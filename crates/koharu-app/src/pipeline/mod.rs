@@ -16,6 +16,7 @@ pub use engine::{
 };
 pub use engines::support;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -82,6 +83,7 @@ fn step_for(info: &EngineInfo) -> Option<PipelineStep> {
     })
 }
 
+use crate::config::SourceTextPolicy;
 use crate::llm;
 use crate::renderer;
 use crate::session::ProjectSession;
@@ -154,6 +156,11 @@ pub async fn run(
     let mut warning_count: usize = 0;
 
     'pages: for (page_index, page_id) in pages.iter().enumerate() {
+        let mut unsupported_seen = HashSet::new();
+        if spec.options.source_text_policy == SourceTextPolicy::HanOnly {
+            let scene = session.scene_snapshot();
+            new_unsupported_geometry(&scene, *page_id, &mut unsupported_seen);
+        }
         for (seq, &i) in order.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 bail!("cancelled");
@@ -256,6 +263,10 @@ pub async fn run(
                 );
                 continue 'pages;
             }
+            if spec.options.source_text_policy == SourceTextPolicy::HanOnly {
+                let scene = session.scene_snapshot();
+                new_unsupported_geometry(&scene, *page_id, &mut unsupported_seen);
+            }
         }
     }
 
@@ -271,6 +282,28 @@ pub async fn run(
         });
     }
     Ok(RunOutcome { warning_count })
+}
+
+fn new_unsupported_geometry(
+    scene: &koharu_core::Scene,
+    page: PageId,
+    seen: &mut HashSet<koharu_core::NodeId>,
+) -> Vec<engines::support::UnsupportedTextGeometry> {
+    let (_, unsupported) = engines::support::eligible_lines_for_page(scene, page);
+    let new = unsupported
+        .into_iter()
+        .filter(|geometry| seen.insert(geometry.node_id))
+        .collect::<Vec<_>>();
+    for geometry in &new {
+        tracing::warn!(
+            node = %geometry.node_id,
+            direction = ?geometry.direction,
+            rotation_deg = geometry.rotation_deg,
+            line_count = geometry.line_count,
+            "skipping unsupported mixed text geometry"
+        );
+    }
+    new
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -355,6 +388,61 @@ pub fn catalog() -> EngineCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    use koharu_core::{Node, NodeId, NodeKind, Page, Scene, TextData, Transform};
+
+    fn unsupported_mixed_node(id: NodeId) -> Node {
+        Node {
+            id,
+            transform: Transform {
+                x: 10.0,
+                y: 10.0,
+                width: 50.0,
+                height: 30.0,
+                rotation_deg: 0.0,
+            },
+            visible: true,
+            kind: NodeKind::Text(TextData {
+                text: Some("English\n中文".to_string()),
+                line_polygons: None,
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn unsupported_geometry_warning_is_emitted_once() {
+        let mut page = Page::new("page", 100, 100);
+        let page_id = page.id;
+        let first_id = NodeId::new();
+        page.nodes
+            .insert(first_id, unsupported_mixed_node(first_id));
+        let mut scene = Scene::default();
+        scene.pages.insert(page_id, page);
+        let mut seen = HashSet::new();
+
+        let first = new_unsupported_geometry(&scene, page_id, &mut seen);
+        let duplicate = new_unsupported_geometry(&scene, page_id, &mut seen);
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].node_id, first_id);
+        assert!(duplicate.is_empty());
+        let diagnostic = format!("{first:?}");
+        assert!(!diagnostic.contains("English"));
+        assert!(!diagnostic.contains("中文"));
+
+        let second_id = NodeId::new();
+        scene
+            .pages
+            .get_mut(&page_id)
+            .expect("page")
+            .nodes
+            .insert(second_id, unsupported_mixed_node(second_id));
+        let second = new_unsupported_geometry(&scene, page_id, &mut seen);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].node_id, second_id);
+    }
 
     #[test]
     fn catalog_includes_anime_text_detector() {

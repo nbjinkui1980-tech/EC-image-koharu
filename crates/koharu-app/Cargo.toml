@@ -35,6 +35,8 @@ camino = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
 image = { workspace = true }
+icu_properties = { workspace = true, features = ["compiled_data"] }
+imageproc = { workspace = true }
 inventory = { workspace = true }
 lru = { workspace = true }
 parking_lot = { workspace = true }

@@ -12,6 +12,21 @@ use koharu_core::{
 
 use crate::blobs::BlobStore;
 
+#[derive(Clone, Debug)]
+pub struct EligibleTextLine {
+    pub line_index: usize,
+    pub text: String,
+    pub region: koharu_ml::types::TextRegion,
+}
+
+#[derive(Clone, Debug)]
+pub struct UnsupportedTextGeometry {
+    pub node_id: NodeId,
+    pub direction: Option<koharu_core::TextDirection>,
+    pub rotation_deg: f32,
+    pub line_count: usize,
+}
+
 // ---------------------------------------------------------------------------
 // Read helpers
 // ---------------------------------------------------------------------------
@@ -92,6 +107,232 @@ pub fn text_nodes(scene: &Scene, page: PageId) -> Vec<(NodeId, &Transform, &Text
             _ => None,
         })
         .collect()
+}
+
+pub fn contains_han(text: &str) -> bool {
+    use icu_properties::{CodePointMapData, props::Script};
+
+    let scripts = CodePointMapData::<Script>::new();
+    text.chars().any(|ch| scripts.get(ch) == Script::Han)
+}
+
+pub fn eligible_text_lines(
+    transform: &Transform,
+    text: &TextData,
+    image_width: u32,
+    image_height: u32,
+) -> Option<Vec<EligibleTextLine>> {
+    let body = text.text.as_deref().unwrap_or_default();
+    let lines = body
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let line = line.trim();
+            (!line.is_empty()).then_some((index, line))
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let node_bbox = safe_node_bbox(transform, image_width, image_height)?;
+    let han_count = lines.iter().filter(|(_, line)| contains_han(line)).count();
+    if han_count == 0 {
+        return Some(Vec::new());
+    }
+
+    let safe_polygons = text.line_polygons.as_ref().and_then(|polygons| {
+        if polygons.len() != lines.len() {
+            return None;
+        }
+        polygons
+            .iter()
+            .map(|quad| safe_mixed_line_bbox(quad, transform, image_width, image_height))
+            .collect::<Option<Vec<_>>>()
+    });
+
+    if han_count != lines.len() {
+        if text
+            .rotation_deg
+            .is_some_and(|rotation| !rotation.is_finite() || rotation != 0.0)
+        {
+            return None;
+        }
+        let boxes = safe_polygons?;
+        return Some(
+            lines
+                .into_iter()
+                .zip(boxes)
+                .filter(|((_, line), _)| contains_han(line))
+                .map(|((line_index, line), bbox)| eligible_line(text, line_index, line, bbox, true))
+                .collect(),
+        );
+    }
+
+    if let Some(boxes) = safe_polygons {
+        return Some(
+            lines
+                .into_iter()
+                .zip(boxes)
+                .map(|((line_index, line), bbox)| eligible_line(text, line_index, line, bbox, true))
+                .collect(),
+        );
+    }
+
+    Some(
+        lines
+            .into_iter()
+            .map(|(line_index, line)| eligible_line(text, line_index, line, node_bbox, false))
+            .collect(),
+    )
+}
+
+pub fn eligible_lines_for_page(
+    scene: &Scene,
+    page: PageId,
+) -> (
+    Vec<(NodeId, EligibleTextLine)>,
+    Vec<UnsupportedTextGeometry>,
+) {
+    let Some(page_ref) = scene.page(page) else {
+        return (Vec::new(), Vec::new());
+    };
+    let (image_width, image_height) = (page_ref.width, page_ref.height);
+    let mut lines = Vec::new();
+    let mut unsupported = Vec::new();
+    for (id, transform, text) in text_nodes(scene, page) {
+        match eligible_text_lines(transform, text, image_width, image_height) {
+            Some(found) => lines.extend(found.into_iter().map(|line| (id, line))),
+            None => unsupported.push(UnsupportedTextGeometry {
+                node_id: id,
+                direction: text.source_direction,
+                rotation_deg: text.rotation_deg.unwrap_or(transform.rotation_deg),
+                line_count: text
+                    .text
+                    .as_deref()
+                    .map(|body| body.lines().count())
+                    .unwrap_or(0),
+            }),
+        }
+    }
+    (lines, unsupported)
+}
+
+fn eligible_line(
+    text: &TextData,
+    line_index: usize,
+    line: &str,
+    bbox: [f32; 4],
+    with_polygon: bool,
+) -> EligibleTextLine {
+    let mut region = text_node_to_region(
+        &Transform {
+            x: bbox[0],
+            y: bbox[1],
+            width: bbox[2] - bbox[0],
+            height: bbox[3] - bbox[1],
+            rotation_deg: 0.0,
+        },
+        text,
+    );
+    region.rotation_deg = Some(0.0);
+    region.line_polygons = with_polygon.then(|| vec![bbox_quad(bbox)]);
+    EligibleTextLine {
+        line_index,
+        text: line.to_string(),
+        region,
+    }
+}
+
+fn safe_node_bbox(transform: &Transform, image_width: u32, image_height: u32) -> Option<[f32; 4]> {
+    let values = [
+        transform.x,
+        transform.y,
+        transform.width,
+        transform.height,
+        transform.rotation_deg,
+    ];
+    if values.iter().any(|value| !value.is_finite())
+        || transform.width <= 0.0
+        || transform.height <= 0.0
+        || transform.rotation_deg != 0.0
+    {
+        return None;
+    }
+    intersect_bbox(
+        [
+            transform.x,
+            transform.y,
+            transform.x + transform.width,
+            transform.y + transform.height,
+        ],
+        [0.0, 0.0, image_width as f32, image_height as f32],
+    )
+}
+
+fn safe_mixed_line_bbox(
+    quad: &[[f32; 2]; 4],
+    transform: &Transform,
+    image_width: u32,
+    image_height: u32,
+) -> Option<[f32; 4]> {
+    if quad.iter().flatten().any(|value| !value.is_finite()) || !quad_is_axis_aligned(quad) {
+        return None;
+    }
+    let area = (0..4)
+        .map(|index| {
+            let next = (index + 1) % 4;
+            quad[index][0] * quad[next][1] - quad[next][0] * quad[index][1]
+        })
+        .sum::<f32>()
+        .abs()
+        * 0.5;
+    if area <= f32::EPSILON {
+        return None;
+    }
+
+    let bbox = [
+        quad.iter()
+            .map(|point| point[0])
+            .fold(f32::INFINITY, f32::min),
+        quad.iter()
+            .map(|point| point[1])
+            .fold(f32::INFINITY, f32::min),
+        quad.iter()
+            .map(|point| point[0])
+            .fold(f32::NEG_INFINITY, f32::max),
+        quad.iter()
+            .map(|point| point[1])
+            .fold(f32::NEG_INFINITY, f32::max),
+    ];
+    let node_bbox = safe_node_bbox(transform, image_width, image_height)?;
+    intersect_bbox(bbox, node_bbox)
+}
+
+fn quad_is_axis_aligned(quad: &[[f32; 2]; 4]) -> bool {
+    (0..4).all(|index| {
+        let next = (index + 1) % 4;
+        quad[index][0] == quad[next][0] || quad[index][1] == quad[next][1]
+    })
+}
+
+fn intersect_bbox(a: [f32; 4], b: [f32; 4]) -> Option<[f32; 4]> {
+    let bbox = [
+        a[0].max(b[0]),
+        a[1].max(b[1]),
+        a[2].min(b[2]),
+        a[3].min(b[3]),
+    ];
+    (bbox[2] > bbox[0] && bbox[3] > bbox[1]).then_some(bbox)
+}
+
+fn bbox_quad(bbox: [f32; 4]) -> [[f32; 2]; 4] {
+    [
+        [bbox[0], bbox[1]],
+        [bbox[2], bbox[1]],
+        [bbox[2], bbox[3]],
+        [bbox[0], bbox[3]],
+    ]
 }
 
 /// Convert a scene `(Transform, TextData)` pair into a `koharu-ml` `TextRegion`
@@ -485,7 +726,167 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koharu_core::{ReadingOrder, Region};
+    use koharu_core::{ReadingOrder, Region, TextDirection};
+
+    fn text_data(text: &str, line_polygons: Option<Vec<[[f32; 2]; 4]>>) -> TextData {
+        TextData {
+            text: Some(text.to_string()),
+            line_polygons,
+            source_direction: Some(TextDirection::Horizontal),
+            confidence: 0.9,
+            ..Default::default()
+        }
+    }
+
+    fn transform() -> Transform {
+        Transform {
+            x: 10.0,
+            y: 20.0,
+            width: 80.0,
+            height: 60.0,
+            rotation_deg: 0.0,
+        }
+    }
+
+    fn quad(x1: f32, y1: f32, x2: f32, y2: f32) -> [[f32; 2]; 4] {
+        [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+    }
+
+    #[test]
+    fn eligible_detects_unicode_han_only() {
+        assert!(contains_han("中文123，。"));
+        assert!(contains_han("S型曲线"));
+        assert!(!contains_han("S-CURVE 123"));
+    }
+
+    #[test]
+    fn eligible_mixed_node_returns_only_han_line_with_canonical_geometry() {
+        let text = text_data(
+            "S-CURVE\nS型曲线",
+            Some(vec![
+                quad(12.0, 22.0, 80.0, 38.0),
+                quad(8.0, 42.0, 95.0, 65.0),
+            ]),
+        );
+
+        let lines = eligible_text_lines(&transform(), &text, 100, 100).expect("safe geometry");
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].line_index, 1);
+        assert_eq!(lines[0].text, "S型曲线");
+        assert_eq!(
+            (
+                lines[0].region.x,
+                lines[0].region.y,
+                lines[0].region.width,
+                lines[0].region.height,
+            ),
+            (10.0, 42.0, 80.0, 23.0)
+        );
+        assert_eq!(
+            lines[0].region.line_polygons.as_deref(),
+            Some([quad(10.0, 42.0, 90.0, 65.0)].as_slice())
+        );
+    }
+
+    #[test]
+    fn eligible_mixed_node_rejects_missing_or_mismatched_polygons() {
+        let missing = text_data("English\n中文", None);
+        assert!(eligible_text_lines(&transform(), &missing, 100, 100).is_none());
+
+        let mut vertical = text_data("English\n中文", None);
+        vertical.source_direction = Some(TextDirection::Vertical);
+        assert!(eligible_text_lines(&transform(), &vertical, 100, 100).is_none());
+
+        let mut rotated = transform();
+        rotated.rotation_deg = 15.0;
+        assert!(eligible_text_lines(&rotated, &missing, 100, 100).is_none());
+
+        let mismatched = text_data("English\n中文", Some(vec![quad(12.0, 22.0, 80.0, 38.0)]));
+        assert!(eligible_text_lines(&transform(), &mismatched, 100, 100).is_none());
+    }
+
+    #[test]
+    fn eligible_mixed_node_rejects_unsafe_geometry() {
+        let cases = [
+            quad(f32::NAN, 22.0, 80.0, 38.0),
+            quad(12.0, 22.0, f32::INFINITY, 38.0),
+            quad(12.0, 22.0, 12.0, 38.0),
+            quad(120.0, 122.0, 180.0, 138.0),
+            [[12.0, 22.0], [80.0, 24.0], [78.0, 38.0], [10.0, 36.0]],
+        ];
+        for unsafe_quad in cases {
+            let text = text_data(
+                "English\n中文",
+                Some(vec![quad(12.0, 22.0, 80.0, 38.0), unsafe_quad]),
+            );
+            assert!(eligible_text_lines(&transform(), &text, 200, 200).is_none());
+        }
+
+        let mut rotated = transform();
+        rotated.rotation_deg = 5.0;
+        let text = text_data(
+            "English\n中文",
+            Some(vec![
+                quad(12.0, 22.0, 80.0, 38.0),
+                quad(12.0, 42.0, 80.0, 58.0),
+            ]),
+        );
+        assert!(eligible_text_lines(&rotated, &text, 100, 100).is_none());
+    }
+
+    #[test]
+    fn eligible_pure_han_without_polygons_uses_clipped_node_region() {
+        let mut transform = transform();
+        transform.x = -5.0;
+        let text = text_data("第一行\n第二行", None);
+
+        let lines = eligible_text_lines(&transform, &text, 70, 70).expect("pure Han fallback");
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!([lines[0].line_index, lines[1].line_index], [0, 1]);
+        for line in lines {
+            assert_eq!(
+                (
+                    line.region.x,
+                    line.region.y,
+                    line.region.width,
+                    line.region.height
+                ),
+                (0.0, 20.0, 70.0, 50.0)
+            );
+            assert!(line.region.line_polygons.is_none());
+        }
+    }
+
+    #[test]
+    fn eligible_pure_english_without_polygons_is_empty() {
+        let text = text_data("S-CURVE\nPEACH BODY", None);
+        let lines = eligible_text_lines(&transform(), &text, 100, 100).expect("valid node");
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn eligible_pure_han_rejects_invalid_node_region() {
+        let text = text_data("中文", None);
+        let invalid = [
+            Transform {
+                width: 0.0,
+                ..transform()
+            },
+            Transform {
+                x: f32::NAN,
+                ..transform()
+            },
+            Transform {
+                x: 200.0,
+                ..transform()
+            },
+        ];
+        for transform in invalid {
+            assert!(eligible_text_lines(&transform, &text, 100, 100).is_none());
+        }
+    }
 
     #[test]
     fn inpainting_engines_share_identical_region_clipping() {
