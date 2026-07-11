@@ -121,6 +121,18 @@ fn init_tracing() {
         .init();
 }
 
+fn pipeline_options(cli: &Cli, config: &AppConfig) -> koharu_app::PipelineRunOptions {
+    koharu_app::PipelineRunOptions {
+        source_text_policy: config.pipeline.source_text_policy,
+        target_language: Some(cli.target_lang.clone()),
+        system_prompt: cli.system_prompt.clone(),
+        default_font: cli.default_font.clone(),
+        text_node_ids: None,
+        reading_order: None,
+        region: None,
+    }
+}
+
 async fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -137,6 +149,7 @@ async fn run() -> Result<()> {
         .join(".cache");
 
     let mut cfg = cfg;
+    let options = pipeline_options(&cli, &cfg);
     cfg.data.path = temp_root.join("data");
     std::fs::create_dir_all(cfg.data.path.as_std_path()).context("create data dir")?;
 
@@ -222,14 +235,7 @@ async fn run() -> Result<()> {
     let spec = koharu_app::pipeline::PipelineSpec {
         scope: koharu_app::pipeline::Scope::Pages(vec![page_id]),
         steps,
-        options: koharu_app::PipelineRunOptions {
-            target_language: Some(cli.target_lang.clone()),
-            system_prompt: cli.system_prompt.clone(),
-            default_font: cli.default_font.clone(),
-            text_node_ids: None,
-            reading_order: None,
-            region: None,
-        },
+        options,
     };
 
     // When translate is skipped, copy OCR text into the translation slot so
@@ -476,4 +482,36 @@ fn save_blob_image(
     img.save(path)
         .with_context(|| format!("write {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koharu_app::config::SourceTextPolicy;
+
+    #[test]
+    fn cli_options_inherits_source_text_policy() {
+        let mut config = AppConfig::default();
+        config.pipeline.source_text_policy = SourceTextPolicy::AllText;
+        let cli = Cli {
+            input: PathBuf::from("input.png"),
+            output_dir: PathBuf::from("output"),
+            config: None,
+            steps: Some(vec!["llm".to_string()]),
+            target_lang: "fr".to_string(),
+            system_prompt: Some("system".to_string()),
+            default_font: Some("Noto Sans".to_string()),
+            with_translate: false,
+            llm: None,
+            cpu: true,
+        };
+
+        let options = pipeline_options(&cli, &config);
+
+        assert_eq!(options.source_text_policy, SourceTextPolicy::AllText);
+        assert_eq!(options.target_language.as_deref(), Some("fr"));
+        assert_eq!(options.system_prompt.as_deref(), Some("system"));
+        assert_eq!(options.default_font.as_deref(), Some("Noto Sans"));
+        assert_eq!(cli.steps.as_deref(), Some(["llm".to_string()].as_slice()));
+    }
 }

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use camino::Utf8PathBuf;
 use koharu_app::{
-    App,
+    App, AppConfig,
     pipeline::{PipelineRunOptions, PipelineSpec, Scope},
 };
 use koharu_core::{NodeId, Op, PageId, ReadingOrder};
@@ -106,6 +106,18 @@ pub struct StartPipelineOutput {
     pub job_id: String,
 }
 
+fn options_from_input(input: &StartPipelineInput, config: &AppConfig) -> PipelineRunOptions {
+    PipelineRunOptions {
+        source_text_policy: config.pipeline.source_text_policy,
+        target_language: input.target_language.clone(),
+        system_prompt: input.system_prompt.clone(),
+        default_font: input.default_font.clone(),
+        text_node_ids: input.text_node_ids.clone(),
+        reading_order: input.reading_order,
+        region: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tool router
 // ---------------------------------------------------------------------------
@@ -179,20 +191,14 @@ impl KoharuServer {
         let session = app
             .current_session()
             .ok_or_else(|| rmcp::ErrorData::invalid_request("no project open", None))?;
+        let options = options_from_input(&input, &app.config.load());
         let spec = PipelineSpec {
             scope: match input.pages {
                 Some(pages) => Scope::Pages(pages),
                 None => Scope::WholeProject,
             },
             steps: input.steps,
-            options: PipelineRunOptions {
-                target_language: input.target_language,
-                system_prompt: input.system_prompt,
-                default_font: input.default_font,
-                text_node_ids: input.text_node_ids,
-                reading_order: input.reading_order,
-                region: None,
-            },
+            options,
         };
         let job_id = Uuid::new_v4().to_string();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -213,6 +219,35 @@ impl KoharuServer {
 
 fn err(e: impl std::fmt::Display) -> rmcp::ErrorData {
     rmcp::ErrorData::internal_error(e.to_string(), None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koharu_app::{AppConfig, config::SourceTextPolicy};
+
+    #[test]
+    fn mcp_options_inherits_source_text_policy() {
+        let mut config = AppConfig::default();
+        config.pipeline.source_text_policy = SourceTextPolicy::AllText;
+        let page = PageId::new();
+        let input = StartPipelineInput {
+            steps: vec!["llm".to_string()],
+            pages: Some(vec![page]),
+            text_node_ids: None,
+            target_language: Some("ko".to_string()),
+            system_prompt: Some("system".to_string()),
+            default_font: Some("Noto Sans".to_string()),
+            reading_order: Some(ReadingOrder::Ltr),
+        };
+
+        let options = options_from_input(&input, &config);
+
+        assert_eq!(options.source_text_policy, SourceTextPolicy::AllText);
+        assert_eq!(options.target_language.as_deref(), Some("ko"));
+        assert_eq!(input.steps, ["llm"]);
+        assert_eq!(input.pages.as_deref(), Some([page].as_slice()));
+    }
 }
 
 #[tool_handler]

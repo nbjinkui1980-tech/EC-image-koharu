@@ -33,3 +33,22 @@ fn openapi_paths_snapshot() {
 
     insta::assert_debug_snapshot!(paths);
 }
+
+#[test]
+fn source_text_policy_only_extends_pipeline_config() {
+    let (_, spec) = koharu_rpc::api::api();
+    let json = serde_json::to_value(&spec).expect("serialize OpenAPI");
+    let schemas = json["components"]["schemas"]
+        .as_object()
+        .expect("schemas object");
+
+    let pipeline = schemas["PipelineConfig"]["properties"]
+        .as_object()
+        .expect("PipelineConfig properties");
+    assert!(pipeline.contains_key("source_text_policy"));
+
+    let request = schemas["StartPipelineRequest"]["properties"]
+        .as_object()
+        .expect("StartPipelineRequest properties");
+    assert!(!request.contains_key("sourceTextPolicy"));
+}

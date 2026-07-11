@@ -1025,6 +1025,7 @@
               "ocr": "paddle-ocr-vl-1.6",
               "renderer": "koharu-renderer",
               "segmenter": "comic-text-detector-seg",
+              "source_text_policy": "han_only",
               "translator": "llm"
             }
           },
@@ -2576,7 +2577,7 @@
       },
       "PipelineConfig": {
         "type": "object",
-        "description": "Engine selection for each pipeline stage.\nValues are engine IDs (e.g. \"pp-doclayout-v3\", \"comic-text-detector\").\nEmpty string means use default.",
+        "description": "Engine selection and source-text policy for the pipeline.\nEngine values are inventory IDs; an empty engine ID means use default.",
         "properties": {
           "bubble_segmenter": {
             "type": "string",
@@ -2605,6 +2606,14 @@
           "segmenter": {
             "type": "string",
             "default": "comic-text-detector-seg"
+          },
+          "source_text_policy": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceTextPolicy"
+              }
+            ],
+            "default": "han_only"
           },
           "translator": {
             "type": "string",
@@ -2951,6 +2960,11 @@
             }
           }
         }
+      },
+      "SourceTextPolicy": {
+        "type": "string",
+        "description": "Which OCR text is eligible for translation and image modification.",
+        "enum": ["han_only", "all_text"]
       },
       "StartDownloadRequest": {
         "type": "object",

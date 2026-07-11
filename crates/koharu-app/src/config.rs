@@ -65,12 +65,21 @@ pub struct AppConfig {
     pub providers: Vec<ProviderConfig>,
 }
 
-/// Engine selection for each pipeline stage.
-/// Values are engine IDs (e.g. "pp-doclayout-v3", "comic-text-detector").
-/// Empty string means use default.
+/// Which OCR text is eligible for translation and image modification.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceTextPolicy {
+    #[default]
+    HanOnly,
+    AllText,
+}
+
+/// Engine selection and source-text policy for the pipeline.
+/// Engine values are inventory IDs; an empty engine ID means use default.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(default)]
 pub struct PipelineConfig {
+    pub source_text_policy: SourceTextPolicy,
     pub detector: String,
     pub font_detector: String,
     pub segmenter: String,
@@ -84,6 +93,7 @@ pub struct PipelineConfig {
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
+            source_text_policy: SourceTextPolicy::HanOnly,
             detector: "pp-doclayout-v3".to_string(),
             font_detector: "yuzumarker-font-detection".to_string(),
             segmenter: "comic-text-detector-seg".to_string(),
@@ -386,6 +396,33 @@ fn provider_api_key_secret_key(provider_id: &str) -> String {
 mod tests {
     use super::*;
     use koharu_core::{ConfigPatch, PipelineConfigPatch};
+
+    #[test]
+    fn old_config_defaults_source_text_policy_to_han_only() {
+        let config: AppConfig = toml::from_str("[pipeline]\ndetector = 'pp-doclayout-v3'")
+            .expect("old config must deserialize");
+
+        assert_eq!(
+            config.pipeline.source_text_policy,
+            SourceTextPolicy::HanOnly
+        );
+    }
+
+    #[test]
+    fn all_text_source_text_policy_round_trips() {
+        let config: AppConfig = toml::from_str("[pipeline]\nsource_text_policy = 'all_text'")
+            .expect("policy must deserialize");
+
+        assert_eq!(
+            config.pipeline.source_text_policy,
+            SourceTextPolicy::AllText
+        );
+        assert!(
+            toml::to_string(&config)
+                .expect("config must serialize")
+                .contains("source_text_policy = \"all_text\"")
+        );
+    }
 
     #[test]
     fn old_config_without_providers_still_loads() {

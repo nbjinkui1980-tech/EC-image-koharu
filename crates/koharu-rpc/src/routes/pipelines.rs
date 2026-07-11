@@ -9,6 +9,7 @@ use std::sync::atomic::AtomicBool;
 
 use axum::Json;
 use axum::extract::State;
+use koharu_app::AppConfig;
 use koharu_app::pipeline::{
     self, PipelineRunOptions, PipelineSpec, ProgressTick, Scope, WarningTick,
 };
@@ -26,6 +27,18 @@ use crate::routes::operations::{register_cancel, unregister_cancel};
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::default().routes(routes!(start_pipeline))
+}
+
+fn options_from_request(req: &StartPipelineRequest, config: &AppConfig) -> PipelineRunOptions {
+    PipelineRunOptions {
+        source_text_policy: config.pipeline.source_text_policy,
+        target_language: req.target_language.clone(),
+        system_prompt: req.system_prompt.clone(),
+        default_font: req.default_font.clone(),
+        text_node_ids: req.text_node_ids.clone(),
+        region: req.region,
+        reading_order: req.reading_order,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -75,20 +88,14 @@ async fn start_pipeline(
     for id in &req.steps {
         pipeline::Registry::find(id).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     }
+    let options = options_from_request(&req, &app.config.load());
     let spec = PipelineSpec {
         scope: match req.pages {
             Some(pages) => Scope::Pages(pages),
             None => Scope::WholeProject,
         },
         steps: req.steps,
-        options: PipelineRunOptions {
-            target_language: req.target_language,
-            system_prompt: req.system_prompt,
-            default_font: req.default_font,
-            text_node_ids: req.text_node_ids,
-            region: req.region,
-            reading_order: req.reading_order,
-        },
+        options,
     };
 
     let operation_id = Uuid::new_v4().to_string();
@@ -190,4 +197,34 @@ async fn start_pipeline(
     });
 
     Ok(Json(StartPipelineResponse { operation_id }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koharu_app::{AppConfig, config::SourceTextPolicy};
+
+    #[test]
+    fn http_options_inherits_source_text_policy() {
+        let mut config = AppConfig::default();
+        config.pipeline.source_text_policy = SourceTextPolicy::AllText;
+        let page = PageId::new();
+        let req = StartPipelineRequest {
+            steps: vec!["llm".to_string()],
+            pages: Some(vec![page]),
+            region: None,
+            text_node_ids: None,
+            target_language: Some("ja".to_string()),
+            system_prompt: Some("system".to_string()),
+            default_font: Some("Noto Sans".to_string()),
+            reading_order: Some(ReadingOrder::Ltr),
+        };
+
+        let options = options_from_request(&req, &config);
+
+        assert_eq!(options.source_text_policy, SourceTextPolicy::AllText);
+        assert_eq!(options.target_language.as_deref(), Some("ja"));
+        assert_eq!(req.steps, ["llm"]);
+        assert_eq!(req.pages.as_deref(), Some([page].as_slice()));
+    }
 }

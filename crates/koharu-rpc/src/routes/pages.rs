@@ -15,6 +15,7 @@ use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Multipart, Path, Query, State};
 use image::GenericImageView;
+use koharu_app::AppConfig;
 use koharu_app::pipeline::{self, EngineCtx, PipelineRunOptions};
 use koharu_core::{
     BlobRef, ImageData, ImageRole, MaskRole, Node, NodeDataPatch, NodeId, NodeKind, Op, Page,
@@ -46,6 +47,14 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(add_image_layer))
         .routes(routes!(put_mask))
         .routes(routes!(reorder_text_nodes))
+}
+
+fn repair_options(region: Region, config: &AppConfig) -> PipelineRunOptions {
+    PipelineRunOptions {
+        source_text_policy: config.pipeline.source_text_policy,
+        region: Some(region),
+        ..Default::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -546,10 +555,7 @@ async fn put_mask(
             height: params.height.unwrap_or(0.0) as u32,
         };
         let cancel = Arc::new(AtomicBool::new(false));
-        let options = PipelineRunOptions {
-            region: Some(region),
-            ..Default::default()
-        };
+        let options = repair_options(region, &app.config.load());
         let ctx = EngineCtx {
             scene: &scene,
             page: page_id,
@@ -691,4 +697,31 @@ async fn reorder_text_nodes(
     }
 
     Ok(axum::http::StatusCode::OK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koharu_app::{AppConfig, config::SourceTextPolicy};
+
+    #[test]
+    fn repair_options_inherits_source_text_policy() {
+        let mut config = AppConfig::default();
+        config.pipeline.source_text_policy = SourceTextPolicy::AllText;
+        let region = Region {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+        };
+
+        let options = repair_options(region, &config);
+
+        assert_eq!(options.source_text_policy, SourceTextPolicy::AllText);
+        let actual = options.region.expect("repair region");
+        assert_eq!(
+            (actual.x, actual.y, actual.width, actual.height),
+            (region.x, region.y, region.width, region.height)
+        );
+    }
 }
