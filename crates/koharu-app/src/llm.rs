@@ -216,25 +216,8 @@ impl Model {
         let body = format_sources(sources);
 
         let mut guard = self.state.write().await;
-        let translation = match &mut *guard {
-            State::ReadyLocal(llm) => {
-                let opts = llm.id().default_generate_options();
-                llm.generate(&body, &opts, target_language, custom_system_prompt)
-            }
-            State::ReadyProvider { target, provider } => {
-                provider
-                    .translate(
-                        &body,
-                        target_language,
-                        &target.model_id,
-                        custom_system_prompt,
-                    )
-                    .await
-            }
-            State::Loading { .. } => Err(anyhow::anyhow!("LLM is still loading")),
-            State::Failed { error, .. } => Err(anyhow::anyhow!("LLM failed to load: {error}")),
-            State::Empty => Err(anyhow::anyhow!("no LLM loaded")),
-        }?;
+        let translation =
+            generate_translation(&mut guard, &body, target_language, custom_system_prompt).await?;
 
         let translation = strip_thinking_block(&translation);
         let out = match parse_tagged_blocks(translation, sources.len())? {
@@ -246,6 +229,67 @@ impl Model {
             .map(|s| strip_wrapping_quotes(s.trim()))
             .collect())
     }
+
+    pub async fn translate_text_lines_strict(
+        &self,
+        sources: &[String],
+        target_language: Option<&str>,
+        custom_system_prompt: Option<&str>,
+    ) -> Result<Vec<String>> {
+        translate_text_lines_strict_with_state(
+            &self.state,
+            sources,
+            target_language,
+            custom_system_prompt,
+        )
+        .await
+    }
+}
+
+async fn generate_translation(
+    state: &mut State,
+    body: &str,
+    target_language: Language,
+    custom_system_prompt: Option<&str>,
+) -> Result<String> {
+    match state {
+        State::ReadyLocal(llm) => {
+            let opts = llm.id().default_generate_options();
+            llm.generate(body, &opts, target_language, custom_system_prompt)
+        }
+        State::ReadyProvider { target, provider } => {
+            provider
+                .translate(
+                    body,
+                    target_language,
+                    &target.model_id,
+                    custom_system_prompt,
+                )
+                .await
+        }
+        State::Loading { .. } => Err(anyhow::anyhow!("LLM is still loading")),
+        State::Failed { error, .. } => Err(anyhow::anyhow!("LLM failed to load: {error}")),
+        State::Empty => Err(anyhow::anyhow!("no LLM loaded")),
+    }
+}
+
+async fn translate_text_lines_strict_with_state(
+    state: &RwLock<State>,
+    sources: &[String],
+    target_language: Option<&str>,
+    custom_system_prompt: Option<&str>,
+) -> Result<Vec<String>> {
+    if sources.is_empty() {
+        return Ok(Vec::new());
+    }
+    let target_language = target_language
+        .and_then(Language::parse)
+        .unwrap_or(Language::English);
+    let body = format_sources(sources);
+    let mut state = state.write().await;
+    let translation =
+        generate_translation(&mut state, &body, target_language, custom_system_prompt).await?;
+    parse_strict_translation_response(&translation, sources.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +546,62 @@ fn parse_tagged_blocks(translation: &str, expected_blocks: usize) -> Result<Opti
     Ok(found_any.then_some(blocks))
 }
 
+fn parse_tagged_blocks_strict(translation: &str, expected: usize) -> Result<Vec<String>> {
+    for line in translation
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with('['))
+    {
+        anyhow::ensure!(parse_block_tag(line).is_some(), "invalid translation tag");
+    }
+
+    let mut slots = vec![None; expected];
+    let mut cursor = translation;
+    let mut found = false;
+    while let Some((offset, len, id)) = find_next_tag(cursor) {
+        if !found {
+            anyhow::ensure!(
+                cursor[..offset].trim().is_empty(),
+                "content before first tag"
+            );
+        }
+        found = true;
+        anyhow::ensure!(id < expected, "translation tag out of range");
+        anyhow::ensure!(slots[id].is_none(), "duplicate translation tag");
+        cursor = &cursor[offset + len..];
+        let end = find_next_tag(cursor)
+            .map(|(next_offset, _, _)| next_offset)
+            .unwrap_or(cursor.len());
+        let content = cursor[..end].trim();
+        anyhow::ensure!(!content.is_empty(), "empty translation block");
+        anyhow::ensure!(
+            content.lines().count() == 1,
+            "translation block must contain one line"
+        );
+        slots[id] = Some(content.to_string());
+        cursor = &cursor[end..];
+    }
+    anyhow::ensure!(found, "tagged translation response required");
+    anyhow::ensure!(slots.iter().all(Option::is_some), "missing translation tag");
+    Ok(slots.into_iter().map(Option::unwrap).collect())
+}
+
+fn parse_strict_translation_response(
+    translation: &str,
+    expected_blocks: usize,
+) -> Result<Vec<String>> {
+    let translation = strip_thinking_block_strict(translation)?;
+    let blocks = parse_tagged_blocks_strict(translation, expected_blocks)?;
+    blocks
+        .into_iter()
+        .map(|block| {
+            let block = strip_wrapping_quotes(block.trim());
+            anyhow::ensure!(!block.trim().is_empty(), "empty translation block");
+            Ok(block)
+        })
+        .collect()
+}
+
 fn split_legacy_lines(translation: &str, expected_blocks: usize) -> Vec<String> {
     let mut lines: Vec<String> = translation
         .lines()
@@ -523,6 +623,21 @@ fn strip_thinking_block(text: &str) -> &str {
     text
 }
 
+fn strip_thinking_block_strict(text: &str) -> Result<&str> {
+    if let Some(start) = text.find("<think>") {
+        let after_open = &text[start + "<think>".len()..];
+        let end = after_open
+            .find("</think>")
+            .ok_or_else(|| anyhow::anyhow!("unclosed thinking block"))?;
+        return Ok(after_open[end + "</think>".len()..].trim_start());
+    }
+    anyhow::ensure!(
+        !text.contains("</think>"),
+        "unexpected thinking block terminator"
+    );
+    Ok(text)
+}
+
 fn strip_wrapping_quotes(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.len() >= 2 {
@@ -535,4 +650,67 @@ fn strip_wrapping_quotes(text: &str) -> String {
         }
     }
     trimmed.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_tagged_blocks_accept_complete_and_reordered_responses() {
+        assert_eq!(
+            parse_tagged_blocks_strict("[1]one\n[2]two", 2).unwrap(),
+            vec!["one", "two"]
+        );
+        assert_eq!(
+            parse_tagged_blocks_strict("[2]two\n[1]one", 2).unwrap(),
+            vec!["one", "two"]
+        );
+    }
+
+    #[test]
+    fn strict_tagged_blocks_reject_invalid_responses() {
+        let invalid = [
+            "one\ntwo",
+            "prefix\n[1]one\n[2]two",
+            "[x]one\n[2]two",
+            "[0]zero\n[1]one",
+            "[1]one\n[1]again",
+            "[1]one",
+            "[1]one\n[3]three",
+            "[1]\n[2]two",
+            "[1]line one\nline two\n[2]two",
+        ];
+
+        for response in invalid {
+            assert!(
+                parse_tagged_blocks_strict(response, 2).is_err(),
+                "response should fail: {response:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn strict_translation_strips_thinking_then_quotes() {
+        assert_eq!(
+            parse_strict_translation_response("<think>reasoning</think>\n[2]'two'\n[1]\"one\"", 2,)
+                .unwrap(),
+            vec!["one", "two"]
+        );
+    }
+
+    #[test]
+    fn strict_translation_rejects_unclosed_thinking_block() {
+        assert!(parse_strict_translation_response("<think>reasoning\n[1]one", 1).is_err());
+        assert!(parse_strict_translation_response("[1]\"\"", 1).is_err());
+    }
+
+    #[tokio::test]
+    async fn strict_translation_empty_sources_short_circuits() {
+        let state = RwLock::new(State::Empty);
+        let output = translate_text_lines_strict_with_state(&state, &[], None, None)
+            .await
+            .unwrap();
+        assert!(output.is_empty());
+    }
 }

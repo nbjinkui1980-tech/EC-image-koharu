@@ -215,7 +215,7 @@ async fn run() -> Result<()> {
     if steps.is_empty() {
         anyhow::bail!("no steps to run; check --steps or config.pipeline.*");
     }
-    eprintln!("=> running steps: {}", steps.join(" → "));
+    let (first_steps, render_steps) = split_render_phase(steps)?;
 
     // Progress sink — one JSON line per tick to stdout. Useful when a step
     // hangs and you want to see which one.
@@ -232,17 +232,6 @@ async fn run() -> Result<()> {
             println!("{line}");
         });
 
-    let spec = koharu_app::pipeline::PipelineSpec {
-        scope: koharu_app::pipeline::Scope::Pages(vec![page_id]),
-        steps,
-        options,
-    };
-
-    // When translate is skipped, copy OCR text into the translation slot so
-    // the renderer has something to rasterise.
-    let ensure_translation_fallback = !cli.with_translate;
-
-    let cancel = Arc::new(AtomicBool::new(false));
     let warning_sink: koharu_app::pipeline::WarningSink =
         Arc::new(|tick: koharu_app::pipeline::WarningTick| {
             eprintln!(
@@ -253,38 +242,81 @@ async fn run() -> Result<()> {
                 tick.message
             );
         });
-    let result = koharu_app::pipeline::run(
-        session.clone(),
-        app.registry.clone(),
-        app.runtime.clone(),
-        app.cpu_only(),
-        app.llm.clone(),
-        app.renderer.clone(),
-        spec,
-        cancel,
-        Some(progress_sink),
-        Some(warning_sink),
-    )
+
+    let pipeline_result: Result<()> = async {
+        if !first_steps.is_empty() {
+            eprintln!("=> running first phase: {}", first_steps.join(" → "));
+            let outcome = run_pipeline_phase(
+                &app,
+                session.clone(),
+                page_id,
+                first_steps,
+                options.clone(),
+                progress_sink.clone(),
+                warning_sink.clone(),
+            )
+            .await?;
+            require_clean_phase(&outcome)?;
+        }
+
+        if !render_steps.is_empty() {
+            synthesize_translations(&app, page_id).await?;
+            eprintln!("=> running render phase: {}", render_steps.join(" → "));
+            let outcome = run_pipeline_phase(
+                &app,
+                session.clone(),
+                page_id,
+                render_steps,
+                options,
+                progress_sink,
+                warning_sink,
+            )
+            .await?;
+            require_clean_phase(&outcome)?;
+        }
+        Ok(())
+    }
     .await;
 
-    match &result {
-        Ok(outcome) if outcome.warning_count == 0 => eprintln!("=> pipeline succeeded"),
-        Ok(outcome) => eprintln!(
-            "=> pipeline finished with {} failed step(s)",
-            outcome.warning_count
-        ),
-        Err(e) => eprintln!("=> pipeline failed: {e:#}"),
-    }
-
-    if ensure_translation_fallback && let Err(e) = synthesize_translations(&app, page_id).await {
-        eprintln!("warn: failed to synthesize translations: {e:#}");
+    match &pipeline_result {
+        Ok(()) => eprintln!("=> pipeline succeeded"),
+        Err(error) => eprintln!("=> pipeline failed: {error:#}"),
     }
 
     dump_artifacts(&session, page_id, &cli.output_dir)
         .with_context(|| format!("dump artifacts to {}", cli.output_dir.display()))?;
 
     app.close_project().await.ok();
-    result.map(|_| ())
+    pipeline_result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_pipeline_phase(
+    app: &App,
+    session: Arc<koharu_app::ProjectSession>,
+    page_id: PageId,
+    steps: Vec<String>,
+    options: koharu_app::PipelineRunOptions,
+    progress: koharu_app::pipeline::ProgressSink,
+    warnings: koharu_app::pipeline::WarningSink,
+) -> Result<koharu_app::pipeline::RunOutcome> {
+    koharu_app::pipeline::run(
+        session,
+        app.registry.clone(),
+        app.runtime.clone(),
+        app.cpu_only(),
+        app.llm.clone(),
+        app.renderer.clone(),
+        koharu_app::pipeline::PipelineSpec {
+            scope: koharu_app::pipeline::Scope::Pages(vec![page_id]),
+            steps,
+            options,
+        },
+        Arc::new(AtomicBool::new(false)),
+        Some(progress),
+        Some(warnings),
+    )
+    .await
 }
 
 /// Load `AppConfig` from TOML at `path` or default.
@@ -385,41 +417,96 @@ fn resolve_steps(cli: &Cli, cfg: &AppConfig) -> Result<Vec<String>> {
     Ok(steps)
 }
 
-/// Populate `translation` with `raw` on every text node that's missing
-/// one. Lets the renderer produce output when the translate step is
-/// skipped — we want to exercise layout + expansion, not the LLM.
+fn split_render_phase(steps: Vec<String>) -> Result<(Vec<String>, Vec<String>)> {
+    let infos = steps
+        .iter()
+        .map(|id| koharu_app::Registry::find(id))
+        .collect::<Result<Vec<_>>>()?;
+    if infos
+        .iter()
+        .any(|info| info.produces.contains(&koharu_app::Artifact::Translations))
+    {
+        return Ok((steps, Vec::new()));
+    }
+
+    let mut first = Vec::new();
+    let mut render = Vec::new();
+    for (id, info) in steps.into_iter().zip(infos) {
+        if info.produces.contains(&koharu_app::Artifact::FinalRender) {
+            render.push(id);
+        } else {
+            first.push(id);
+        }
+    }
+    Ok((first, render))
+}
+
+fn require_clean_phase(outcome: &koharu_app::pipeline::RunOutcome) -> Result<()> {
+    anyhow::ensure!(outcome.warning_count == 0, "pipeline phase failed");
+    Ok(())
+}
+
+fn build_translation_fallback_ops(
+    scene: &koharu_core::Scene,
+    page: PageId,
+    policy: koharu_app::config::SourceTextPolicy,
+) -> Result<Vec<Op>> {
+    if policy == koharu_app::config::SourceTextPolicy::HanOnly {
+        let targets = koharu_app::pipeline::eligible_lines_for_page(scene, page).0;
+        let translations = targets
+            .iter()
+            .map(|(_, line)| line.text.clone())
+            .collect::<Vec<_>>();
+        return koharu_app::pipeline::build_han_only_translation_ops(
+            scene,
+            page,
+            None,
+            &targets,
+            &translations,
+        );
+    }
+
+    let Some(page_data) = scene.pages.get(&page) else {
+        return Ok(Vec::new());
+    };
+    let mut ops = Vec::new();
+    for (id, node) in &page_data.nodes {
+        if let NodeKind::Text(text) = &node.kind
+            && text.translation.is_none()
+            && let Some(raw) = text.text.as_ref().filter(|source| !source.is_empty())
+        {
+            ops.push(Op::UpdateNode {
+                page,
+                id: *id,
+                patch: koharu_core::NodePatch {
+                    data: Some(koharu_core::NodeDataPatch::Text(
+                        koharu_core::TextDataPatch {
+                            translation: Some(Some(raw.clone())),
+                            ..Default::default()
+                        },
+                    )),
+                    transform: None,
+                    visible: None,
+                },
+                prev: koharu_core::NodePatch::default(),
+            });
+        }
+    }
+    Ok(ops)
+}
+
+/// Populate renderer input when no translator engine was selected. HanOnly
+/// copies only eligible Han lines and clears stale English/unsupported output;
+/// AllText preserves the existing node-level OCR fallback.
 async fn synthesize_translations(app: &App, page: PageId) -> Result<()> {
     let session = app
         .current_session()
         .ok_or_else(|| anyhow!("no session open"))?;
-    let mut ops = Vec::new();
-    {
-        let scene = session.scene.read();
-        let Some(page_data) = scene.pages.get(&page) else {
-            return Ok(());
-        };
-        for (id, node) in &page_data.nodes {
-            if let NodeKind::Text(t) = &node.kind
-                && t.translation.is_none()
-                && let Some(raw) = t.text.as_ref().filter(|s| !s.is_empty())
-            {
-                let patch = koharu_core::NodeDataPatch::Text(koharu_core::TextDataPatch {
-                    translation: Some(Some(raw.clone())),
-                    ..Default::default()
-                });
-                ops.push(Op::UpdateNode {
-                    page,
-                    id: *id,
-                    patch: koharu_core::NodePatch {
-                        data: Some(patch),
-                        transform: None,
-                        visible: None,
-                    },
-                    prev: koharu_core::NodePatch::default(),
-                });
-            }
-        }
-    }
+    let ops = build_translation_fallback_ops(
+        &session.scene.read(),
+        page,
+        app.config.load().pipeline.source_text_policy,
+    )?;
     if ops.is_empty() {
         return Ok(());
     }
@@ -488,6 +575,7 @@ fn save_blob_image(
 mod tests {
     use super::*;
     use koharu_app::config::SourceTextPolicy;
+    use koharu_core::{BlobRef, Scene, TextData, TextDirection};
 
     #[test]
     fn cli_options_inherits_source_text_policy() {
@@ -513,5 +601,124 @@ mod tests {
         assert_eq!(options.system_prompt.as_deref(), Some("system"));
         assert_eq!(options.default_font.as_deref(), Some("Noto Sans"));
         assert_eq!(cli.steps.as_deref(), Some(["llm".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn cli_fallback_splits_renderer_without_translator() {
+        let (first, render) = split_render_phase(vec![
+            "koharu-renderer".to_string(),
+            "comic-text-detector".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(first, vec!["comic-text-detector"]);
+        assert_eq!(render, vec!["koharu-renderer"]);
+
+        let (first, render) = split_render_phase(vec!["koharu-renderer".to_string()]).unwrap();
+        assert!(first.is_empty());
+        assert_eq!(render, vec!["koharu-renderer"]);
+    }
+
+    #[test]
+    fn cli_fallback_keeps_explicit_translator_chain() {
+        let steps = vec!["llm".to_string(), "koharu-renderer".to_string()];
+        let (first, render) = split_render_phase(steps.clone()).unwrap();
+        assert_eq!(first, steps);
+        assert!(render.is_empty());
+    }
+
+    #[test]
+    fn cli_fallback_requires_clean_phase() {
+        assert!(
+            require_clean_phase(&koharu_app::pipeline::RunOutcome { warning_count: 0 }).is_ok()
+        );
+        assert!(
+            require_clean_phase(&koharu_app::pipeline::RunOutcome { warning_count: 1 }).is_err()
+        );
+    }
+
+    fn fallback_scene() -> (Scene, PageId, NodeId, NodeId) {
+        let mut page = Page::new("page", 100, 100);
+        let page_id = page.id;
+        let mixed = NodeId::new();
+        let english = NodeId::new();
+        let node = |id, text: &str, polygons| Node {
+            id,
+            transform: Transform {
+                x: 10.0,
+                y: 10.0,
+                width: 80.0,
+                height: 50.0,
+                rotation_deg: 0.0,
+            },
+            visible: true,
+            kind: NodeKind::Text(TextData {
+                text: Some(text.to_string()),
+                translation: Some("old".to_string()),
+                sprite: Some(BlobRef::new("sprite")),
+                sprite_transform: Some(Transform::default()),
+                line_polygons: polygons,
+                source_direction: Some(TextDirection::Horizontal),
+                ..Default::default()
+            }),
+        };
+        page.nodes.insert(
+            mixed,
+            node(
+                mixed,
+                "English\n中文",
+                Some(vec![
+                    [[10.0, 10.0], [90.0, 10.0], [90.0, 30.0], [10.0, 30.0]],
+                    [[10.0, 35.0], [90.0, 35.0], [90.0, 55.0], [10.0, 55.0]],
+                ]),
+            ),
+        );
+        page.nodes.insert(english, node(english, "English", None));
+        let mut scene = Scene::default();
+        scene.pages.insert(page_id, page);
+        (scene, page_id, mixed, english)
+    }
+
+    fn text(scene: &Scene, page: PageId, id: NodeId) -> &TextData {
+        match &scene.node(page, id).unwrap().kind {
+            NodeKind::Text(text) => text,
+            _ => panic!("expected text node"),
+        }
+    }
+
+    #[test]
+    fn cli_fallback_han_only_and_all_text_policy() {
+        let (mut han_scene, page, mixed, english) = fallback_scene();
+        let mut ops =
+            build_translation_fallback_ops(&han_scene, page, SourceTextPolicy::HanOnly).unwrap();
+        for op in &mut ops {
+            op.apply(&mut han_scene).unwrap();
+        }
+        assert_eq!(
+            text(&han_scene, page, mixed).translation.as_deref(),
+            Some("中文")
+        );
+        assert!(text(&han_scene, page, english).translation.is_none());
+        assert!(text(&han_scene, page, english).sprite.is_none());
+
+        let (mut all_scene, page, mixed, english) = fallback_scene();
+        for id in [mixed, english] {
+            let NodeKind::Text(text) = &mut all_scene.node_mut(page, id).unwrap().kind else {
+                panic!("expected text node");
+            };
+            text.translation = None;
+        }
+        let mut ops =
+            build_translation_fallback_ops(&all_scene, page, SourceTextPolicy::AllText).unwrap();
+        for op in &mut ops {
+            op.apply(&mut all_scene).unwrap();
+        }
+        assert_eq!(
+            text(&all_scene, page, mixed).translation.as_deref(),
+            Some("English\n中文")
+        );
+        assert_eq!(
+            text(&all_scene, page, english).translation.as_deref(),
+            Some("English")
+        );
     }
 }

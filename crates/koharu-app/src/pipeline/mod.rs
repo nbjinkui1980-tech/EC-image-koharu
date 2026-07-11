@@ -9,6 +9,10 @@ pub mod artifacts;
 pub mod engine;
 mod engines;
 
+pub use engines::support::{
+    EligibleTextLine, build_han_only_translation_ops, eligible_lines_for_page,
+};
+
 pub use artifacts::Artifact;
 pub use engine::{
     BoxFuture, Engine, EngineCtx, EngineInfo, EngineLoadFn, PipelineRunOptions, Registry,

@@ -3,12 +3,14 @@
 //! The patterns here map `koharu-ml` / `koharu-llm` outputs (plain
 //! `TextRegion`s, `DynamicImage`s) into `Op` sequences that mutate the scene.
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::{Context, Result};
 use image::{DynamicImage, GenericImageView, GrayImage, Luma};
 use imageproc::{drawing::draw_polygon_mut, point::Point};
 use koharu_core::{
-    BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId, NodeKind, Op,
-    PageId, ReadingOrder, Region, Scene, TextData, Transform,
+    BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId, NodeKind,
+    NodePatch, Op, PageId, ReadingOrder, Region, Scene, TextData, TextDataPatch, Transform,
 };
 use koharu_ml::types::TextRegion;
 
@@ -462,6 +464,77 @@ where
         .then_some((final_mask, inference_blocks))
 }
 
+pub fn build_han_only_translation_ops(
+    scene: &Scene,
+    page: PageId,
+    allowed_ids: Option<&[NodeId]>,
+    targets: &[(NodeId, EligibleTextLine)],
+    translations: &[String],
+) -> Result<Vec<Op>> {
+    anyhow::ensure!(
+        targets.len() == translations.len(),
+        "translation count does not match Han line targets"
+    );
+
+    let mut seen = HashSet::with_capacity(targets.len());
+    let mut mapped = Vec::with_capacity(targets.len());
+    for ((node_id, line), translation) in targets.iter().zip(translations) {
+        anyhow::ensure!(
+            allowed_ids.is_none_or(|ids| ids.contains(node_id)),
+            "translation target outside requested scope"
+        );
+        anyhow::ensure!(
+            matches!(
+                scene.node(page, *node_id).map(|node| &node.kind),
+                Some(NodeKind::Text(_))
+            ),
+            "translation target is not a text node on the page"
+        );
+        anyhow::ensure!(
+            seen.insert((*node_id, line.line_index)),
+            "duplicate Han line translation target"
+        );
+        anyhow::ensure!(!translation.trim().is_empty(), "empty Han line translation");
+        mapped.push(((*node_id, line.line_index), translation.clone()));
+    }
+    mapped.sort_by_key(|((node_id, line_index), _)| (*node_id, *line_index));
+
+    let mut by_node: HashMap<NodeId, Vec<String>> = HashMap::new();
+    for ((node_id, _), translation) in mapped {
+        by_node.entry(node_id).or_default().push(translation);
+    }
+
+    let page_ref = scene
+        .page(page)
+        .ok_or_else(|| anyhow::anyhow!("page {page} not found"))?;
+    let mut ops = Vec::new();
+    for (node_id, node) in &page_ref.nodes {
+        if !matches!(node.kind, NodeKind::Text(_))
+            || allowed_ids.is_some_and(|ids| !ids.contains(node_id))
+        {
+            continue;
+        }
+        let translation = by_node.remove(node_id).map(|lines| lines.join("\n"));
+        ops.push(Op::UpdateNode {
+            page,
+            id: *node_id,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    translation: Some(translation),
+                    sprite: Some(None),
+                    sprite_transform: Some(None),
+                    ..Default::default()
+                })),
+                transform: None,
+                visible: None,
+            },
+            prev: NodePatch::default(),
+        });
+    }
+    anyhow::ensure!(by_node.is_empty(), "unmapped Han line translation target");
+    Ok(ops)
+}
+
 /// Convert a scene `(Transform, TextData)` pair into a `koharu-ml` `TextRegion`
 /// for passing back through detector helpers that need geometry + language
 /// hints (e.g. CTD's `refine_segmentation_mask`, OCR's `extract_text_block_regions`).
@@ -853,7 +926,7 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koharu_core::{ReadingOrder, Region, TextDirection};
+    use koharu_core::{BlobRef, Page, ReadingOrder, Region, TextDirection};
     use koharu_ml::inpainting::{
         expand_mask_for_inpainting, mask::expand_mask_to_bubble_region_for_inpainting,
     };
@@ -1210,6 +1283,128 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    fn translation_scene(nodes: Vec<Node>) -> (Scene, PageId) {
+        let mut page = Page::new("page", 100, 100);
+        let page_id = page.id;
+        page.nodes = nodes.into_iter().map(|node| (node.id, node)).collect();
+        let mut scene = Scene::default();
+        scene.pages.insert(page_id, page);
+        (scene, page_id)
+    }
+
+    fn translated_node(id: NodeId, text: &str) -> Node {
+        Node {
+            id,
+            transform: transform(),
+            visible: true,
+            kind: NodeKind::Text(TextData {
+                text: Some(text.to_string()),
+                translation: Some("old translation".to_string()),
+                sprite: Some(BlobRef::new("old-sprite")),
+                sprite_transform: Some(transform()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn target(node_id: NodeId, line_index: usize) -> (NodeId, EligibleTextLine) {
+        let mut line = support_line([10.0, 10.0, 30.0, 20.0], None);
+        line.line_index = line_index;
+        (node_id, line)
+    }
+
+    #[test]
+    fn han_translation_ops_reject_mismatched_or_duplicate_targets() {
+        let id = NodeId::new();
+        let (scene, page) = translation_scene(vec![translated_node(id, "中文")]);
+
+        assert!(build_han_only_translation_ops(&scene, page, None, &[target(id, 0)], &[]).is_err());
+        assert!(
+            build_han_only_translation_ops(
+                &scene,
+                page,
+                None,
+                &[target(id, 0), target(id, 0)],
+                &["一".to_string(), "二".to_string()],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn han_translation_ops_map_lines_atomically_and_cleanup_in_scope() {
+        let eligible = NodeId::new();
+        let english = NodeId::new();
+        let unsupported = NodeId::new();
+        let outside = NodeId::new();
+        let (mut scene, page) = translation_scene(vec![
+            translated_node(eligible, "English\n中文一\n中文二"),
+            translated_node(english, "English"),
+            translated_node(unsupported, "English\n中文"),
+            translated_node(outside, "中文"),
+        ]);
+        let allowed = [eligible, english, unsupported];
+
+        let mut ops = build_han_only_translation_ops(
+            &scene,
+            page,
+            Some(&allowed),
+            &[target(eligible, 2), target(eligible, 1)],
+            &["译文二".to_string(), "译文一".to_string()],
+        )
+        .unwrap();
+        for op in &mut ops {
+            op.apply(&mut scene).unwrap();
+        }
+
+        let text = |id| match &scene.node(page, id).unwrap().kind {
+            NodeKind::Text(text) => text,
+            _ => panic!("expected text node"),
+        };
+        assert_eq!(
+            text(eligible).translation.as_deref(),
+            Some("译文一\n译文二")
+        );
+        assert!(text(eligible).sprite.is_none());
+        assert!(text(eligible).sprite_transform.is_none());
+        for id in [english, unsupported] {
+            assert!(text(id).translation.is_none());
+            assert!(text(id).sprite.is_none());
+            assert!(text(id).sprite_transform.is_none());
+        }
+        assert_eq!(
+            text(outside).translation.as_deref(),
+            Some("old translation")
+        );
+        assert!(text(outside).sprite.is_some());
+        assert!(text(outside).sprite_transform.is_some());
+    }
+
+    #[test]
+    fn han_translation_ops_empty_targets_still_cleanup() {
+        let english = NodeId::new();
+        let outside = NodeId::new();
+        let (mut scene, page) = translation_scene(vec![
+            translated_node(english, "English"),
+            translated_node(outside, "English"),
+        ]);
+
+        let mut ops =
+            build_han_only_translation_ops(&scene, page, Some(&[english]), &[], &[]).unwrap();
+        for op in &mut ops {
+            op.apply(&mut scene).unwrap();
+        }
+
+        let NodeKind::Text(english_text) = &scene.node(page, english).unwrap().kind else {
+            panic!("expected text node");
+        };
+        let NodeKind::Text(outside_text) = &scene.node(page, outside).unwrap().kind else {
+            panic!("expected text node");
+        };
+        assert!(english_text.translation.is_none());
+        assert_eq!(outside_text.translation.as_deref(), Some("old translation"));
     }
 
     #[test]

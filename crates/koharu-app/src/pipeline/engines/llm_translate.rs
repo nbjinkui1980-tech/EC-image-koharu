@@ -6,15 +6,22 @@ use anyhow::Result;
 use async_trait::async_trait;
 use koharu_core::{NodeDataPatch, NodeId, NodePatch, Op, PageId, Scene, TextData, TextDataPatch};
 
+use crate::config::SourceTextPolicy;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
-use crate::pipeline::engines::support::text_nodes;
+use crate::pipeline::engines::support::{
+    EligibleTextLine, build_han_only_translation_ops, eligible_lines_for_page, text_nodes,
+};
 
 pub struct Model;
 
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
+        if ctx.options.source_text_policy == SourceTextPolicy::HanOnly {
+            return run_han_only(ctx).await;
+        }
+
         let targets = collect_translation_targets(&ctx);
         if targets.is_empty() {
             return Ok(Vec::new());
@@ -48,6 +55,45 @@ impl Engine for Model {
         }
         Ok(ops)
     }
+}
+
+async fn run_han_only(ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
+    let targets =
+        collect_han_translation_targets(ctx.scene, ctx.page, ctx.options.text_node_ids.as_deref());
+    let translations = if targets.is_empty() {
+        Vec::new()
+    } else {
+        let sources = targets
+            .iter()
+            .map(|(_, line)| line.text.clone())
+            .collect::<Vec<_>>();
+        ctx.llm
+            .translate_text_lines_strict(
+                &sources,
+                ctx.options.target_language.as_deref(),
+                ctx.options.system_prompt.as_deref(),
+            )
+            .await?
+    };
+    build_han_only_translation_ops(
+        ctx.scene,
+        ctx.page,
+        ctx.options.text_node_ids.as_deref(),
+        &targets,
+        &translations,
+    )
+}
+
+fn collect_han_translation_targets(
+    scene: &Scene,
+    page: PageId,
+    allowed_ids: Option<&[NodeId]>,
+) -> Vec<(NodeId, EligibleTextLine)> {
+    eligible_lines_for_page(scene, page)
+        .0
+        .into_iter()
+        .filter(|(node_id, _)| allowed_ids.is_none_or(|ids| ids.contains(node_id)))
+        .collect()
 }
 
 fn collect_translation_targets(ctx: &EngineCtx<'_>) -> Vec<(NodeId, String)> {
