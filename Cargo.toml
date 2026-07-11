@@ -169,6 +169,10 @@ opt-level = 3
 [profile.dev.package.imageproc]
 opt-level = 3
 
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
 [profile.release-with-debug]
 inherits = "release"
 debug-assertions = true
