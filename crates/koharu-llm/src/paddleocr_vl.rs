@@ -189,7 +189,9 @@ impl PaddleOcrVl {
             &MtmdContextParams {
                 use_gpu: !cpu && backend.as_ref().supports_gpu_offload(),
                 print_timings: false,
-                n_threads: num_cpus::get().try_into().unwrap_or(i32::MAX),
+                n_threads: koharu_runtime::host_parallelism()
+                    .try_into()
+                    .unwrap_or(i32::MAX),
                 media_marker: CString::new(PADDLEOCR_IMAGE_MARKER)
                     .expect("PaddleOCR image marker contains no null bytes"),
             },

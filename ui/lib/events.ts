@@ -2,7 +2,7 @@
 
 import { EventStreamContentType, fetchEventSource } from '@microsoft/fetch-event-source'
 
-import { getGetCurrentLlmQueryKey, getGetSceneJsonQueryKey } from '@/lib/api/default/default'
+import { getGetCurrentLlmQueryKey, getGetSceneJsonQueryKey } from '@/lib/api'
 import type { AppEvent } from '@/lib/api/schemas'
 import { queryClient } from '@/lib/queryClient'
 import { useDownloadsStore } from '@/lib/stores/downloadsStore'

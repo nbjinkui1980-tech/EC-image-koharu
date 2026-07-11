@@ -16,11 +16,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use koharu_app::{App, AppConfig};
-use koharu_client::apis::configuration::Configuration;
 use koharu_rpc::{BootstrapManager, server};
 use koharu_runtime::{ComputePolicy, RuntimeHttpConfig, RuntimeManager};
 use tokio::net::TcpListener;
 use tokio::sync::OnceCell;
+
+use crate::client::Configuration;
 
 /// Path to the shared runtime cache. Relative to the workspace root so it's
 /// a stable, reusable location across `cargo test` invocations.
@@ -121,7 +122,6 @@ impl TestApp {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()?,
-            ..Default::default()
         };
 
         Ok(Self {

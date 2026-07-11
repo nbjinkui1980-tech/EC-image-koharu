@@ -411,7 +411,7 @@ pub async fn prefetch(runtime: &RuntimeManager) -> anyhow::Result<()> {
             let runtime = runtime.clone();
             async move { model.get(&runtime).await }
         })
-        .buffer_unordered(num_cpus::get())
+        .buffer_unordered(koharu_runtime::host_parallelism())
         .try_collect::<Vec<_>>()
         .await?;
     Ok(())

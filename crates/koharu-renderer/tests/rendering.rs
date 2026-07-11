@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::OnceLock};
 
 use anyhow::Result;
 use koharu_renderer::{
@@ -6,7 +6,6 @@ use koharu_renderer::{
     layout::{TextLayout, WritingMode},
     renderer::{RenderOptions, TinySkiaRenderer},
 };
-use once_cell::sync::OnceCell;
 use unicode_bidi::BidiInfo;
 
 const SAMPLE_TEXT: &str = "吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。吾輩はここで始めて人間というものを見た。しかもあとで聞くとそれは書生という人間中で一番獰悪な種族であったそうだ。";
@@ -43,9 +42,11 @@ fn font(family_name: &str) -> Result<Font> {
 }
 
 fn tiny_skia_renderer() -> Result<&'static TinySkiaRenderer> {
-    static INSTANCE: OnceCell<TinySkiaRenderer> = OnceCell::new();
-    let renderer = INSTANCE.get_or_try_init(TinySkiaRenderer::new)?;
-    Ok(renderer)
+    static INSTANCE: OnceLock<Result<TinySkiaRenderer, String>> = OnceLock::new();
+    match INSTANCE.get_or_init(|| TinySkiaRenderer::new().map_err(|error| error.to_string())) {
+        Ok(renderer) => Ok(renderer),
+        Err(error) => Err(anyhow::anyhow!(error.clone())),
+    }
 }
 
 fn non_bg_y_bounds(img: &image::RgbaImage, bg: [u8; 4]) -> Option<(u32, u32)> {

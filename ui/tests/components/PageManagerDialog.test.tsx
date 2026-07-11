@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PageManagerDialog } from '@/components/PageManagerDialog'
-import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
+import { getGetSceneJsonQueryKey } from '@/lib/api'
 import { queryClient } from '@/lib/queryClient'
 
 import { renderWithQuery } from '../helpers'

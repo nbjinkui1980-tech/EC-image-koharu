@@ -1,6 +1,6 @@
 'use client'
 
-import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
+import { getGetSceneJsonQueryKey } from '@/lib/api'
 import type { SceneSnapshot } from '@/lib/api/schemas'
 import { openImageFiles, openImageFolder, openKhrFile } from '@/lib/io/openFiles'
 import { saveBlob } from '@/lib/io/saveBlob'

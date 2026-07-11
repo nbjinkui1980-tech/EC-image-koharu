@@ -17,7 +17,6 @@ pub mod pipeline;
 pub mod projects;
 pub mod renderer;
 pub mod session;
-pub mod utils;
 
 pub use ai::AiManager;
 pub use app::{App, AppSharedState};

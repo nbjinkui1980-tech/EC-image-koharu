@@ -35,7 +35,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { useDeleteProject, useListProjects } from '@/lib/api/default/default'
+import { useDeleteProject, useListProjects } from '@/lib/api'
 import type { ProjectSummary } from '@/lib/api/schemas'
 import { importKhrFile } from '@/lib/io/pagesIo'
 import { createAndOpenProject, switchProject } from '@/lib/io/scene'

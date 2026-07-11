@@ -10,7 +10,6 @@ camino = { workspace = true }
 futures = { workspace = true }
 image = { workspace = true }
 koharu-app = { workspace = true }
-koharu-client = { path = "client" }
 koharu-core = { workspace = true }
 koharu-rpc = { workspace = true }
 koharu-runtime = { workspace = true }

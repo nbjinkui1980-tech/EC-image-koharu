@@ -3,7 +3,7 @@ import { fireEvent } from '@testing-library/react'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
-import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
+import { getGetSceneJsonQueryKey } from '@/lib/api'
 import type { Node, Page, SceneSnapshot } from '@/lib/api/schemas'
 import { queryClient } from '@/lib/queryClient'
 import { useSelectionStore } from '@/lib/stores/selectionStore'

@@ -4,12 +4,13 @@ export default defineConfig({
   koharu: {
     input: './openapi.json',
     output: {
-      target: './lib/api',
+      target: './lib/api/generated.ts',
       schemas: './lib/api/schemas',
-      client: 'react-query',
-      mode: 'tags-split',
+      client: 'fetch',
+      mode: 'single',
       baseUrl: '/api/v1',
-      mock: true,
+      mock: false,
+      clean: ['!index.ts', '!fetch.ts'],
       override: {
         fetch: {
           includeHttpResponseReturnType: false,
@@ -24,12 +25,6 @@ export default defineConfig({
           },
           addImageLayer: {
             formData: true,
-          },
-        },
-        query: {
-          options: {
-            gcTime: 5 * 60 * 1000,
-            retry: 1,
           },
         },
       },

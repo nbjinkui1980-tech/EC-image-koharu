@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 
 import { useCanvasDrawing, type CanvasDims } from '@/hooks/useCanvasDrawing'
 import type { PointerToDocumentFn } from '@/hooks/usePointerToDocument'
-import { getConfig } from '@/lib/api/default/default'
+import { getConfig } from '@/lib/api'
 import type { Page } from '@/lib/api/schemas'
 import { invalidateScene } from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'

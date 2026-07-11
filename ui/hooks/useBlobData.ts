@@ -2,7 +2,7 @@
 
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 
-import { getBlob } from '@/lib/api/default/default'
+import { getBlob } from '@/lib/api'
 import { convertToBlob } from '@/lib/io/blobConvert'
 
 const blobQueryOptions = (hash: string) => ({

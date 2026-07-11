@@ -18,7 +18,7 @@ import {
   reorderTextNodes,
   startPipeline,
   undo,
-} from '@/lib/api/default/default'
+} from '@/lib/api'
 import { ApiError } from '@/lib/api/fetch'
 import type {
   ConfigPatch,

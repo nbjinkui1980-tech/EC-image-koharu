@@ -1,6 +1,6 @@
 'use client'
 
-import { useGetSceneJson } from '@/lib/api/default/default'
+import { useGetSceneJson } from '@/lib/api'
 import type { Scene } from '@/lib/api/schemas'
 
 /**

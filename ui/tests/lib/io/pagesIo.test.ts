@@ -1,7 +1,7 @@
 import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
+import { getGetSceneJsonQueryKey } from '@/lib/api'
 import { queryClient } from '@/lib/queryClient'
 
 import { server } from '../../msw/server'

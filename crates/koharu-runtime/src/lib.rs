@@ -21,3 +21,21 @@ pub use runtime::{
     default_app_data_root,
 };
 pub use zluda::zluda_active;
+
+/// Number of worker threads suitable for host-bound parallel work.
+///
+/// Sandboxed environments may not expose their parallelism. Keep the old
+/// `num_cpus` contract of always returning at least one worker.
+pub fn host_parallelism() -> usize {
+    std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn host_parallelism_is_never_zero() {
+        assert!(super::host_parallelism() >= 1);
+    }
+}

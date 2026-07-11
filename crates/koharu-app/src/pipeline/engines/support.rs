@@ -4,7 +4,7 @@
 //! `TextRegion`s, `DynamicImage`s) into `Op` sequences that mutate the scene.
 
 use anyhow::{Context, Result};
-use image::{DynamicImage, GenericImageView};
+use image::{DynamicImage, GenericImageView, GrayImage, Luma};
 use koharu_core::{
     BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId, NodeKind, Op,
     PageId, ReadingOrder, Scene, TextData, Transform,
@@ -36,6 +36,29 @@ pub fn source_node(scene: &Scene, page: PageId) -> Result<(NodeId, &ImageData)> 
 pub fn load_source_image(scene: &Scene, page: PageId, blobs: &BlobStore) -> Result<DynamicImage> {
     let (_, img_data) = source_node(scene, page)?;
     blobs.load_image(&img_data.blob)
+}
+
+/// Zero every mask pixel outside `region` while preserving the source
+/// dimensions. Inpainting engines use this to limit repair-brush work.
+pub fn clip_mask_to_region(mask: &DynamicImage, region: &koharu_core::Region) -> DynamicImage {
+    DynamicImage::ImageLuma8(clip_gray_mask_to_region(&mask.to_luma8(), region))
+}
+
+/// Gray-image variant of [`clip_mask_to_region`].
+pub fn clip_gray_mask_to_region(src: &GrayImage, region: &koharu_core::Region) -> GrayImage {
+    let (width, height) = src.dimensions();
+    let x0 = region.x.min(width);
+    let y0 = region.y.min(height);
+    let x1 = region.x.saturating_add(region.width).min(width);
+    let y1 = region.y.saturating_add(region.height).min(height);
+
+    let mut clipped = GrayImage::new(width, height);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            clipped.put_pixel(x, y, Luma([src.get_pixel(x, y).0[0]]));
+        }
+    }
+    clipped
 }
 
 /// Find a node of `Image { role }` on `page`, if any.
@@ -462,7 +485,29 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koharu_core::ReadingOrder;
+    use koharu_core::{ReadingOrder, Region};
+
+    #[test]
+    fn inpainting_engines_share_identical_region_clipping() {
+        let source = GrayImage::from_fn(4, 3, |x, y| Luma([(x + y * 4 + 1) as u8]));
+        let region = Region {
+            x: 1,
+            y: 1,
+            width: 2,
+            height: 9,
+        };
+
+        let gray = clip_gray_mask_to_region(&source, &region);
+        let dynamic =
+            clip_mask_to_region(&DynamicImage::ImageLuma8(source.clone()), &region).to_luma8();
+
+        assert_eq!(gray, dynamic);
+        assert_eq!(gray.dimensions(), source.dimensions());
+        assert_eq!(gray.get_pixel(1, 1), source.get_pixel(1, 1));
+        assert_eq!(gray.get_pixel(2, 2), source.get_pixel(2, 2));
+        assert_eq!(gray.get_pixel(0, 1).0, [0]);
+        assert_eq!(gray.get_pixel(3, 2).0, [0]);
+    }
 
     #[test]
     fn test_reading_order_sort() {

@@ -16,7 +16,7 @@ use super::requests::{
 };
 use super::token_store::TokenStore;
 use super::tokens::CodexTokens;
-use crate::provider::{AiImageProvider, AiImageRequest, AiImageResult};
+use crate::provider::{AiImageRequest, AiImageResult};
 
 const USER_AGENT: &str = concat!("koharu-ai/", env!("CARGO_PKG_VERSION"));
 
@@ -293,25 +293,7 @@ impl CodexClient {
 
         Ok(builder.send().await?)
     }
-}
-
-async fn ensure_success(endpoint: &str, response: reqwest::Response) -> Result<reqwest::Response> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
-    }
-
-    let body = response.text().await.unwrap_or_default();
-    Err(CodexError::HttpStatus {
-        endpoint: endpoint.to_owned(),
-        status,
-        body,
-    })
-}
-
-#[async_trait::async_trait]
-impl AiImageProvider for CodexClient {
-    async fn generate_image(&self, request: AiImageRequest) -> anyhow::Result<AiImageResult> {
+    pub async fn generate_image(&self, request: AiImageRequest) -> anyhow::Result<AiImageResult> {
         let action = request.action.unwrap_or_else(|| {
             if request.input_image.is_some() {
                 "edit".to_string()
@@ -342,4 +324,18 @@ impl AiImageProvider for CodexClient {
         })?;
         Ok(AiImageResult { image_url })
     }
+}
+
+async fn ensure_success(endpoint: &str, response: reqwest::Response) -> Result<reqwest::Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+
+    let body = response.text().await.unwrap_or_default();
+    Err(CodexError::HttpStatus {
+        endpoint: endpoint.to_owned(),
+        status,
+        body,
+    })
 }

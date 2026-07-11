@@ -33,7 +33,7 @@ import {
   useTextNodes,
   type TextNodeEntry,
 } from '@/hooks/useCurrentPage'
-import { fetchGoogleFont, useGetGoogleFontsCatalog, useListFonts } from '@/lib/api/default/default'
+import { fetchGoogleFont, useGetGoogleFontsCatalog, useListFonts } from '@/lib/api'
 import type {
   FontFaceInfo,
   FontPrediction,

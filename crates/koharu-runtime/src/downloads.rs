@@ -231,7 +231,7 @@ impl Downloads {
                 reporter.advance(bytes.len());
                 Ok::<_, anyhow::Error>(())
             })
-            .buffer_unordered(num_cpus::get())
+            .buffer_unordered(crate::host_parallelism())
             .try_collect()
             .await;
 

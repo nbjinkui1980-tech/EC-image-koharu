@@ -5,7 +5,7 @@ import { type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
-import { cancelOperation } from '@/lib/api/default/default'
+import { cancelOperation } from '@/lib/api'
 import type {
   DownloadProgress,
   JobSummary,

@@ -13,16 +13,16 @@
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use image::{DynamicImage, GrayImage, Luma};
-use koharu_core::{ImageRole, MaskRole, Op, Region};
+use image::DynamicImage;
+use koharu_core::{ImageRole, MaskRole, Op};
 use koharu_ml::inpainting::expand_mask_for_inpainting;
 use koharu_ml::lama::Lama;
 
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    find_image_node, find_mask_node, image_dimensions, load_source_image, text_node_to_region,
-    text_nodes, upsert_image_blob,
+    clip_mask_to_region, find_image_node, find_mask_node, image_dimensions, load_source_image,
+    text_node_to_region, text_nodes, upsert_image_blob,
 };
 
 pub struct Model(Lama);
@@ -80,26 +80,6 @@ impl Engine for Model {
             h,
         )])
     }
-}
-
-/// Zero out every pixel of `mask` that falls outside `region`. The Crop
-/// strategy's `boxes_from_mask` then only finds contours inside the region,
-/// so the inpainter only touches that area.
-fn clip_mask_to_region(mask: &DynamicImage, region: &Region) -> DynamicImage {
-    let src = mask.to_luma8();
-    let (w, h) = src.dimensions();
-    let x0 = region.x.min(w);
-    let y0 = region.y.min(h);
-    let x1 = region.x.saturating_add(region.width).min(w);
-    let y1 = region.y.saturating_add(region.height).min(h);
-
-    let mut clipped = GrayImage::new(w, h);
-    for y in y0..y1 {
-        for x in x0..x1 {
-            clipped.put_pixel(x, y, Luma([src.get_pixel(x, y).0[0]]));
-        }
-    }
-    DynamicImage::ImageLuma8(clipped)
 }
 
 inventory::submit! {

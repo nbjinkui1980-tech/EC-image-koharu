@@ -1,16 +1,18 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+};
 
 use anyhow::Context;
 pub use fontdb::FaceInfo;
 use fontdb::{Database, ID};
-use once_cell::sync::OnceCell;
 
 /// A loaded font ready for shaping and rendering.
 #[derive(Clone, Debug)]
 pub struct Font {
     data: Arc<[u8]>,
     face: FaceInfo,
-    fontdue: Arc<OnceCell<Arc<fontdue::Font>>>,
+    fontdue: Arc<OnceLock<Result<Arc<fontdue::Font>, String>>>,
     pub weight: u16,
     pub style: String,
 }
@@ -29,17 +31,18 @@ impl Font {
     }
 
     pub fn fontdue(&self) -> anyhow::Result<Arc<fontdue::Font>> {
-        let font = self.fontdue.get_or_try_init(|| {
+        match self.fontdue.get_or_init(|| {
             let settings = fontdue::FontSettings {
                 collection_index: self.face.index,
                 ..Default::default()
             };
-            let font = fontdue::Font::from_bytes(self.data.as_ref(), settings)
-                .map_err(|err| anyhow::anyhow!(err))
-                .context("failed to create fontdue Font")?;
-            Ok::<_, anyhow::Error>(Arc::new(font))
-        })?;
-        Ok(Arc::clone(font))
+            fontdue::Font::from_bytes(self.data.as_ref(), settings)
+                .map(Arc::new)
+                .map_err(|err| format!("failed to create fontdue Font: {err}"))
+        }) {
+            Ok(font) => Ok(Arc::clone(font)),
+            Err(error) => Err(anyhow::anyhow!(error.clone())),
+        }
     }
 
     /// Returns true if the font contains a glyph for the given character.
@@ -156,7 +159,7 @@ impl FontBook {
         let font = Font {
             data,
             face,
-            fontdue: Arc::new(OnceCell::new()),
+            fontdue: Arc::new(OnceLock::new()),
             weight,
             style,
         };
@@ -168,5 +171,27 @@ impl FontBook {
 impl Default for FontBook {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fontdue_cache_initializes_once_across_font_clones() -> anyhow::Result<()> {
+        let mut book = FontBook::new();
+        let Some(id) = book.database.faces().next().map(|face| face.id) else {
+            // Minimal CI images are allowed to have no system fonts.
+            return Ok(());
+        };
+        let font = book.load_font(id)?;
+        let clone = font.clone();
+
+        let first = font.fontdue()?;
+        let second = clone.fontdue()?;
+
+        assert!(Arc::ptr_eq(&first, &second));
+        Ok(())
     }
 }

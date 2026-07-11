@@ -2,9 +2,8 @@
 //! projects live under the managed `{data.path}/projects/` directory; no
 //! client-side paths involved.
 
-use koharu_client::apis::default_api as api;
-use koharu_client::models;
 use koharu_integration_tests::TestApp;
+use koharu_integration_tests::client::{api, models};
 
 #[tokio::test]
 async fn create_and_close_project() -> anyhow::Result<()> {

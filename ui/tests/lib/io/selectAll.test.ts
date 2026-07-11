@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { getGetSceneJsonQueryKey } from '@/lib/api/default/default'
+import { getGetSceneJsonQueryKey } from '@/lib/api'
 import type { Node, Page, SceneSnapshot } from '@/lib/api/schemas'
 import { selectAllTextNodesOnCurrentPage } from '@/lib/io/scene'
 import { queryClient } from '@/lib/queryClient'

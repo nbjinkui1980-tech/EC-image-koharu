@@ -21,7 +21,7 @@ import {
   MenubarSubTrigger,
 } from '@/components/ui/menubar'
 import { useScene } from '@/hooks/useScene'
-import { getConfig, startPipeline } from '@/lib/api/default/default'
+import { getConfig, startPipeline } from '@/lib/api'
 import { isTauri, openExternalUrl } from '@/lib/backend'
 import { exportCurrentProjectAs, importPages } from '@/lib/io/pagesIo'
 import { closeProject, redoOp, selectAllTextNodesOnCurrentPage, undoOp } from '@/lib/io/scene'

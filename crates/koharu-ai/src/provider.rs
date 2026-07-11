@@ -1,5 +1,3 @@
-use async_trait::async_trait;
-
 #[derive(Debug, Clone)]
 pub struct AiInputImage {
     pub data_url: String,
@@ -20,11 +18,6 @@ pub struct AiImageRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiImageResult {
     pub image_url: String,
-}
-
-#[async_trait]
-pub trait AiImageProvider: Send + Sync {
-    async fn generate_image(&self, request: AiImageRequest) -> anyhow::Result<AiImageResult>;
 }
 
 impl AiImageRequest {

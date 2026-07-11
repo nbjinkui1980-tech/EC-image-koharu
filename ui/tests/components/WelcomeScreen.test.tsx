@@ -4,10 +4,11 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 
 import { WelcomeScreen } from '@/components/WelcomeScreen'
-import { getGetSceneJsonQueryKey, getListProjectsQueryKey } from '@/lib/api/default/default'
+import { getGetSceneJsonQueryKey, getListProjectsQueryKey } from '@/lib/api'
 import { queryClient } from '@/lib/queryClient'
 
 import { renderWithQuery } from '../helpers'
+import { projectSummary } from '../msw/fixtures'
 import { server } from '../msw/server'
 
 function seedSceneQuery(): void {
@@ -29,11 +30,7 @@ function withProjects(list: Array<{ id: string; name: string }>) {
   server.use(
     http.get('/api/v1/projects', () =>
       HttpResponse.json({
-        projects: list.map((p) => ({
-          ...p,
-          path: `/tmp/${p.id}`,
-          updatedAtMs: 0,
-        })),
+        projects: list.map((project) => projectSummary(project.id, project.name)),
       }),
     ),
   )
@@ -55,10 +52,7 @@ describe('WelcomeScreen', () => {
     server.use(
       http.get('/api/v1/projects', () =>
         HttpResponse.json({
-          projects: [
-            { id: 'old', name: 'Older', path: '/tmp/old', updatedAtMs: 100 },
-            { id: 'new', name: 'Newer', path: '/tmp/new', updatedAtMs: 999 },
-          ],
+          projects: [projectSummary('old', 'Older', 100), projectSummary('new', 'Newer', 999)],
         }),
       ),
     )
@@ -89,12 +83,7 @@ describe('WelcomeScreen', () => {
       http.post('/api/v1/projects', async ({ request }) => {
         const body = (await request.json()) as { name: string }
         creates.push(body)
-        return HttpResponse.json({
-          id: 'shiny',
-          name: body.name,
-          path: '/tmp/shiny',
-          updatedAtMs: 0,
-        })
+        return HttpResponse.json(projectSummary('shiny', body.name))
       }),
     )
     renderWithQuery(<WelcomeScreen />)
@@ -117,12 +106,7 @@ describe('WelcomeScreen', () => {
     server.use(
       http.put('/api/v1/projects/current', async ({ request }) => {
         switches.push((await request.json()) as { id: string })
-        return HttpResponse.json({
-          id: 'existing',
-          name: 'Existing',
-          path: '/tmp/existing',
-          updatedAtMs: 0,
-        })
+        return HttpResponse.json(projectSummary('existing', 'Existing'))
       }),
     )
     renderWithQuery(<WelcomeScreen />)

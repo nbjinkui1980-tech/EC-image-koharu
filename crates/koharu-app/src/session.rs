@@ -1,7 +1,7 @@
 //! A loaded project. One `ProjectSession` = one `.khrproj/` directory.
 //!
 //! Holds:
-//!   - an exclusive `.lock` via `fs4` (refuses second opener)
+//!   - an exclusive `.lock` file (refuses a second opener)
 //!   - the in-memory `Scene` behind a `parking_lot::RwLock` (never held across `.await`)
 //!   - the `History` behind a `Mutex` (linear, all writes serialized)
 //!   - the `BlobStore` (content-addressed images)
@@ -11,7 +11,7 @@
 //!   `.khrproj/scene.bin`       — postcard-encoded `Snapshot { epoch, scene }`
 //!   `.khrproj/history.log`     — append-only `LogFrame { epoch, op }`
 //!   `.khrproj/blobs/ab/cdef…`  — content-addressed blobs
-//!   `.khrproj/.lock`           — fs4 exclusive lock (session lifetime)
+//!   `.khrproj/.lock`           — exclusive file lock (session lifetime)
 
 use std::fs::File;
 use std::io::Write;
@@ -21,7 +21,6 @@ use anyhow::{Context, Result};
 use atomicwrites::{AtomicFile, OverwriteBehavior};
 use camino::{Utf8Path, Utf8PathBuf};
 use chrono::Utc;
-use fs4::FileExt;
 use koharu_core::{Scene, op::Op};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -99,7 +98,8 @@ impl ProjectSession {
             .truncate(false)
             .open(lock_path.as_std_path())
             .with_context(|| format!("open lock file {}", lock_path))?;
-        FileExt::try_lock(&lock).context("project is already open elsewhere")?;
+        lock.try_lock()
+            .context("project is already open elsewhere")?;
 
         let blobs = Arc::new(BlobStore::open(dir.join(BLOBS_DIR).as_std_path())?);
 

@@ -16,7 +16,7 @@ import type {
 
 /**
  * Typed `Op` constructors. Shimmed V1 api modules build ops through these
- * and submit via `applyCommand` from `@/lib/api/default/default`.
+ * and submit via `applyCommand` from `@/lib/api`.
  *
  * Semantics for patch fields: missing = leave alone. `null` = clear (the
  * wire format encodes "present + cleared" as JSON null; our TS types honor

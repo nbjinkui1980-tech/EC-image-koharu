@@ -28,7 +28,7 @@ pub enum AutosaveSignal {
 /// Handle to a running autosave loop. Dropping the sender lets the loop
 /// drain and exit; `join` waits for that exit so the caller can ensure the
 /// autosave's `Arc<ProjectSession>` has been released (useful when closing
-/// a project and the fs4 lock must be freed before re-opening).
+/// a project and the file lock must be freed before re-opening).
 pub struct AutosaveHandle {
     pub tx: mpsc::Sender<AutosaveSignal>,
     pub join: tokio::task::JoinHandle<()>,

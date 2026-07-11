@@ -10,11 +10,12 @@
     "test:ui": "bun run --filter ui test",
     "format": "oxfmt ui package.json .oxfmtrc.json .vscode",
     "format:check": "oxfmt --check ui package.json .oxfmtrc.json .vscode",
-    "generate:openapi": "cargo run -p koharu-rpc --bin openapi -- ui/openapi.json",
-    "generate:client": "openapi-generator-cli generate -i ui/openapi.json -g rust -o tests/integration-tests/client --package-name koharu-client --additional-properties=library=reqwest,supportAsync=true,preferUnsignedInt=true,packageVersion=0.0.0"
+    "format:generated": "oxfmt ui/openapi.json ui/lib/api/generated.ts ui/lib/api/schemas",
+    "generate:openapi": "bun run scripts/dev.ts cargo run -p koharu-rpc --bin openapi -- ui/openapi.json",
+    "generate:api": "bun run generate:openapi && bun run --filter ui generate:api && bun run format:generated",
+    "check:generated": "bun run generate:api && git diff --exit-code -- ui/openapi.json ui/lib/api/generated.ts ui/lib/api/schemas"
   },
   "devDependencies": {
-    "@openapitools/openapi-generator-cli": "^2.39.0",
     "@tauri-apps/cli": "^2.11.3",
     "git-cliff": "^2.13.1",
     "oxfmt": "^0.56.0"

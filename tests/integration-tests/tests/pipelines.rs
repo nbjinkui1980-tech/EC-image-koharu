@@ -3,10 +3,11 @@
 
 use std::io::Cursor;
 
-use koharu_client::apis::default_api as api;
-use koharu_client::models;
 use koharu_core::{ImageRole, JobStatus, NodeKind, PageId};
-use koharu_integration_tests::TestApp;
+use koharu_integration_tests::{
+    TestApp,
+    client::{api, models},
+};
 use reqwest::multipart::{Form, Part};
 use tokio::time::{Duration, Instant, sleep};
 

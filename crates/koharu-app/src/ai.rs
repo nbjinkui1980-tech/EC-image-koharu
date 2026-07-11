@@ -6,8 +6,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
 use dashmap::DashMap;
 use image::DynamicImage;
+use koharu_ai::AiImageRequest;
 use koharu_ai::codex::{CodexClient, CodexConfig};
-use koharu_ai::{AiImageProvider, AiImageRequest};
 use koharu_core::{
     BlobRef, ImageData, ImageDataPatch, ImageRole, Node, NodeDataPatch, NodeId, NodeKind,
     NodePatch, Op, PageId, Scene, Transform,

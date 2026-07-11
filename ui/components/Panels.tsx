@@ -10,7 +10,7 @@ import { RenderControlsPanel } from '@/components/panels/RenderControlsPanel'
 import { TextBlocksPanel } from '@/components/panels/TextBlocksPanel'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useGetCodexAuthStatus } from '@/lib/api/default/default'
+import { useGetCodexAuthStatus } from '@/lib/api'
 
 export function Panels() {
   const { t } = useTranslation()

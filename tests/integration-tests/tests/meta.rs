@@ -1,8 +1,7 @@
 //! Meta, engines, config, fonts, LLM catalog — read-mostly endpoints.
 
-use koharu_client::apis::default_api as api;
-use koharu_client::models;
 use koharu_integration_tests::TestApp;
+use koharu_integration_tests::client::{api, models};
 
 #[tokio::test]
 async fn meta_returns_version_and_device() -> anyhow::Result<()> {

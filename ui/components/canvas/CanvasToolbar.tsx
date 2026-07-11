@@ -31,7 +31,7 @@ import {
   startPipeline,
   useGetCatalog,
   useGetCurrentLlm,
-} from '@/lib/api/default/default'
+} from '@/lib/api'
 import type { LlmCatalog, LlmCatalogModel, LlmProviderCatalog, LlmTarget } from '@/lib/api/schemas'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'

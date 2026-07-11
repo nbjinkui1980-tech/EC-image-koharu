@@ -2,9 +2,10 @@
 //! would require downloading multi-GB weights); we verify the routes wire up
 //! and error sensibly on bad targets.
 
-use koharu_client::apis::default_api as api;
-use koharu_client::models;
-use koharu_integration_tests::TestApp;
+use koharu_integration_tests::{
+    TestApp,
+    client::{api, models},
+};
 
 #[tokio::test]
 async fn unload_when_empty_is_ok() -> anyhow::Result<()> {

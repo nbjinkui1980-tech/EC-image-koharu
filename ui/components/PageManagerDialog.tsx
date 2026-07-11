@@ -24,7 +24,7 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { useScene } from '@/hooks/useScene'
-import { getGetPageThumbnailUrl } from '@/lib/api/default/default'
+import { getGetPageThumbnailUrl } from '@/lib/api'
 import { applyOp } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 

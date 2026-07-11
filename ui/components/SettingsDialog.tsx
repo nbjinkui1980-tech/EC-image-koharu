@@ -66,7 +66,7 @@ import {
   getGetCodexAuthStatusQueryKey,
   startCodexDeviceLogin,
   useGetCodexAuthStatus,
-} from '@/lib/api/default/default'
+} from '@/lib/api'
 import type {
   AppConfig,
   ConfigPatch,

@@ -996,7 +996,7 @@
               }
             ],
             "default": {
-              "path": "C:\\Users\\Mayo\\AppData\\Local\\Koharu"
+              "path": "${APP_DATA}/Koharu"
             }
           },
           "http": {
@@ -1022,7 +1022,7 @@
               "detector": "pp-doclayout-v3",
               "font_detector": "yuzumarker-font-detection",
               "inpainter": "lama-manga",
-              "ocr": "paddle-ocr-vl-1.5",
+              "ocr": "paddle-ocr-vl-1.6",
               "renderer": "koharu-renderer",
               "segmenter": "comic-text-detector-seg",
               "translator": "llm"
@@ -2596,7 +2596,7 @@
           },
           "ocr": {
             "type": "string",
-            "default": "paddle-ocr-vl-1.5"
+            "default": "paddle-ocr-vl-1.6"
           },
           "renderer": {
             "type": "string",

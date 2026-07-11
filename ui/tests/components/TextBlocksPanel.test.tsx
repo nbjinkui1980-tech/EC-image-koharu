@@ -10,6 +10,7 @@ import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 import { renderWithQuery } from '../helpers'
+import { readyLlmState } from '../msw/fixtures'
 import { server } from '../msw/server'
 
 function sceneWithTextNodes() {
@@ -62,9 +63,7 @@ describe('TextBlocksPanel', () => {
       http.get('/api/v1/config', () =>
         HttpResponse.json({ pipeline: { translator: 'llm', renderer: 'koharu-renderer' } }),
       ),
-      http.get('/api/v1/llm/current', () =>
-        HttpResponse.json({ status: 'ready', target: null, error: null }),
-      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
       http.post('/api/v1/pipelines', async ({ request }) => {
         pipelineRequests.push(await request.json())
         return HttpResponse.json({ operationId: 'op-1' })

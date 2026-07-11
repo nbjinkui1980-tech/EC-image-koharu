@@ -17,7 +17,7 @@ import { Navigator } from '@/components/Navigator'
 import { Panels } from '@/components/Panels'
 import { WelcomeScreen } from '@/components/WelcomeScreen'
 import { useScene } from '@/hooks/useScene'
-import { useGetMeta } from '@/lib/api/default/default'
+import { useGetMeta } from '@/lib/api'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { cn } from '@/lib/utils'
 

@@ -6,7 +6,7 @@ import { useRef, useState, useMemo, useCallback, useEffect } from 'react'
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
-import { fetchGoogleFont, getGetGoogleFontFileUrl } from '@/lib/api/default/default'
+import { fetchGoogleFont, getGetGoogleFontFileUrl } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 const ITEM_HEIGHT = 28

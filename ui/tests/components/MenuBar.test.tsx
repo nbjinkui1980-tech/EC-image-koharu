@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MenuBar } from '@/components/MenuBar'
-import { getGetConfigQueryKey, getGetSceneJsonQueryKey } from '@/lib/api/default/default'
+import { getGetConfigQueryKey, getGetSceneJsonQueryKey } from '@/lib/api'
 import { queryClient } from '@/lib/queryClient'
 
 import { renderWithQuery } from '../helpers'

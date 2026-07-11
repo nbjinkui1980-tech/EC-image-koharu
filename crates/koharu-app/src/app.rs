@@ -141,7 +141,7 @@ impl App {
         Ok(session)
     }
 
-    /// Flush, wait for autosave to exit, release the fs4 lock, swap `None`.
+    /// Flush, wait for autosave to exit, release the file lock, swap `None`.
     /// Ordering is critical on Windows where re-opening immediately after
     /// close needs the previous lock file freed before the next `open` runs.
     pub async fn close_project(&self) -> Result<()> {
@@ -155,7 +155,7 @@ impl App {
             // Final synchronous compact for durability.
             let s = session.clone();
             tokio::task::spawn_blocking(move || s.compact()).await??;
-            // Drop our Arc — this is the last reference, releasing the fs4 lock.
+            // Drop our Arc — this is the last reference, releasing the file lock.
             drop(session);
         }
         Ok(())
