@@ -87,6 +87,8 @@ export function MenuBar() {
     const cfg = await getConfig()
     if (!cfg.pipeline) return
     const p = cfg.pipeline
+    // The backend artifact DAG resolves execution order; this list only
+    // selects the engines that belong to the full pipeline.
     const steps = [
       p.detector,
       p.segmenter,
@@ -121,10 +123,8 @@ export function MenuBar() {
     const p = cfg.pipeline
     const prefs = usePreferencesStore.getState()
     const steps = [
-      ...(prefs.customPipeline.detect
-        ? [p.detector, p.segmenter, p.bubble_segmenter, p.font_detector]
-        : []),
-      prefs.customPipeline.ocr ? p.ocr : null,
+      ...(prefs.customPipeline.detect ? [p.detector, p.bubble_segmenter, p.font_detector] : []),
+      ...(prefs.customPipeline.ocr ? [p.ocr, p.segmenter] : []),
       prefs.customPipeline.translator ? p.translator : null,
       prefs.customPipeline.inpainter ? p.inpainter : null,
       prefs.customPipeline.renderer ? p.renderer : null,

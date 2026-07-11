@@ -280,7 +280,7 @@ fn pad_forward<F: InpaintForward>(
     let pad_w = ceil_multiple(w, pad_mod);
     let pad_h = ceil_multiple(h, pad_mod);
 
-    let out = if pad_w == w && pad_h == h {
+    let generated = if pad_w == w && pad_h == h {
         model.forward(image, mask, bubble_mask)?
     } else {
         let pad_img = symmetric_pad_rgb(image, pad_w, pad_h);
@@ -289,6 +289,8 @@ fn pad_forward<F: InpaintForward>(
         let padded_out = model.forward(&pad_img, &pad_msk, pad_bubble.as_ref())?;
         crop_imm(&padded_out, 0, 0, w, h).to_image()
     };
+    let mut out = image.clone();
+    composite_masked(&mut out, &generated, mask, 0, 0);
     Ok(out)
 }
 
@@ -700,6 +702,25 @@ mod tests {
         let out = run_inpaint(&IdentityForward, &img, &mask, None, &cfg).unwrap();
         assert_eq!(out.get_pixel(0, 0).0, [10, 20, 30]);
         assert_eq!(out.get_pixel(1599, 1199).0, [10, 20, 30]);
+    }
+
+    #[test]
+    fn original_strategy_restores_unmasked_pixels() {
+        let img = solid_rgb(16, 12, [10, 20, 30]);
+        let mut mask = GrayImage::new(16, 12);
+        mask.put_pixel(7, 6, Luma([255]));
+        let forward = PaintForward::new([240, 8, 16]);
+        let cfg = HdStrategyConfig {
+            strategy: HdStrategy::Original,
+            ..HdStrategyConfig::lama_default()
+        };
+
+        let out = run_inpaint(&forward, &img, &mask, None, &cfg).unwrap();
+
+        assert_eq!(forward.calls.get(), 1);
+        assert_eq!(out.get_pixel(0, 0).0, [10, 20, 30]);
+        assert_eq!(out.get_pixel(15, 11).0, [10, 20, 30]);
+        assert_eq!(out.get_pixel(7, 6).0, [240, 8, 16]);
     }
 
     #[test]

@@ -315,15 +315,9 @@ impl Flux2Klein {
             return Ok(image.clone());
         }
 
-        if let Some(bounds) = inpaint_crop_bounds(image, mask, options.mask_padding) {
-            let image_crop = image.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-            let mask_crop = mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
-            let generated =
-                self.inpaint_full_frame(&image_crop, &mask_crop, reference_image, options)?;
-            return composite_inpaint_crop(image, &generated, &mask_crop, bounds);
-        }
-
-        self.inpaint_full_frame(image, mask, reference_image, options)
+        dispatch_inpaint_with_reference(image, mask, options, |frame, frame_mask| {
+            self.inpaint_full_frame(frame, frame_mask, reference_image, options)
+        })
     }
 
     fn inpaint_full_frame(
@@ -591,6 +585,36 @@ fn inpaint_crop_bounds(
     })
 }
 
+fn dispatch_inpaint_with_reference<Generate>(
+    image: &DynamicImage,
+    mask: &DynamicImage,
+    options: &Flux2InpaintOptions,
+    mut generate: Generate,
+) -> Result<DynamicImage>
+where
+    Generate: FnMut(&DynamicImage, &DynamicImage) -> Result<DynamicImage>,
+{
+    if let Some(bounds) = inpaint_crop_bounds(image, mask, options.mask_padding) {
+        let image_crop = image.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+        let mask_crop = mask.crop_imm(bounds.x, bounds.y, bounds.width, bounds.height);
+        let generated = generate(&image_crop, &mask_crop)?;
+        return composite_inpaint_crop(image, &generated, &mask_crop, bounds);
+    }
+
+    let generated = generate(image, mask)?;
+    composite_inpaint_crop(
+        image,
+        &generated,
+        mask,
+        CropBounds {
+            x: 0,
+            y: 0,
+            width: image.width(),
+            height: image.height(),
+        },
+    )
+}
+
 fn composite_inpaint_crop(
     original: &DynamicImage,
     generated_crop: &DynamicImage,
@@ -655,4 +679,94 @@ fn restore_original_alpha(output: DynamicImage, original: &DynamicImage) -> Dyna
         pixel.0[3] = alpha.get_pixel(x, y).0[0];
     }
     DynamicImage::ImageRgba8(rgba)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use image::{GrayImage, Luma, Rgb, RgbImage};
+
+    use super::*;
+
+    fn options() -> Flux2InpaintOptions {
+        Flux2InpaintOptions {
+            mask_padding: 0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn flux2_mask_resize_does_not_expand_support() {
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(4, 4, |x, y| {
+            Luma([if x == 1 && y == 1 { 255 } else { 0 }])
+        }));
+        let prepared = prepare_mask(&mask, 9, 9);
+        assert!(prepared.pixels().all(|pixel| matches!(pixel.0[0], 0 | 255)));
+
+        let packed = mask_to_packed_tensor(&prepared, 3, 3, &Device::Cpu)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        assert!(packed.iter().all(|value| *value == 0.0 || *value == 1.0));
+    }
+
+    #[test]
+    fn flux2_mask_full_frame_composite_preserves_unmasked_pixels() {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(32, 32, Rgb([1, 2, 3])));
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(32, 32, |x, y| {
+            Luma([if x == 16 && y == 16 { 255 } else { 0 }])
+        }));
+        let calls = Cell::new(0);
+
+        let result = dispatch_inpaint_with_reference(&image, &mask, &options(), |frame, seen| {
+            calls.set(calls.get() + 1);
+            assert_eq!(frame.dimensions(), (32, 32));
+            assert_eq!(seen.dimensions(), (32, 32));
+            Ok(DynamicImage::ImageRgb8(RgbImage::from_pixel(
+                frame.width(),
+                frame.height(),
+                Rgb([250, 250, 250]),
+            )))
+        })
+        .unwrap();
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(result.to_rgb8().get_pixel(0, 0).0, [1, 2, 3]);
+        assert_eq!(result.to_rgb8().get_pixel(16, 16).0, [250, 250, 250]);
+        assert_eq!(result.to_rgb8().get_pixel(31, 31).0, [1, 2, 3]);
+    }
+
+    #[test]
+    fn flux2_mask_crop_composite_preserves_unmasked_pixels() {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(256, 256, Rgb([1, 2, 3])));
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(256, 256, |x, y| {
+            Luma([if (126..130).contains(&x) && (126..130).contains(&y) {
+                255
+            } else {
+                0
+            }])
+        }));
+        let calls = Cell::new(0);
+
+        let result = dispatch_inpaint_with_reference(&image, &mask, &options(), |frame, seen| {
+            calls.set(calls.get() + 1);
+            assert!(frame.width() < image.width());
+            assert!(frame.height() < image.height());
+            assert_eq!(frame.dimensions(), seen.dimensions());
+            Ok(DynamicImage::ImageRgb8(RgbImage::from_pixel(
+                frame.width(),
+                frame.height(),
+                Rgb([250, 250, 250]),
+            )))
+        })
+        .unwrap();
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(result.to_rgb8().get_pixel(0, 0).0, [1, 2, 3]);
+        assert_eq!(result.to_rgb8().get_pixel(127, 127).0, [250, 250, 250]);
+        assert_eq!(result.to_rgb8().get_pixel(255, 255).0, [1, 2, 3]);
+    }
 }

@@ -199,3 +199,52 @@ pub fn build_order(infos: &[&EngineInfo]) -> Result<Vec<usize>> {
         .map_err(|c| anyhow::anyhow!("cycle at '{}'", infos[g[c.node_id()]].id))?;
     Ok(order.into_iter().map(|n| g[n]).collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ordered_ids(ids: &[&str]) -> Vec<&'static str> {
+        let infos = ids
+            .iter()
+            .map(|id| Registry::find(id).unwrap())
+            .collect::<Vec<_>>();
+        build_order(&infos)
+            .unwrap()
+            .into_iter()
+            .map(|index| infos[index].id)
+            .collect()
+    }
+
+    #[test]
+    fn orders_ocr_before_segmenter() {
+        let ids = ordered_ids(&["manga-ocr", "comic-text-detector-seg"]);
+        assert!(
+            ids.iter().position(|id| *id == "manga-ocr")
+                < ids.iter().position(|id| *id == "comic-text-detector-seg")
+        );
+    }
+
+    #[test]
+    fn orders_translator_before_inpainters() {
+        for inpainter in ["lama-manga", "aot-inpainting", "flux2-klein"] {
+            let ids = ordered_ids(&["llm", inpainter]);
+            assert!(
+                ids.iter().position(|id| *id == "llm") < ids.iter().position(|id| *id == inpainter),
+                "translator must run before {inpainter}"
+            );
+        }
+    }
+
+    #[test]
+    fn orders_inpainters_without_translator() {
+        for inpainter in ["lama-manga", "aot-inpainting", "flux2-klein"] {
+            assert_eq!(ordered_ids(&[inpainter]), vec![inpainter]);
+        }
+    }
+
+    #[test]
+    fn orders_repair_engine_alone() {
+        assert_eq!(ordered_ids(&["lama-manga"]), vec!["lama-manga"]);
+    }
+}

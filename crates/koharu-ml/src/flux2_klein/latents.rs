@@ -55,7 +55,7 @@ pub fn prepare_rgb_image(image: &DynamicImage, max_pixels: u32) -> (RgbImage, Pr
 
 pub fn prepare_mask(mask: &DynamicImage, width: u32, height: u32) -> GrayImage {
     let gray = mask.to_luma8();
-    image::imageops::resize(&gray, width, height, image::imageops::FilterType::Triangle)
+    image::imageops::resize(&gray, width, height, image::imageops::FilterType::Nearest)
 }
 
 pub fn expand_mask(mask: &GrayImage, padding: u8) -> GrayImage {
@@ -121,7 +121,7 @@ pub fn mask_to_packed_tensor(
         mask,
         packed_width as u32,
         packed_height as u32,
-        image::imageops::FilterType::Triangle,
+        image::imageops::FilterType::Nearest,
     );
     let mut data = Vec::with_capacity(packed_height * packed_width);
     for y in 0..packed_height {

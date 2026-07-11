@@ -5,12 +5,14 @@
 
 use anyhow::{Context, Result};
 use image::{DynamicImage, GenericImageView, GrayImage, Luma};
+use imageproc::{drawing::draw_polygon_mut, point::Point};
 use koharu_core::{
     BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId, NodeKind, Op,
-    PageId, ReadingOrder, Scene, TextData, Transform,
+    PageId, ReadingOrder, Region, Scene, TextData, Transform,
 };
+use koharu_ml::types::TextRegion;
 
-use crate::blobs::BlobStore;
+use crate::{blobs::BlobStore, config::SourceTextPolicy};
 
 #[derive(Clone, Debug)]
 pub struct EligibleTextLine {
@@ -333,6 +335,131 @@ fn bbox_quad(bbox: [f32; 4]) -> [[f32; 2]; 4] {
         [bbox[2], bbox[3]],
         [bbox[0], bbox[3]],
     ]
+}
+
+pub fn line_support_mask(
+    width: u32,
+    height: u32,
+    eligible_lines: &[EligibleTextLine],
+) -> GrayImage {
+    let mut mask = GrayImage::new(width, height);
+    for line in eligible_lines {
+        let bbox = match line.region.line_polygons.as_deref() {
+            Some([quad]) if quad_is_axis_aligned(quad) => {
+                if quad.iter().flatten().any(|value| !value.is_finite()) {
+                    continue;
+                }
+                let area = (0..4)
+                    .map(|index| {
+                        let next = (index + 1) % 4;
+                        quad[index][0] * quad[next][1] - quad[next][0] * quad[index][1]
+                    })
+                    .sum::<f32>()
+                    .abs()
+                    * 0.5;
+                if area <= f32::EPSILON {
+                    continue;
+                }
+                [
+                    quad.iter()
+                        .map(|point| point[0])
+                        .fold(f32::INFINITY, f32::min),
+                    quad.iter()
+                        .map(|point| point[1])
+                        .fold(f32::INFINITY, f32::min),
+                    quad.iter()
+                        .map(|point| point[0])
+                        .fold(f32::NEG_INFINITY, f32::max),
+                    quad.iter()
+                        .map(|point| point[1])
+                        .fold(f32::NEG_INFINITY, f32::max),
+                ]
+            }
+            None => [
+                line.region.x,
+                line.region.y,
+                line.region.x + line.region.width,
+                line.region.y + line.region.height,
+            ],
+            _ => continue,
+        };
+        let Some([left, top, right, bottom]) = pixel_bbox(bbox, width, height) else {
+            continue;
+        };
+        let polygon = [
+            Point::new(left, top),
+            Point::new(right, top),
+            Point::new(right, bottom),
+            Point::new(left, bottom),
+        ];
+        draw_polygon_mut(&mut mask, &polygon, Luma([255]));
+    }
+    mask
+}
+
+fn pixel_bbox(bbox: [f32; 4], width: u32, height: u32) -> Option<[i32; 4]> {
+    if width == 0 || height == 0 || bbox.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let clipped = intersect_bbox(bbox, [0.0, 0.0, width as f32, height as f32])?;
+    let left = clipped[0].floor().max(0.0) as i32;
+    let top = clipped[1].floor().max(0.0) as i32;
+    let right = (clipped[2].ceil().min(width as f32) as i32 - 1).max(left);
+    let bottom = (clipped[3].ceil().min(height as f32) as i32 - 1).max(top);
+    Some([left, top, right, bottom])
+}
+
+pub fn intersect_gray_masks(source: &GrayImage, allowed: &GrayImage) -> GrayImage {
+    assert_eq!(source.dimensions(), allowed.dimensions());
+    GrayImage::from_fn(source.width(), source.height(), |x, y| {
+        Luma([if allowed.get_pixel(x, y).0[0] == 0 {
+            0
+        } else {
+            source.get_pixel(x, y).0[0]
+        }])
+    })
+}
+
+pub fn prepare_inpaint_mask<Expand>(
+    mask: &DynamicImage,
+    bubble_mask: &DynamicImage,
+    all_blocks: &[TextRegion],
+    eligible_lines: &[EligibleTextLine],
+    policy: SourceTextPolicy,
+    region: Option<Region>,
+    expand: Expand,
+) -> Option<(DynamicImage, Vec<TextRegion>)>
+where
+    Expand: FnOnce(&DynamicImage, &DynamicImage, &[TextRegion]) -> GrayImage,
+{
+    let inference_blocks = if region.is_none() && policy == SourceTextPolicy::HanOnly {
+        eligible_lines
+            .iter()
+            .map(|line| line.region.clone())
+            .collect::<Vec<_>>()
+    } else {
+        all_blocks.to_vec()
+    };
+
+    let final_mask = if let Some(region) = region {
+        let clipped_mask = clip_mask_to_region(mask, &region);
+        let clipped_bubble = clip_mask_to_region(bubble_mask, &region);
+        let expanded = expand(&clipped_mask, &clipped_bubble, &inference_blocks);
+        DynamicImage::ImageLuma8(clip_gray_mask_to_region(&expanded, &region))
+    } else if policy == SourceTextPolicy::HanOnly {
+        let allowed = line_support_mask(mask.width(), mask.height(), eligible_lines);
+        let filtered = DynamicImage::ImageLuma8(intersect_gray_masks(&mask.to_luma8(), &allowed));
+        let expanded = expand(&filtered, bubble_mask, &inference_blocks);
+        DynamicImage::ImageLuma8(intersect_gray_masks(&expanded, &allowed))
+    } else {
+        DynamicImage::ImageLuma8(expand(mask, bubble_mask, &inference_blocks))
+    };
+
+    final_mask
+        .to_luma8()
+        .pixels()
+        .any(|pixel| pixel.0[0] != 0)
+        .then_some((final_mask, inference_blocks))
 }
 
 /// Convert a scene `(Transform, TextData)` pair into a `koharu-ml` `TextRegion`
@@ -727,6 +854,11 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
 mod tests {
     use super::*;
     use koharu_core::{ReadingOrder, Region, TextDirection};
+    use koharu_ml::inpainting::{
+        expand_mask_for_inpainting, mask::expand_mask_to_bubble_region_for_inpainting,
+    };
+
+    use crate::config::SourceTextPolicy;
 
     fn text_data(text: &str, line_polygons: Option<Vec<[[f32; 2]; 4]>>) -> TextData {
         TextData {
@@ -886,6 +1018,198 @@ mod tests {
         for transform in invalid {
             assert!(eligible_text_lines(&transform, &text, 100, 100).is_none());
         }
+    }
+
+    fn support_line(bbox: [f32; 4], line_polygons: Option<Vec<[[f32; 2]; 4]>>) -> EligibleTextLine {
+        EligibleTextLine {
+            line_index: 0,
+            text: "中文".to_string(),
+            region: koharu_ml::types::TextRegion {
+                x: bbox[0],
+                y: bbox[1],
+                width: bbox[2] - bbox[0],
+                height: bbox[3] - bbox[1],
+                line_polygons,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn line_support_mask_handles_empty_and_zero_dimensions() {
+        assert_eq!(line_support_mask(0, 0, &[]).dimensions(), (0, 0));
+        assert!(
+            line_support_mask(8, 8, &[])
+                .pixels()
+                .all(|pixel| pixel.0[0] == 0)
+        );
+    }
+
+    #[test]
+    fn line_support_mask_rasterizes_polygon_and_bbox_fallback() {
+        let polygon = support_line([2.0, 2.0, 6.0, 6.0], Some(vec![quad(2.0, 2.0, 6.0, 6.0)]));
+        let fallback = support_line([-2.0, 7.0, 4.0, 12.0], None);
+
+        let mask = line_support_mask(10, 10, &[polygon, fallback]);
+
+        assert_ne!(mask.get_pixel(3, 3).0[0], 0);
+        assert_ne!(mask.get_pixel(1, 8).0[0], 0);
+        assert_eq!(mask.get_pixel(8, 8).0[0], 0);
+    }
+
+    #[test]
+    fn line_support_mask_rejects_invalid_geometry() {
+        let invalid = [
+            support_line(
+                [0.0, 0.0, 1.0, 1.0],
+                Some(vec![quad(f32::NAN, 0.0, 1.0, 1.0)]),
+            ),
+            support_line([0.0, 0.0, 1.0, 1.0], Some(vec![quad(1.0, 1.0, 1.0, 2.0)])),
+            support_line(
+                [20.0, 20.0, 30.0, 30.0],
+                Some(vec![quad(20.0, 20.0, 30.0, 30.0)]),
+            ),
+            support_line([f32::INFINITY, 0.0, f32::INFINITY, 2.0], None),
+        ];
+
+        let mask = line_support_mask(10, 10, &invalid);
+        assert!(mask.pixels().all(|pixel| pixel.0[0] == 0));
+    }
+
+    #[test]
+    fn line_support_mask_keeps_oversized_quad_out_of_english_roi() {
+        let text = text_data(
+            "English\n中文",
+            Some(vec![
+                quad(12.0, 22.0, 80.0, 38.0),
+                quad(8.0, 42.0, 95.0, 65.0),
+            ]),
+        );
+        let lines = eligible_text_lines(&transform(), &text, 100, 100).expect("eligible line");
+
+        let mask = line_support_mask(100, 100, &lines);
+
+        assert_eq!(mask.get_pixel(5, 50).0[0], 0);
+        assert_ne!(mask.get_pixel(20, 50).0[0], 0);
+        assert_eq!(mask.get_pixel(95, 50).0[0], 0);
+    }
+
+    #[test]
+    fn final_inpaint_mask_limits_han_support_before_and_after_expansion() {
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(32, 16, |x, y| {
+            Luma([if (x == 5 || x == 20) && y == 8 {
+                255
+            } else {
+                0
+            }])
+        }));
+        let bubble = DynamicImage::ImageLuma8(GrayImage::new(32, 16));
+        let eligible = vec![support_line(
+            [18.0, 6.0, 23.0, 11.0],
+            Some(vec![quad(18.0, 6.0, 23.0, 11.0)]),
+        )];
+
+        for expand in [
+            expand_mask_for_inpainting
+                as fn(&DynamicImage, &DynamicImage, &[koharu_ml::types::TextRegion]) -> GrayImage,
+            expand_mask_to_bubble_region_for_inpainting,
+        ] {
+            let (prepared, blocks) = prepare_inpaint_mask(
+                &mask,
+                &bubble,
+                &[],
+                &eligible,
+                SourceTextPolicy::HanOnly,
+                None,
+                expand,
+            )
+            .expect("Han target should produce a final mask");
+            let prepared = prepared.to_luma8();
+
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(prepared.get_pixel(5, 8).0[0], 0);
+            assert_eq!(prepared.get_pixel(17, 8).0[0], 0);
+            assert_ne!(prepared.get_pixel(20, 8).0[0], 0);
+            assert_eq!(prepared.get_pixel(23, 8).0[0], 0);
+        }
+    }
+
+    #[test]
+    fn final_inpaint_mask_preserves_repair_region_semantics() {
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(16, 12, |x, y| {
+            Luma([if x == 5 && y == 6 { 255 } else { 0 }])
+        }));
+        let bubble = DynamicImage::ImageLuma8(GrayImage::new(16, 12));
+        let all_blocks = vec![support_line([0.0, 0.0, 16.0, 12.0], None).region];
+        let region = Region {
+            x: 3,
+            y: 4,
+            width: 5,
+            height: 4,
+        };
+
+        let (prepared, blocks) = prepare_inpaint_mask(
+            &mask,
+            &bubble,
+            &all_blocks,
+            &[],
+            SourceTextPolicy::HanOnly,
+            Some(region),
+            expand_mask_for_inpainting,
+        )
+        .expect("repair mask should not require Han lines");
+        let prepared = prepared.to_luma8();
+
+        assert_eq!(blocks.len(), 1);
+        assert_ne!(prepared.get_pixel(5, 6).0[0], 0);
+        assert_eq!(prepared.get_pixel(2, 6).0[0], 0);
+        assert_eq!(prepared.get_pixel(8, 6).0[0], 0);
+    }
+
+    #[test]
+    fn final_inpaint_mask_short_circuits_empty_results() {
+        let empty = DynamicImage::ImageLuma8(GrayImage::new(8, 8));
+        let bubble = DynamicImage::ImageLuma8(GrayImage::new(8, 8));
+        let nonempty = DynamicImage::ImageLuma8(GrayImage::from_fn(8, 8, |x, y| {
+            Luma([if x == 3 && y == 3 { 255 } else { 0 }])
+        }));
+
+        assert!(
+            prepare_inpaint_mask(
+                &empty,
+                &bubble,
+                &[],
+                &[support_line([2.0, 2.0, 5.0, 5.0], None)],
+                SourceTextPolicy::HanOnly,
+                None,
+                expand_mask_for_inpainting,
+            )
+            .is_none()
+        );
+        assert!(
+            prepare_inpaint_mask(
+                &nonempty,
+                &bubble,
+                &[],
+                &[],
+                SourceTextPolicy::HanOnly,
+                None,
+                expand_mask_for_inpainting,
+            )
+            .is_none()
+        );
+        assert!(
+            prepare_inpaint_mask(
+                &nonempty,
+                &bubble,
+                &[],
+                &[support_line([2.0, 2.0, 5.0, 5.0], None)],
+                SourceTextPolicy::HanOnly,
+                None,
+                |mask, _, _| GrayImage::new(mask.width(), mask.height()),
+            )
+            .is_none()
+        );
     }
 
     #[test]

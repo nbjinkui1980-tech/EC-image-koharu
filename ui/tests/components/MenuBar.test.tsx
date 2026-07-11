@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MenuBar } from '@/components/MenuBar'
 import { getGetConfigQueryKey, getGetSceneJsonQueryKey } from '@/lib/api'
 import { queryClient } from '@/lib/queryClient'
+import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 import { renderWithQuery } from '../helpers'
 import { server } from '../msw/server'
@@ -17,6 +18,7 @@ vi.mock('@/lib/io/openFiles', () => ({
 }))
 
 beforeEach(() => {
+  usePreferencesStore.getState().resetPreferences()
   // Default: config + scene exist so the menu enables scene-dependent items.
   server.use(
     http.get('/api/v1/scene.json', () =>
@@ -77,5 +79,83 @@ describe('MenuBar', () => {
     await userEvent.click(screen.getByTestId('menu-file-trigger'))
     const close = await screen.findByTestId('menu-file-close-project')
     expect(close).toHaveAttribute('data-disabled')
+  })
+
+  it('custom Detect excludes the OCR segmenter', async () => {
+    usePreferencesStore.setState({
+      customPipeline: {
+        detect: true,
+        ocr: false,
+        translator: false,
+        inpainter: false,
+        renderer: false,
+      },
+    })
+    let request: { steps?: string[] } | undefined
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({
+          pipeline: {
+            detector: 'detector',
+            segmenter: 'segmenter',
+            bubble_segmenter: 'bubble',
+            font_detector: 'font',
+            ocr: 'ocr',
+            translator: 'translator',
+            inpainter: 'inpainter',
+            renderer: 'renderer',
+          },
+        }),
+      ),
+      http.post('/api/v1/pipelines', async ({ request: incoming }) => {
+        request = (await incoming.json()) as { steps?: string[] }
+        return HttpResponse.json({ jobId: 'job' })
+      }),
+    )
+
+    renderWithQuery(<MenuBar />)
+    await userEvent.click(screen.getByTestId('menu-process-trigger'))
+    await userEvent.click(await screen.findByText('menu.runCustomAll'))
+
+    await waitFor(() => expect(request?.steps).toEqual(['detector', 'bubble', 'font']))
+  })
+
+  it('custom OCR includes the OCR segmenter', async () => {
+    usePreferencesStore.setState({
+      customPipeline: {
+        detect: false,
+        ocr: true,
+        translator: false,
+        inpainter: false,
+        renderer: false,
+      },
+    })
+    let request: { steps?: string[] } | undefined
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({
+          pipeline: {
+            detector: 'detector',
+            segmenter: 'segmenter',
+            bubble_segmenter: 'bubble',
+            font_detector: 'font',
+            ocr: 'ocr',
+            translator: 'translator',
+            inpainter: 'inpainter',
+            renderer: 'renderer',
+          },
+        }),
+      ),
+      http.post('/api/v1/pipelines', async ({ request: incoming }) => {
+        request = (await incoming.json()) as { steps?: string[] }
+        return HttpResponse.json({ jobId: 'job' })
+      }),
+    )
+
+    renderWithQuery(<MenuBar />)
+    await userEvent.click(screen.getByTestId('menu-process-trigger'))
+    await userEvent.click(await screen.findByText('menu.runCustomAll'))
+
+    await waitFor(() => expect(request?.steps).toEqual(['ocr', 'segmenter']))
   })
 })

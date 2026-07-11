@@ -107,11 +107,8 @@ function WorkflowButtons() {
    * the Rust `PipelineConfig`, so we trust what the server returns and
    * never hard-code fallbacks here.
    *
-   * Detect is the only multi-engine button; it bundles detector +
-   * segmenter + font-detector so the subsequent single-engine steps
-   * (OCR / Inpaint / Render) find their inputs already on the page. The
-   * backend driver skips any step whose artifact is already satisfied,
-   * so re-running is idempotent.
+   * Detect bundles detector + bubble-segmenter + font-detector. OCR bundles
+   * OCR + text segmenter; the backend artifact DAG resolves their order.
    */
   const runStep = async (
     pick: (p: NonNullable<Awaited<ReturnType<typeof getConfig>>['pipeline']>) => string[],
@@ -136,13 +133,8 @@ function WorkflowButtons() {
   type PipelinePick = (
     p: NonNullable<Awaited<ReturnType<typeof getConfig>>['pipeline']>,
   ) => string[]
-  const detectChain: PipelinePick = (p) => [
-    p.detector!,
-    p.segmenter!,
-    p.bubble_segmenter!,
-    p.font_detector!,
-  ]
-  const ocrChain: PipelinePick = (p) => [p.ocr!]
+  const detectChain: PipelinePick = (p) => [p.detector!, p.bubble_segmenter!, p.font_detector!]
+  const ocrChain: PipelinePick = (p) => [p.ocr!, p.segmenter!]
   const translateChain: PipelinePick = (p) => [p.translator!]
   const inpaintChain: PipelinePick = (p) => [p.inpainter!]
   const renderChain: PipelinePick = (p) => [p.renderer!]
