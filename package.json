@@ -8,12 +8,14 @@
     "cargo": "bun run scripts/dev.ts cargo",
     "lint:ui": "bun run --filter ui lint",
     "test:ui": "bun run --filter ui test",
-    "format": "oxfmt ui package.json .oxfmtrc.json .vscode",
-    "format:check": "oxfmt --check ui package.json .oxfmtrc.json .vscode",
+    "format": "oxfmt ui scripts/check-generated.ts scripts/check-generated.test.ts package.json .oxfmtrc.json .vscode",
+    "format:check": "oxfmt --check ui scripts/check-generated.ts scripts/check-generated.test.ts package.json .oxfmtrc.json .vscode",
     "format:generated": "oxfmt ui/openapi.json ui/lib/api/generated.ts ui/lib/api/schemas",
     "generate:openapi": "bun run scripts/dev.ts cargo run -p koharu-rpc --bin openapi -- ui/openapi.json",
     "generate:api": "bun run generate:openapi && bun run --filter ui generate:api && bun run format:generated",
-    "check:generated": "bun run generate:api && git diff --exit-code -- ui/openapi.json ui/lib/api/generated.ts ui/lib/api/schemas"
+    "test:generated": "bun test scripts/check-generated.test.ts",
+    "verify:generated": "bun run scripts/check-generated.ts",
+    "check:generated": "bun run generate:api && bun run verify:generated"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.3",

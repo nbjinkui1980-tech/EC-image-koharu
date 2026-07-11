@@ -33,9 +33,15 @@ jobs:
             dbus-x11 \
             gnome-keyring
       - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
         with:
           cache-targets: false
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+      - run: bun install --frozen-lockfile
       # The integration-tests crate prepares a shared llama.cpp runtime once
       # per `cargo test` invocation under `tests/integration-tests/.cache`;
       # caching that directory across runs avoids re-downloading the dylib
@@ -53,6 +59,10 @@ jobs:
           echo -n "" | gnome-keyring-daemon --unlock --components=secrets &>/dev/null &
           export $(echo -n "" | gnome-keyring-daemon --start --components=secrets 2>/dev/null)
           cargo test --workspace --tests
+      - name: Test generated artifact checker
+        run: bun run test:generated
+      - name: Check generated artifacts
+        run: bun run check:generated
 
   ui:
     name: UI
