@@ -644,8 +644,8 @@ mod tests {
     fn extract_region_contour_mask_keeps_thresholded_shape() -> anyhow::Result<()> {
         let mut probability_map = ProbabilityMap::zeros(6, 5);
         let mut mask = vec![0.0f32; 6 * 5];
-        mask[1 + 1 * 6] = 0.9;
-        mask[2 + 1 * 6] = 0.8;
+        mask[7] = 0.9;
+        mask[8] = 0.8;
         mask[2 + 2 * 6] = 0.7;
         mask[4 + 3 * 6] = 0.4;
 

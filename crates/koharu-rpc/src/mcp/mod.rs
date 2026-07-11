@@ -221,35 +221,6 @@ fn err(e: impl std::fmt::Display) -> rmcp::ErrorData {
     rmcp::ErrorData::internal_error(e.to_string(), None)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use koharu_app::{AppConfig, config::SourceTextPolicy};
-
-    #[test]
-    fn mcp_options_inherits_source_text_policy() {
-        let mut config = AppConfig::default();
-        config.pipeline.source_text_policy = SourceTextPolicy::AllText;
-        let page = PageId::new();
-        let input = StartPipelineInput {
-            steps: vec!["llm".to_string()],
-            pages: Some(vec![page]),
-            text_node_ids: None,
-            target_language: Some("ko".to_string()),
-            system_prompt: Some("system".to_string()),
-            default_font: Some("Noto Sans".to_string()),
-            reading_order: Some(ReadingOrder::Ltr),
-        };
-
-        let options = options_from_input(&input, &config);
-
-        assert_eq!(options.source_text_policy, SourceTextPolicy::AllText);
-        assert_eq!(options.target_language.as_deref(), Some("ko"));
-        assert_eq!(input.steps, ["llm"]);
-        assert_eq!(input.pages.as_deref(), Some([page].as_slice()));
-    }
-}
-
 #[tool_handler]
 impl ServerHandler for KoharuServer {
     fn get_info(&self) -> ServerInfo {
@@ -277,4 +248,33 @@ pub fn mount(router: axum::Router, state: AppState) -> axum::Router {
     let service =
         StreamableHttpService::new(factory, manager, StreamableHttpServerConfig::default());
     router.nest_service("/mcp", service)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koharu_app::{AppConfig, config::SourceTextPolicy};
+
+    #[test]
+    fn mcp_options_inherits_source_text_policy() {
+        let mut config = AppConfig::default();
+        config.pipeline.source_text_policy = SourceTextPolicy::AllText;
+        let page = PageId::new();
+        let input = StartPipelineInput {
+            steps: vec!["llm".to_string()],
+            pages: Some(vec![page]),
+            text_node_ids: None,
+            target_language: Some("ko".to_string()),
+            system_prompt: Some("system".to_string()),
+            default_font: Some("Noto Sans".to_string()),
+            reading_order: Some(ReadingOrder::Ltr),
+        };
+
+        let options = options_from_input(&input, &config);
+
+        assert_eq!(options.source_text_policy, SourceTextPolicy::AllText);
+        assert_eq!(options.target_language.as_deref(), Some("ko"));
+        assert_eq!(input.steps, ["llm"]);
+        assert_eq!(input.pages.as_deref(), Some([page].as_slice()));
+    }
 }
