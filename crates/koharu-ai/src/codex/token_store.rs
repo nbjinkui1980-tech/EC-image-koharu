@@ -1,9 +1,8 @@
-use koharu_secrets::SecretStore;
+use koharu_secrets::{DEFAULT_SECRET_SERVICE, SecretStore};
 
 use super::error::{CodexError, Result};
 use super::tokens::CodexTokens;
 
-pub const DEFAULT_SECRET_SERVICE: &str = "koharu";
 pub const DEFAULT_TOKEN_SECRET_KEY: &str = "codex_oauth_tokens";
 
 const SECRET_CHUNK_UTF16_UNITS: usize = 1000;

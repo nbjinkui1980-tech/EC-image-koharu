@@ -63,8 +63,9 @@ Each provider appears as an accordion with a status dot:
 Current behavior:
 
 - provider API keys are not written to `config.toml`
-- on macOS and Windows, provider API keys are stored through the system keyring
-- on Linux, provider API keys are stored in Koharu's local filesystem credential store under the app data directory with owner-only file permissions
+- in macOS builds with debug assertions disabled and on Windows, provider API keys are stored through the system keyring
+- macOS debug builds use the isolated owner-only filesystem store at `~/.koharu-dev/secrets/`
+- on Linux, provider API keys are stored in Koharu's local filesystem credential store at `~/.koharu/secrets/` with owner-only file permissions
 - provider base URLs are stored in the app config
 - `OpenAI Compatible` requires a custom `Base URL`; models are discovered dynamically by calling `GET /v1/models` against that URL
 - machine-translation providers (`DeepL`, `Google Cloud Translation`, `Caiyun`) only need an API key; `Caiyun` supports a limited set of target languages
@@ -72,7 +73,7 @@ Current behavior:
 
 The API response intentionally redacts saved keys rather than returning the raw secret.
 
-The Linux filesystem credential store relies on local filesystem permissions rather than OS-level encryption.
+The Linux and macOS debug filesystem credential stores rely on local filesystem permissions rather than OS-level encryption.
 
 ## Keybinds
 

@@ -3,7 +3,7 @@ use std::fs;
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use koharu_runtime::default_app_data_root;
-use koharu_secrets::SecretStore;
+use koharu_secrets::{DEFAULT_SECRET_SERVICE, SecretStore};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use utoipa::ToSchema;
 
@@ -13,7 +13,6 @@ pub use koharu_core::SourceTextPolicy;
 
 const CONFIG_FILE: &str = "config.toml";
 const REDACTED: &str = "[REDACTED]";
-const SECRET_SERVICE: &str = "koharu";
 const PROVIDER_API_KEY_SECRET_PREFIX: &str = "llm_provider_api_key_";
 
 // ---------------------------------------------------------------------------
@@ -383,7 +382,7 @@ fn validate_engine_name(
 /// Populate provider keys from the standard credential store without writing
 /// them back to TOML. Custom CLI config uses the same hydration path.
 pub fn hydrate_provider_secrets(config: &mut AppConfig) {
-    let secrets = SecretStore::new(SECRET_SERVICE);
+    let secrets = SecretStore::new(DEFAULT_SECRET_SERVICE);
     hydrate_provider_secrets_with(config, |key| secrets.get(key).ok().flatten());
 }
 
@@ -405,7 +404,7 @@ fn hydrate_provider_secrets_with(
 /// - `None` → clear from credential storage
 /// - `Some(RedactedSecret)` with value == "[REDACTED]" → unchanged
 pub fn sync_secrets(config: &AppConfig) -> Result<()> {
-    let secrets = SecretStore::new(SECRET_SERVICE);
+    let secrets = SecretStore::new(DEFAULT_SECRET_SERVICE);
     for provider in &config.providers {
         match &provider.api_key {
             Some(secret) if secret.expose() != REDACTED => {

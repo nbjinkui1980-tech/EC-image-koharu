@@ -3,8 +3,7 @@ use std::fs;
 use std::io;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use atomicwrites::{AtomicFile, OverwriteBehavior};
 use keyring::credential::{Credential, CredentialApi, CredentialBuilderApi};
@@ -15,11 +14,19 @@ pub(crate) fn configure() {
 }
 
 fn secret_root() -> PathBuf {
-    std::env::var_os("HOME")
+    let home = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".koharu")
-        .join("secrets")
+        .unwrap_or_else(std::env::temp_dir);
+    secret_root_from_home(&home)
+}
+
+fn secret_root_from_home(home: &Path) -> PathBuf {
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    const APP_DIR: &str = ".koharu-dev";
+    #[cfg(not(all(target_os = "macos", debug_assertions)))]
+    const APP_DIR: &str = ".koharu";
+
+    home.join(APP_DIR).join("secrets")
 }
 
 #[derive(Debug)]
@@ -75,14 +82,14 @@ impl CredentialApi for FileCredential {
 
     fn get_secret(&self) -> Result<Vec<u8>> {
         fs::read(self.path()).map_err(|err| match err.kind() {
-            std::io::ErrorKind::NotFound => Error::NoEntry,
+            io::ErrorKind::NotFound => Error::NoEntry,
             _ => storage_error(err),
         })
     }
 
     fn delete_credential(&self) -> Result<()> {
         fs::remove_file(self.path()).map_err(|err| match err.kind() {
-            std::io::ErrorKind::NotFound => Error::NoEntry,
+            io::ErrorKind::NotFound => Error::NoEntry,
             _ => storage_error(err),
         })
     }
@@ -106,7 +113,7 @@ fn atomic_write_error(err: atomicwrites::Error<io::Error>) -> Error {
     }
 }
 
-fn storage_error(err: std::io::Error) -> Error {
+fn storage_error(err: io::Error) -> Error {
     Error::NoStorageAccess(Box::new(err))
 }
 
@@ -141,10 +148,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn uses_platform_specific_secret_root() {
+        let root = secret_root_from_home(Path::new("/tmp/home"));
+
+        #[cfg(all(target_os = "macos", debug_assertions))]
+        assert_eq!(root, Path::new("/tmp/home/.koharu-dev/secrets"));
+        #[cfg(not(all(target_os = "macos", debug_assertions)))]
+        assert_eq!(root, Path::new("/tmp/home/.koharu/secrets"));
+    }
+
+    #[test]
     fn round_trips_secret_across_credentials() {
         let dir = tempfile::tempdir().unwrap();
         let builder = Builder::new(dir.path());
-
         let first = builder
             .build(None, "koharu", "llm_provider_api_key_openai")
             .unwrap();

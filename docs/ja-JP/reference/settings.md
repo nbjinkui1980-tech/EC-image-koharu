@@ -63,8 +63,9 @@ title: 設定リファレンス
 現在の挙動:
 
 - provider の API キーは `config.toml` には書き込まれません
-- macOS と Windows では、provider の API キーはシステム keyring に保存されます
-- Linux では、provider の API キーはアプリデータディレクトリ配下の Koharu ローカルファイルシステム認証情報ストアに保存され、所有ユーザーのみが読める権限が設定されます
+- デバッグアサーションを無効にした macOS ビルドと Windows では、provider の API キーはシステム keyring に保存されます
+- macOS のデバッグビルドでは、所有ユーザーだけが読める分離済みファイルシステムストア `~/.koharu-dev/secrets/` を使用します
+- Linux では、provider の API キーは `~/.koharu/secrets/` の Koharu ローカルファイルシステム認証情報ストアに保存され、所有ユーザーのみが読める権限が設定されます
 - provider の `Base URL` は共有アプリ設定に保存されます
 - `OpenAI Compatible` ではカスタム `Base URL` が必須です。モデルはその URL に対して `GET /v1/models` を呼び出して動的に取得されます
 - 機械翻訳プロバイダ (`DeepL`、`Google Cloud Translation`、`Caiyun`) は API キーのみで使えます。`Caiyun` は対応ターゲット言語が限られます
@@ -72,7 +73,7 @@ title: 設定リファレンス
 
 API レスポンスでは保存済みキーは生値ではなく、マスク済みの値として返されます。
 
-Linux のファイルシステム認証情報ストアは、OS レベルの暗号化ではなくローカルファイルシステム権限に依存します。
+Linux と macOS デバッグビルドのファイルシステム認証情報ストアは、OS レベルの暗号化ではなくローカルファイルシステム権限に依存します。
 
 ## キーバインド
 

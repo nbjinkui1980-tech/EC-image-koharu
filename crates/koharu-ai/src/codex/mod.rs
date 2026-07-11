@@ -19,7 +19,8 @@ pub use image::{
     CodexImageStreamResult, CodexInputImage, extract_image_url, image_response_stream_result,
     image_response_stream_url,
 };
+pub use koharu_secrets::DEFAULT_SECRET_SERVICE;
 pub use responses::{CodexInputContent, CodexInputItem};
 pub use task::CodexTaskRequest;
-pub use token_store::{DEFAULT_SECRET_SERVICE, DEFAULT_TOKEN_SECRET_KEY, TokenStore};
+pub use token_store::{DEFAULT_TOKEN_SECRET_KEY, TokenStore};
 pub use tokens::CodexTokens;

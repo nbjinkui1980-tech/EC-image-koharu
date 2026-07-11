@@ -47,6 +47,8 @@ bun run dev
 
 This launches the Tauri app in development mode against the bundled UI.
 
+On macOS, debug builds keep provider and Codex credentials in `~/.koharu-dev/secrets/` with owner-only permissions. This development-only store is intentionally isolated from the native Keychain used by non-debug builds, so ad-hoc rebuilds do not trigger Keychain authorization prompts. The first debug run after this boundary change appears signed out and requires development credentials to be entered again. Existing `koharu` Keychain items are neither migrated nor deleted automatically; remove them manually only if no non-debug build still needs them.
+
 ## Build a Release
 
 ```bash

@@ -13,12 +13,10 @@ publish.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+atomicwrites = { workspace = true }
 keyring = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-atomicwrites = { workspace = true }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
+[dev-dependencies]
 tempfile = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]

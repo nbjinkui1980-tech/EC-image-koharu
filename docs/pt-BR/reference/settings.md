@@ -63,8 +63,9 @@ Cada provedor aparece como um accordion com um indicador de status (status dot):
 Comportamento atual:
 
 - as chaves de API dos provedores não são escritas em `config.toml`
-- no macOS e no Windows, as chaves de API dos provedores são armazenadas pelo keyring do sistema
-- no Linux, as chaves de API dos provedores são armazenadas no armazenamento local de credenciais do Koharu sob o diretório de dados do app com permissões somente para o usuário dono
+- em builds do macOS com assertions de debug desativadas e no Windows, as chaves de API dos provedores são armazenadas pelo keyring do sistema
+- builds de debug do macOS usam o armazenamento isolado `~/.koharu-dev/secrets/`, com permissões somente para o usuário dono
+- no Linux, as chaves de API dos provedores são armazenadas no armazenamento local de credenciais do Koharu em `~/.koharu/secrets/`, com permissões somente para o usuário dono
 - as base URLs dos provedores são armazenadas na config do app
 - `OpenAI Compatible` requer uma `Base URL` customizada; os modelos são descobertos dinamicamente chamando `GET /v1/models` contra essa URL
 - provedores de tradução automática (`DeepL`, `Google Cloud Translation`, `Caiyun`) precisam apenas de uma chave de API; o `Caiyun` suporta um conjunto limitado de idiomas de destino
@@ -72,7 +73,7 @@ Comportamento atual:
 
 O response da API intencionalmente redacta as chaves salvas em vez de retornar o segredo bruto.
 
-O armazenamento local de credenciais no Linux depende das permissões do filesystem em vez de criptografia em nível de sistema operacional.
+Os armazenamentos locais de credenciais no Linux e nos builds de debug do macOS dependem das permissões do filesystem em vez de criptografia em nível de sistema operacional.
 
 ## Keybinds
 

@@ -79,8 +79,9 @@ Han 脚本也用于部分日文汉字，因此仅凭字符脚本无法绝对区�
 当前行为：
 
 - 提供方 API key 不会写入 `config.toml`
-- 在 macOS 和 Windows 上，提供方 API key 存储在系统 keyring 中
-- 在 Linux 上，提供方 API key 存储在应用数据目录下的 Koharu 本地文件系统凭据存储中，并使用仅所有者可访问的文件权限
+- 在关闭调试断言的 macOS 构建和 Windows 上，提供方 API key 存储在系统 keyring 中
+- macOS 调试构建使用隔离的 `~/.koharu-dev/secrets/` 文件系统存储，并设置为仅所有者可访问
+- 在 Linux 上，提供方 API key 存储在 `~/.koharu/secrets/` 的 Koharu 本地文件系统凭据存储中，并使用仅所有者可访问的文件权限
 - 提供方的 `Base URL` 保存在共享应用配置中
 - `OpenAI Compatible` 需要自定义 `Base URL`；模型列表通过对该 URL 调用 `GET /v1/models` 动态发现
 - 机器翻译提供方（`DeepL`、`Google Cloud Translation`、`Caiyun`）只需要 API key；`Caiyun` 仅支持有限的目标语言
@@ -88,7 +89,7 @@ Han 脚本也用于部分日文汉字，因此仅凭字符脚本无法绝对区�
 
 API 响应不会返回原始密钥，而是返回已遮罩的值。
 
-Linux 文件系统凭据存储依赖本地文件系统权限，而不是操作系统级加密。
+Linux 和 macOS 调试构建的文件系统凭据存储依赖本地文件系统权限，而不是操作系统级加密。
 
 ## Typography
 

@@ -1,8 +1,8 @@
-#[cfg(target_os = "linux")]
-#[path = "platform/linux.rs"]
+#[cfg(any(target_os = "linux", all(target_os = "macos", debug_assertions)))]
+#[path = "platform/file.rs"]
 mod implementation;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", all(target_os = "macos", debug_assertions))))]
 #[path = "platform/native.rs"]
 mod implementation;
 
