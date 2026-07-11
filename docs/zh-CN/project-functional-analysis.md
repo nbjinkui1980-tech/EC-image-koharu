@@ -215,6 +215,26 @@ flowchart LR
 
 实现位于 `crates/koharu-app/src/pipeline/` 和 `crates/koharu-rpc/src/routes/pipelines.rs`。
 
+### 中文限定策略与使用限制
+
+默认配置为 `source_text_policy = "han_only"`。HTTP、MCP、CLI 和 Repair Brush 都继承服务端配置；如需恢复旧版全量行为，可在 `config.toml` 中设置：
+
+```toml
+[pipeline]
+source_text_policy = "all_text"
+```
+
+`han_only` 模式具有以下边界：
+
+- 纯英文文本不会进入 Segment 推理、翻译 Provider、Lama/AOT/Flux2 推理或 Renderer。
+- 混合节点只处理包含 Han 字符的行；每行使用严格 tagged Provider 映射，并保留显式换行。
+- 混合节点必须提供有限、非退化、零旋转且轴对齐的逐行 polygon。缺少有效 polygon、存在非零 rotation、旋转或斜切时会安全跳过，并只记录不含 OCR 正文的 warning；不会按高度猜测行区域。
+- 纯中文多行缺少 polygon 时，可以使用裁剪到图内的节点 bbox 作为兼容 fallback。
+- Segment Mask 和三种修复器的最终推理 mask 都会在扩张前后限制到中文行支撑区；Flux2 不再在应用层 mask 之外重复 padding。Repair Brush 不做语言过滤，但扩张后仍限制在用户 region 内。
+- `all_text` 保持当前节点级 Provider 输入、legacy fallback、节点 transform 和通用软换行布局。
+
+旧项目若已经由旧 Segment/Inpainted 结果擦除了英文，必须从 Source 重新运行完整流程。仅重新执行 Render 不能恢复已被旧 Inpainted 图像删除的英文像素。
+
 ## 文本块编辑
 
 编辑器支持：
