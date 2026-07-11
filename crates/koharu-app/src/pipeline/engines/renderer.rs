@@ -7,18 +7,22 @@
 //!
 //! Requires an `Image { role: Inpainted }` node on the page.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use koharu_core::{
-    ImageRole, MaskRole, NodeDataPatch, NodePatch, Op, TextDataPatch, TextStyle, Transform,
+    ImageRole, MaskRole, NodeDataPatch, NodeId, NodePatch, Op, PageId, Scene, TextDataPatch,
+    TextStyle, Transform,
 };
 use koharu_llm::Language;
 
+use crate::config::SourceTextPolicy;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    find_image_node, find_mask_node, image_dimensions, load_source_image, text_nodes,
-    upsert_image_blob,
+    EligibleTextLine, eligible_lines_for_page, find_image_node, find_mask_node, image_dimensions,
+    load_source_image, text_nodes, upsert_image_blob,
 };
 use crate::renderer::{PageRenderOptions, RenderBlockInput};
 
@@ -47,27 +51,12 @@ impl Engine for Model {
             None => None,
         };
 
-        // Build renderer input from every text node with a non-empty translation.
-        let nodes = text_nodes(ctx.scene, ctx.page);
-        let inputs: Vec<RenderBlockInput> = nodes
-            .iter()
-            .filter_map(|(id, transform, t)| {
-                let translation = t.translation.as_ref()?.trim();
-                if translation.is_empty() {
-                    return None;
-                }
-                Some(RenderBlockInput {
-                    node_id: *id,
-                    transform: **transform,
-                    translation: translation.to_string(),
-                    style: t.style.clone(),
-                    font_prediction: t.font_prediction.clone(),
-                    source_direction: t.source_direction,
-                    rendered_direction: t.rendered_direction,
-                    lock_layout_box: t.lock_layout_box,
-                })
-            })
-            .collect();
+        let (inputs, mut ops) = build_render_inputs(
+            ctx.scene,
+            ctx.page,
+            ctx.options.source_text_policy,
+            ctx.options.text_node_ids.as_deref(),
+        )?;
 
         let page_opts = PageRenderOptions {
             shader_effect: Default::default(),
@@ -95,7 +84,7 @@ impl Engine for Model {
         )?;
 
         // Upload sprites + compose ops.
-        let mut ops = Vec::with_capacity(output.blocks.len() + 1);
+        ops.reserve(output.blocks.len() + 1);
         for block_out in output.blocks {
             let sprite_ref = ctx.blobs.put_raw(&block_out.sprite)?;
             let existing_style = inputs
@@ -140,6 +129,137 @@ impl Engine for Model {
     }
 }
 
+fn build_render_inputs(
+    scene: &Scene,
+    page: PageId,
+    policy: SourceTextPolicy,
+    allowed_ids: Option<&[NodeId]>,
+) -> Result<(Vec<RenderBlockInput>, Vec<Op>)> {
+    if policy == SourceTextPolicy::AllText {
+        let inputs = text_nodes(scene, page)
+            .into_iter()
+            .filter_map(|(node_id, transform, text)| {
+                let translation = text.translation.as_deref()?.trim();
+                if translation.is_empty() {
+                    return None;
+                }
+                Some(RenderBlockInput {
+                    node_id,
+                    transform: *transform,
+                    translation: translation.to_string(),
+                    style: text.style.clone(),
+                    font_prediction: text.font_prediction.clone(),
+                    source_direction: text.source_direction,
+                    rendered_direction: text.rendered_direction,
+                    lock_layout_box: text.lock_layout_box,
+                    preserve_explicit_lines: false,
+                })
+            })
+            .collect();
+        return Ok((inputs, Vec::new()));
+    }
+
+    let mut lines_by_node: HashMap<NodeId, Vec<EligibleTextLine>> = HashMap::new();
+    for (node_id, line) in eligible_lines_for_page(scene, page).0 {
+        lines_by_node.entry(node_id).or_default().push(line);
+    }
+
+    let mut inputs = Vec::new();
+    let mut cleanup = Vec::new();
+    for (node_id, _, text) in text_nodes(scene, page) {
+        if allowed_ids.is_some_and(|ids| !ids.contains(&node_id)) {
+            continue;
+        }
+        let mut lines = lines_by_node.remove(&node_id).unwrap_or_default();
+        if lines.is_empty() {
+            cleanup.push(render_cleanup_op(page, node_id, true));
+            continue;
+        }
+        lines.sort_by_key(|line| line.line_index);
+
+        let translation = text
+            .translation
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Han translation missing for node {node_id}"))?;
+        let translated_lines = translation
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            translated_lines.len() == lines.len(),
+            "Han translation line count mismatch for node {node_id}"
+        );
+
+        let mut left = f32::INFINITY;
+        let mut top = f32::INFINITY;
+        let mut right = f32::NEG_INFINITY;
+        let mut bottom = f32::NEG_INFINITY;
+        for line in &lines {
+            let region = &line.region;
+            let values = [region.x, region.y, region.width, region.height];
+            anyhow::ensure!(
+                values.iter().all(|value| value.is_finite())
+                    && region.width > 0.0
+                    && region.height > 0.0,
+                "invalid Han renderer geometry for node {node_id}"
+            );
+            left = left.min(region.x);
+            top = top.min(region.y);
+            right = right.max(region.x + region.width);
+            bottom = bottom.max(region.y + region.height);
+        }
+
+        let source_line_count = text
+            .text
+            .as_deref()
+            .map(|source| {
+                source
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .count()
+            })
+            .unwrap_or(0);
+        inputs.push(RenderBlockInput {
+            node_id,
+            transform: Transform {
+                x: left,
+                y: top,
+                width: right - left,
+                height: bottom - top,
+                rotation_deg: 0.0,
+            },
+            translation: translated_lines.join("\n"),
+            style: text.style.clone(),
+            font_prediction: text.font_prediction.clone(),
+            source_direction: text.source_direction,
+            rendered_direction: text.rendered_direction,
+            lock_layout_box: text.lock_layout_box || lines.len() < source_line_count,
+            preserve_explicit_lines: true,
+        });
+        cleanup.push(render_cleanup_op(page, node_id, false));
+    }
+    Ok((inputs, cleanup))
+}
+
+fn render_cleanup_op(page: PageId, node_id: NodeId, clear_translation: bool) -> Op {
+    Op::UpdateNode {
+        page,
+        id: node_id,
+        patch: NodePatch {
+            data: Some(NodeDataPatch::Text(TextDataPatch {
+                translation: clear_translation.then_some(None),
+                sprite: Some(None),
+                sprite_transform: Some(None),
+                ..Default::default()
+            })),
+            transform: None,
+            visible: None,
+        },
+        prev: NodePatch::default(),
+    }
+}
+
 inventory::submit! {
     EngineInfo {
         id: "koharu-renderer",
@@ -178,8 +298,10 @@ fn render_target_language_tag(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{preserve_existing_style, render_target_language_tag};
-    use koharu_core::TextStyle;
+    use super::*;
+    use koharu_core::{BlobRef, Node, NodeId, NodeKind, Page, Scene, TextData, TextDirection};
+
+    use crate::config::SourceTextPolicy;
 
     #[test]
     fn omits_style_patch_when_block_has_no_explicit_style() {
@@ -216,5 +338,166 @@ mod tests {
             render_target_language_tag("not-a-language"),
             "not-a-language"
         );
+    }
+
+    fn quad(x1: f32, y1: f32, x2: f32, y2: f32) -> [[f32; 2]; 4] {
+        [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+    }
+
+    fn renderer_node(
+        id: NodeId,
+        text: &str,
+        translation: Option<&str>,
+        polygons: Option<Vec<[[f32; 2]; 4]>>,
+    ) -> Node {
+        Node {
+            id,
+            transform: Transform {
+                x: 10.0,
+                y: 10.0,
+                width: 80.0,
+                height: 50.0,
+                rotation_deg: 0.0,
+            },
+            visible: true,
+            kind: NodeKind::Text(TextData {
+                text: Some(text.to_string()),
+                translation: translation.map(str::to_string),
+                line_polygons: polygons,
+                source_direction: Some(TextDirection::Horizontal),
+                sprite: Some(BlobRef::new("old-sprite")),
+                sprite_transform: Some(Transform::default()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn renderer_scene(nodes: Vec<Node>) -> (Scene, koharu_core::PageId) {
+        let mut page = Page::new("page", 100, 100);
+        let page_id = page.id;
+        page.nodes = nodes.into_iter().map(|node| (node.id, node)).collect();
+        let mut scene = Scene::default();
+        scene.pages.insert(page_id, page);
+        (scene, page_id)
+    }
+
+    fn text(scene: &Scene, page: koharu_core::PageId, id: NodeId) -> &TextData {
+        match &scene.node(page, id).unwrap().kind {
+            NodeKind::Text(text) => text,
+            _ => panic!("expected text node"),
+        }
+    }
+
+    #[test]
+    fn han_only_renderer_uses_han_geometry_and_cleans_in_scope_nodes() {
+        let mixed = NodeId::new();
+        let english = NodeId::new();
+        let unsupported = NodeId::new();
+        let outside = NodeId::new();
+        let (mut scene, page) = renderer_scene(vec![
+            renderer_node(
+                mixed,
+                "English\n中文",
+                Some("Translated"),
+                Some(vec![
+                    quad(12.0, 12.0, 88.0, 28.0),
+                    quad(20.0, 35.0, 70.0, 52.0),
+                ]),
+            ),
+            renderer_node(english, "English", Some("old"), None),
+            renderer_node(unsupported, "English\n中文", Some("old"), None),
+            renderer_node(outside, "中文", Some("outside"), None),
+        ]);
+        let allowed = [mixed, english, unsupported];
+
+        let (inputs, mut cleanup) =
+            build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, Some(&allowed)).unwrap();
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].node_id, mixed);
+        assert_eq!(
+            (
+                inputs[0].transform.x,
+                inputs[0].transform.y,
+                inputs[0].transform.width,
+                inputs[0].transform.height,
+                inputs[0].transform.rotation_deg,
+            ),
+            (20.0, 35.0, 50.0, 17.0, 0.0)
+        );
+        assert!(inputs[0].lock_layout_box);
+        assert!(inputs[0].preserve_explicit_lines);
+
+        for op in &mut cleanup {
+            op.apply(&mut scene).unwrap();
+        }
+        assert_eq!(
+            text(&scene, page, mixed).translation.as_deref(),
+            Some("Translated")
+        );
+        assert!(text(&scene, page, mixed).sprite.is_none());
+        for id in [english, unsupported] {
+            assert!(text(&scene, page, id).translation.is_none());
+            assert!(text(&scene, page, id).sprite.is_none());
+            assert!(text(&scene, page, id).sprite_transform.is_none());
+        }
+        assert_eq!(
+            text(&scene, page, outside).translation.as_deref(),
+            Some("outside")
+        );
+        assert!(text(&scene, page, outside).sprite.is_some());
+    }
+
+    #[test]
+    fn han_only_renderer_rejects_translation_line_count_mismatch() {
+        let mixed = NodeId::new();
+        let (scene, page) = renderer_scene(vec![renderer_node(
+            mixed,
+            "English\n中文一\n中文二",
+            Some("only one"),
+            Some(vec![
+                quad(10.0, 10.0, 90.0, 20.0),
+                quad(10.0, 25.0, 90.0, 35.0),
+                quad(10.0, 40.0, 90.0, 50.0),
+            ]),
+        )]);
+
+        assert!(build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None).is_err());
+    }
+
+    #[test]
+    fn han_only_renderer_keeps_all_text_transform_and_layout_behavior() {
+        let id = NodeId::new();
+        let mut node = renderer_node(id, "English\n中文", Some("A translated paragraph"), None);
+        let original = node.transform;
+        let NodeKind::Text(text) = &mut node.kind else {
+            unreachable!()
+        };
+        text.lock_layout_box = true;
+        let (scene, page) = renderer_scene(vec![node]);
+
+        let (inputs, cleanup) =
+            build_render_inputs(&scene, page, SourceTextPolicy::AllText, Some(&[])).unwrap();
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(
+            (
+                inputs[0].transform.x,
+                inputs[0].transform.y,
+                inputs[0].transform.width,
+                inputs[0].transform.height,
+                inputs[0].transform.rotation_deg,
+            ),
+            (
+                original.x,
+                original.y,
+                original.width,
+                original.height,
+                original.rotation_deg,
+            )
+        );
+        assert!(inputs[0].lock_layout_box);
+        assert!(!inputs[0].preserve_explicit_lines);
+        assert!(cleanup.is_empty());
     }
 }

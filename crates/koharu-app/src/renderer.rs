@@ -48,6 +48,7 @@ pub struct RenderBlockInput {
     pub source_direction: Option<TextDirection>,
     pub rendered_direction: Option<TextDirection>,
     pub lock_layout_box: bool,
+    pub preserve_explicit_lines: bool,
 }
 
 /// Document-level render options (shared across all blocks).
@@ -310,6 +311,7 @@ impl Renderer {
                 style.font_size,
                 min_font_size,
                 max_font,
+                block.preserve_explicit_lines,
                 mask,
                 bubble_id,
                 &mut render_candidate,
@@ -325,11 +327,11 @@ impl Renderer {
         let layout = fit_font_size(
             &layout_builder,
             translation,
-            layout_box.width,
-            layout_box.height,
+            layout_box,
             style.font_size,
             min_font_size,
             max_font,
+            block.preserve_explicit_lines,
         )?;
 
         let candidate = render_candidate(&layout)?;
@@ -495,26 +497,27 @@ fn max_font_size_for_box(layout_box: LayoutBox, min_size: f32) -> f32 {
 fn fit_font_size<'a>(
     layout_builder: &TextLayout<'a>,
     text: &str,
-    constraint_width: f32,
-    constraint_height: f32,
+    layout_box: LayoutBox,
     explicit_size: Option<f32>,
     min_size: f32,
     max_size: f32,
+    preserve_explicit_lines: bool,
 ) -> Result<LayoutRun<'a>> {
-    let run_at = |size: f32| -> Result<LayoutRun<'a>> {
-        layout_builder
-            .clone()
-            .with_font_size(size.max(1.0))
-            .with_max_width(constraint_width)
-            .with_max_height(constraint_height)
-            .run(text)
+    let run_at = |size: f32| {
+        run_layout_at(
+            layout_builder,
+            text,
+            layout_box,
+            size,
+            preserve_explicit_lines,
+        )
     };
     if let Some(s) = explicit_size {
         return run_at(s);
     }
 
     let fits =
-        |run: &LayoutRun<'a>| run.width <= constraint_width && run.height <= constraint_height;
+        |run: &LayoutRun<'a>| run.width <= layout_box.width && run.height <= layout_box.height;
 
     let min_size = min_size.max(1.0).round() as i32;
     let max_size = (max_size.round() as i32).max(min_size);
@@ -551,6 +554,7 @@ fn fit_rendered_with_mask_collision<'a, F>(
     explicit_size: Option<f32>,
     min_size: f32,
     max_size: f32,
+    preserve_explicit_lines: bool,
     mask: &GrayImage,
     bubble_id: u8,
     render_candidate: &mut F,
@@ -564,6 +568,7 @@ where
             text,
             layout_box,
             size.max(1.0),
+            preserve_explicit_lines,
             mask,
             bubble_id,
             render_candidate,
@@ -579,6 +584,7 @@ where
         text,
         layout_box,
         max_size as f32,
+        preserve_explicit_lines,
         mask,
         bubble_id,
         render_candidate,
@@ -591,6 +597,7 @@ where
         text,
         layout_box,
         min_size as f32,
+        preserve_explicit_lines,
         mask,
         bubble_id,
         render_candidate,
@@ -609,6 +616,7 @@ where
             text,
             layout_box,
             mid as f32,
+            preserve_explicit_lines,
             mask,
             bubble_id,
             render_candidate,
@@ -629,6 +637,7 @@ fn try_mask_collision_size<'a, F>(
     text: &str,
     layout_box: LayoutBox,
     font_size: f32,
+    preserve_explicit_lines: bool,
     mask: &GrayImage,
     bubble_id: u8,
     render_candidate: &mut F,
@@ -636,7 +645,13 @@ fn try_mask_collision_size<'a, F>(
 where
     F: FnMut(&LayoutRun<'a>) -> Result<RenderedTextCandidate>,
 {
-    let layout = run_collision_layout_at(layout_builder, text, layout_box, font_size)?;
+    let layout = run_collision_layout_at(
+        layout_builder,
+        text,
+        layout_box,
+        font_size,
+        preserve_explicit_lines,
+    )?;
     let fits_layout_box = layout_fits_collision_attempt(&layout, layout_box);
     if !fits_layout_box {
         return Ok(None);
@@ -655,6 +670,7 @@ fn render_mask_collision_attempt<'a, F>(
     text: &str,
     layout_box: LayoutBox,
     font_size: f32,
+    preserve_explicit_lines: bool,
     mask: &GrayImage,
     bubble_id: u8,
     render_candidate: &mut F,
@@ -662,7 +678,13 @@ fn render_mask_collision_attempt<'a, F>(
 where
     F: FnMut(&LayoutRun<'a>) -> Result<RenderedTextCandidate>,
 {
-    let layout = run_collision_layout_at(layout_builder, text, layout_box, font_size)?;
+    let layout = run_collision_layout_at(
+        layout_builder,
+        text,
+        layout_box,
+        font_size,
+        preserve_explicit_lines,
+    )?;
     let fits_layout_box = layout_fits_collision_attempt(&layout, layout_box);
     let candidate = render_candidate(&layout)?;
     let valid = fits_layout_box
@@ -680,13 +702,33 @@ fn run_collision_layout_at<'a>(
     text: &str,
     layout_box: LayoutBox,
     font_size: f32,
+    preserve_explicit_lines: bool,
 ) -> Result<LayoutRun<'a>> {
-    layout_builder
-        .clone()
-        .with_font_size(font_size.max(1.0))
-        .with_max_width(layout_box.width.max(1.0))
-        .with_max_height(layout_box.height.max(1.0))
-        .run(text)
+    run_layout_at(
+        layout_builder,
+        text,
+        layout_box,
+        font_size,
+        preserve_explicit_lines,
+    )
+}
+
+fn run_layout_at<'a>(
+    layout_builder: &TextLayout<'a>,
+    text: &str,
+    layout_box: LayoutBox,
+    font_size: f32,
+    preserve_explicit_lines: bool,
+) -> Result<LayoutRun<'a>> {
+    let layout = layout_builder.clone().with_font_size(font_size.max(1.0));
+    if preserve_explicit_lines {
+        layout.without_hyphenation().run(text)
+    } else {
+        layout
+            .with_max_width(layout_box.width.max(1.0))
+            .with_max_height(layout_box.height.max(1.0))
+            .run(text)
+    }
 }
 
 fn layout_fits_collision_attempt(layout: &LayoutRun<'_>, layout_box: LayoutBox) -> bool {
@@ -1142,6 +1184,7 @@ mod tests {
             None,
             12.0,
             18.0,
+            false,
             &mask,
             1,
             &mut render_candidate,
@@ -1198,6 +1241,123 @@ mod tests {
 
         assert_eq!(layout_boxes[0].layout_box, seed_layout_box(&blocks[0]));
         assert_eq!(layout_boxes[0].bubble_id, None);
+    }
+
+    fn has_synthetic_hyphen(layout: &LayoutRun<'_>) -> bool {
+        layout.lines.iter().any(|line| {
+            line.glyphs
+                .iter()
+                .any(|glyph| glyph.cluster as usize == line.range.end)
+        })
+    }
+
+    #[test]
+    fn preserves_explicit_lines_in_horizontal_and_vertical_fit_paths() -> Result<()> {
+        let font = any_system_font();
+        let cases = [
+            (WritingMode::Horizontal, "antidisestablishmentarianism", 1),
+            (
+                WritingMode::Horizontal,
+                "first explicit line\nsecond explicit line",
+                2,
+            ),
+            (WritingMode::VerticalRl, "VERTICALTEXT", 1),
+            (WritingMode::VerticalRl, "FIRST\nSECOND", 2),
+        ];
+        for (mode, text, expected_lines) in cases {
+            let builder = TextLayout::new(&font, None).with_writing_mode(mode);
+            let layout_box = LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 140.0,
+                height: 140.0,
+            };
+            let layout = fit_font_size(&builder, text, layout_box, None, 6.0, 24.0, true)?;
+            assert_eq!(layout.lines.len(), expected_lines, "mode={mode:?}");
+            assert!(!has_synthetic_hyphen(&layout), "mode={mode:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_explicit_lines_in_horizontal_and_vertical_collision_paths() -> Result<()> {
+        let font = any_system_font();
+        let cases = [
+            (WritingMode::Horizontal, "antidisestablishmentarianism", 1),
+            (
+                WritingMode::Horizontal,
+                "first explicit line\nsecond explicit line",
+                2,
+            ),
+            (WritingMode::VerticalRl, "VERTICALTEXT", 1),
+            (WritingMode::VerticalRl, "FIRST\nSECOND", 2),
+        ];
+        for (mode, text, expected_lines) in cases {
+            let builder = TextLayout::new(&font, None).with_writing_mode(mode);
+            let layout = run_collision_layout_at(
+                &builder,
+                text,
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 140.0,
+                    height: 140.0,
+                },
+                12.0,
+                true,
+            )?;
+            assert_eq!(layout.lines.len(), expected_lines, "mode={mode:?}");
+            assert!(!has_synthetic_hyphen(&layout), "mode={mode:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_explicit_lines_when_bubble_mask_is_locked_to_han_box() -> Result<()> {
+        let mut mask = GrayImage::from_pixel(200, 200, Luma([0u8]));
+        paint_rect(&mut mask, 20, 20, 180, 180, 1);
+        let index = BubbleIndex::new(mask);
+        let mut locked = block(70.0, 70.0, 30.0, 40.0, "FIRST\nSECOND");
+        locked.lock_layout_box = true;
+        locked.preserve_explicit_lines = true;
+        let blocks = vec![locked];
+
+        let resolved = resolve_layout_boxes(&blocks, Some(&index));
+        let font = any_system_font();
+        let layout = fit_font_size(
+            &TextLayout::new(&font, None),
+            &blocks[0].translation,
+            resolved[0].layout_box,
+            None,
+            6.0,
+            18.0,
+            blocks[0].preserve_explicit_lines,
+        )?;
+
+        assert_eq!(resolved[0].layout_box, seed_layout_box(&blocks[0]));
+        assert_eq!(resolved[0].bubble_id, None);
+        assert_eq!(layout.lines.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn preserves_explicit_lines_keeps_all_text_soft_wrapping() -> Result<()> {
+        let font = any_system_font();
+        let builder = TextLayout::new(&font, None).with_writing_mode(WritingMode::Horizontal);
+        let layout = run_layout_at(
+            &builder,
+            "antidisestablishmentarianism",
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 200.0,
+            },
+            24.0,
+            false,
+        )?;
+        assert!(layout.lines.len() > 1);
+        Ok(())
     }
 
     #[test]
@@ -1262,6 +1422,7 @@ mod tests {
             source_direction: None,
             rendered_direction: None,
             lock_layout_box: false,
+            preserve_explicit_lines: false,
         }
     }
 
