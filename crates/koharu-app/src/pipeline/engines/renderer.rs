@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use image::{DynamicImage, imageops};
 use koharu_core::{
     ImageRole, MaskRole, NodeDataPatch, NodeId, NodePatch, Op, PageId, Scene, TextDataPatch,
     TextStyle, Transform,
@@ -24,7 +25,7 @@ use crate::pipeline::engines::support::{
     EligibleTextLine, eligible_lines_for_page, find_image_node, find_mask_node, image_dimensions,
     load_source_image, text_nodes, upsert_image_blob,
 };
-use crate::renderer::{PageRenderOptions, RenderBlockInput};
+use crate::renderer::{PageRenderOptions, RenderBlockInput, RenderOutput, RenderedBlock};
 
 pub struct Model;
 
@@ -51,7 +52,8 @@ impl Engine for Model {
             None => None,
         };
 
-        let (inputs, mut ops) = build_render_inputs(
+        let has_text_nodes = !text_nodes(ctx.scene, ctx.page).is_empty();
+        let (inputs, mutable_ids, mut ops) = build_render_inputs(
             ctx.scene,
             ctx.page,
             ctx.options.source_text_policy,
@@ -73,19 +75,30 @@ impl Engine for Model {
         // `render_page` is synchronous and CPU-bound. It runs inline on the
         // current tokio worker; for multi-page jobs the driver parallelises
         // across pages via separate `run()` calls.
-        let output = ctx.renderer.render_page(
+        let output = dispatch_render_page(
+            ctx.options.source_text_policy,
+            has_text_nodes,
             &base,
             brush.as_ref(),
-            bubble.as_ref(),
-            w,
-            h,
             &inputs,
-            &page_opts,
+            || {
+                ctx.renderer.render_page(
+                    &base,
+                    brush.as_ref(),
+                    bubble.as_ref(),
+                    w,
+                    h,
+                    &inputs,
+                    &page_opts,
+                )
+            },
         )?;
 
         // Upload sprites + compose ops.
-        ops.reserve(output.blocks.len() + 1);
-        for block_out in output.blocks {
+        let mut blocks = output.blocks;
+        retain_mutable_blocks(&mut blocks, &mutable_ids);
+        ops.reserve(blocks.len() + 1);
+        for block_out in blocks {
             let sprite_ref = ctx.blobs.put_raw(&block_out.sprite)?;
             let existing_style = inputs
                 .iter()
@@ -129,12 +142,37 @@ impl Engine for Model {
     }
 }
 
+fn dispatch_render_page(
+    policy: SourceTextPolicy,
+    has_text_nodes: bool,
+    base: &DynamicImage,
+    brush: Option<&DynamicImage>,
+    inputs: &[RenderBlockInput],
+    render: impl FnOnce() -> Result<RenderOutput>,
+) -> Result<RenderOutput> {
+    if policy == SourceTextPolicy::HanOnly && has_text_nodes && inputs.is_empty() {
+        let mut canvas = base.to_rgba8();
+        if let Some(brush) = brush {
+            imageops::overlay(&mut canvas, &brush.to_rgba8(), 0, 0);
+        }
+        return Ok(RenderOutput {
+            final_render: DynamicImage::ImageRgba8(canvas),
+            blocks: Vec::new(),
+        });
+    }
+    render()
+}
+
+fn retain_mutable_blocks(blocks: &mut Vec<RenderedBlock>, mutable_ids: &[NodeId]) {
+    blocks.retain(|block| mutable_ids.contains(&block.node_id));
+}
+
 fn build_render_inputs(
     scene: &Scene,
     page: PageId,
     policy: SourceTextPolicy,
     allowed_ids: Option<&[NodeId]>,
-) -> Result<(Vec<RenderBlockInput>, Vec<Op>)> {
+) -> Result<(Vec<RenderBlockInput>, Vec<NodeId>, Vec<Op>)> {
     if policy == SourceTextPolicy::AllText {
         let inputs = text_nodes(scene, page)
             .into_iter()
@@ -155,8 +193,9 @@ fn build_render_inputs(
                     preserve_explicit_lines: false,
                 })
             })
-            .collect();
-        return Ok((inputs, Vec::new()));
+            .collect::<Vec<_>>();
+        let mutable_ids = inputs.iter().map(|input| input.node_id).collect();
+        return Ok((inputs, mutable_ids, Vec::new()));
     }
 
     let mut lines_by_node: HashMap<NodeId, Vec<EligibleTextLine>> = HashMap::new();
@@ -165,31 +204,35 @@ fn build_render_inputs(
     }
 
     let mut inputs = Vec::new();
+    let mut mutable_ids = Vec::new();
     let mut cleanup = Vec::new();
     for (node_id, _, text) in text_nodes(scene, page) {
-        if allowed_ids.is_some_and(|ids| !ids.contains(&node_id)) {
-            continue;
-        }
+        let in_scope = allowed_ids.is_none_or(|ids| ids.contains(&node_id));
         let mut lines = lines_by_node.remove(&node_id).unwrap_or_default();
         if lines.is_empty() {
-            cleanup.push(render_cleanup_op(page, node_id, true));
+            if in_scope {
+                cleanup.push(render_cleanup_op(page, node_id, true));
+            }
             continue;
         }
         lines.sort_by_key(|line| line.line_index);
 
-        let translation = text
-            .translation
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Han translation missing for node {node_id}"))?;
+        let Some(translation) = text.translation.as_deref() else {
+            anyhow::ensure!(!in_scope, "Han translation missing for node {node_id}");
+            continue;
+        };
         let translated_lines = translation
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty())
             .collect::<Vec<_>>();
-        anyhow::ensure!(
-            translated_lines.len() == lines.len(),
-            "Han translation line count mismatch for node {node_id}"
-        );
+        if translated_lines.len() != lines.len() {
+            anyhow::ensure!(
+                !in_scope,
+                "Han translation line count mismatch for node {node_id}"
+            );
+            continue;
+        }
 
         let mut left = f32::INFINITY;
         let mut top = f32::INFINITY;
@@ -237,9 +280,12 @@ fn build_render_inputs(
             lock_layout_box: text.lock_layout_box || lines.len() < source_line_count,
             preserve_explicit_lines: true,
         });
-        cleanup.push(render_cleanup_op(page, node_id, false));
+        if in_scope {
+            mutable_ids.push(node_id);
+            cleanup.push(render_cleanup_op(page, node_id, false));
+        }
     }
-    Ok((inputs, cleanup))
+    Ok((inputs, mutable_ids, cleanup))
 }
 
 fn render_cleanup_op(page: PageId, node_id: NodeId, clear_translation: bool) -> Op {
@@ -298,7 +344,10 @@ fn render_target_language_tag(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
+    use image::{DynamicImage, Rgba, RgbaImage};
     use koharu_core::{BlobRef, Node, NodeId, NodeKind, Page, Scene, TextData, TextDirection};
 
     use crate::config::SourceTextPolicy;
@@ -410,11 +459,13 @@ mod tests {
         ]);
         let allowed = [mixed, english, unsupported];
 
-        let (inputs, mut cleanup) =
+        let (inputs, mutable_ids, mut cleanup) =
             build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, Some(&allowed)).unwrap();
 
-        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs.len(), 2);
         assert_eq!(inputs[0].node_id, mixed);
+        assert_eq!(inputs[1].node_id, outside);
+        assert_eq!(mutable_ids, vec![mixed]);
         assert_eq!(
             (
                 inputs[0].transform.x,
@@ -476,10 +527,11 @@ mod tests {
         text.lock_layout_box = true;
         let (scene, page) = renderer_scene(vec![node]);
 
-        let (inputs, cleanup) =
+        let (inputs, mutable_ids, cleanup) =
             build_render_inputs(&scene, page, SourceTextPolicy::AllText, Some(&[])).unwrap();
 
         assert_eq!(inputs.len(), 1);
+        assert_eq!(mutable_ids, vec![id]);
         assert_eq!(
             (
                 inputs[0].transform.x,
@@ -499,5 +551,124 @@ mod tests {
         assert!(inputs[0].lock_layout_box);
         assert!(!inputs[0].preserve_explicit_lines);
         assert!(cleanup.is_empty());
+    }
+
+    #[test]
+    fn han_only_renderer_scoped_composite_keeps_outside_translations() -> Result<()> {
+        let selected = NodeId::new();
+        let outside = NodeId::new();
+        let selected_node = renderer_node(selected, "中文一", Some("One"), None);
+        let mut outside_node = renderer_node(outside, "中文二", Some("Two"), None);
+        outside_node.transform.x = 60.0;
+        outside_node.transform.y = 60.0;
+        let (scene, page) = renderer_scene(vec![selected_node, outside_node]);
+
+        let (inputs, mutable_ids, cleanup) =
+            build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, Some(&[selected]))?;
+        assert_eq!(
+            inputs.iter().map(|input| input.node_id).collect::<Vec<_>>(),
+            vec![selected, outside]
+        );
+        assert_eq!(mutable_ids, vec![selected]);
+        assert_eq!(cleanup.len(), 1);
+
+        let base =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([255, 255, 255, 255])));
+        let calls = Cell::new(0);
+        let output = dispatch_render_page(
+            SourceTextPolicy::HanOnly,
+            true,
+            &base,
+            None,
+            &inputs,
+            || {
+                calls.set(calls.get() + 1);
+                let mut final_render = base.to_rgba8();
+                for (index, input) in inputs.iter().enumerate() {
+                    let color = if index == 0 {
+                        Rgba([255, 0, 0, 255])
+                    } else {
+                        Rgba([0, 0, 255, 255])
+                    };
+                    final_render.put_pixel(
+                        input.transform.x as u32,
+                        input.transform.y as u32,
+                        color,
+                    );
+                }
+                Ok(RenderOutput {
+                    final_render: DynamicImage::ImageRgba8(final_render),
+                    blocks: inputs
+                        .iter()
+                        .map(|input| RenderedBlock {
+                            node_id: input.node_id,
+                            sprite: DynamicImage::new_rgba8(1, 1),
+                            rendered_direction: TextDirection::Horizontal,
+                            expanded_transform: None,
+                        })
+                        .collect(),
+                })
+            },
+        )?;
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            output.final_render.to_rgba8().get_pixel(10, 10).0,
+            [255, 0, 0, 255]
+        );
+        assert_eq!(
+            output.final_render.to_rgba8().get_pixel(60, 60).0,
+            [0, 0, 255, 255]
+        );
+        let mut blocks = output.blocks;
+        retain_mutable_blocks(&mut blocks, &mutable_ids);
+        let updated = blocks.iter().map(|block| block.node_id).collect::<Vec<_>>();
+        assert_eq!(updated, vec![selected]);
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_renderer_empty_text_targets_skip_backend_but_textless_renders() -> Result<()> {
+        let base = DynamicImage::ImageRgba8(RgbaImage::from_pixel(4, 4, Rgba([10, 20, 30, 255])));
+
+        for node in [
+            renderer_node(NodeId::new(), "English", Some("old"), None),
+            renderer_node(NodeId::new(), "English\n中文", Some("old"), None),
+        ] {
+            let (scene, page) = renderer_scene(vec![node]);
+            let (inputs, mutable_ids, cleanup) =
+                build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
+            assert!(inputs.is_empty());
+            assert!(mutable_ids.is_empty());
+            assert_eq!(cleanup.len(), 1);
+
+            let calls = Cell::new(0);
+            let output = dispatch_render_page(
+                SourceTextPolicy::HanOnly,
+                true,
+                &base,
+                None,
+                &inputs,
+                || {
+                    calls.set(calls.get() + 1);
+                    unreachable!("empty Han-only targets must skip the renderer")
+                },
+            )?;
+            assert_eq!(calls.get(), 0);
+            assert_eq!(output.final_render.to_rgba8(), base.to_rgba8());
+        }
+
+        let calls = Cell::new(0);
+        let output =
+            dispatch_render_page(SourceTextPolicy::HanOnly, false, &base, None, &[], || {
+                calls.set(calls.get() + 1);
+                Ok(RenderOutput {
+                    final_render: base.clone(),
+                    blocks: Vec::new(),
+                })
+            })?;
+        assert_eq!(calls.get(), 1);
+        assert_eq!(output.final_render.to_rgba8(), base.to_rgba8());
+        Ok(())
     }
 }
