@@ -447,6 +447,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     fn source_id_includes_platform() {
         let id = source_id().unwrap();
         assert!(id.contains("cuda"));
