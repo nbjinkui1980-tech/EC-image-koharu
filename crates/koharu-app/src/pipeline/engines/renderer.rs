@@ -671,4 +671,36 @@ mod tests {
         assert_eq!(output.final_render.to_rgba8(), base.to_rgba8());
         Ok(())
     }
+
+    #[test]
+    fn legacy_brush_layer_still_composites_without_editor_ui() -> Result<()> {
+        let base = DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 2, Rgba([10, 20, 30, 255])));
+        let mut brush = RgbaImage::from_pixel(2, 2, Rgba([0, 0, 0, 0]));
+        brush.put_pixel(1, 1, Rgba([200, 10, 20, 255]));
+        let brush = DynamicImage::ImageRgba8(brush);
+        let calls = Cell::new(0);
+
+        let output = dispatch_render_page(
+            SourceTextPolicy::HanOnly,
+            true,
+            &base,
+            Some(&brush),
+            &[],
+            || {
+                calls.set(calls.get() + 1);
+                unreachable!("empty Han targets must not call the renderer")
+            },
+        )?;
+
+        assert_eq!(calls.get(), 0);
+        assert_eq!(
+            output.final_render.to_rgba8().get_pixel(0, 0).0,
+            [10, 20, 30, 255]
+        );
+        assert_eq!(
+            output.final_render.to_rgba8().get_pixel(1, 1).0,
+            [200, 10, 20, 255]
+        );
+        Ok(())
+    }
 }

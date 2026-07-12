@@ -458,4 +458,27 @@ mod tests {
                 && engine.produces.iter().map(String::as_str).eq(["TextBoxes"])
         }));
     }
+
+    #[test]
+    fn registry_retains_all_production_engine_ids() {
+        for id in [
+            "anime-text",
+            "aot-inpainting",
+            "speech-bubble-segmentation",
+            "comic-text-bubble-detector",
+            "comic-text-detector",
+            "comic-text-detector-seg",
+            "flux2-klein",
+            "lama-manga",
+            "llm",
+            "manga-ocr",
+            "mit48px-ocr",
+            "paddle-ocr-vl-1.6",
+            "pp-doclayout-v3",
+            "koharu-renderer",
+            "yuzumarker-font-detection",
+        ] {
+            assert!(Registry::find(id).is_ok(), "missing production engine {id}");
+        }
+    }
 }

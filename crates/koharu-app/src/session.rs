@@ -229,7 +229,8 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
     use koharu_core::{
-        Node, NodeId, NodeKind, Op, Page, PageId, TextData, TextShaderEffect, TextStyle, Transform,
+        BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeId, NodeKind, Op, Page,
+        PageId, TextData, TextShaderEffect, TextStyle, Transform,
     };
     use tempfile::tempdir;
 
@@ -256,6 +257,117 @@ mod tests {
         let session = ProjectSession::open(&path).unwrap();
         assert_eq!(session.scene.read().pages.len(), 1);
         assert!(session.scene.read().pages.contains_key(&page_id));
+    }
+
+    #[test]
+    fn legacy_optional_layers_round_trip_before_scope_reduction() {
+        let (_tmp, path) = tmp_dir();
+        let page_id: PageId;
+        let expected = [
+            BlobRef::new("source"),
+            BlobRef::new("rendered"),
+            BlobRef::new("custom"),
+            BlobRef::new("segment"),
+            BlobRef::new("bubble"),
+            BlobRef::new("brush"),
+            BlobRef::new("sprite"),
+        ];
+        {
+            let session = ProjectSession::create(&path, "legacy-layers").unwrap();
+            let mut page = Page::new("p1", 64, 64);
+            page_id = page.id;
+            for (role, blob) in [
+                (ImageRole::Source, expected[0].clone()),
+                (ImageRole::Rendered, expected[1].clone()),
+                (ImageRole::Custom, expected[2].clone()),
+            ] {
+                let id = NodeId::new();
+                page.nodes.insert(
+                    id,
+                    Node {
+                        id,
+                        transform: Transform::default(),
+                        visible: true,
+                        kind: NodeKind::Image(ImageData {
+                            role,
+                            blob,
+                            opacity: 1.0,
+                            natural_width: 64,
+                            natural_height: 64,
+                            name: None,
+                        }),
+                    },
+                );
+            }
+            for (role, blob) in [
+                (MaskRole::Segment, expected[3].clone()),
+                (MaskRole::Bubble, expected[4].clone()),
+                (MaskRole::BrushInpaint, expected[5].clone()),
+            ] {
+                let id = NodeId::new();
+                page.nodes.insert(
+                    id,
+                    Node {
+                        id,
+                        transform: Transform::default(),
+                        visible: true,
+                        kind: NodeKind::Mask(MaskData { role, blob }),
+                    },
+                );
+            }
+            let text_id = NodeId::new();
+            page.nodes.insert(
+                text_id,
+                Node {
+                    id: text_id,
+                    transform: Transform::default(),
+                    visible: true,
+                    kind: NodeKind::Text(TextData {
+                        sprite: Some(expected[6].clone()),
+                        ..Default::default()
+                    }),
+                },
+            );
+            session.apply(Op::AddPage { page, at: 0 }).unwrap();
+            session.compact().unwrap();
+        }
+
+        let session = ProjectSession::open(&path).unwrap();
+        let page = session.scene.read().pages.get(&page_id).unwrap().clone();
+        let mut blobs = page
+            .nodes
+            .values()
+            .filter_map(|node| match &node.kind {
+                NodeKind::Image(data) => Some(data.blob.clone()),
+                NodeKind::Mask(data) => Some(data.blob.clone()),
+                NodeKind::Text(data) => data.sprite.clone(),
+            })
+            .collect::<Vec<_>>();
+        blobs.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut expected_blobs = expected.to_vec();
+        expected_blobs.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(blobs, expected_blobs);
+        for (role, blob) in [
+            (ImageRole::Source, &expected[0]),
+            (ImageRole::Rendered, &expected[1]),
+            (ImageRole::Custom, &expected[2]),
+        ] {
+            assert!(page.nodes.values().any(
+                |node| matches!(&node.kind, NodeKind::Image(data) if data.role == role && &data.blob == blob)
+            ));
+        }
+        for (role, blob) in [
+            (MaskRole::Segment, &expected[3]),
+            (MaskRole::Bubble, &expected[4]),
+            (MaskRole::BrushInpaint, &expected[5]),
+        ] {
+            assert!(page.nodes.values().any(
+                |node| matches!(&node.kind, NodeKind::Mask(data) if data.role == role && &data.blob == blob)
+            ));
+        }
+        assert!(page.nodes.values().any(
+            |node| matches!(&node.kind, NodeKind::Text(data) if data.sprite.as_ref() == Some(&expected[6]))
+        ));
     }
 
     #[test]
