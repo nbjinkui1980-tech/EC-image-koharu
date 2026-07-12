@@ -101,7 +101,6 @@
     "title": "레이어",
     "rendered": "렌더링된 텍스트",
     "textBlocks": "텍스트 블록",
-    "brush": "브러시 레이어",
     "inpainted": "인페인트 이미지",
     "mask": "세그멘테이션 마스크",
     "base": "원본 이미지"
@@ -116,7 +115,6 @@
   "mask": {
     "showSegmentationMask": "세그멘테이션 마스크 표시",
     "showInpainted": "인페인트 이미지 표시",
-    "showBrushLayer": "브러시 레이어 표시",
     "showRendered": "렌더링된 텍스트 표시",
     "showTextBlocks": "텍스트 블록 표시",
     "inpaint": "인페인트",
@@ -270,15 +268,12 @@
     "canvas": "캔버스"
   },
   "toolbar": {
-    "brush": "브러시",
     "eraser": "지우개",
-    "brushSize": "브러시 크기",
-    "brushColor": "브러시 색상"
+    "brushSize": "브러시 크기"
   },
   "toolRail": {
     "select": "선택",
     "block": "블록",
-    "brush": "브러시",
     "repairBrush": "복구 브러시",
     "eraser": "지우개"
   },

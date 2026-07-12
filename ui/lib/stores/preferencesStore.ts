@@ -8,7 +8,6 @@ import { getPlatform } from '@/lib/shortcutUtils'
 type PreferencesState = {
   brushConfig: {
     size: number
-    color: string
   }
   setBrushConfig: (config: Partial<PreferencesState['brushConfig']>) => void
   defaultFont?: string
@@ -24,7 +23,6 @@ type PreferencesState = {
   shortcuts: {
     select: string
     block: string
-    brush: string
     eraser: string
     repairBrush: string
     increaseBrushSize: string
@@ -40,13 +38,11 @@ type PreferencesState = {
 const initialPreferences = {
   brushConfig: {
     size: 36,
-    color: '#ffffff',
   },
   favoriteFonts: [],
   shortcuts: {
     select: 'V',
     block: 'M',
-    brush: 'B',
     eraser: 'E',
     repairBrush: 'R',
     increaseBrushSize: ']',
@@ -97,7 +93,7 @@ export const usePreferencesStore = create<PreferencesState>()(
     }),
     {
       name: 'koharu-config',
-      version: 8,
+      version: 9,
       migrate: (persisted: any, version: number) => {
         if (version < 2 && persisted) {
           delete persisted.localLlm
@@ -131,6 +127,12 @@ export const usePreferencesStore = create<PreferencesState>()(
         }
         if (version < 8 && persisted) {
           delete persisted.customPipeline
+        }
+        if (version < 9 && persisted?.shortcuts) {
+          delete persisted.shortcuts.brush
+        }
+        if (version < 9 && persisted?.brushConfig) {
+          delete persisted.brushConfig.color
         }
         return persisted
       },

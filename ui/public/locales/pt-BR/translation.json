@@ -96,7 +96,6 @@
     "title": "Camadas",
     "rendered": "Texto renderizado",
     "textBlocks": "Blocos de texto",
-    "brush": "Camada de pincel",
     "inpainted": "Inpainting",
     "mask": "Máscara de segmentação",
     "base": "Imagem original"
@@ -111,7 +110,6 @@
   "mask": {
     "showSegmentationMask": "Mostrar máscara de segmentação",
     "showInpainted": "Mostrar imagem com inpainting",
-    "showBrushLayer": "Mostrar camada de pincel",
     "showRendered": "Mostrar texto renderizado",
     "showTextBlocks": "Mostrar blocos de texto",
     "inpaint": "Inpaint",
@@ -249,15 +247,12 @@
     "canvas": "Tela"
   },
   "toolbar": {
-    "brush": "Pincel",
     "eraser": "Borracha",
-    "brushSize": "Tamanho do pincel",
-    "brushColor": "Cor do pincel"
+    "brushSize": "Tamanho do pincel"
   },
   "toolRail": {
     "select": "Selecionar",
     "block": "Bloco",
-    "brush": "Pincel",
     "repairBrush": "Pincel de reparo",
     "eraser": "Borracha"
   },

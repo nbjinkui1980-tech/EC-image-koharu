@@ -95,7 +95,6 @@
     "title": "Katmanlar",
     "rendered": "Render Edilmiş Metin",
     "textBlocks": "Metin Blokları",
-    "brush": "Fırça Katmanı",
     "inpainted": "İnpaint",
     "mask": "Segmentasyon Maskesi",
     "base": "Özgün Görsel"
@@ -110,7 +109,6 @@
   "mask": {
     "showSegmentationMask": "Segmentasyon maskesini göster",
     "showInpainted": "İnpaint görselini göster",
-    "showBrushLayer": "Fırça katmanını göster",
     "showRendered": "Render edilmiş metni göster",
     "showTextBlocks": "Metin bloklarını göster",
     "inpaint": "İnpaint",
@@ -248,15 +246,12 @@
     "canvas": "Tuval"
   },
   "toolbar": {
-    "brush": "Fırça",
     "eraser": "Silgi",
-    "brushSize": "Fırça boyutu",
-    "brushColor": "Fırça rengi"
+    "brushSize": "Fırça boyutu"
   },
   "toolRail": {
     "select": "Seç",
     "block": "Blok",
-    "brush": "Fırça",
     "repairBrush": "Onarım fırçası",
     "eraser": "Silgi"
   },

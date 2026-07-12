@@ -4,7 +4,6 @@ import { AnimatePresence, motion } from 'motion/react'
 import * as React from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { ColorPicker } from '@/components/ui/color-picker'
 import { Input } from '@/components/ui/input'
 import { Slider } from '@/components/ui/slider'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -12,7 +11,7 @@ import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 export function SubToolRail() {
   const mode = useEditorUiStore((state) => state.mode)
-  const isBrushTool = mode === 'brush' || mode === 'eraser' || mode === 'repairBrush'
+  const isBrushTool = mode === 'eraser' || mode === 'repairBrush'
 
   const brushConfig = usePreferencesStore((state) => state.brushConfig)
   const setBrushConfig = usePreferencesStore((state) => state.setBrushConfig)
@@ -70,42 +69,6 @@ export function SubToolRail() {
                 </div>
               </div>
             </div>
-
-            {/* Color Picker Section */}
-            <AnimatePresence initial={false}>
-              {mode === 'brush' && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.2, ease: 'easeInOut' }}
-                  className='overflow-hidden border-t border-border/30 pt-2'
-                >
-                  <div className='flex items-center justify-between'>
-                    <p
-                      id='brush-color-label'
-                      className='text-[11px] font-medium text-muted-foreground'
-                    >
-                      {t('toolbar.brushColor')}
-                    </p>
-                    <div className='flex items-center gap-2'>
-                      <span
-                        className='font-mono text-[10px] text-muted-foreground uppercase'
-                        aria-hidden='true'
-                      >
-                        {brushConfig.color}
-                      </span>
-                      <ColorPicker
-                        value={brushConfig.color}
-                        onChange={(color) => setBrushConfig({ color })}
-                        className='size-5 rounded-md'
-                        aria-labelledby='brush-color-label'
-                      />
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
           </div>
         </motion.div>
       )}

@@ -7,7 +7,6 @@ import {
   ALargeSmallIcon,
   ContrastIcon,
   BandageIcon,
-  PaintbrushIcon,
 } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useTranslation } from 'react-i18next'
@@ -36,8 +35,6 @@ export function LayersPanel() {
   const setShowInpaintedImage = useEditorUiStore((s) => s.setShowInpaintedImage)
   const showSegmentationMask = useEditorUiStore((s) => s.showSegmentationMask)
   const setShowSegmentationMask = useEditorUiStore((s) => s.setShowSegmentationMask)
-  const showBrushLayer = useEditorUiStore((s) => s.showBrushLayer)
-  const setShowBrushLayer = useEditorUiStore((s) => s.setShowBrushLayer)
   const showTextBlocksOverlay = useEditorUiStore((s) => s.showTextBlocksOverlay)
   const setShowTextBlocksOverlay = useEditorUiStore((s) => s.setShowTextBlocksOverlay)
   const showRenderedImage = useEditorUiStore((s) => s.showRenderedImage)
@@ -47,7 +44,6 @@ export function LayersPanel() {
   const hasInpainted = !!(page && findImageBlob(page, 'inpainted'))
   const hasSource = !!(page && findImageBlob(page, 'source'))
   const hasSegment = !!(page && findMaskBlob(page, 'segment'))
-  const hasBrush = !!(page && findMaskBlob(page, 'brushInpaint'))
   // Silence warning about unused epoch dep — it's the invalidation trigger.
   void sceneEpoch
 
@@ -67,14 +63,6 @@ export function LayersPanel() {
       visible: showTextBlocksOverlay,
       setVisible: setShowTextBlocksOverlay,
       hasContent: textNodes.length > 0,
-    },
-    {
-      id: 'brush',
-      labelKey: 'layers.brush',
-      icon: PaintbrushIcon,
-      visible: showBrushLayer,
-      setVisible: setShowBrushLayer,
-      hasContent: hasBrush,
     },
     {
       id: 'inpainted',

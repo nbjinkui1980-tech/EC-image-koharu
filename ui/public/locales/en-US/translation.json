@@ -112,7 +112,6 @@
     "title": "Layers",
     "rendered": "Rendered Text",
     "textBlocks": "Text Blocks",
-    "brush": "Brush Layer",
     "inpainted": "Inpainted",
     "mask": "Segmentation Mask",
     "base": "Original Image"
@@ -127,7 +126,6 @@
   "mask": {
     "showSegmentationMask": "Show segmentation mask",
     "showInpainted": "Show inpainted image",
-    "showBrushLayer": "Show brush layer",
     "showRendered": "Show rendered text",
     "showTextBlocks": "Show text blocks",
     "inpaint": "Inpaint",
@@ -281,15 +279,12 @@
     "canvas": "Canvas"
   },
   "toolbar": {
-    "brush": "Brush",
     "eraser": "Eraser",
-    "brushSize": "Brush size",
-    "brushColor": "Brush color"
+    "brushSize": "Brush size"
   },
   "toolRail": {
     "select": "Select",
     "block": "Block",
-    "brush": "Brush",
     "repairBrush": "Repair brush",
     "eraser": "Eraser"
   },

@@ -16,10 +16,7 @@ export function useBrushCursor(
   const isInsideRef = useRef(false)
   const brushSize = usePreferencesStore((state) => state.brushConfig.size)
 
-  const isBrushMode = useMemo(
-    () => mode === 'brush' || mode === 'repairBrush' || mode === 'eraser',
-    [mode],
-  )
+  const isBrushMode = useMemo(() => mode === 'repairBrush' || mode === 'eraser', [mode])
 
   const isBrushModeRef = useRef(isBrushMode)
   useEffect(() => {

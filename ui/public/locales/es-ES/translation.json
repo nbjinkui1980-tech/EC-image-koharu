@@ -95,7 +95,6 @@
     "title": "Capas",
     "rendered": "Texto renderizado",
     "textBlocks": "Bloques de texto",
-    "brush": "Capa de pincel",
     "inpainted": "Rellenado",
     "mask": "Máscara de segmentación",
     "base": "Imagen original"
@@ -110,7 +109,6 @@
   "mask": {
     "showSegmentationMask": "Mostrar máscara de segmentación",
     "showInpainted": "Mostrar imagen rellenada",
-    "showBrushLayer": "Mostrar capa de pincel",
     "showRendered": "Mostrar texto renderizado",
     "showTextBlocks": "Mostrar bloques de texto",
     "inpaint": "Rellenar",
@@ -248,15 +246,12 @@
     "canvas": "Lienzo"
   },
   "toolbar": {
-    "brush": "Pincel",
     "eraser": "Borrador",
-    "brushSize": "Tamaño del pincel",
-    "brushColor": "Color del pincel"
+    "brushSize": "Tamaño del pincel"
   },
   "toolRail": {
     "select": "Seleccionar",
     "block": "Bloque",
-    "brush": "Pincel",
     "repairBrush": "Pincel de reparación",
     "eraser": "Borrador"
   },

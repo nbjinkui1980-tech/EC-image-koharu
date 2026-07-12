@@ -95,7 +95,6 @@
     "title": "レイヤー",
     "rendered": "レンダー済みテキスト",
     "textBlocks": "テキスト枠",
-    "brush": "ブラシレイヤー",
     "inpainted": "インペイント",
     "mask": "セグメンテーションマスク",
     "base": "元画像"
@@ -110,7 +109,6 @@
   "mask": {
     "showSegmentationMask": "セグメンテーションマスクを表示",
     "showInpainted": "インペイント画像を表示",
-    "showBrushLayer": "ブラシレイヤーを表示",
     "showRendered": "レンダー済みテキストを表示",
     "showTextBlocks": "テキスト枠を表示",
     "inpaint": "インペイント",
@@ -248,15 +246,12 @@
     "canvas": "キャンバス"
   },
   "toolbar": {
-    "brush": "ブラシ",
     "eraser": "消しゴム",
-    "brushSize": "ブラシサイズ",
-    "brushColor": "ブラシカラー"
+    "brushSize": "ブラシサイズ"
   },
   "toolRail": {
     "select": "選択",
     "block": "ブロック",
-    "brush": "ブラシ",
     "repairBrush": "リペアブラシ",
     "eraser": "消しゴム"
   },

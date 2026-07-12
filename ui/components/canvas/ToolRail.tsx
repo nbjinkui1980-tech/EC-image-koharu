@@ -1,6 +1,6 @@
 'use client'
 
-import { MousePointer, VectorSquare, Brush, Bandage, Eraser, PanelLeft } from 'lucide-react'
+import { MousePointer, VectorSquare, Bandage, Eraser, PanelLeft } from 'lucide-react'
 import type { ComponentType } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -29,12 +29,6 @@ const MODES: ModeDefinition[] = [
     value: 'block',
     icon: VectorSquare,
     testId: 'tool-block',
-  },
-  {
-    labelKey: 'toolRail.brush',
-    value: 'brush',
-    icon: Brush,
-    testId: 'tool-brush',
   },
   {
     labelKey: 'toolRail.eraser',

@@ -18,7 +18,6 @@ export function useKeyboardShortcuts() {
     (): Record<string, import('@/lib/types').ToolMode> => ({
       [shortcuts.select]: 'select',
       [shortcuts.block]: 'block',
-      [shortcuts.brush]: 'brush',
       [shortcuts.eraser]: 'eraser',
       [shortcuts.repairBrush]: 'repairBrush',
     }),

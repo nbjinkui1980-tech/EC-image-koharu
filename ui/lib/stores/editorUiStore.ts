@@ -35,12 +35,10 @@ type EditorUiState = {
   // layer visibility
   showSegmentationMask: boolean
   showInpaintedImage: boolean
-  showBrushLayer: boolean
   showRenderedImage: boolean
   showTextBlocksOverlay: boolean
   setShowSegmentationMask: (show: boolean) => void
   setShowInpaintedImage: (show: boolean) => void
-  setShowBrushLayer: (show: boolean) => void
   setShowRenderedImage: (show: boolean) => void
   setShowTextBlocksOverlay: (show: boolean) => void
 
@@ -79,7 +77,6 @@ const initialState = {
   autoFitEnabled: true,
   showSegmentationMask: false,
   showInpaintedImage: false,
-  showBrushLayer: false,
   showRenderedImage: false,
   showTextBlocksOverlay: false,
   mode: 'select' as ToolMode,
@@ -103,25 +100,21 @@ export const useEditorUiStore = create<EditorUiState>((set) => ({
 
   setShowSegmentationMask: (show) => set({ showSegmentationMask: show }),
   setShowInpaintedImage: (show) => set({ showInpaintedImage: show }),
-  setShowBrushLayer: (show) => set({ showBrushLayer: show }),
   setShowRenderedImage: (show) => set({ showRenderedImage: show }),
   setShowTextBlocksOverlay: (show) => set({ showTextBlocksOverlay: show }),
 
   setMode: (mode) => {
     set({ mode })
-    if (mode === 'repairBrush' || mode === 'brush' || mode === 'eraser') {
-      set({ showRenderedImage: false, showInpaintedImage: true })
-    }
-    if (mode === 'repairBrush') {
+    if (mode === 'repairBrush' || mode === 'eraser') {
       set({
-        showTextBlocksOverlay: true,
+        showRenderedImage: false,
+        showInpaintedImage: true,
         showSegmentationMask: true,
-        showBrushLayer: false,
+        ...(mode === 'repairBrush' ? { showTextBlocksOverlay: true } : {}),
       })
-    } else if (mode !== 'eraser') {
+    } else {
       set({ showSegmentationMask: false })
-      if (mode === 'brush') set({ showBrushLayer: true })
-      else if (mode === 'block') set({ showTextBlocksOverlay: true })
+      if (mode === 'block') set({ showTextBlocksOverlay: true })
     }
   },
 
