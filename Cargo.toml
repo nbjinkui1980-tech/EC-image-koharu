@@ -163,6 +163,10 @@ candle-flash-attn = { git = "https://github.com/mayocream/candle", branch = "fla
 ug = { git = "https://github.com/mayocream/ug", branch = "cuda-dynamic-loading" }
 ug-cuda = { git = "https://github.com/mayocream/ug", branch = "cuda-dynamic-loading" }
 
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
 [profile.dev.package.image]
 opt-level = 3
 
