@@ -15,10 +15,6 @@ import {
   MenubarSeparator,
   MenubarShortcut,
   MenubarTrigger,
-  MenubarCheckboxItem,
-  MenubarSub,
-  MenubarSubContent,
-  MenubarSubTrigger,
 } from '@/components/ui/menubar'
 import { useScene } from '@/hooks/useScene'
 import { getConfig, startPipeline } from '@/lib/api'
@@ -56,12 +52,6 @@ type MenuItem = {
   testId?: string
 }
 
-type MenuSection = {
-  label: string
-  items: MenuItem[]
-  triggerTestId?: string
-}
-
 export function MenuBar() {
   const { t } = useTranslation()
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -69,12 +59,6 @@ export function MenuBar() {
   const hasPage = useSelectionStore((s) => s.pageId !== null)
   const hasScene = useScene().scene !== null
   const shortcuts = usePreferencesStore((state) => state.shortcuts)
-  const customPipeline = usePreferencesStore((state) => state.customPipeline)
-  const setCustomPipeline = usePreferencesStore((state) => state.setCustomPipeline)
-  const hasSelectedSteps = useMemo(
-    () => Object.values(customPipeline).some(Boolean),
-    [customPipeline],
-  )
   const isMac = useMemo(() => getPlatform() === 'mac', [])
 
   const requirePageId = () => {
@@ -115,29 +99,6 @@ export function MenuBar() {
     const cfg = await getConfig()
     if (!cfg.pipeline?.inpainter) return
     await startPipeline({ steps: [cfg.pipeline.inpainter], pages: [pageId] })
-  }
-
-  const runCustomPipeline = async (opts: { pageId?: string }) => {
-    const cfg = await getConfig()
-    if (!cfg.pipeline) return
-    const p = cfg.pipeline
-    const prefs = usePreferencesStore.getState()
-    const steps = [
-      ...(prefs.customPipeline.detect ? [p.detector, p.bubble_segmenter, p.font_detector] : []),
-      ...(prefs.customPipeline.ocr ? [p.ocr, p.segmenter] : []),
-      prefs.customPipeline.translator ? p.translator : null,
-      prefs.customPipeline.inpainter ? p.inpainter : null,
-      prefs.customPipeline.renderer ? p.renderer : null,
-    ].filter((s): s is string => !!s)
-    const editor = useEditorUiStore.getState()
-    await startPipeline({
-      steps,
-      pages: opts.pageId ? [opts.pageId] : undefined,
-      targetLanguage: editor.selectedLanguage,
-      systemPrompt: prefs.customSystemPrompt,
-      defaultFont: prefs.defaultFont,
-      readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
-    })
   }
 
   const exportItems: MenuItem[] = [
@@ -335,68 +296,6 @@ export function MenuBar() {
             >
               {t('menu.processAll')}
             </MenubarItem>
-            <MenubarSeparator />
-            <MenubarItem
-              className='text-[13px]'
-              disabled={!hasPage || !hasSelectedSteps}
-              onSelect={() => void runCustomPipeline({ pageId: requirePageId() })}
-            >
-              {t('menu.runCustomCurrent')}
-            </MenubarItem>
-            <MenubarItem
-              className='text-[13px]'
-              disabled={!hasScene || !hasSelectedSteps}
-              onSelect={() => void runCustomPipeline({})}
-            >
-              {t('menu.runCustomAll')}
-            </MenubarItem>
-            <MenubarSub>
-              <MenubarSubTrigger className='text-[13px]'>
-                {t('menu.customPipeline')}
-              </MenubarSubTrigger>
-              <MenubarSubContent className='min-w-48'>
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.detect}
-                  onCheckedChange={(checked) => setCustomPipeline({ detect: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('processing.detect')}
-                </MenubarCheckboxItem>
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.ocr}
-                  onCheckedChange={(checked) => setCustomPipeline({ ocr: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('processing.ocr')}
-                </MenubarCheckboxItem>
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.translator}
-                  onCheckedChange={(checked) => setCustomPipeline({ translator: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('llm.generate')}
-                </MenubarCheckboxItem>
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.inpainter}
-                  onCheckedChange={(checked) => setCustomPipeline({ inpainter: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('mask.inpaint')}
-                </MenubarCheckboxItem>
-                <MenubarCheckboxItem
-                  className='text-[13px]'
-                  checked={customPipeline.renderer}
-                  onCheckedChange={(checked) => setCustomPipeline({ renderer: checked })}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  {t('llm.render')}
-                </MenubarCheckboxItem>
-              </MenubarSubContent>
-            </MenubarSub>
           </MenubarContent>
         </MenubarMenu>
         <MenubarMenu>

@@ -37,10 +37,7 @@
     "github": "GitHub",
     "version": "Versión: {{version}}",
     "versionUnknown": "Versión: Desconocida",
-    "language": "Idioma",
-    "customPipeline": "Pipeline personalizado",
-    "runCustomCurrent": "Ejecutar personalizado (Página actual)",
-    "runCustomAll": "Ejecutar personalizado (Todas las páginas)"
+    "language": "Idioma"
   },
   "welcome": {
     "title": "Koharu",

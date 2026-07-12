@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MenuBar } from '@/components/MenuBar'
 import { getGetConfigQueryKey, getGetSceneJsonQueryKey } from '@/lib/api'
 import { queryClient } from '@/lib/queryClient'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 import { renderWithQuery } from '../helpers'
@@ -19,6 +20,7 @@ vi.mock('@/lib/io/openFiles', () => ({
 
 beforeEach(() => {
   usePreferencesStore.getState().resetPreferences()
+  useEditorUiStore.setState({ selectedLanguage: undefined, readingOrder: 'rtl' })
   // Default: config + scene exist so the menu enables scene-dependent items.
   server.use(
     http.get('/api/v1/scene.json', () =>
@@ -81,56 +83,22 @@ describe('MenuBar', () => {
     expect(close).toHaveAttribute('data-disabled')
   })
 
-  it('custom Detect excludes the OCR segmenter', async () => {
-    usePreferencesStore.setState({
-      customPipeline: {
-        detect: true,
-        ocr: false,
-        translator: false,
-        inpainter: false,
-        renderer: false,
-      },
-    })
-    let request: { steps?: string[] } | undefined
-    server.use(
-      http.get('/api/v1/config', () =>
-        HttpResponse.json({
-          pipeline: {
-            detector: 'detector',
-            segmenter: 'segmenter',
-            bubble_segmenter: 'bubble',
-            font_detector: 'font',
-            ocr: 'ocr',
-            translator: 'translator',
-            inpainter: 'inpainter',
-            renderer: 'renderer',
-          },
-        }),
-      ),
-      http.post('/api/v1/pipelines', async ({ request: incoming }) => {
-        request = (await incoming.json()) as { steps?: string[] }
-        return HttpResponse.json({ jobId: 'job' })
-      }),
-    )
-
+  it('menu_hides_custom_pipeline_controls', async () => {
     renderWithQuery(<MenuBar />)
     await userEvent.click(screen.getByTestId('menu-process-trigger'))
-    await userEvent.click(await screen.findByText('menu.runCustomAll'))
 
-    await waitFor(() => expect(request?.steps).toEqual(['detector', 'bubble', 'font']))
+    expect(screen.queryByText('menu.customPipeline')).not.toBeInTheDocument()
+    expect(screen.queryByText('menu.runCustomCurrent')).not.toBeInTheDocument()
+    expect(screen.queryByText('menu.runCustomAll')).not.toBeInTheDocument()
   })
 
-  it('custom OCR includes the OCR segmenter', async () => {
+  it('full_pipeline_still_uses_all_configured_engines', async () => {
     usePreferencesStore.setState({
-      customPipeline: {
-        detect: false,
-        ocr: true,
-        translator: false,
-        inpainter: false,
-        renderer: false,
-      },
+      customSystemPrompt: 'translate products',
+      defaultFont: 'Inter',
     })
-    let request: { steps?: string[] } | undefined
+    useEditorUiStore.setState({ selectedLanguage: 'de-DE', readingOrder: 'ltr' })
+    let request: Record<string, unknown> | undefined
     server.use(
       http.get('/api/v1/config', () =>
         HttpResponse.json({
@@ -147,15 +115,32 @@ describe('MenuBar', () => {
         }),
       ),
       http.post('/api/v1/pipelines', async ({ request: incoming }) => {
-        request = (await incoming.json()) as { steps?: string[] }
+        request = (await incoming.json()) as Record<string, unknown>
         return HttpResponse.json({ jobId: 'job' })
       }),
     )
 
     renderWithQuery(<MenuBar />)
     await userEvent.click(screen.getByTestId('menu-process-trigger'))
-    await userEvent.click(await screen.findByText('menu.runCustomAll'))
+    await userEvent.click(await screen.findByText('menu.processAll'))
 
-    await waitFor(() => expect(request?.steps).toEqual(['ocr', 'segmenter']))
+    await waitFor(() => {
+      expect(request).toMatchObject({
+        steps: [
+          'detector',
+          'segmenter',
+          'bubble',
+          'font',
+          'ocr',
+          'translator',
+          'inpainter',
+          'renderer',
+        ],
+        targetLanguage: 'de-DE',
+        systemPrompt: 'translate products',
+        defaultFont: 'Inter',
+        readingOrder: 'ltr',
+      })
+    })
   })
 })
