@@ -153,12 +153,6 @@ expression: paths
         ],
     ),
     (
-        "/pages/{id}/image-layers",
-        [
-            "post",
-        ],
-    ),
-    (
         "/pages/{id}/masks/{role}",
         [
             "put",

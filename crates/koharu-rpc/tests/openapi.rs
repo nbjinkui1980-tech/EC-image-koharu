@@ -52,3 +52,12 @@ fn source_text_policy_only_extends_pipeline_config() {
         .expect("StartPipelineRequest properties");
     assert!(!request.contains_key("sourceTextPolicy"));
 }
+
+#[test]
+fn custom_image_layer_route_is_not_exposed() {
+    let (_, spec) = koharu_rpc::api::api();
+    let json = serde_json::to_value(&spec).expect("serialize OpenAPI");
+    let paths = json["paths"].as_object().expect("paths object");
+
+    assert!(!paths.contains_key("/pages/{id}/image-layers"));
+}

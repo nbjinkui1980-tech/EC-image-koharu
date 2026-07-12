@@ -4,7 +4,6 @@ import { fetchApi } from './fetch'
  * Do not edit manually.
  */
 import type {
-  AddImageLayerResponse,
   AppConfig,
   AppEvent,
   CodexAuthStatus,
@@ -410,20 +409,6 @@ export const createPagesFromPaths = async (
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...options?.headers },
     body: JSON.stringify(createPagesFromPathsRequest),
-  })
-}
-
-export const getAddImageLayerUrl = (id: PageId) => {
-  return `/api/v1/pages/${id}/image-layers`
-}
-
-export const addImageLayer = async (
-  id: PageId,
-  options?: RequestInit,
-): Promise<AddImageLayerResponse> => {
-  return fetchApi<AddImageLayerResponse>(getAddImageLayerUrl(id), {
-    ...options,
-    method: 'POST',
   })
 }
 

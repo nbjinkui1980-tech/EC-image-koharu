@@ -1,11 +1,10 @@
 //! Page + page-subresource byte-ingress routes.
 //!
 //! - `POST /pages`                           — multipart: create pages from N image files
-//! - `POST /pages/{id}/image-layers`         — multipart: add one Custom image node
 //! - `PUT  /pages/{id}/masks/{role}`         — raw PNG body: upsert a mask node
 //!   (role ∈ `segment`, `brushInpaint`)
 //!
-//! All three do the same server-side dance: read bytes → `blobs.put_bytes`
+//! These ingress routes do the same server-side dance: read bytes → `blobs.put_bytes`
 //! → emit an `Op` on the session history.
 
 use std::sync::Arc;
@@ -44,7 +43,6 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::default()
         .routes(routes!(create_pages))
         .routes(routes!(create_pages_from_paths))
-        .routes(routes!(add_image_layer))
         .routes(routes!(put_mask))
         .routes(routes!(reorder_text_nodes))
 }
@@ -336,104 +334,6 @@ async fn create_pages_from_paths(
     .map_err(ApiError::internal)?;
 
     Ok(Json(CreatePagesResponse { pages: created_ids }))
-}
-
-// ---------------------------------------------------------------------------
-// POST /pages/{id}/image-layers
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AddImageLayerResponse {
-    pub node: NodeId,
-}
-
-#[utoipa::path(
-    post,
-    path = "/pages/{id}/image-layers",
-    params(("id" = PageId, Path, description = "Page id")),
-    request_body(content_type = "multipart/form-data"),
-    responses((status = 200, body = AddImageLayerResponse))
-)]
-async fn add_image_layer(
-    State(app): State<AppState>,
-    Path(page_id): Path<PageId>,
-    mut multipart: Multipart,
-) -> ApiResult<Json<AddImageLayerResponse>> {
-    let session = app
-        .current_session()
-        .ok_or_else(|| ApiError::bad_request("no project open"))?;
-    let page_node_count = {
-        let scene = session.scene.read();
-        scene
-            .page(page_id)
-            .ok_or_else(|| ApiError::not_found(format!("page {page_id}")))?
-            .nodes
-            .len()
-    };
-
-    // The handler only accepts a single image layer per request, so we
-    // pull the first multipart field and ignore the rest.
-    let field = multipart
-        .next_field()
-        .await
-        .map_err(|e| ApiError::bad_request(format!("multipart: {e}")))?
-        .ok_or_else(|| ApiError::bad_request("no file uploaded"))?;
-    let filename = field
-        .file_name()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| String::from("layer.png"));
-    let bytes = field
-        .bytes()
-        .await
-        .map_err(|e| ApiError::bad_request(format!("read file: {e}")))?
-        .to_vec();
-
-    let decoded = image::load_from_memory(&bytes)
-        .map_err(|e| ApiError::bad_request(format!("decode: {e}")))?;
-    let (w, h) = decoded.dimensions();
-    let blob = session
-        .blobs
-        .put_bytes(&bytes)
-        .map_err(ApiError::internal)?;
-
-    // Center-place on the page.
-    let (center_x, center_y) = center_on_page(session.scene.read().page(page_id), w, h);
-    let node_id = NodeId::new();
-    let node = Node {
-        id: node_id,
-        transform: Transform {
-            x: center_x,
-            y: center_y,
-            width: w as f32,
-            height: h as f32,
-            rotation_deg: 0.0,
-        },
-        visible: true,
-        kind: NodeKind::Image(ImageData {
-            role: ImageRole::Custom,
-            blob,
-            opacity: 1.0,
-            natural_width: w,
-            natural_height: h,
-            name: Some(filename),
-        }),
-    };
-    app.apply(Op::AddNode {
-        page: page_id,
-        node,
-        at: page_node_count,
-    })
-    .map_err(ApiError::internal)?;
-
-    Ok(Json(AddImageLayerResponse { node: node_id }))
-}
-
-fn center_on_page(page: Option<&koharu_core::Page>, iw: u32, ih: u32) -> (f32, f32) {
-    let Some(p) = page else { return (0.0, 0.0) };
-    let x = ((p.width as f32) - iw as f32) / 2.0;
-    let y = ((p.height as f32) - ih as f32) / 2.0;
-    (x.max(0.0), y.max(0.0))
 }
 
 #[allow(dead_code)]

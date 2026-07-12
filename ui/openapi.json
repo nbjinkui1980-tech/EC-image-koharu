@@ -588,39 +588,6 @@
         }
       }
     },
-    "/pages/{id}/image-layers": {
-      "post": {
-        "operationId": "add_image_layer",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Page id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/PageId"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "multipart/form-data": {}
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AddImageLayerResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/pages/{id}/masks/{role}": {
       "put": {
         "summary": "Upsert the `Mask { role }` node on a page with the raw image bytes in\nthe body. Emits `Op::UpdateNode` if a mask of that role exists, else\n`Op::AddNode`. Used by the repair-brush / segment-edit flow; the\nfollow-up localized inpaint is a separate `POST /pipelines` call.",
@@ -977,15 +944,6 @@
   },
   "components": {
     "schemas": {
-      "AddImageLayerResponse": {
-        "type": "object",
-        "required": ["node"],
-        "properties": {
-          "node": {
-            "$ref": "#/components/schemas/NodeId"
-          }
-        }
-      },
       "AppConfig": {
         "type": "object",
         "properties": {

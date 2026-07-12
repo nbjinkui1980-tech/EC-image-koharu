@@ -23,9 +23,6 @@ export default defineConfig({
           createPages: {
             formData: true,
           },
-          addImageLayer: {
-            formData: true,
-          },
         },
       },
     },

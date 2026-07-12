@@ -3,7 +3,6 @@
  * Do not edit manually.
  */
 
-export * from './addImageLayerResponse'
 export * from './appConfig'
 export * from './appEvent'
 export * from './blobRef'
