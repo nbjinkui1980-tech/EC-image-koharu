@@ -235,7 +235,8 @@
     "readingOrder": "Orden de lectura",
     "readingOrderRtl": "Derecha a izquierda (RTL)",
     "readingOrderLtr": "Izquierda a derecha (LTR)",
-    "readingOrderCustom": "Personalizado"
+    "readingOrderCustom": "Personalizado",
+    "mixedGeometryWarning": "El texto mixto en chino y otros idiomas necesita geometría por línea antes de generarse."
   },
   "workspace": {
     "importPrompt": "Importa una página para comenzar a editar.",

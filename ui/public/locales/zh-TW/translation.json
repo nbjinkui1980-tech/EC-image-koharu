@@ -235,7 +235,8 @@
     "readingOrder": "閱讀順序",
     "readingOrderRtl": "從右至左 (RTL)",
     "readingOrderLtr": "從左至右 (LTR)",
-    "readingOrderCustom": "自定義"
+    "readingOrderCustom": "自定義",
+    "mixedGeometryWarning": "中英文混排文字缺少逐行位置，無法安全產生。"
   },
   "workspace": {
     "importPrompt": "匯入頁面以開始編輯。",

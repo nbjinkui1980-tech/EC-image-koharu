@@ -50,7 +50,7 @@ import {
   STYLE_KEYWORDS,
   uniqueFontFaces,
 } from '@/lib/font-utils'
-import { applyOp, invalidateScene, queueAutoRender } from '@/lib/io/scene'
+import { applyOp, invalidateScene, queueAutoRender, runAutoRenderNow } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -298,39 +298,63 @@ export function RenderControlsPanel() {
     })
   }
 
-  const applyStyleToNodes = (
+  const applyStyleToNodes = async (
     nodes: TextNodeEntry[],
     updates: Partial<TextStyle>,
     label: string,
-  ) => {
+    renderImmediately = false,
+  ): Promise<void> => {
     if (!page || nodes.length === 0) return
-    void (async () => {
-      const op =
-        nodes.length === 1
-          ? buildStyleOp(nodes[0], updates)
-          : ops.batch(
-              label,
-              nodes.map((n) => buildStyleOp(n, updates)),
-            )
-      await applyOp(op)
+    const op =
+      nodes.length === 1
+        ? buildStyleOp(nodes[0], updates)
+        : ops.batch(
+            label,
+            nodes.map((n) => buildStyleOp(n, updates)),
+          )
+    await applyOp(op)
+    if (renderImmediately) {
+      await runAutoRenderNow(page.id)
+    } else {
       queueAutoRender(page.id)
-    })()
+    }
   }
 
   const applyStyleToSelected = (updates: Partial<TextStyle>): boolean => {
     if (selectedNodes.length === 0) return false
-    applyStyleToNodes(selectedNodes, updates, 'Multi-block style update')
+    void applyStyleToNodes(selectedNodes, updates, 'Multi-block style update')
     return true
   }
 
   const applyStyleToAll = (updates: Partial<TextStyle>) => {
-    applyStyleToNodes(textNodes, updates, 'Bulk style update')
+    void applyStyleToNodes(textNodes, updates, 'Bulk style update')
+  }
+
+  const ensureFontAvailable = async (face: FontFaceInfo): Promise<boolean> => {
+    if (face.source !== 'google' || face.cached) return true
+    try {
+      await fetchGoogleFont(encodeURIComponent(face.postScriptName))
+      await invalidateScene()
+      return true
+    } catch (error) {
+      console.error('Failed to fetch font:', error)
+      useEditorUiStore.getState().showError(String(error))
+      return false
+    }
+  }
+
+  const applyFontToCurrentScope = async (postScriptName: string): Promise<void> => {
+    const targets = selectedNodes.length > 0 ? selectedNodes : textNodes
+    if (selectedNodes.length === 0) {
+      usePreferencesStore.getState().setDefaultFont(postScriptName)
+    }
+    await applyStyleToNodes(targets, { fontFamilies: [postScriptName] }, 'Font family update', true)
   }
 
   const commitCurrentFontColorIfImplicit = () => {
     const targets = selectedNodes.length > 0 ? selectedNodes : textNodes
     if (targets.every(hasExplicitColor)) return
-    applyStyleToNodes(targets, { color: currentColor }, 'Explicit font color update')
+    void applyStyleToNodes(targets, { color: currentColor }, 'Explicit font color update')
   }
 
   const applyStrokeSetting = (nextStroke: TextStrokeStyle) => {
@@ -440,21 +464,8 @@ export function RenderControlsPanel() {
                 const face = regularFace || findFontFace(fontCandidates, value)
                 if (!face) return
 
-                // Trigger fetch for Google Fonts if not cached
-                if (face.source === 'google' && !face.cached) {
-                  try {
-                    await fetchGoogleFont(encodeURIComponent(face.postScriptName))
-                    invalidateScene()
-                  } catch (e) {
-                    console.error('Failed to fetch font:', e)
-                  }
-                }
-
-                if (selectedNode) {
-                  applyStyleToSelected({ fontFamilies: [face.postScriptName] })
-                  return
-                }
-                usePreferencesStore.getState().setDefaultFont(face.postScriptName)
+                if (!(await ensureFontAvailable(face))) return
+                await applyFontToCurrentScope(face.postScriptName)
               }}
             />
           </div>
@@ -464,22 +475,9 @@ export function RenderControlsPanel() {
                 key={`${currentFontFamilyName}-${currentVariants.length}`}
                 value={currentFont}
                 onValueChange={async (value) => {
-                  // Trigger fetch for Google Fonts if not cached
                   const variant = currentVariants.find((v) => v.postScriptName === value)
-                  if (variant?.source === 'google' && !variant.cached) {
-                    try {
-                      await fetchGoogleFont(encodeURIComponent(value))
-                      invalidateScene()
-                    } catch (e) {
-                      console.error('Failed to fetch font variant:', e)
-                    }
-                  }
-
-                  if (selectedNode) {
-                    applyStyleToSelected({ fontFamilies: [value] })
-                    return
-                  }
-                  usePreferencesStore.getState().setDefaultFont(value)
+                  if (variant && !(await ensureFontAvailable(variant))) return
+                  await applyFontToCurrentScope(value)
                 }}
               >
                 <SelectTrigger

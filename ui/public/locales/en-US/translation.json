@@ -268,7 +268,8 @@
     "readingOrder": "Reading Order",
     "readingOrderRtl": "Right-to-Left (RTL)",
     "readingOrderLtr": "Left-to-Right (LTR)",
-    "readingOrderCustom": "Custom"
+    "readingOrderCustom": "Custom",
+    "mixedGeometryWarning": "Mixed Chinese and non-Chinese lines need per-line geometry before generating."
   },
   "workspace": {
     "importPrompt": "Import a page to begin editing.",

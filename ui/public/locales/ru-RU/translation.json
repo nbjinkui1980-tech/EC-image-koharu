@@ -235,7 +235,8 @@
     "readingOrder": "Порядок чтения",
     "readingOrderRtl": "Справа налево (RTL)",
     "readingOrderLtr": "Слева направо (LTR)",
-    "readingOrderCustom": "Свой"
+    "readingOrderCustom": "Свой",
+    "mixedGeometryWarning": "Для смешанного китайского и другого текста перед генерацией нужна геометрия каждой строки."
   },
   "workspace": {
     "importPrompt": "Импортируйте страницу, чтобы начать редактирование.",

@@ -23,15 +23,26 @@ import {
 } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useCurrentPage, useTextNodes, type TextNodeEntry } from '@/hooks/useCurrentPage'
-import { getConfig, startPipeline, useGetCurrentLlm } from '@/lib/api'
-import { fetchApi } from '@/lib/api/fetch'
-import type { TextDataPatch } from '@/lib/api/schemas'
-import { applyOp, invalidateScene, queueAutoRender, reorderPageTextNodes } from '@/lib/io/scene'
+import { getConfig, startPipeline, useGetConfig, useGetCurrentLlm } from '@/lib/api'
+import type { TextData, TextDataPatch } from '@/lib/api/schemas'
+import { applyOp, queueAutoRender, reorderPageTextNodes } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
+
+const HAN_PATTERN = /\p{Script=Han}/u
+
+export function lacksMixedLineGeometry(data: TextData): boolean {
+  const lines = (data.text ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const hanLineCount = lines.filter((line) => HAN_PATTERN.test(line)).length
+  const isMixed = hanLineCount > 0 && hanLineCount < lines.length
+  return isMixed && data.linePolygons?.length !== lines.length
+}
 
 export function TextBlocksPanel() {
   const { t } = useTranslation()
@@ -49,7 +60,9 @@ export function TextBlocksPanel() {
   const select = useSelectionStore((s) => s.select)
   const clearSelection = useSelectionStore((s) => s.clear)
   const { data: llm } = useGetCurrentLlm()
+  const { data: config } = useGetConfig()
   const llmReady = llm?.status === 'ready'
+  const hanOnly = (config?.pipeline?.source_text_policy ?? 'han_only') === 'han_only'
   const isProcessing = useJobsStore((s) =>
     Object.values(s.jobs).some((j) => j.status === 'running'),
   )
@@ -87,7 +100,7 @@ export function TextBlocksPanel() {
 
   const generate = async (nodeId: string) => {
     if (!page) return
-    const cfg = await getConfig()
+    const cfg = config ?? (await getConfig())
     const translator = cfg.pipeline?.translator || 'llm'
     const renderer = cfg.pipeline?.renderer || 'koharu-renderer'
     const editor = useEditorUiStore.getState()
@@ -193,6 +206,7 @@ export function TextBlocksPanel() {
                   onGenerate={() => void generate(node.id)}
                   processing={isProcessing}
                   llmReady={llmReady}
+                  unsupportedMixedGeometry={hanOnly && lacksMixedLineGeometry(node.data)}
                 />
               ))}
             </Accordion>
@@ -213,6 +227,7 @@ type BlockCardProps = {
   onGenerate: () => void
   processing: boolean
   llmReady: boolean
+  unsupportedMixedGeometry: boolean
 }
 
 function BlockCard({
@@ -225,6 +240,7 @@ function BlockCard({
   onGenerate,
   processing,
   llmReady,
+  unsupportedMixedGeometry,
 }: BlockCardProps) {
   const { t } = useTranslation()
   const data = node.data
@@ -282,6 +298,14 @@ function BlockCard({
             )}
           </div>
         </AccordionTrigger>
+        {unsupportedMixedGeometry && (
+          <p
+            data-testid={`textblock-geometry-warning-${index}`}
+            className='border-t border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-300'
+          >
+            {t('textBlocks.mixedGeometryWarning')}
+          </p>
+        )}
         <AccordionContent className='px-2 pt-1.5 pb-2 shadow-[inset_0_1px_0_0_var(--color-border)]'>
           <div className='space-y-1.5'>
             <div className='flex flex-col gap-0.5'>
@@ -328,7 +352,7 @@ function BlockCard({
                         aria-label={t('llm.generateTooltip')}
                         variant='ghost'
                         size='icon-xs'
-                        disabled={!llmReady || processing}
+                        disabled={!llmReady || processing || unsupportedMixedGeometry}
                         onClick={onGenerate}
                         className='size-5'
                       >

@@ -1,7 +1,8 @@
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { queueAutoRender } from '@/lib/io/scene'
+import { queueAutoRender, runAutoRenderNow } from '@/lib/io/scene'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 import { server } from '../../msw/server'
@@ -9,11 +10,77 @@ import { server } from '../../msw/server'
 describe('queueAutoRender', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    useEditorUiStore.getState().clearError()
   })
 
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
+  })
+
+  it('runAutoRenderNow starts the configured renderer immediately', async () => {
+    vi.spyOn(usePreferencesStore, 'getState').mockReturnValue({
+      defaultFont: 'Noto Sans CJK SC',
+    } as ReturnType<typeof usePreferencesStore.getState>)
+    const pipelineHits: Array<{ steps: string[]; pages: string[]; defaultFont?: string | null }> =
+      []
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { renderer: 'koharu-renderer' } }),
+      ),
+      http.post('/api/v1/pipelines', async ({ request }) => {
+        pipelineHits.push((await request.json()) as (typeof pipelineHits)[number])
+        return HttpResponse.json({ operationId: 'op-now' })
+      }),
+    )
+
+    await runAutoRenderNow('p-now')
+
+    expect(pipelineHits).toEqual([
+      {
+        steps: ['koharu-renderer'],
+        pages: ['p-now'],
+        defaultFont: 'Noto Sans CJK SC',
+      },
+    ])
+  })
+
+  it('runAutoRenderNow cancels the pending debounced render', async () => {
+    vi.spyOn(usePreferencesStore, 'getState').mockReturnValue({
+      defaultFont: undefined,
+    } as ReturnType<typeof usePreferencesStore.getState>)
+    let pipelinePosts = 0
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { renderer: 'koharu-renderer' } }),
+      ),
+      http.post('/api/v1/pipelines', () => {
+        pipelinePosts += 1
+        return HttpResponse.json({ operationId: `op-${pipelinePosts}` })
+      }),
+    )
+
+    queueAutoRender('p-1')
+    await runAutoRenderNow('p-1')
+    await vi.advanceTimersByTimeAsync(550)
+
+    expect(pipelinePosts).toBe(1)
+  })
+
+  it('runAutoRenderNow surfaces pipeline failures through the editor error state', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { renderer: 'koharu-renderer' } }),
+      ),
+      http.post('/api/v1/pipelines', () =>
+        HttpResponse.json({ message: 'render failed' }, { status: 500 }),
+      ),
+    )
+
+    await expect(runAutoRenderNow('p-1')).resolves.toBeUndefined()
+
+    expect(useEditorUiStore.getState().error?.message).toContain('render failed')
   })
 
   it('coalesces rapid edits into a single pipeline POST and forwards default font', async () => {

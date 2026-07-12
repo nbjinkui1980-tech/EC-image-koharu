@@ -32,6 +32,7 @@ import type {
 } from '@/lib/api/schemas'
 import { filenameFromContentDisposition } from '@/lib/io/saveBlob'
 import { queryClient } from '@/lib/queryClient'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
@@ -102,6 +103,12 @@ const AUTO_RENDER_DEBOUNCE_MS = 500
 let autoRenderTimer: ReturnType<typeof setTimeout> | null = null
 let autoRenderPendingPageId: string | null = null
 
+function cancelQueuedAutoRender(): void {
+  if (autoRenderTimer) clearTimeout(autoRenderTimer)
+  autoRenderTimer = null
+  autoRenderPendingPageId = null
+}
+
 export function queueAutoRender(pageId: string): void {
   autoRenderPendingPageId = pageId
   if (autoRenderTimer) clearTimeout(autoRenderTimer)
@@ -110,22 +117,30 @@ export function queueAutoRender(pageId: string): void {
     const id = autoRenderPendingPageId
     autoRenderPendingPageId = null
     if (!id) return
-    void runAutoRender(id)
+    void runAutoRenderWithFeedback(id)
   }, AUTO_RENDER_DEBOUNCE_MS)
 }
 
-async function runAutoRender(pageId: string): Promise<void> {
+export async function runAutoRenderNow(pageId: string): Promise<void> {
+  cancelQueuedAutoRender()
+  await runAutoRenderWithFeedback(pageId)
+}
+
+async function runAutoRenderWithFeedback(pageId: string): Promise<void> {
   try {
-    const cfg = await getConfig()
-    const renderer = cfg.pipeline?.renderer
-    if (!renderer) return
-    const defaultFont = usePreferencesStore.getState().defaultFont
-    await startPipeline({ steps: [renderer], pages: [pageId], defaultFont })
+    await runAutoRender(pageId)
   } catch (err) {
-    // Auto-render failures shouldn't disturb the editing flow; users can
-    // always run Render manually from the toolbar / menu.
     console.error('Auto-render failed:', err)
+    useEditorUiStore.getState().showError(String(err))
   }
+}
+
+async function runAutoRender(pageId: string): Promise<void> {
+  const cfg = await getConfig()
+  const renderer = cfg.pipeline?.renderer
+  if (!renderer) return
+  const defaultFont = usePreferencesStore.getState().defaultFont
+  await startPipeline({ steps: [renderer], pages: [pageId], defaultFont })
 }
 
 /** Select every text node on the active page. No-op if no project/page open. */

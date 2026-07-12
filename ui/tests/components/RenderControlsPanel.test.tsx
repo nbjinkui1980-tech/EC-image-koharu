@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { RenderControlsPanel } from '@/components/panels/RenderControlsPanel'
 import * as sceneActions from '@/lib/io/scene'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
@@ -32,6 +33,7 @@ vi.mock('@/lib/io/scene', async () => {
     ...actual,
     applyOp: vi.fn(),
     queueAutoRender: vi.fn(),
+    runAutoRenderNow: vi.fn(),
   }
 })
 
@@ -61,6 +63,7 @@ describe('RenderControlsPanel Font Assignment', () => {
     useSelectionStore.getState().setPage('p1')
     useSelectionStore.getState().clear()
     usePreferencesStore.getState().setDefaultFont('Arial')
+    useEditorUiStore.getState().clearError()
     vi.clearAllMocks()
 
     server.use(
@@ -71,6 +74,7 @@ describe('RenderControlsPanel Font Assignment', () => {
           { familyName: 'Custom', postScriptName: 'Custom', source: 'system', cached: true },
         ]),
       ),
+      http.get('/api/v1/google-fonts', () => HttpResponse.json({ fonts: [] })),
       http.get('/api/v1/scene.json', () =>
         HttpResponse.json(
           sceneWithTextNodes([
@@ -102,6 +106,8 @@ describe('RenderControlsPanel Font Assignment', () => {
     expect(lastOp).toHaveProperty('updateNode')
     expect(lastOp.updateNode.id).toBe('t1')
     expect(lastOp.updateNode.patch.data.text.style.fontFamilies).toEqual(['Roboto'])
+    expect(usePreferencesStore.getState().defaultFont).toBe('Arial')
+    expect(sceneActions.runAutoRenderNow).toHaveBeenCalledWith('p1')
   })
 
   it('bulk applying a font change (with selection) updates all selected boxes', async () => {
@@ -125,21 +131,139 @@ describe('RenderControlsPanel Font Assignment', () => {
     expect(lastOp.batch.ops).toHaveLength(2)
   })
 
-  it('changing global font (no selection) updates defaultFont in preferences', async () => {
+  it('changing global font updates every page node before rendering and preserves style', async () => {
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(
+          sceneWithTextNodes([
+            {
+              id: 't1',
+              kind: {
+                text: {
+                  style: {
+                    fontFamilies: ['Arial'],
+                    fontSize: 18,
+                    color: [1, 2, 3, 255],
+                    textAlign: 'left',
+                  },
+                },
+              },
+            },
+            {
+              id: 't2',
+              kind: {
+                text: {
+                  style: {
+                    fontFamilies: ['Arial'],
+                    fontSize: 24,
+                    color: [4, 5, 6, 255],
+                    textAlign: 'right',
+                  },
+                },
+              },
+            },
+          ]),
+        ),
+      ),
+    )
+    let finishApply: (() => void) | undefined
+    vi.mocked(sceneActions.applyOp).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishApply = resolve
+        }),
+    )
     renderWithQuery(<RenderControlsPanel />)
 
-    // No selection
-
-    // Open font select
     const trigger = await screen.findByTestId('render-font-select')
     await userEvent.click(trigger)
-
-    // Pick "Custom"
     const option = await screen.findByText('Custom')
     await userEvent.click(option)
 
-    // Verify default font changed
+    await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalled())
+    expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
+    finishApply?.()
+    await waitFor(() => expect(sceneActions.runAutoRenderNow).toHaveBeenCalledWith('p1'))
+
     expect(usePreferencesStore.getState().defaultFont).toBe('Custom')
+    const op = vi.mocked(sceneActions.applyOp).mock.calls[0][0]
+    expect(op).toHaveProperty('batch')
+    expect(op.batch.ops).toHaveLength(2)
+    expect(op.batch.ops[0].updateNode.patch.data.text.style).toMatchObject({
+      fontFamilies: ['Custom'],
+      fontSize: 18,
+      color: [1, 2, 3, 255],
+      textAlign: 'left',
+    })
+    expect(op.batch.ops[1].updateNode.patch.data.text.style).toMatchObject({
+      fontFamilies: ['Custom'],
+      fontSize: 24,
+      color: [4, 5, 6, 255],
+      textAlign: 'right',
+    })
+  })
+
+  it('applies a font variant to the same global scope and renders immediately', async () => {
+    usePreferencesStore.getState().setDefaultFont('Roboto')
+    server.use(
+      http.get('/api/v1/fonts', () =>
+        HttpResponse.json([
+          { familyName: 'Roboto', postScriptName: 'Roboto', source: 'system', cached: true },
+          {
+            familyName: 'Roboto',
+            postScriptName: 'Roboto-Bold',
+            source: 'system',
+            cached: true,
+          },
+        ]),
+      ),
+    )
+
+    renderWithQuery(<RenderControlsPanel />)
+
+    const variantTrigger = await screen.findByRole('combobox')
+    await userEvent.click(variantTrigger)
+    await userEvent.click(await screen.findByText('Bold'))
+
+    await waitFor(() => expect(sceneActions.runAutoRenderNow).toHaveBeenCalledWith('p1'))
+    expect(usePreferencesStore.getState().defaultFont).toBe('Roboto-Bold')
+    const op = vi.mocked(sceneActions.applyOp).mock.calls[0][0]
+    expect(op.batch.ops).toHaveLength(2)
+    for (const child of op.batch.ops) {
+      expect(child.updateNode.patch.data.text.style.fontFamilies).toEqual(['Roboto-Bold'])
+    }
+  })
+
+  it('stops before applying or rendering when a Google font download fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    server.use(
+      http.get('/api/v1/fonts', () =>
+        HttpResponse.json([
+          { familyName: 'Arial', postScriptName: 'Arial', source: 'system', cached: true },
+          {
+            familyName: 'Cloud',
+            postScriptName: 'Cloud:400',
+            source: 'google',
+            cached: false,
+          },
+        ]),
+      ),
+      http.post('/api/v1/google-fonts/:family/fetch', () =>
+        HttpResponse.json({ message: 'font download failed' }, { status: 500 }),
+      ),
+    )
+
+    renderWithQuery(<RenderControlsPanel />)
+
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    await userEvent.click(await screen.findByText('Cloud'))
+
+    await waitFor(() =>
+      expect(useEditorUiStore.getState().error?.message).toContain('font download failed'),
+    )
+    expect(usePreferencesStore.getState().defaultFont).toBe('Arial')
+    expect(sceneActions.applyOp).not.toHaveBeenCalled()
+    expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
   })
 
   it('shows auto when a selected block has no manual font size override', async () => {

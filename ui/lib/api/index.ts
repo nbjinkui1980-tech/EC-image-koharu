@@ -12,6 +12,7 @@ import {
   deleteProject,
   getCatalog,
   getCodexAuthStatus,
+  getConfig,
   getCurrentLlm,
   getGoogleFontsCatalog,
   getMeta,
@@ -22,6 +23,7 @@ import {
 } from './generated'
 import type {
   CodexAuthStatus,
+  AppConfig,
   GoogleFontCatalog,
   LlmCatalog,
   LlmState,
@@ -95,6 +97,9 @@ export const useGetCodexAuthStatus = (options?: ApiQueryOptions<CodexAuthStatus>
 
 export const useGetMeta = (options?: ApiQueryOptions<MetaInfo>) =>
   useApiQuery(getGetMetaQueryKey(), getMeta, options)
+
+export const useGetConfig = (options?: ApiQueryOptions<AppConfig>) =>
+  useApiQuery(getGetConfigQueryKey(), getConfig, options)
 
 export const useGetSceneJson = (options?: ApiQueryOptions<SceneSnapshot>) =>
   useApiQuery(getGetSceneJsonQueryKey(), getSceneJson, options)
