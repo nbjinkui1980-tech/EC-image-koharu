@@ -4286,7 +4286,6 @@ version = "0.61.2"
 dependencies = [
  "anyhow",
  "bindgen",
- "clap",
  "encoding_rs",
  "enumflags2",
  "flate2",
@@ -4324,7 +4323,6 @@ dependencies = [
  "candle-transformers",
  "clap",
  "cudarc 0.19.8",
- "dirs",
  "image",
  "imageproc",
  "koharu-runtime",
@@ -4340,7 +4338,6 @@ dependencies = [
  "tokenizers 0.23.1",
  "tokio",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

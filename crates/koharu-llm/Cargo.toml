@@ -14,21 +14,8 @@ publish.workspace = true
 [lib]
 doctest = false
 
-[[bin]]
-name = "llama"
-path = "bin/llama.rs"
-
-[[bin]]
-name = "llm"
-path = "bin/llm.rs"
-
-[[bin]]
-name = "paddleocr-vl-llm"
-path = "bin/paddleocr-vl.rs"
-
 [dependencies]
 anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
 futures = { workspace = true }
 image = { workspace = true }
 koharu-runtime = { workspace = true }
