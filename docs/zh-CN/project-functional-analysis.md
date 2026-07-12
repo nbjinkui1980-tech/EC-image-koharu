@@ -200,8 +200,9 @@ flowchart LR
 - 分别点击“检测、识别、生成、修补、渲染”
 - 处理当前页面
 - 处理全部页面
-- 自定义选择流水线阶段
 - 为一次运行指定目标语言、系统提示词、默认字体和阅读顺序
+
+桌面 UI 不再提供 Custom Pipeline 菜单；HTTP、MCP 和 CLI 的 `steps` 能力仍保留。
 
 ### 事务与错误处理
 
@@ -321,11 +322,9 @@ Koharu 同一时刻维护一个已加载的翻译目标：
 
 - 选择工具
 - 文本块工具
-- 彩色笔刷
 - 橡皮擦
 - 修复笔刷
 - 8–128 px 笔刷大小
-- 笔刷颜色选择
 
 ### 修复笔刷流程
 
@@ -337,7 +336,8 @@ Koharu 同一时刻维护一个已加载的翻译目标：
 6. 后端同步执行局部修复。
 7. 遮罩更新和修复结果组成同一个历史批次。
 
-普通彩色笔刷写入独立的 `brushInpaint` 图层。渲染器合成顺序是：
+桌面 UI 不再创建或编辑普通彩色笔刷图层。为兼容旧项目，已有的
+`BrushInpaint` 图层仍会随 KHR 保存、参与 PSD 导出，并按以下顺序合成：
 
 1. 修复图
 2. 笔刷层
@@ -345,15 +345,13 @@ Koharu 同一时刻维护一个已加载的翻译目标：
 
 ### 使用限制
 
-- 普通笔刷修改不会自动触发 Render。
-- 若修改笔刷后直接导出已有 Rendered 图层，可能得到修改前的旧结果。
-- 导出扁平图之前应手动重新运行 Render。
-- PSD 会把笔刷作为独立辅助层保留。
+- 新 UI 不能创建、修改或单独切换旧 `BrushInpaint` 图层。
+- Repair Brush 和 Segment Eraser 只修改分割遮罩；Repair Brush 会触发局部修复。
+- 旧 `BrushInpaint` 数据不会在打开、保存、渲染或导出项目时被删除。
 
 相关实现位于：
 
 - `ui/hooks/useMaskDrawing.ts`
-- `ui/hooks/useRenderBrushDrawing.ts`
 - `crates/koharu-rpc/src/routes/pages.rs`
 - `crates/koharu-app/src/pipeline/engines/renderer.rs`
 
@@ -489,7 +487,7 @@ Codex 图像生成功能与本地分阶段翻译流水线相互独立。
 
 ### HTTP API
 
-HTTP API 位于 `/api/v1`。当前 `ui/openapi.json` 包含 36 个路径和 97 个 schema，覆盖：
+HTTP API 位于 `/api/v1`。当前 `ui/openapi.json` 包含 35 个路径和 97 个 schema，覆盖：
 
 - 项目和页面
 - Scene 和 Blob
@@ -557,7 +555,7 @@ MCP 当前是刻意保持精简的底层接口。以下功能仍需直接使用 
 - `config.toml`：数据目录、HTTP、流水线和 Provider Base URL
 - 系统 keyring：macOS 和 Windows 的 API key
 - Linux 本地凭据文件：依赖仅所有者文件权限，不是系统级加密
-- 前端 preferences：主题、UI 语言、默认字体、快捷键、自定义流水线和提示词
+- 前端 preferences：主题、UI 语言、默认字体、快捷键和提示词
 
 Runtime 设置在启动时加载，因此修改数据目录、HTTP 连接超时、读取超时和重试次数后需要重启。Headless 浏览器环境无法自动重启桌面进程。
 
@@ -629,20 +627,17 @@ Runtime 设置在启动时加载，因此修改数据目录、HTTP 连接超时�
 
 ## 验证状态
 
-分析期间完成的静态验证：
+本次完成的验证：
 
-- `cargo fmt --all -- --check`：通过
-- 所有 locale JSON：解析通过
-- `ui/openapi.json`：解析通过
-- OpenAPI 路径数：36
-- OpenAPI schema 数：97
+- `cargo fmt --all -- --check`、workspace check 和 clippy：通过
+- `cargo test --workspace --tests`：通过；需要模型下载的测试保持 ignored
+- UI format、lint 和 Vitest：通过，156 项测试全部成功
+- OpenAPI/Orval 生成物漂移检查：通过
+- Next/Tauri production build：通过
+- macOS Metal 全目标检查：通过
+- OpenAPI 路径数：35；schema 数：97
 
-未能执行的动态测试：
-
-- UI Vitest：本地未安装 UI 依赖，`vitest` 命令不存在
-- Rust 单元测试：本地缺少 `cmake`，`libz-sys` 在进入测试前构建失败
-
-因此，本文对源码结构、入口、配置和数据流的描述为高置信度；运行时性能、模型质量、外部服务可用性和不同硬件组合下的行为仍需在完整环境中验证。
+外部账号登录、模型质量、真实电商图片效果和不同硬件组合仍需在对应运行环境中人工验收。
 
 ## 主要证据文件
 

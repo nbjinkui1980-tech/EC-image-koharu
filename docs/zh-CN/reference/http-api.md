@@ -86,7 +86,6 @@ API 是以项目为中心的。同一时间只会打开一个项目，它包含�
 | ------ | --------------------------------------- | --------------------------------------------------- |
 | `POST` | `/pages`                                | 通过 multipart 上传 N 张图片创建页面                  |
 | `POST` | `/pages/from-paths`                     | Tauri 专用的快速通道，按绝对路径导入                   |
-| `POST` | `/pages/{id}/image-layers`              | 从上传文件添加一个 Custom 图像节点                     |
 | `PUT`  | `/pages/{id}/masks/{role}`              | 用原始 PNG 字节 upsert 一个掩码节点                   |
 | `GET`  | `/pages/{id}/thumbnail`                 | 获取页面缩略图（以 WebP 缓存）                        |
 

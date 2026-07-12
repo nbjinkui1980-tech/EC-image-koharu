@@ -86,7 +86,6 @@ Todo projeto vive sob o diretório gerenciado `{data.path}/projects/`; clientes 
 | ------ | --------------------------------------- | ----------------------------------------------------------- |
 | `POST` | `/pages`                                | cria páginas a partir de N arquivos de imagem enviados (multipart) |
 | `POST` | `/pages/from-paths`                     | caminho rápido só para Tauri que importa por caminho absoluto |
-| `POST` | `/pages/{id}/image-layers`              | adiciona um node de imagem Custom a partir de um arquivo enviado |
 | `PUT`  | `/pages/{id}/masks/{role}`              | faz upsert de um node de máscara a partir de bytes PNG brutos |
 | `GET`  | `/pages/{id}/thumbnail`                 | obtém a thumbnail da página (cache em WebP)                 |
 

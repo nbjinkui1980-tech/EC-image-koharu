@@ -86,7 +86,6 @@ Every project lives under the managed `{data.path}/projects/` directory; clients
 | ------ | --------------------------------------- | ---------------------------------------------------- |
 | `POST` | `/pages`                                | create pages from N uploaded image files (multipart) |
 | `POST` | `/pages/from-paths`                     | Tauri-only fast path that imports by absolute path   |
-| `POST` | `/pages/{id}/image-layers`              | add a Custom image node from an uploaded file        |
 | `PUT`  | `/pages/{id}/masks/{role}`              | upsert a mask node from raw PNG bytes                |
 | `GET`  | `/pages/{id}/thumbnail`                 | get the page thumbnail (cached as WebP)              |
 
