@@ -49,16 +49,18 @@ function hasProtectedLatinWord(text: string): boolean {
   return letters >= 2
 }
 
-function blocksHanOnlyGenerate(data: TextData): boolean {
+function hanOnlyGenerateBlockReason(data: TextData): 'no-han' | 'unsafe-geometry' | null {
   const lines = (data.text ?? '')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-  if (lines.some((line) => HAN_PATTERN.test(line) && hasProtectedLatinWord(line))) return true
+  if (lines.some((line) => HAN_PATTERN.test(line) && hasProtectedLatinWord(line))) {
+    return 'unsafe-geometry'
+  }
   const hanLineCount = lines.filter((line) => HAN_PATTERN.test(line)).length
-  if (hanLineCount === 0) return true
-  if (hanLineCount === lines.length) return false
-  return data.linePolygons?.length !== lines.length
+  if (hanLineCount === 0) return 'no-han'
+  if (hanLineCount === lines.length) return null
+  return data.linePolygons?.length === lines.length ? null : 'unsafe-geometry'
 }
 
 export function TextBlocksPanel() {
@@ -223,7 +225,7 @@ export function TextBlocksPanel() {
                   onGenerate={() => void generate(node.id)}
                   processing={isProcessing}
                   llmReady={llmReady}
-                  hanOnlyBlocked={hanOnly && blocksHanOnlyGenerate(node.data)}
+                  hanOnlyBlockReason={hanOnly ? hanOnlyGenerateBlockReason(node.data) : null}
                 />
               ))}
             </Accordion>
@@ -244,7 +246,7 @@ type BlockCardProps = {
   onGenerate: () => void
   processing: boolean
   llmReady: boolean
-  hanOnlyBlocked: boolean
+  hanOnlyBlockReason: 'no-han' | 'unsafe-geometry' | null
 }
 
 function BlockCard({
@@ -257,7 +259,7 @@ function BlockCard({
   onGenerate,
   processing,
   llmReady,
-  hanOnlyBlocked,
+  hanOnlyBlockReason,
 }: BlockCardProps) {
   const { t } = useTranslation()
   const data = node.data
@@ -315,7 +317,7 @@ function BlockCard({
             )}
           </div>
         </AccordionTrigger>
-        {hanOnlyBlocked && (
+        {hanOnlyBlockReason === 'unsafe-geometry' && (
           <p
             data-testid={`textblock-geometry-warning-${index}`}
             className='border-t border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-300'
@@ -378,7 +380,7 @@ function BlockCard({
                         aria-label={t('llm.generateTooltip')}
                         variant='ghost'
                         size='icon-xs'
-                        disabled={!llmReady || processing || hanOnlyBlocked}
+                        disabled={!llmReady || processing || hanOnlyBlockReason !== null}
                         onClick={onGenerate}
                         className='size-5'
                       >

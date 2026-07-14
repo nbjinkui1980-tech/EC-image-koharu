@@ -54,7 +54,7 @@ function sceneWithTextNodes() {
   }
 }
 
-function sceneWithSingleTextNode(text: string, linePolygons?: number[][][]) {
+function sceneWithSingleTextNode(text: string | null, linePolygons?: number[][][]) {
   const scene = sceneWithTextNodes()
   scene.scene.pages.p1.nodes = {
     t1: {
@@ -231,9 +231,26 @@ describe('TextBlocksPanel', () => {
 
     const generateButton = await screen.findByTestId('textblock-generate-0')
     expect(generateButton).toBeDisabled()
-    expect(screen.getByTestId('textblock-geometry-warning-0')).toBeInTheDocument()
+    expect(screen.queryByTestId('textblock-geometry-warning-0')).not.toBeInTheDocument()
     await userEvent.click(generateButton)
     expect(pipelinePosts).toBe(0)
+  })
+
+  it('disables Generate without showing a geometry warning before OCR', async () => {
+    useSelectionStore.getState().select('t1', false)
+    server.use(
+      http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithSingleTextNode(null))),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+    )
+
+    renderWithQuery(<TextBlocksPanel />)
+
+    const generateButton = await screen.findByTestId('textblock-generate-0')
+    expect(generateButton).toBeDisabled()
+    expect(screen.queryByTestId('textblock-geometry-warning-0')).not.toBeInTheDocument()
   })
 
   it('disables Generate for unresolved inline English word plus Han text', async () => {

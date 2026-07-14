@@ -270,6 +270,22 @@ impl Renderer {
             layout_builder = layout_builder.with_hyphenation_language_tag(target_language);
         }
         let max_font = max_font_size_for_box(layout_box, min_font_size);
+        let sizing_font_size = style.font_size.unwrap_or(max_font);
+        let sizing_padding = stroke_padding(resolve_stroke_style(
+            block.font_prediction.as_ref(),
+            style.stroke.as_ref(),
+            global_stroke.as_ref(),
+            sizing_font_size,
+            color,
+        ));
+        let content_width = (layout_box.width - sizing_padding * 2.0).max(1.0);
+        let content_height = (layout_box.height - sizing_padding * 2.0).max(1.0);
+        let content_box = LayoutBox {
+            x: layout_box.x + (layout_box.width - content_width) * 0.5,
+            y: layout_box.y + (layout_box.height - content_height) * 0.5,
+            width: content_width,
+            height: content_height,
+        };
         let mut render_candidate = |layout: &LayoutRun<'_>| -> Result<RenderedTextCandidate> {
             let resolved_stroke = resolve_stroke_style(
                 block.font_prediction.as_ref(),
@@ -278,6 +294,7 @@ impl Renderer {
                 layout.font_size,
                 color,
             );
+            let padding = stroke_padding(resolved_stroke);
 
             let rendered = self.renderer.render(
                 layout,
@@ -287,6 +304,7 @@ impl Renderer {
                     color,
                     effect: shader_core_to_renderer(block_effect),
                     stroke: resolved_stroke,
+                    padding,
                     raster,
                     ..Default::default()
                 },
@@ -307,7 +325,7 @@ impl Renderer {
             let candidate = fit_rendered_with_mask_collision(
                 &layout_builder,
                 translation,
-                layout_box,
+                content_box,
                 style.font_size,
                 min_font_size,
                 max_font,
@@ -327,7 +345,7 @@ impl Renderer {
         let layout = fit_font_size(
             &layout_builder,
             translation,
-            layout_box,
+            content_box,
             style.font_size,
             min_font_size,
             max_font,
@@ -908,6 +926,16 @@ fn default_stroke_width(font_size: f32) -> f32 {
     (font_size * 0.10).clamp(1.2, 8.0)
 }
 
+fn stroke_padding(stroke: Option<RenderStrokeOptions>) -> f32 {
+    stroke
+        .filter(|stroke| {
+            stroke.width_px.is_finite() && stroke.width_px > 0.0 && stroke.color[3] > 0
+        })
+        // The stroke radius needs its own space, plus three logical pixels so
+        // Lanczos downsampling cannot leave a non-zero alpha tail on the edge.
+        .map_or(0.0, |stroke| stroke.width_px.ceil() + 3.0)
+}
+
 fn contrasting_stroke_color(text_color: [u8; 4]) -> [u8; 4] {
     let luminance =
         0.299 * text_color[0] as f32 + 0.587 * text_color[1] as f32 + 0.114 * text_color[2] as f32;
@@ -948,13 +976,13 @@ fn resolve_stroke_style(
         });
     }
     let auto_stroke_color = contrasting_stroke_color(text_color);
-    if let Some(pred) = font_prediction
-        && pred.stroke_width_px > 0.0
-    {
-        return Some(RenderStrokeOptions {
-            color: auto_stroke_color,
-            width_px: pred.stroke_width_px,
-        });
+    if let Some(pred) = font_prediction {
+        return (pred.stroke_width_px.is_finite() && pred.stroke_width_px > 0.0).then_some(
+            RenderStrokeOptions {
+                color: auto_stroke_color,
+                width_px: pred.stroke_width_px,
+            },
+        );
     }
     Some(RenderStrokeOptions {
         color: auto_stroke_color,
@@ -1092,6 +1120,195 @@ mod tests {
                 .expect("predicted stroke should be present");
         assert_eq!(stroke.color, [0, 0, 0, 255]);
         assert_eq!(stroke.width_px, 3.0);
+    }
+
+    #[test]
+    fn predicted_zero_stroke_remains_unstroked() {
+        let prediction = FontPrediction {
+            stroke_width_px: 0.0,
+            ..Default::default()
+        };
+
+        assert!(
+            resolve_stroke_style(Some(&prediction), None, None, 18.0, [0, 0, 0, 255]).is_none()
+        );
+    }
+
+    #[test]
+    fn render_page_keeps_horizontal_stroke_inside_sprite() -> Result<()> {
+        let sprite = render_stroked_test_block(TextDirection::Horizontal)?;
+
+        assert_transparent_sprite_border(&sprite);
+        Ok(())
+    }
+
+    #[test]
+    fn render_page_keeps_vertical_stroke_inside_sprite() -> Result<()> {
+        let sprite = render_stroked_test_block(TextDirection::Vertical)?;
+
+        assert_transparent_sprite_border(&sprite);
+        Ok(())
+    }
+
+    #[test]
+    fn render_page_padding_fits_non_bubble_sprite_inside_layout_box() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let layout_box = Transform {
+            x: 40.0,
+            y: 50.0,
+            width: 180.0,
+            height: 90.0,
+            rotation_deg: 0.0,
+        };
+        let block = stroked_renderer_block(
+            &renderer,
+            TextDirection::Horizontal,
+            layout_box,
+            "A longer translated product title",
+            None,
+            4.0,
+        )?;
+
+        let rendered = render_single_test_block(&renderer, block, None)?;
+        let transform = rendered
+            .expanded_transform
+            .expect("rendered sprite should have a transform");
+
+        assert_transparent_sprite_border(&rendered.sprite.to_rgba8());
+        assert!(transform.x >= layout_box.x - FIT_EPSILON);
+        assert!(transform.y >= layout_box.y - FIT_EPSILON);
+        assert!(transform.x + transform.width <= layout_box.x + layout_box.width + FIT_EPSILON);
+        assert!(transform.y + transform.height <= layout_box.y + layout_box.height + FIT_EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn render_page_padding_fits_bubble_sprite_inside_mask() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let mut bubble_mask = GrayImage::from_pixel(320, 320, Luma([0u8]));
+        paint_rect(&mut bubble_mask, 20, 20, 300, 300, 1);
+        let block = stroked_renderer_block(
+            &renderer,
+            TextDirection::Horizontal,
+            Transform {
+                x: 100.0,
+                y: 100.0,
+                width: 80.0,
+                height: 50.0,
+                rotation_deg: 0.0,
+            },
+            "Bubble translated product title",
+            None,
+            4.0,
+        )?;
+
+        let rendered = render_single_test_block(&renderer, block, Some(&bubble_mask))?;
+        let transform = rendered
+            .expanded_transform
+            .expect("rendered sprite should have a transform");
+        let sprite = rendered.sprite.to_rgba8();
+
+        assert_transparent_sprite_border(&sprite);
+        assert!(!sprite_collides_with_bubble_mask(
+            &sprite,
+            &transform,
+            &bubble_mask,
+            1,
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn render_page_padding_keeps_sprite_centered() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let layout_box = Transform {
+            x: 40.0,
+            y: 50.0,
+            width: 180.0,
+            height: 100.0,
+            rotation_deg: 0.0,
+        };
+        let block = stroked_renderer_block(
+            &renderer,
+            TextDirection::Horizontal,
+            layout_box,
+            "Centered",
+            Some(36.0),
+            4.0,
+        )?;
+
+        let rendered = render_single_test_block(&renderer, block, None)?;
+        let transform = rendered
+            .expanded_transform
+            .expect("rendered sprite should have a transform");
+
+        assert!(
+            (transform.x + transform.width * 0.5 - (layout_box.x + layout_box.width * 0.5)).abs()
+                <= 0.5
+        );
+        assert!(
+            (transform.y + transform.height * 0.5 - (layout_box.y + layout_box.height * 0.5)).abs()
+                <= 0.5
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tiny_layout_box_with_stroke_does_not_panic() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let block = stroked_renderer_block(
+            &renderer,
+            TextDirection::Horizontal,
+            Transform {
+                x: 10.0,
+                y: 10.0,
+                width: 4.0,
+                height: 4.0,
+                rotation_deg: 0.0,
+            },
+            "T",
+            None,
+            8.0,
+        )?;
+
+        let rendered = render_single_test_block(&renderer, block, None)?;
+
+        assert!(rendered.sprite.width() > 0);
+        assert!(rendered.sprite.height() > 0);
+        Ok(())
+    }
+
+    #[test]
+    fn stroke_padding_ignores_none_zero_transparent_and_non_finite() {
+        assert_eq!(stroke_padding(None), 0.0);
+        assert_eq!(
+            stroke_padding(Some(RenderStrokeOptions {
+                color: [0, 0, 0, 255],
+                width_px: 0.0,
+            })),
+            0.0
+        );
+        assert_eq!(
+            stroke_padding(Some(RenderStrokeOptions {
+                color: [0, 0, 0, 0],
+                width_px: 4.0,
+            })),
+            0.0
+        );
+        assert_eq!(
+            stroke_padding(Some(RenderStrokeOptions {
+                color: [0, 0, 0, 255],
+                width_px: f32::NAN,
+            })),
+            0.0
+        );
+        assert_eq!(
+            stroke_padding(Some(RenderStrokeOptions {
+                color: [0, 0, 0, 255],
+                width_px: 4.25,
+            })),
+            8.0
+        );
     }
 
     #[test]
@@ -1439,7 +1656,102 @@ mod tests {
 
     fn any_system_font() -> Font {
         let mut book = FontBook::new();
-        let preferred = [
+        let post_script_name = test_font_post_script_name(&book.all_families());
+        book.query(&post_script_name)
+            .expect("failed to load system font")
+    }
+
+    fn render_stroked_test_block(direction: TextDirection) -> Result<RgbaImage> {
+        let renderer = Renderer::new()?;
+        let transform = match direction {
+            TextDirection::Horizontal => Transform {
+                x: 40.0,
+                y: 40.0,
+                width: 220.0,
+                height: 100.0,
+                rotation_deg: 0.0,
+            },
+            TextDirection::Vertical => Transform {
+                x: 40.0,
+                y: 40.0,
+                width: 100.0,
+                height: 220.0,
+                rotation_deg: 0.0,
+            },
+        };
+        let block =
+            stroked_renderer_block(&renderer, direction, transform, "STROKE", Some(48.0), 4.0)?;
+
+        Ok(render_single_test_block(&renderer, block, None)?
+            .sprite
+            .to_rgba8())
+    }
+
+    fn stroked_renderer_block(
+        renderer: &Renderer,
+        direction: TextDirection,
+        transform: Transform,
+        translation: &str,
+        font_size: Option<f32>,
+        stroke_width: f32,
+    ) -> Result<RenderBlockInput> {
+        let font = test_font_post_script_name(
+            &renderer
+                .fontbook
+                .lock()
+                .expect("failed to lock renderer fontbook")
+                .all_families(),
+        );
+
+        Ok(RenderBlockInput {
+            node_id: NodeId::new(),
+            transform,
+            translation: translation.to_string(),
+            style: Some(TextStyle {
+                font_families: vec![font],
+                font_size,
+                color: [255, 255, 255, 255],
+                effect: None,
+                stroke: Some(TextStrokeStyle {
+                    enabled: true,
+                    color: [0, 0, 0, 255],
+                    width_px: Some(stroke_width),
+                }),
+                text_align: None,
+            }),
+            font_prediction: None,
+            source_direction: Some(direction),
+            rendered_direction: None,
+            lock_layout_box: false,
+            preserve_explicit_lines: false,
+        })
+    }
+
+    fn render_single_test_block(
+        renderer: &Renderer,
+        block: RenderBlockInput,
+        bubble_mask: Option<&GrayImage>,
+    ) -> Result<RenderedBlock> {
+        let bubble_mask = bubble_mask.cloned().map(DynamicImage::ImageLuma8);
+        let output = renderer.render_page(
+            &DynamicImage::new_rgba8(320, 320),
+            None,
+            bubble_mask.as_ref(),
+            320,
+            320,
+            &[block],
+            &PageRenderOptions::default(),
+        )?;
+
+        Ok(output
+            .blocks
+            .into_iter()
+            .next()
+            .expect("test block should render"))
+    }
+
+    fn test_font_post_script_name(faces: &[FaceInfo]) -> String {
+        [
             "Yu Gothic",
             "MS Gothic",
             "Noto Sans CJK JP",
@@ -1447,38 +1759,64 @@ mod tests {
             "Arial",
             "DejaVu Sans",
             "Liberation Sans",
-        ];
+        ]
+        .into_iter()
+        .find_map(|name| face_post_script_name(faces, name))
+        .or_else(|| {
+            faces
+                .iter()
+                .find(|face| !face.post_script_name.is_empty())
+                .map(|face| face.post_script_name.clone())
+        })
+        .expect("no system font available for tests")
+    }
 
-        for name in preferred {
-            if let Some(post_script_name) = book
-                .all_families()
-                .into_iter()
-                .find(|face| {
-                    face.post_script_name == name
-                        || face
-                            .families
-                            .iter()
-                            .any(|(family, _)| family.as_str() == name)
-                })
-                .map(|face| face.post_script_name)
-                .filter(|post_script_name| !post_script_name.is_empty())
-                && let Ok(font) = book.query(&post_script_name)
-            {
-                return font;
-            }
-        }
+    fn assert_transparent_sprite_border(sprite: &RgbaImage) {
+        assert!(sprite.width() > 2 && sprite.height() > 2);
+        let last_x = sprite.width() - 1;
+        let last_y = sprite.height() - 1;
+        let top = (0..sprite.width())
+            .filter(|&x| sprite.get_pixel(x, 0).0[3] != 0)
+            .count();
+        let bottom = (0..sprite.width())
+            .filter(|&x| sprite.get_pixel(x, last_y).0[3] != 0)
+            .count();
+        let left = (0..sprite.height())
+            .filter(|&y| sprite.get_pixel(0, y).0[3] != 0)
+            .count();
+        let right = (0..sprite.height())
+            .filter(|&y| sprite.get_pixel(last_x, y).0[3] != 0)
+            .count();
+        let left_columns = (0..sprite.width().min(8))
+            .map(|x| {
+                (0..sprite.height())
+                    .filter(|&y| sprite.get_pixel(x, y).0[3] != 0)
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        let right_columns = (sprite.width().saturating_sub(8)..sprite.width())
+            .map(|x| {
+                (0..sprite.height())
+                    .filter(|&y| sprite.get_pixel(x, y).0[3] != 0)
+                    .count()
+            })
+            .collect::<Vec<_>>();
+        let left_max_alpha = (0..sprite.height())
+            .map(|y| sprite.get_pixel(0, y).0[3])
+            .max()
+            .unwrap_or(0);
+        let right_max_alpha = (0..sprite.height())
+            .map(|y| sprite.get_pixel(last_x, y).0[3])
+            .max()
+            .unwrap_or(0);
 
-        if let Some(face) = book
-            .all_families()
-            .into_iter()
-            .find(|face| !face.post_script_name.is_empty())
-        {
-            return book
-                .query(&face.post_script_name)
-                .expect("failed to load first system font");
-        }
-
-        panic!("no system font available for tests");
+        assert_eq!(
+            (top, bottom, left, right),
+            (0, 0, 0, 0),
+            "non-transparent border pixels in {}x{} sprite; left={left_columns:?} max={left_max_alpha}; right={right_columns:?} max={right_max_alpha}",
+            sprite.width(),
+            sprite.height()
+        );
     }
 
     #[test]

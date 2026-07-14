@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -55,6 +55,71 @@ function sceneWithTextNodes(nodes: any[]) {
       },
       project: { name: 'Proj' },
     },
+  }
+}
+
+function fullyStyledTextNodes() {
+  return [
+    {
+      id: 't1',
+      kind: {
+        text: {
+          style: {
+            fontFamilies: ['Arial'],
+            fontSize: 18,
+            color: [1, 2, 3, 255],
+            effect: { bold: true, italic: false },
+            stroke: { enabled: true, color: [7, 8, 9, 255], widthPx: 1.5 },
+            textAlign: 'left',
+          },
+        },
+      },
+    },
+    {
+      id: 't2',
+      kind: {
+        text: {
+          style: {
+            fontFamilies: ['Roboto'],
+            fontSize: 24,
+            color: [4, 5, 6, 255],
+            effect: { bold: false, italic: true },
+            stroke: { enabled: false, color: [10, 11, 12, 255], widthPx: 2.5 },
+            textAlign: 'center',
+          },
+        },
+      },
+    },
+    {
+      id: 't3',
+      kind: {
+        text: {
+          style: {
+            fontFamilies: ['Custom'],
+            fontSize: 30,
+            color: [13, 14, 15, 255],
+            effect: { bold: true, italic: true },
+            stroke: { enabled: true, color: [16, 17, 18, 255], widthPx: 3.5 },
+            textAlign: 'right',
+          },
+        },
+      },
+    },
+  ]
+}
+
+function expectBatchStyleUpdate(update: Record<string, unknown>) {
+  const sourceById = new Map(
+    fullyStyledTextNodes().map((node) => [node.id, node.kind.text.style] as const),
+  )
+  const op = vi.mocked(sceneActions.applyOp).mock.calls[0][0] as any
+  expect(op.batch.ops).toHaveLength(3)
+  for (const child of op.batch.ops) {
+    const id = child.updateNode.id as string
+    expect(child.updateNode.patch.data.text.style).toEqual({
+      ...sourceById.get(id),
+      ...update,
+    })
   }
 }
 
@@ -386,5 +451,87 @@ describe('RenderControlsPanel Font Assignment', () => {
     const op = (sceneActions.applyOp as any).mock.calls[0][0]
     expect(op.updateNode.id).toBe('t1')
     expect(op.updateNode.patch.data.text.style.color).toEqual([0, 0, 0, 255])
+  })
+
+  it('batch font update preserves every other explicit style field', async () => {
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithTextNodes(fullyStyledTextNodes())),
+      ),
+    )
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().selectMany(['t1', 't2', 't3'])
+
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    await userEvent.click(await screen.findByText('Roboto'))
+
+    await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalledTimes(1))
+    expectBatchStyleUpdate({ fontFamilies: ['Roboto'] })
+    expect(sceneActions.runAutoRenderNow).toHaveBeenCalledTimes(1)
+    expect(sceneActions.runAutoRenderNow).toHaveBeenCalledWith('p1')
+    expect(sceneActions.queueAutoRender).not.toHaveBeenCalled()
+  })
+
+  it('batch font-size update preserves every other explicit style field', async () => {
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithTextNodes(fullyStyledTextNodes())),
+      ),
+    )
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().selectMany(['t1', 't2', 't3'])
+
+    fireEvent.change(await screen.findByTestId('render-font-size'), {
+      target: { value: '42' },
+    })
+
+    await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalledTimes(1))
+    expectBatchStyleUpdate({ fontSize: 42 })
+    expect(sceneActions.queueAutoRender).toHaveBeenCalledTimes(1)
+    expect(sceneActions.queueAutoRender).toHaveBeenCalledWith('p1')
+    expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
+  })
+
+  it('batch color update preserves every other explicit style field', async () => {
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithTextNodes(fullyStyledTextNodes())),
+      ),
+    )
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().selectMany(['t1', 't2', 't3'])
+
+    await userEvent.click(await screen.findByTestId('render-color-trigger'))
+    fireEvent.change(await screen.findByTestId('render-color-input'), {
+      target: { value: '#123456' },
+    })
+
+    await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalledTimes(1))
+    expectBatchStyleUpdate({ color: [18, 52, 86, 255] })
+    expect(sceneActions.queueAutoRender).toHaveBeenCalledTimes(1)
+    expect(sceneActions.queueAutoRender).toHaveBeenCalledWith('p1')
+    expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
+  })
+
+  it('batch stroke update applies one complete stroke and preserves other style fields', async () => {
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithTextNodes(fullyStyledTextNodes())),
+      ),
+    )
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().selectMany(['t1', 't2', 't3'])
+
+    fireEvent.change(await screen.findByTestId('render-stroke-width'), {
+      target: { value: '5.5' },
+    })
+
+    await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalledTimes(1))
+    expectBatchStyleUpdate({
+      stroke: { enabled: true, color: [7, 8, 9, 255], widthPx: 5.5 },
+    })
+    expect(sceneActions.queueAutoRender).toHaveBeenCalledTimes(1)
+    expect(sceneActions.queueAutoRender).toHaveBeenCalledWith('p1')
+    expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
   })
 })
