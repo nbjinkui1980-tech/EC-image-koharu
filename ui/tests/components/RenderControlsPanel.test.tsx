@@ -144,6 +144,8 @@ describe('RenderControlsPanel Font Assignment', () => {
                     fontFamilies: ['Arial'],
                     fontSize: 18,
                     color: [1, 2, 3, 255],
+                    effect: { bold: true, italic: false },
+                    stroke: { enabled: true, color: [7, 8, 9, 255], widthPx: 2 },
                     textAlign: 'left',
                   },
                 },
@@ -157,6 +159,8 @@ describe('RenderControlsPanel Font Assignment', () => {
                     fontFamilies: ['Arial'],
                     fontSize: 24,
                     color: [4, 5, 6, 255],
+                    effect: { bold: false, italic: true },
+                    stroke: { enabled: false, color: [10, 11, 12, 255], widthPx: 0 },
                     textAlign: 'right',
                   },
                 },
@@ -182,6 +186,7 @@ describe('RenderControlsPanel Font Assignment', () => {
 
     await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalled())
     expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
+    expect(usePreferencesStore.getState().defaultFont).toBe('Arial')
     finishApply?.()
     await waitFor(() => expect(sceneActions.runAutoRenderNow).toHaveBeenCalledWith('p1'))
 
@@ -193,12 +198,16 @@ describe('RenderControlsPanel Font Assignment', () => {
       fontFamilies: ['Custom'],
       fontSize: 18,
       color: [1, 2, 3, 255],
+      effect: { bold: true, italic: false },
+      stroke: { enabled: true, color: [7, 8, 9, 255], widthPx: 2 },
       textAlign: 'left',
     })
     expect(op.batch.ops[1].updateNode.patch.data.text.style).toMatchObject({
       fontFamilies: ['Custom'],
       fontSize: 24,
       color: [4, 5, 6, 255],
+      effect: { bold: false, italic: true },
+      stroke: { enabled: false, color: [10, 11, 12, 255], widthPx: 0 },
       textAlign: 'right',
     })
   })
@@ -263,6 +272,61 @@ describe('RenderControlsPanel Font Assignment', () => {
     )
     expect(usePreferencesStore.getState().defaultFont).toBe('Arial')
     expect(sceneActions.applyOp).not.toHaveBeenCalled()
+    expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
+  })
+
+  it('downloads a Google font before applying and rendering it', async () => {
+    const events: string[] = []
+    server.use(
+      http.get('/api/v1/fonts', () =>
+        HttpResponse.json([
+          { familyName: 'Arial', postScriptName: 'Arial', source: 'system', cached: true },
+          {
+            familyName: 'Cloud',
+            postScriptName: 'Cloud:400',
+            source: 'google',
+            cached: false,
+          },
+        ]),
+      ),
+      http.post('/api/v1/google-fonts/:family/fetch', () => {
+        events.push('download')
+        return HttpResponse.json({})
+      }),
+    )
+    vi.mocked(sceneActions.applyOp).mockImplementationOnce(async () => {
+      events.push('apply')
+    })
+    vi.mocked(sceneActions.runAutoRenderNow).mockImplementationOnce(async () => {
+      expect(usePreferencesStore.getState().defaultFont).toBe('Cloud:400')
+      events.push('render')
+    })
+
+    renderWithQuery(<RenderControlsPanel />)
+
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    await userEvent.click(await screen.findByText('Cloud'))
+
+    await waitFor(() => expect(events.at(-1)).toBe('render'))
+    const applyIndex = events.indexOf('apply')
+    expect(events).toContain('download')
+    expect(events.slice(0, applyIndex).every((event) => event === 'download')).toBe(true)
+    expect(events.slice(applyIndex)).toEqual(['apply', 'render'])
+    expect(usePreferencesStore.getState().defaultFont).toBe('Cloud:400')
+  })
+
+  it('preserves the global font and skips rendering when the scene update fails', async () => {
+    vi.mocked(sceneActions.applyOp).mockRejectedValueOnce(new Error('scene apply failed'))
+
+    renderWithQuery(<RenderControlsPanel />)
+
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    await userEvent.click(await screen.findByText('Custom'))
+
+    await waitFor(() =>
+      expect(useEditorUiStore.getState().error?.message).toContain('scene apply failed'),
+    )
+    expect(usePreferencesStore.getState().defaultFont).toBe('Arial')
     expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
   })
 

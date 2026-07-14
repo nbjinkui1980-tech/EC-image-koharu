@@ -269,7 +269,7 @@
     "readingOrderRtl": "Right-to-Left (RTL)",
     "readingOrderLtr": "Left-to-Right (LTR)",
     "readingOrderCustom": "Custom",
-    "mixedGeometryWarning": "Mixed Chinese and non-Chinese lines need per-line geometry before generating."
+    "mixedGeometryWarning": "Han-only mode skipped this text box because English words and Chinese do not have reliable separate coordinates. English will not be erased. Run PaddleOCR-VL again so PP-OCRv5 can generate word boxes, or split the languages into separate text boxes."
   },
   "workspace": {
     "importPrompt": "Import a page to begin editing.",

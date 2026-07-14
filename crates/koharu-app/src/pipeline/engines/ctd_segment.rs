@@ -236,12 +236,12 @@ mod tests {
     }
 
     #[test]
-    fn segment_dispatch_finalizes_to_han_line_support() {
+    fn segment_dispatch_word_box_inline_mixed_keeps_english_roi_zero() {
         let quad = |x1, y1, x2, y2| [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
         let (scene, page) = scene_with_texts(vec![(
             transform(),
             text(
-                Some("English\n中文"),
+                Some("Peach\n蜜桃臀"),
                 Some(vec![quad(2.0, 1.0, 30.0, 7.0), quad(2.0, 9.0, 30.0, 15.0)]),
             ),
         )]);

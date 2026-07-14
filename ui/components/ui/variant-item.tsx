@@ -16,6 +16,7 @@ export function VariantItem({ variant, label }: VariantItemProps) {
     variant.source === 'google' ? variant.postScriptName : variant.familyName,
     variant.source,
     true,
+    variant.cached,
   )
 
   const variantInfo = useMemo(() => {

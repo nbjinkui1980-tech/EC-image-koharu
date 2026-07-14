@@ -17,6 +17,8 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 image = { workspace = true }
 imageproc = { workspace = true }
+ocrs-cjk = { workspace = true }
+rten = { workspace = true }
 candle-core = { workspace = true }
 candle-transformers = { workspace = true }
 candle-nn = { workspace = true }

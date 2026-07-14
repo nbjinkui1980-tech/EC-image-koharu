@@ -1044,7 +1044,10 @@ fn find_input(blocks: &[RenderBlockInput], id: NodeId) -> &RenderBlockInput {
         .expect("rendered_block must have matching input")
 }
 
-fn placement_origin(input: &RenderBlockInput, expanded: &Option<Transform>) -> (f32, f32) {
+pub(crate) fn placement_origin(
+    input: &RenderBlockInput,
+    expanded: &Option<Transform>,
+) -> (f32, f32) {
     if let Some(t) = expanded {
         (t.x.round(), t.y.round())
     } else {

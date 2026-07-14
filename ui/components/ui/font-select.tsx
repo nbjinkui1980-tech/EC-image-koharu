@@ -6,7 +6,7 @@ import { useRef, useState, useMemo, useCallback, useEffect } from 'react'
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
-import { fetchGoogleFont, getGetGoogleFontFileUrl } from '@/lib/api'
+import { getGetGoogleFontFileUrl } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
 const ITEM_HEIGHT = 28
@@ -37,26 +37,27 @@ type FontSelectProps = {
   'data-testid'?: string
 }
 
-export function useGoogleFontPreview(family: string, source: string, isVisible: boolean) {
+export function useGoogleFontPreview(
+  family: string,
+  source: string,
+  isVisible: boolean,
+  cached: boolean,
+) {
   const [state, setState] = useState<FontLoadState>(source === 'system' ? 'ready' : 'idle')
   const stateRef = useRef(state)
   stateRef.current = state
 
   useEffect(() => {
-    if (source !== 'google' || !isVisible || stateRef.current !== 'idle') return
+    if (source !== 'google' || !cached || !isVisible || stateRef.current !== 'idle') return
 
     let cancelled = false
     setState('loading')
 
-    fetchGoogleFont(encodeURIComponent(family))
-      .then(() => {
-        if (cancelled) return
-        const url = getGetGoogleFontFileUrl(encodeURIComponent(family), 'file')
-        // Sanitize name for browser (replace : with -)
-        const safeName = family.replace(':', '-')
-        const face = new FontFace(safeName, `url(${url})`)
-        return face.load()
-      })
+    const url = getGetGoogleFontFileUrl(encodeURIComponent(family), 'file')
+    const safeName = family.replace(':', '-')
+    const face = new FontFace(safeName, `url(${url})`)
+    face
+      .load()
       .then((face) => {
         if (cancelled || !face) return
         document.fonts.add(face)
@@ -70,7 +71,7 @@ export function useGoogleFontPreview(family: string, source: string, isVisible: 
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [family, source, isVisible])
+  }, [family, source, isVisible, cached])
 
   return state
 }
@@ -96,6 +97,7 @@ function FontRow({
     font.source === 'google' ? font.postScriptName : font.familyName,
     font.source,
     isVisible,
+    font.cached,
   )
 
   const variantInfo = useMemo(() => {

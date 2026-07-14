@@ -180,4 +180,30 @@ mod tests {
         assert_eq!(calls.get(), 1);
         assert_eq!(result.to_rgb8(), image.to_rgb8());
     }
+
+    #[test]
+    fn flux2_inpaint_dispatch_skips_empty_han_targets() {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(16, 12, Rgb([1, 2, 3])));
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_pixel(16, 12, Luma([255])));
+        let bubble = DynamicImage::ImageLuma8(GrayImage::new(16, 12));
+        let calls = Cell::new(0);
+
+        let output = dispatch_flux2_inpaint(
+            &image,
+            &mask,
+            &bubble,
+            &[],
+            &[],
+            SourceTextPolicy::HanOnly,
+            None,
+            |frame, _, _| {
+                calls.set(calls.get() + 1);
+                Ok(frame.clone())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(calls.get(), 0);
+        assert_eq!(output.to_rgb8(), image.to_rgb8());
+    }
 }

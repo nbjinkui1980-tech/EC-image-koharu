@@ -33,15 +33,32 @@ import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
 const HAN_PATTERN = /\p{Script=Han}/u
+const LATIN_PATTERN = /\p{Script=Latin}/u
+const LETTER_PATTERN = /\p{Letter}/u
 
-export function lacksMixedLineGeometry(data: TextData): boolean {
+function hasProtectedLatinWord(text: string): boolean {
+  let letters = 0
+  for (const char of text) {
+    if (LATIN_PATTERN.test(char) && LETTER_PATTERN.test(char)) letters += 1
+    else if ((char === '-' || char === "'" || char === '’') && letters > 0) continue
+    else {
+      if (letters >= 2) return true
+      letters = 0
+    }
+  }
+  return letters >= 2
+}
+
+function blocksHanOnlyGenerate(data: TextData): boolean {
   const lines = (data.text ?? '')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
+  if (lines.some((line) => HAN_PATTERN.test(line) && hasProtectedLatinWord(line))) return true
   const hanLineCount = lines.filter((line) => HAN_PATTERN.test(line)).length
-  const isMixed = hanLineCount > 0 && hanLineCount < lines.length
-  return isMixed && data.linePolygons?.length !== lines.length
+  if (hanLineCount === 0) return true
+  if (hanLineCount === lines.length) return false
+  return data.linePolygons?.length !== lines.length
 }
 
 export function TextBlocksPanel() {
@@ -206,7 +223,7 @@ export function TextBlocksPanel() {
                   onGenerate={() => void generate(node.id)}
                   processing={isProcessing}
                   llmReady={llmReady}
-                  unsupportedMixedGeometry={hanOnly && lacksMixedLineGeometry(node.data)}
+                  hanOnlyBlocked={hanOnly && blocksHanOnlyGenerate(node.data)}
                 />
               ))}
             </Accordion>
@@ -227,7 +244,7 @@ type BlockCardProps = {
   onGenerate: () => void
   processing: boolean
   llmReady: boolean
-  unsupportedMixedGeometry: boolean
+  hanOnlyBlocked: boolean
 }
 
 function BlockCard({
@@ -240,7 +257,7 @@ function BlockCard({
   onGenerate,
   processing,
   llmReady,
-  unsupportedMixedGeometry,
+  hanOnlyBlocked,
 }: BlockCardProps) {
   const { t } = useTranslation()
   const data = node.data
@@ -298,7 +315,7 @@ function BlockCard({
             )}
           </div>
         </AccordionTrigger>
-        {unsupportedMixedGeometry && (
+        {hanOnlyBlocked && (
           <p
             data-testid={`textblock-geometry-warning-${index}`}
             className='border-t border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-300'
@@ -317,7 +334,16 @@ function BlockCard({
                 value={data.text ?? ''}
                 placeholder={t('textBlocks.addOcrPlaceholder')}
                 rows={2}
-                onValueChange={(value) => onPatch({ text: value })}
+                onValueChange={(value) =>
+                  onPatch({
+                    text: value,
+                    linePolygons: null,
+                    translation: null,
+                    sprite: null,
+                    spriteTransform: null,
+                    renderedDirection: null,
+                  })
+                }
                 className='min-h-0 resize-none px-1.5 py-1 text-xs'
               />
             </div>
@@ -352,7 +378,7 @@ function BlockCard({
                         aria-label={t('llm.generateTooltip')}
                         variant='ghost'
                         size='icon-xs'
-                        disabled={!llmReady || processing || unsupportedMixedGeometry}
+                        disabled={!llmReady || processing || hanOnlyBlocked}
                         onClick={onGenerate}
                         className='size-5'
                       >

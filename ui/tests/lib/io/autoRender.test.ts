@@ -67,6 +67,35 @@ describe('queueAutoRender', () => {
     expect(pipelinePosts).toBe(1)
   })
 
+  it('runAutoRenderNow skips when no renderer is configured', async () => {
+    let pipelinePosts = 0
+    server.use(
+      http.get('/api/v1/config', () => HttpResponse.json({ pipeline: {} })),
+      http.post('/api/v1/pipelines', () => {
+        pipelinePosts += 1
+        return HttpResponse.json({ operationId: 'op-unexpected' })
+      }),
+    )
+
+    await runAutoRenderNow('p-1')
+
+    expect(pipelinePosts).toBe(0)
+    expect(useEditorUiStore.getState().error).toBeUndefined()
+  })
+
+  it('runAutoRenderNow surfaces config failures through the editor error state', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ message: 'config unavailable' }, { status: 500 }),
+      ),
+    )
+
+    await expect(runAutoRenderNow('p-1')).resolves.toBeUndefined()
+
+    expect(useEditorUiStore.getState().error?.message).toContain('config unavailable')
+  })
+
   it('runAutoRenderNow surfaces pipeline failures through the editor error state', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined)
     server.use(

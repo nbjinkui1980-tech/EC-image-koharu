@@ -236,7 +236,7 @@
     "readingOrderRtl": "從右至左 (RTL)",
     "readingOrderLtr": "從左至右 (LTR)",
     "readingOrderCustom": "自定義",
-    "mixedGeometryWarning": "中英文混排文字缺少逐行位置，無法安全產生。"
+    "mixedGeometryWarning": "僅中文模式已略過此文字框：沒有可靠座標可分離英文單字與中文。英文不會被擦除；請重新執行 PaddleOCR-VL，讓 PP-OCRv5 產生單字框，或把中英文拆成獨立文字框。"
   },
   "workspace": {
     "importPrompt": "匯入頁面以開始編輯。",

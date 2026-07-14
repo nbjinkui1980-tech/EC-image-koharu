@@ -1,22 +1,24 @@
-# 字体应用、即时渲染与混合文本提示 Implementation Plan
+# 字体应用、即时渲染与中英混合文本保护 Implementation Plan
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 选择字体后立即在当前桌面画布看到真实渲染结果；未选择文本框时把字体应用到当前页全部文本框，已选择时只修改选中框；对缺少可靠逐行几何的中英混合文本给出明确、可操作的安全提示。
+**Goal:** 选择字体后立即在当前桌面画布看到真实渲染结果；未选择文本框时把字体应用到当前页全部文本框，已选择时只修改选中框；纯英文行不进入后续流程，`S型曲线` 这类单字母标记随中文整行处理，而包含完整英文词的中英同排内容只擦除、翻译和重绘中文区域并保留英文原像素。
 
-**Architecture:** 保留后端 Scene 为唯一事实来源。离散字体选择先提交 `Op`，再复用现有 renderer pipeline 立即重渲染；输入、滑杆等连续编辑继续使用 500ms debounce。字体批量操作只修改 `fontFamilies`，保留每个文本框的字号、颜色、描边、效果和对齐。当前 OCR 只返回节点级文本，不产生逐行几何，因此不伪造 `linePolygons`；HanOnly 下缺少可靠逐行几何的混合文本继续由后端安全跳过，并在文本块面板显示原因与处理建议。
+**Architecture:** 保留后端 Scene 为唯一事实来源。离散字体选择先提交 `Op`，再复用现有 renderer pipeline 立即重渲染；输入、滑杆等连续编辑继续使用 500ms debounce。字体批量操作只修改 `fontFamilies`，保留每个文本框的字号、颜色、描边、效果和对齐。电商流程固定遵守 HanOnly：纯英文节点在 Segment 前短路；已有逐行 polygon 继续按行过滤；同一视觉行同时含完整英文词和中文时，PaddleOCR-VL 提供权威正文，跨平台 PP-OCRv5 提供 word boxes，经严格校验后写回现有 `text + linePolygons` 下游链路。词框无法形成完整、无歧义且安全的英文/中文分区时，清除该候选的旧逐行几何并让整个节点停止，不按字符宽度猜坐标。
 
-**Tech Stack:** React 19、TypeScript、Zustand、TanStack Query、Vitest、Testing Library、MSW、Bun、Rust/Tauri（只做回归验证）。
+**Tech Stack:** React 19、TypeScript、Zustand、TanStack Query、Vitest、Testing Library、MSW、Bun、Rust/Tauri、PaddleOCR-VL 1.6、PP-OCRv5 server ONNX、`ocrs-cjk`、纯 Rust RTen。
 
 ---
 
-## 已核实的当前行为
+## 已核实的当前行为与剩余缺口
 
-- `RenderControlsPanel.tsx` 在有选择时写入节点 `style.fontFamilies`，没有选择时只写 `preferences.defaultFont`，因此“全局”不会改变当前页已有文本节点。
-- 所有样式修改都调用 `queueAutoRender()`，其固定等待 500ms；调用失败只写 `console.error`，用户无法立即确认字体是否真正渲染。
-- Renderer 仅在节点 `style.font_families` 为空时使用 `defaultFont`。已有显式字体的节点不会被新的全局默认字体覆盖。
-- 节点颜色、描边、字号和字体预测独立解析。统一字体不应顺便覆盖这些视觉属性。
-- PaddleOCR-VL 和 MIT48px OCR 都只回写节点级 `text`，没有输出逐行坐标。后端 `eligible_text_lines()` 对中英混合节点要求数量匹配且安全的 `line_polygons`，缺失时返回 unsupported。这是防止英文被擦除的安全边界，不能用等高切分或猜测框绕过。
+- `d852b7c3` 已实现 `runAutoRenderNow()`、字体全局/选中作用域、Google Font 失败短路、HanOnly 混合几何警告和九种语言 key。
+- 自动渲染测试实际位于 `ui/tests/lib/io/autoRender.test.ts`；本修订统一所有路径和命令，并要求核对实际执行数量，防止全部 skipped 但退出码为 0 的假绿。
+- 字体实现已按 `applyOp → runAutoRenderNow` 执行，但仍缺少 Google Font 下载成功顺序以及 `stroke/effect` 保持的明确回归断言。
+- UI 已覆盖缺少 polygon、匹配 polygon、纯中文和 AllText 兼容；现有纯英文测试锁定的是旧“可生成”行为，必须改为 HanOnly 下显示跳过状态并禁用 Generate，同时补充“polygon 数量不匹配”的独立测试。
+- 后端已有纯英文/unsupported 的 Segment 短路、共享空 mask、Lama dispatch 和空 Han Renderer 测试；Translator 有效几何 fixture、AOT 与 Flux2 生产 dispatch 短路仍需补齐，本计划不重复已有 Lama 覆盖。
+- 当前 `TextData.line_polygons` 只能描述整行，不能可靠区分同一视觉行内的英文词和中文。最新产品决定使用 PP-OCRv5 word boxes 补充几何，并由 PaddleOCR-VL 首轮正文做严格内容校验。
+- 当前 `eligible_text_lines()` 会把任何含 Han 的单行整体视为目标。必须只对“含完整英文词且仍未被可靠词框拆分”的行返回 unsupported；`S型曲线` 仍是合法整行目标。
 
 ## 范围与不变量
 
@@ -26,15 +28,19 @@
 - 字体变更后立即启动当前配置的 Renderer。
 - 自动渲染失败的可见错误提示。
 - HanOnly 下缺少逐行几何的中英混合节点状态提示。
+- 纯英文内容在 Segment、Translate、Inpaint、Renderer 前短路的现有后端回归。
+- PaddleOCR-VL 首轮 OCR 识别“完整英文词 + 中文”的同排内容后，仅对候选 crop 按需执行 PP-OCRv5 word-box 推理，并把严格校验后的可靠结果写回现有 `text + linePolygons`。
+- 中文逻辑单元进入 Segment、Translate、Inpaint、Renderer；纯英文逻辑单元保留 Source 原像素且不进入这些阶段。
 - UI 单元/组件测试及现有后端几何安全回归。
 
 ### Out of Scope
 
-- 不修改 OCR 模型、Detector、Segment、Translate、Inpaint 或 Renderer 排版算法。
+- 不修改 OCR 模型权重、现有 Detector、Inpaint 模型或 Renderer 排版算法；只增加 PP-OCRv5 几何适配和现有 HanOnly 下游入口。
 - 不生成虚假的 `linePolygons`，不把节点矩形等分为行框。
 - 不强制统一字号、颜色、描边、效果或对齐；这些仍由现有独立控件控制。
-- 不修改 HTTP 请求结构、OpenAPI schema、Rust Scene 类型或 `source_text_policy`。
-- 不新增依赖、Zustand store、Renderer trait、后端 DTO 或新 helper 文件。
+- 不修改 HTTP 请求结构、OpenAPI schema、Rust Scene 类型或 `source_text_policy`；词框结果继续写入已有 `TextData.text` 和 `line_polygons`。
+- 仅新增 PP-OCRv5 所需的 `ocrs-cjk`/`rten` 依赖和一个 `koharu-ml/src/pp_ocr_v5.rs` 适配模块；不新增 Zustand store、Renderer trait、持久化 Scene/API DTO、Provider fake 或通用 OCR 架构层。
+- 不删除 AllText 后端兼容模式；但电商 HanOnly UI 不把“切换 AllText”作为处理建议。
 
 ### 核心不变量
 
@@ -46,24 +52,30 @@
 - 立即渲染会取消尚未执行的 debounce timer，避免同一操作重复启动 Renderer。
 - 文本输入、字号、颜色等现有连续编辑仍走 debounce，不扩大本次立即渲染范围。
 - HanOnly 混合节点没有可靠逐行几何时不得猜测、不得翻译/擦除英文；UI 只显示安全状态和解决建议。
-- AllText 不受混合几何提示限制，继续使用现有节点级行为。
+- 纯英文节点不得调用 Segment inference、Provider、Inpaint backend 或 Renderer，最终可见像素保持 Source/Inpainted 基面。
+- “完整英文词”定义为同一连续 Latin 单元内至少两个字母，允许内部连字符或撇号；`AI智能` 中的 `AI`、`Peach蜜桃臀` 中的 `Peach` 必须保留，`S型曲线` 中的单字母 `S` 不属于受保护完整英文词，该整行必须擦除、翻译和重绘。
+- 有可靠逐行/word-box 几何的混合节点只处理含 Han 的逻辑单元；纯英文逻辑单元不得进入 mask、Provider 输入、Inpaint 或 Renderer。
+- 含完整英文词和中文的同一视觉行，Provider 只能收到中文逻辑单元；最终 Mask 在英文 polygon 内必须全零，最终 Rendered 在英文 polygon 内必须逐像素等于 Source/Inpainted 基面。
+- PP-OCRv5 只在 HanOnly 候选节点按需加载；英文必须与 PaddleOCR-VL 首轮正文精确一致，Han 必须保持相同字符数量和 Han 脚本形状；坐标必须有限、非退化、位于原 crop 内且英文/中文目标不重叠，并至少形成一个受保护英文单元及恰好一个含 Han 目标。任何条件失败都清除该候选旧 `line_polygons`，让共享 eligibility 将其判为 unsupported，后续模型调用次数为零。
+- 缺少、错配或不安全逐行几何的混合节点整体停止后续处理；允许清理旧 translation/sprite 等陈旧派生字段，但不得产生新的英文处理结果。
+- AllText 仅保留现有后端兼容行为，不作为电商流程入口、提示或绕过方案。
 
 ## Task 1：为现有自动渲染增加可等待的立即执行入口
 
 **Files:**
 
-- Modify: `ui/lib/io/scene.ts:91-129`
-- Test: `ui/tests/lib/io/scene.test.ts`
+- Modify: `ui/lib/io/scene.ts:92-144`
+- Test: `ui/tests/lib/io/autoRender.test.ts`
 
-### Step 1：先写失败测试
+### Step 1：补齐并校正现有回归测试
 
-在 `ui/tests/lib/io/scene.test.ts` 增加 `describe('auto render')`，通过 MSW 记录 `/api/v1/pipelines` 请求，并使用 fake timers 验证：
+在现有 `ui/tests/lib/io/autoRender.test.ts` 中通过 MSW 记录 `/api/v1/pipelines` 请求，并使用 fake timers 验证：
 
 1. `runAutoRenderNow('p1')` 立即读取 `/config` 并启动配置中的 renderer。
 2. 请求包含 `steps: ['koharu-renderer']`、`pages: ['p1']` 和当前 `defaultFont`。
 3. 先调用 `queueAutoRender('p1')` 再调用 `runAutoRenderNow('p1')`，推进 500ms 后仍只有一次 pipeline 请求。
-4. renderer 为空时不发 pipeline 请求。
-5. `/config` 或 `/pipelines` 失败时调用 `useEditorUiStore.getState().showError(...)`，且 Promise 正常结束，不产生未处理 rejection。
+4. `runAutoRenderNow()` 遇到 renderer 为空时不发 pipeline 请求；不能只测试 debounce 入口。
+5. `/config` 和 `/pipelines` 两种失败分别调用 `useEditorUiStore.getState().showError(...)`，且 Promise 正常结束，不产生未处理 rejection。
 
 测试名称固定为：
 
@@ -71,20 +83,21 @@
 runAutoRenderNow starts the configured renderer immediately
 runAutoRenderNow cancels the pending debounced render
 runAutoRenderNow skips when no renderer is configured
+runAutoRenderNow surfaces config failures through the editor error state
 runAutoRenderNow surfaces pipeline failures through the editor error state
 ```
 
-### Step 2：运行并确认预期失败
+### Step 2：运行完整测试文件并拒绝 skipped 假绿
 
 ```bash
-bun run --filter ui test -- tests/lib/io/scene.test.ts -t runAutoRenderNow
+bun run --filter ui test -- tests/lib/io/autoRender.test.ts
 ```
 
-预期：FAIL，原因是 `runAutoRenderNow` 尚未导出。
+预期：`Test Files 1 passed`，上述五个 `runAutoRenderNow` 测试全部实际执行；如果输出 `skipped` 或测试数量没有增加，则视为 FAIL，即使退出码为 0。
 
-### Step 3：实现最小共享执行路径
+### Step 3：仅在测试暴露回归时修正共享执行路径
 
-在 `ui/lib/io/scene.ts`：
+当前生产结构已存在。只有测试失败时才在 `ui/lib/io/scene.ts` 做以下最小修正：
 
 - 保留 `queueAutoRender(pageId)` 和 500ms debounce。
 - 把“读取配置并调用 renderer”保留为唯一私有执行函数。
@@ -132,18 +145,17 @@ export async function runAutoRenderNow(pageId: string): Promise<void> {
 ### Step 4：运行测试并确认通过
 
 ```bash
-bun run --filter ui test -- tests/lib/io/scene.test.ts -t runAutoRenderNow
-bun run --filter ui test -- tests/lib/io/scene.test.ts
+bun run --filter ui test -- tests/lib/io/autoRender.test.ts
 ```
 
-预期：新增测试和原有 scene 测试全部 PASS。
+预期：新增测试和原有 auto-render 测试全部 PASS。
 
 ### Step 5：提交边界
 
 仅在用户另行授权提交时执行：
 
 ```bash
-git add ui/lib/io/scene.ts ui/tests/lib/io/scene.test.ts
+git add ui/lib/io/scene.ts ui/tests/lib/io/autoRender.test.ts
 git commit -m "fix(ui): add immediate auto render execution"
 ```
 
@@ -151,10 +163,10 @@ git commit -m "fix(ui): add immediate auto render execution"
 
 **Files:**
 
-- Modify: `ui/components/panels/RenderControlsPanel.tsx:286-328,429-483`
+- Modify: `ui/components/panels/RenderControlsPanel.tsx:286-352,453-481`
 - Test: `ui/tests/components/RenderControlsPanel.test.tsx`
 
-### Step 1：先改测试为目标语义并确认失败
+### Step 1：补齐当前实现尚未覆盖的回归断言
 
 扩展 `vi.mock('@/lib/io/scene')`，同时 mock `runAutoRenderNow`。新增或替换测试：
 
@@ -165,6 +177,7 @@ changing a font preserves each node non-font style fields
 changing a font awaits applyOp before immediate render
 changing a font variant uses the same scope and immediate render behavior
 downloading a Google font completes before applying and rendering it
+failing to download a Google font stops before applying and rendering
 ```
 
 关键断言：
@@ -175,18 +188,20 @@ downloading a Google font completes before applying and rendering it
 - `runAutoRenderNow('p1')` 被调用一次，`queueAutoRender` 没有因字体操作被调用。
 - 用受控 Promise 暂停 `applyOp`，在 resolve 前断言 `runAutoRenderNow` 未调用；resolve 后才调用。
 - 输入节点使用不同的 `fontSize/color/stroke/effect/textAlign`，生成的每个 patch 只替换 `fontFamilies`，其他字段保持各自原值。
+- 用受控 Google Font fetch Promise 暂停下载，在 resolve 前断言 `applyOp`、`runAutoRenderNow` 均未调用；下载和 `invalidateScene()` 完成后才允许继续。
+- family/variant 操作后显式断言 `queueAutoRender` 未调用，避免立即渲染和 debounce 重复启动。
 
-### Step 2：运行并确认预期失败
+### Step 2：运行完整组件回归
 
 ```bash
-bun run --filter ui test -- tests/components/RenderControlsPanel.test.tsx -t "global font|selected font|font variant|Google font"
+bun run --filter ui test -- tests/components/RenderControlsPanel.test.tsx
 ```
 
-预期：FAIL。当前无选择路径只更新 `defaultFont`，并且字体操作只进入 debounce 队列。
+预期：完整测试文件执行且无 skipped。当前生产实现应满足目标；新测试若失败，只修正对应根因，不重写字体控件或新增抽象。
 
-### Step 3：让现有样式写入函数支持立即渲染
+### Step 3：核对现有样式写入顺序，仅在测试失败时最小修正
 
-把 `applyStyleToNodes` 改为返回 `Promise<void>`，增加一个默认 `false` 的 `immediate` 参数；不新增 DTO 或 helper 文件：
+当前 `applyStyleToNodes` 已返回 `Promise<void>` 并支持默认 `false` 的 `immediate` 参数。核对结构保持如下；只有测试失败时才修改，不新增 DTO 或 helper 文件：
 
 ```ts
 const applyStyleToNodes = async (
@@ -210,9 +225,9 @@ const applyStyleToNodes = async (
 - 字体 family/variant handler 使用 `await applyStyleToNodes(..., true)`。
 - 不复制 `buildStyleOp`，不新增专用 font-op 类型。
 
-### Step 4：统一 family 与 variant 的目标节点规则
+### Step 4：核对 family 与 variant 共用同一目标节点规则
 
-两个 handler 都按同一规则执行：
+两个 handler 已按同一规则执行；测试必须锁定以下行为：
 
 ```ts
 const targets = selectedNodes.length > 0 ? selectedNodes : textNodes
@@ -233,7 +248,7 @@ await applyStyleToNodes(targets, { fontFamilies: [postScriptName] }, 'Font updat
 
 ```bash
 bun run --filter ui test -- tests/components/RenderControlsPanel.test.tsx
-bun run --filter ui test -- tests/lib/io/scene.test.ts tests/components/RenderControlsPanel.test.tsx
+bun run --filter ui test -- tests/lib/io/autoRender.test.ts tests/components/RenderControlsPanel.test.tsx
 ```
 
 预期：全部 PASS；字体变化走立即渲染，其他样式编辑仍走 debounce。
@@ -247,115 +262,246 @@ git add ui/components/panels/RenderControlsPanel.tsx ui/tests/components/RenderC
 git commit -m "fix(ui): apply font scope and render immediately"
 ```
 
-## Task 3：显示 HanOnly 混合文本的安全跳过状态
+## Task 3：使用 PP-OCRv5 词框保护完整英文词，只处理同排中文
 
 **Files:**
 
-- Modify: `ui/lib/api/index.ts`
-- Modify: `ui/components/panels/TextBlocksPanel.tsx:25-35,184-196,206-362`
-- Test: `ui/tests/components/TextBlocksPanel.test.tsx`
-- Modify: `ui/public/locales/en-US/translation.json`
-- Modify: `ui/public/locales/zh-CN/translation.json`
-- Modify: `ui/public/locales/zh-TW/translation.json`
-- Modify: `ui/public/locales/ja-JP/translation.json`
-- Modify: `ui/public/locales/ko-KR/translation.json`
-- Modify: `ui/public/locales/pt-BR/translation.json`
-- Modify: `ui/public/locales/ru-RU/translation.json`
-- Modify: `ui/public/locales/es-ES/translation.json`
-- Modify: `ui/public/locales/tr-TR/translation.json`
+- Modify: Cargo.toml
+- Modify: Cargo.lock
+- Modify: crates/koharu-ml/Cargo.toml
+- Modify: crates/koharu-ml/src/lib.rs
+- Create: crates/koharu-ml/src/pp_ocr_v5.rs
+- Modify/Test: crates/koharu-app/src/pipeline/engines/paddle_ocr.rs
+- Modify/Test: crates/koharu-app/src/pipeline/engines/support.rs
+- Test: crates/koharu-app/src/pipeline/engines/ctd_segment.rs
+- Test: crates/koharu-app/src/pipeline/engines/llm_translate.rs
+- Verify: crates/koharu-app/src/pipeline/engines/lama.rs
+- Test: crates/koharu-app/src/pipeline/engines/aot.rs
+- Test: crates/koharu-app/src/pipeline/engines/flux2_klein.rs
+- Modify/Test: crates/koharu-app/src/pipeline/engines/renderer.rs
+- Modify: crates/koharu-app/src/renderer.rs（仅暴露现有 placement_origin）
+- Verify: crates/koharu-llm/src/paddleocr_vl.rs（普通 OCR 正文仍是权威来源，不新增位置解析器）
+- Verify: ui/lib/api/index.ts
+- Modify: ui/components/panels/TextBlocksPanel.tsx
+- Test: ui/tests/components/TextBlocksPanel.test.tsx
+- Modify: ui/public/locales 下现有九种 translation.json
 
-### Step 1：先写失败组件测试
+### Step 1：先锁定完整英文词和单字母标记分类
 
-在 `TextBlocksPanel.test.tsx` 扩展 fixture，使 Text 节点可传入 `text` 和 `linePolygons`。通过 `/api/v1/config` 返回 `source_text_policy`，测试：
+在 support.rs 先写并运行：
 
-```text
-shows a safe-skip warning for HanOnly mixed text without line polygons
-shows a safe-skip warning for HanOnly mixed text with mismatched line polygons
-does not warn for pure Han or pure non-Han text
-does not warn for mixed text with matching line polygons
-does not block mixed text in AllText mode
-```
+~~~text
+protected_latin_word_distinguishes_words_from_single_letter_labels
+eligible_single_latin_label_with_han_targets_the_whole_line
+eligible_inline_english_word_without_word_boxes_is_unsupported
+eligible_word_box_inline_mixed_targets_only_han_units
+~~~
 
-断言警告使用稳定 test id，例如 `textblock-geometry-warning-0`。HanOnly unsupported 卡片的 Generate 按钮 disabled；AllText 同一节点保持原有 LLM/processing 禁用规则。
+真值表：
 
-### Step 2：运行并确认预期失败
+| PaddleOCR-VL 正文 | PP-OCRv5 安全词框 | HanOnly 结果 |
+| --- | --- | --- |
+| English only | 不调用 | 空目标，后续短路 |
+| S型曲线 | 不调用 | 整行是目标 |
+| AI智能塑形 | 无/失败 | unsupported |
+| Peach蜜桃臀 | 无/失败 | unsupported |
+| Peach 换行 蜜桃臀 | 英文/中文独立 polygon | 只返回蜜桃臀 |
+| S-CURVE 换行 S型曲线 | 英文/中文独立 polygon | 只返回 S型曲线 |
 
-```bash
-bun run --filter ui test -- tests/components/TextBlocksPanel.test.tsx -t "safe-skip|mixed text|AllText"
-```
+contains_protected_latin_word() 继续作为唯一共享分类入口：连续 Latin 单元至少两个字母；内部连字符、ASCII 撇号和弯撇号不终止已开始的单元。禁止在各后端复制判断。
 
-预期：FAIL，当前 UI 没有策略查询或几何状态。
+先在缺少实现的基线运行，预期新增测试 FAIL；当前工作树若已有同名实现，则必须确认测试实际执行而不是零匹配。
 
-### Step 3：复用 API facade 的既有 query 模式
+### Step 2：增加最小跨平台 PP-OCRv5 适配
 
-在 `ui/lib/api/index.ts`：
+在 koharu-ml/src/pp_ocr_v5.rs 实现：
 
-- 从 generated imports 引入 `getConfig`。
-- 从 schemas 引入 `AppConfig`。
-- 增加与现有 `useGetMeta/useGetCurrentLlm` 同形的 `useGetConfig`。
+- 使用 ocrs-cjk + 纯 Rust RTen 加载 PP-OCRv5 server detector、recognizer 和字典。
+- 三个 runtime package 均为 bootstrap=false；普通启动、普通 OCR、AllText 和纯英文不得下载模型。
+- 只有 PaddleOCR-VL 首轮正文包含同一行完整英文词 + Han 时，paddle_ocr.rs 才懒加载模型。
+- 返回最小 PpOcrWordBox：line_index、text、crop-local axis-aligned bbox、confidence。
+- 使用现有 OcrEngine 的 TextLine::segments() 取得脚本/词段边界，不新增 OCR trait、provider 或全局 hook。
+- 字典解析必须保持模型 label 索引；多 scalar grapheme 用单个占位字符维持索引，不把它当作电商中文/Latin 目标。
 
-```ts
-export const useGetConfig = (options?: ApiQueryOptions<AppConfig>) =>
-  useApiQuery(getGetConfigQueryKey(), getConfig, options)
-```
+模型加载在 spawn_blocking 内完成；默认测试只验证字典和纯函数，不调用 RuntimeManager 下载。
 
-不要新建 hook 文件，不改生成代码。
+先写并运行：
 
-### Step 4：在现有组件内做最小显示判定
+~~~bash
+bun cargo test -p koharu-ml ppocr_dictionary
+~~~
 
-在 `TextBlocksPanel.tsx` 内保留一个局部纯函数，仅识别当前 UI 能可靠知道的“缺失/数量不匹配”：
+预期：实现前编译 FAIL；实现后 1 个以上匹配测试 PASS，且无模型下载。
 
-```ts
-const HAN = /\p{Script=Han}/u
+### Step 3：用 PaddleOCR-VL 正文严格校验 PP-OCRv5 词框
 
-function lacksMixedLineGeometry(node: TextNodeEntry): boolean {
-  const lines = (node.data.text ?? '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-  const hanLines = lines.filter((line) => HAN.test(line)).length
-  if (hanLines === 0 || hanLines === lines.length) return false
-  return node.data.linePolygons?.length !== lines.length
-}
-```
+paddle_ocr.rs 保持首轮 PaddleOcrVlTask::Ocr 批处理。增加唯一生产入口 dispatch_inline_word_boxes()，它只负责候选选择、PP 推理、校验和按原 index 回组。
 
-- `source_text_policy` 缺失时按后端默认值 `han_only` 处理。
-- 仅当 HanOnly 且 `lacksMixedLineGeometry(node)` 为 true 时显示 warning，并禁用该卡片 Generate。
-- 提示不得回显 OCR 正文；中文建议为：“仅中文模式无法安全定位此混合文本的中文行。请用框选工具拆成独立文字框，或切换 AllText。”
-- 有数量匹配的 polygons 时，UI 不重复实现后端有限性、相交和轴对齐校验；后端仍是最终安全边界。
-- 不修改 `eligible_text_lines()`，不新增等高 fallback，不根据换行数量猜测几何。
+校验契约：
 
-### Step 5：补齐现有九种语言的同名 key
+1. crop bounds 必须非空并位于原图内。
+2. bbox/confidence 必须有限；confidence 至少 0.5；bbox 非退化并完全位于 crop。
+3. 去除 Unicode 空白后，PP 所有 segment 必须完整覆盖 PaddleOCR-VL 正文，不能缺字、增字或改变顺序。
+4. 英文字符必须与 PaddleOCR-VL 精确一致；Han 只允许同字符数量、Han 脚本形状一致的识别差异，最终写入的正文始终取 PaddleOCR-VL。
+5. 结果必须包含至少一个同排受保护英文单元及恰好一个含 Han 目标；多个 Han 目标、英文与 Han 仍在同一 item、英文/中文 bbox 重叠、越界或低置信度全部失败。
+6. S型曲线中的单字母 S 与 Han 单元合并为整个中文目标；不保护 S。
+7. AllText、纯英文、纯中文、已有安全换行几何和普通 OCR 节点不调用 PP-OCRv5。
 
-在每个 `translation.json` 的 `textBlocks` 下新增：
+生产结果必须区分三个状态，不得用一个 Option 混淆：
 
-```json
-"mixedGeometryWarning": "..."
-```
+- 未尝试：只写首轮 OCR text，line_polygons 外层为 None，保留已有 detector 几何。
+- 校验成功：写 PaddleOCR-VL 权威逻辑正文，并写 Some(Some(polygons))。
+- 候选已尝试但失败：写首轮 OCR text，并写 Some(None) 清除旧 line_polygons，防止任何旧逐行几何继续处理新正文。
 
-所有 locale 必须包含相同 key；不能只依赖英文 fallback。
+使用最小 tuple 或现有私有函数表达“attempted + update”；不新增单实现 trait 或通用 DTO。构造 TextDataPatch 的最小纯函数必须由 Model::run() 实际调用，并用测试断言候选失败会产生 line_polygons == Some(None)。
 
-### Step 6：运行测试与后端安全回归
+测试名至少包括：
 
-```bash
+~~~text
+requests_word_boxes_only_for_inline_han_with_a_complete_latin_word
+all_text_never_requests_word_boxes_or_rewrites_ocr_text
+production_word_box_dispatch_calls_inference_only_for_candidates
+production_word_box_dispatch_marks_failed_candidates_for_geometry_clear
+production_word_box_dispatch_keeps_original_index_order
+pp_ocr_word_boxes_use_vl_text_and_preserve_the_english_span
+maps_valid_word_box_units_back_to_absolute_page_polygons
+merges_a_single_latin_label_into_the_han_target
+rejects_word_boxes_when_the_english_word_disagrees_with_vl
+rejects_word_boxes_that_does_not_cover_the_first_ocr_text
+rejects_word_boxes_that_leaves_english_and_han_in_one_unit
+rejects_word_boxes_with_multiple_han_units_for_one_node_sprite
+rejects_word_boxes_outside_the_original_crop
+rejects_overlapping_or_low_confidence_word_boxes
+failed_word_box_candidate_clears_stale_line_polygons
+~~~
+
+运行：
+
+~~~bash
+bun cargo test -p koharu-app pipeline::engines::paddle_ocr::tests
+~~~
+
+预期：全部匹配测试 PASS，无模型下载；失败候选的 Scene patch 明确清除旧 polygon。
+
+### Step 4：让共享 HanOnly 边界短路所有后续阶段
+
+eligible_text_lines() 遇到任何仍同时含 Han 和完整 Latin 词的逻辑行时返回 None。词框成功后的 Peach 换行 蜜桃臀继续复用现有 polygon 数量校验，只返回 Han 行。
+
+所有后续阶段继续消费 eligible_lines_for_page()：
+
+- Segment：纯英文和 unsupported 在 inference closure 前短路。
+- Translate：Provider targets 只包含 Han 的 node_id + line_index。
+- Lama/AOT/Flux2：最终 mask 在 expansion 前后均限制到 Han support；空最终 mask 不调用 backend。
+- Renderer：每个 stored sprite 按自身 NodeId 的 Han support 独立裁剪，禁止跨节点借用允许区。
+- AllText：保持节点级 OCR/Provider/transform/通用布局，不经过 PP 词框或 HanOnly 裁剪。
+
+运行：
+
+~~~bash
+bun cargo test -p koharu-app protected_latin_word_
+bun cargo test -p koharu-app eligible_single_latin_label_with_han_targets_the_whole_line
+bun cargo test -p koharu-app eligible_inline_english_word_without_word_boxes_is_unsupported
+bun cargo test -p koharu-app eligible_word_box_inline_mixed_targets_only_han_units
+bun cargo test -p koharu-app segment_dispatch_word_box_inline_mixed_keeps_english_roi_zero
+bun cargo test -p koharu-app segment_dispatch_skips_english_and_unsupported_before_inference
+bun cargo test -p koharu-app han_only_translation_targets_skip_english_and_unsupported
+bun cargo test -p koharu-app final_inpaint_mask_keeps_word_box_english_word_zero
+bun cargo test -p koharu-app lama_inpaint_dispatch_receives_final_mask
+bun cargo test -p koharu-app aot_inpaint_dispatch_skips_empty_han_targets
+bun cargo test -p koharu-app flux2_inpaint_dispatch_skips_empty_han_targets
+~~~
+
+预期：每条命令至少执行一个测试并 PASS；默认测试不下载模型。
+
+### Step 5：在最终整页合成中恢复英文 Source 像素
+
+仅 HanOnly 使用 protected_source_lines_for_page() 从已验证的逻辑正文和安全 polygon 收集完整英文词框。该 helper 必须复用 safe_mixed_line_bbox() 和 line_support_mask()，不信任原始越界 polygon。
+
+dispatch_render_page() 是唯一生产合成入口：
+
+1. 每个 sprite 仅按自己的 Han line support 清除允许区外 alpha。
+2. 以 Inpainted 优先、Source fallback 构造 base。
+3. 在受保护英文词框内从 Source 逐像素恢复。
+4. 显式 Repair Brush 在 Source 恢复之后叠加，保留用户主动 region/mask 语义。
+5. 再叠加已经裁剪的 Han sprites。
+6. AllText 完全跳过 Source 恢复和 Han 裁剪。
+
+生产测试必须调用 dispatch_render_page()，不得只测试 mask/helper：
+
+~~~text
+protected_source_lines_keep_only_validated_english_word_boxes
+han_only_renderer_clips_word_box_inline_mixed_to_han_mask
+han_only_renderer_restores_validated_english_pixels_from_source
+han_only_renderer_does_not_allow_one_node_sprite_into_another_node_mask
+han_only_renderer_uses_the_same_fractional_origin_for_clip_and_composite
+han_only_renderer_empty_text_targets_skip_backend_but_textless_renders
+~~~
+
+运行：
+
+~~~bash
+bun cargo test -p koharu-app protected_source_lines_keep_only_validated_english_word_boxes
+bun cargo test -p koharu-app han_only_renderer_
+~~~
+
+预期：英文 ROI 等于 Source；中文 ROI 保留新 sprite；Repair Brush 仍可显式覆盖；stored sprite 在 Han support 外透明。
+
+### Step 6：保持 UI 操作闭环和安全提示
+
+TextBlocksPanel.tsx 只镜像用户可见阻断条件，不复制后端几何验证：
+
+- source_text_policy 缺失时按 han_only。
+- 纯英文或 unresolved 完整英文词 + Han：显示安全提示并禁用 Generate。
+- S型曲线：允许 Generate。
+- PP-OCRv5 成功写入匹配 text + linePolygons 后：允许 Generate。
+- 手工修改 OCR 正文时同一 Op 清除 linePolygons，禁止复用旧词框。
+- 提示不得回显 OCR 正文、不得建议切换 AllText；九种 locale 使用现有 mixedGeometryWarning key，并说明重新运行 PaddleOCR-VL 让 PP-OCRv5 生成词框，或手工拆框。
+
+运行：
+
+~~~bash
 bun run --filter ui test -- tests/components/TextBlocksPanel.test.tsx
+~~~
+
+预期：完整测试文件 PASS，无 skipped。
+
+### Step 7：Task 3 汇总回归
+
+~~~bash
+bun cargo test -p koharu-ml ppocr_dictionary
+bun cargo test -p koharu-app pipeline::engines::paddle_ocr::tests
 bun cargo test -p koharu-app eligible_mixed_node_
-```
+bun cargo test -p koharu-app eligible_pure_english_without_polygons_is_empty
+bun cargo test -p koharu-app segment_dispatch_skips_english_and_unsupported_before_inference
+bun cargo test -p koharu-app han_only_translation_targets_skip_english_and_unsupported
+bun cargo test -p koharu-app final_inpaint_mask_short_circuits_empty_results
+bun cargo test -p koharu-app han_translation_ops_empty_targets_still_cleanup
+bun cargo test -p koharu-app han_only_renderer_
+bun run --filter ui test -- tests/components/TextBlocksPanel.test.tsx
+~~~
 
-预期：
+预期：全部 PASS、每个过滤器实际命中、无模型下载。HTTP、OpenAPI、Scene schema 和 StartPipelineRequest 不变。
 
-- UI 测试 PASS。
-- 后端测试继续证明缺失/错配/不安全 polygon 返回 unsupported，不会用节点矩形猜测混合行。
-
-### Step 7：提交边界
+### Step 8：提交边界
 
 仅在用户另行授权提交时执行：
 
-```bash
-git add ui/lib/api/index.ts ui/components/panels/TextBlocksPanel.tsx ui/tests/components/TextBlocksPanel.test.tsx ui/public/locales
-git commit -m "fix(ui): explain unsupported mixed text geometry"
-```
+~~~bash
+git add Cargo.toml Cargo.lock \
+  crates/koharu-ml/Cargo.toml crates/koharu-ml/src/lib.rs crates/koharu-ml/src/pp_ocr_v5.rs \
+  crates/koharu-app/src/pipeline/engines/paddle_ocr.rs \
+  crates/koharu-app/src/pipeline/engines/support.rs \
+  crates/koharu-app/src/pipeline/engines/ctd_segment.rs \
+  crates/koharu-app/src/pipeline/engines/llm_translate.rs \
+  crates/koharu-app/src/pipeline/engines/aot.rs \
+  crates/koharu-app/src/pipeline/engines/flux2_klein.rs \
+  crates/koharu-app/src/pipeline/engines/renderer.rs crates/koharu-app/src/renderer.rs \
+  ui/components/panels/TextBlocksPanel.tsx ui/tests/components/TextBlocksPanel.test.tsx \
+  ui/public/locales
+git commit -m "fix(pipeline): preserve English words with PP-OCRv5 boxes"
+~~~
 
+不得暂存计划文档或其他既有无关修改。
 ## Task 4：全量回归与桌面人工验收
 
 **Files:**
@@ -366,7 +512,7 @@ git commit -m "fix(ui): explain unsupported mixed text geometry"
 ### Step 1：运行 UI 定向回归
 
 ```bash
-bun run --filter ui test -- tests/lib/io/scene.test.ts tests/components/RenderControlsPanel.test.tsx tests/components/TextBlocksPanel.test.tsx
+bun run --filter ui test -- tests/lib/io/autoRender.test.ts tests/components/RenderControlsPanel.test.tsx tests/components/TextBlocksPanel.test.tsx
 ```
 
 预期：全部 PASS，且测试不加载或下载 ML 模型。
@@ -379,9 +525,30 @@ bun run lint:ui
 bun run test:ui
 bun cargo fmt --all -- --check
 bun cargo check --workspace --all-targets
+bun cargo clippy --workspace --all-targets -- -D warnings
+bun cargo test -p koharu-ml ppocr_dictionary
+bun cargo test -p koharu-app pipeline::engines::paddle_ocr::tests
+bun cargo test -p koharu-app protected_latin_word_
+bun cargo test -p koharu-app eligible_single_latin_label_with_han_targets_the_whole_line
+bun cargo test -p koharu-app eligible_inline_english_word_without_word_boxes_is_unsupported
+bun cargo test -p koharu-app eligible_word_box_inline_mixed_targets_only_han_units
+bun cargo test -p koharu-app final_inpaint_mask_keeps_word_box_english_word_zero
 bun cargo test -p koharu-app eligible_mixed_node_
+bun cargo test -p koharu-app segment_dispatch_skips_english_and_unsupported_before_inference
+bun cargo test -p koharu-app segment_dispatch_word_box_inline_mixed_keeps_english_roi_zero
+bun cargo test -p koharu-app han_only_translation_targets_skip_english_and_unsupported
+bun cargo test -p koharu-app protected_source_lines_keep_only_validated_english_word_boxes
+bun cargo test -p koharu-app han_only_renderer_
+bun cargo test -p koharu-app final_inpaint_mask_short_circuits_empty_results
+bun cargo test -p koharu-app lama_inpaint_dispatch_receives_final_mask
+bun cargo test -p koharu-app aot_inpaint_dispatch_skips_empty_han_targets
+bun cargo test -p koharu-app flux2_inpaint_dispatch_skips_empty_han_targets
+bun cargo test -p koharu-app han_only_renderer_empty_text_targets_skip_backend_but_textless_renders
+NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost bun cargo test --workspace --tests
 bun run check:generated
 bun run build
+bun cargo check -p koharu --all-targets --features=metal
+bun cargo build --release -p koharu --features=metal
 git diff --check
 git status --short
 ```
@@ -407,9 +574,14 @@ bun run dev
 3. 切换同一 family 的 variant：作用域与 family 完全一致，画布无需额外点击即可更新。
 4. 连续拖动字号或输入翻译：仍经过 debounce，不产生每次击键一个 pipeline job。
 5. 修改字体前后，三个节点各自的字号、颜色、描边、效果和对齐不被字体操作改变。
-6. `S-CURVE / S型曲线` 这类缺少 `linePolygons` 的混合节点在 HanOnly 下显示安全提示，Generate 禁用；英文不会因猜测行框被擦除。
-7. 将该节点拆成独立英文框和中文框后，中文框可单独生成；或切换 AllText 后按原节点级行为处理。
-8. 自动渲染失败时出现现有错误提示，不只写开发者控制台。
+6. 纯英文文本框在 HanOnly 下显示安全跳过提示且 Generate 禁用；点击不会创建新的局部 Generate 任务。
+7. `S型曲线` 作为单字母标记 + 中文整行擦除、翻译并重绘，不保留原始 `S`。
+8. `Peach蜜桃臀` 或 `AI智能塑形` 经 PaddleOCR-VL 正文与 PP-OCRv5 词框严格校验后，只擦除和重绘中文 polygon；完整英文词保持 Source 原像素。
+9. 人为构造 PP 英文与 VL 正文不一致、低置信度、位置越界、polygon 重叠或仍未拆开的同排内容：清除旧逐行几何，显示安全提示，Generate 禁用，整节点停止后续处理。
+10. `S-CURVE\nS型曲线` 具有两组真实 polygon 时，英文逻辑单元不进入后续阶段，中文逻辑单元整行处理。
+11. 将混合节点手工拆成独立英文框和中文框后，英文框保持原像素且不进入后续阶段，中文框可单独生成。
+12. UI 不把 AllText 作为电商处理建议；显式旧 AllText 配置仍保持既有兼容行为。
+13. 自动渲染失败时出现现有错误提示，不只写开发者控制台。
 
 ### Step 4：停止条件
 
@@ -418,22 +590,26 @@ bun run dev
 - 字体 family/variant 的全局与选中作用域测试通过。
 - 字体 Op 与立即 Renderer 的顺序测试通过，且没有重复 debounce 请求。
 - 非字体样式字段保持测试通过。
-- 混合文本提示与 AllText 兼容测试通过。
+- 纯英文、unsupported 混合节点的 UI 禁用和全阶段短路测试通过。
+- `S型曲线` 作为整行目标；含完整英文词的同排内容只有在 PaddleOCR-VL + PP-OCRv5 严格校验成功后才处理中文逻辑单元。
+- 有安全 word-box/逐行几何的混合节点只处理中文逻辑单元，英文 polygon 不进入最终 mask、Provider、Inpaint 或 Renderer，最终英文 ROI 与 Source 逐像素相等；显式 Repair Brush 仍保留用户 region 语义。
+- AllText 兼容没有被删除，但未作为电商 UI 的建议或绕过入口。
 - 后端 mixed geometry 安全测试通过。
 - 当前问题页面完成上述人工验收。
 - 无非预期生成物或无关文件修改。
 
-## 预期修改规模
+## 剩余预期修改规模
 
-- 生产实现：约 45–70 行。
-- 测试：约 100–150 行。
-- 多语言文本：9 个同名 key。
-- 新依赖：0。
-- 新 production 文件：0。
-- Rust/OpenAPI/schema 修改：0。
+- 生产实现：集中在 PP-OCRv5 RTen 适配、Paddle OCR 严格回组、共享 HanOnly 判定、Renderer Source 恢复和 UI 阻断；字体和自动渲染生产代码预期不再修改。
+- 测试：覆盖词框字典/坐标回组、失败清理旧 polygon、`S型曲线`、完整英文词保护、假绿、Google Font 成功顺序、样式保持、Translator 目标以及三种 Inpainter 生产 dispatch 短路。
+- 多语言文本：更新现有 9 个 `mixedGeometryWarning`，不得新增第二套 key。
+- 新依赖：`ocrs-cjk` 与 `rten`，仅用于 PP-OCRv5 纯 Rust ONNX 推理。
+- 新 production 文件：`crates/koharu-ml/src/pp_ocr_v5.rs`。
+- OpenAPI/Scene schema 修改：0；PaddleOCR-VL 普通 OCR 仍是正文权威来源。
 
 ## 已知限制
 
 - 统一字体只统一 font family/variant，不会自动统一颜色、描边和字号；这是避免破坏节点已有设计的明确选择。
-- 现有 OCR 没有逐行几何输出。HanOnly 无法安全自动处理缺少 `linePolygons` 的中英混合节点；本次提供安全提示与拆框/AllText 处理路径，不伪造几何。
-- 若未来需要自动处理此类混合节点，应另立计划，让 Detector/OCR 产出真实逐行 polygon，并以实际模型输出和图像坐标回归测试证明；不应在本计划中增加启发式切分。
+- PP-OCRv5 模型在第一次命中 HanOnly 同排候选时按需下载；离线或下载失败时节点安全跳过，不会退回字符宽度估算。
+- PP 英文与 PaddleOCR-VL 正文不一致、词框不安全或仍把完整英文词和 Han 放在同一 item 时，节点必须清除旧逐行几何并跳过。用户可以重跑 PaddleOCR-VL，或手工拆分文字框。
+- 单 Latin 字母标记与 Han 相连时按用户规则整行处理，例如 `S型曲线`；如未来需要保护单字母品牌/尺码代码，应新增显式配置，不在本计划中继续增加启发式例外。

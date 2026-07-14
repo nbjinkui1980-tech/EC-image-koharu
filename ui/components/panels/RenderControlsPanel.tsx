@@ -277,6 +277,7 @@ export function RenderControlsPanel() {
     currentFontFace?.source === 'google' ? currentFont : (currentFontFamilyName ?? ''),
     currentFontFace?.source ?? 'system',
     true,
+    currentFontFace?.cached ?? true,
   )
 
   // ---------------------------------------------------------------------------
@@ -303,6 +304,7 @@ export function RenderControlsPanel() {
     updates: Partial<TextStyle>,
     label: string,
     renderImmediately = false,
+    afterApply?: () => void,
   ): Promise<void> => {
     if (!page || nodes.length === 0) return
     const op =
@@ -313,6 +315,7 @@ export function RenderControlsPanel() {
             nodes.map((n) => buildStyleOp(n, updates)),
           )
     await applyOp(op)
+    afterApply?.()
     if (renderImmediately) {
       await runAutoRenderNow(page.id)
     } else {
@@ -345,10 +348,25 @@ export function RenderControlsPanel() {
 
   const applyFontToCurrentScope = async (postScriptName: string): Promise<void> => {
     const targets = selectedNodes.length > 0 ? selectedNodes : textNodes
-    if (selectedNodes.length === 0) {
-      usePreferencesStore.getState().setDefaultFont(postScriptName)
+    const setGlobalDefault =
+      selectedNodes.length === 0
+        ? () => usePreferencesStore.getState().setDefaultFont(postScriptName)
+        : undefined
+    if (targets.length === 0) {
+      setGlobalDefault?.()
+      return
     }
-    await applyStyleToNodes(targets, { fontFamilies: [postScriptName] }, 'Font family update', true)
+    try {
+      await applyStyleToNodes(
+        targets,
+        { fontFamilies: [postScriptName] },
+        'Font family update',
+        true,
+        setGlobalDefault,
+      )
+    } catch (error) {
+      useEditorUiStore.getState().showError(String(error))
+    }
   }
 
   const commitCurrentFontColorIfImplicit = () => {

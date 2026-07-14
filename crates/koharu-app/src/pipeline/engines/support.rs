@@ -120,6 +120,26 @@ pub fn contains_han(text: &str) -> bool {
     text.chars().any(|ch| scripts.get(ch) == Script::Han)
 }
 
+pub fn contains_protected_latin_word(text: &str) -> bool {
+    use icu_properties::{CodePointMapData, props::Script};
+
+    let scripts = CodePointMapData::<Script>::new();
+    let mut letters = 0;
+    for ch in text.chars() {
+        if scripts.get(ch) == Script::Latin && ch.is_alphabetic() {
+            letters += 1;
+        } else if matches!(ch, '-' | '\'' | '’') && letters > 0 {
+            continue;
+        } else {
+            if letters >= 2 {
+                return true;
+            }
+            letters = 0;
+        }
+    }
+    letters >= 2
+}
+
 pub fn eligible_text_lines(
     transform: &Transform,
     text: &TextData,
@@ -137,6 +157,13 @@ pub fn eligible_text_lines(
         .collect::<Vec<_>>();
     if lines.is_empty() {
         return Some(Vec::new());
+    }
+
+    if lines
+        .iter()
+        .any(|(_, line)| contains_han(line) && contains_protected_latin_word(line))
+    {
+        return None;
     }
 
     let node_bbox = safe_node_bbox(transform, image_width, image_height)?;
@@ -222,6 +249,75 @@ pub fn eligible_lines_for_page(
     (lines, unsupported)
 }
 
+/// Return regions skipped by HanOnly that must retain Source pixels.
+pub fn protected_source_lines_for_page(
+    scene: &Scene,
+    page: PageId,
+) -> Vec<(NodeId, EligibleTextLine)> {
+    let Some(page_ref) = scene.page(page) else {
+        return Vec::new();
+    };
+    let (image_width, image_height) = (page_ref.width, page_ref.height);
+    let mut protected = Vec::new();
+
+    for (node_id, transform, text) in text_nodes(scene, page) {
+        let body = text.text.as_deref().unwrap_or_default().trim();
+        if body.is_empty() {
+            continue;
+        }
+        let eligible = eligible_text_lines(transform, text, image_width, image_height);
+        if eligible.as_ref().is_none_or(Vec::is_empty) {
+            let Some(bbox) = safe_source_restore_bbox(transform, image_width, image_height) else {
+                continue;
+            };
+            protected.push((node_id, eligible_line(text, 0, body, bbox, false)));
+            continue;
+        }
+        let eligible = eligible.expect("non-empty eligibility checked above");
+        let translated_line_count = text
+            .translation
+            .as_deref()
+            .into_iter()
+            .flat_map(str::lines)
+            .filter(|line| !line.trim().is_empty())
+            .count();
+        if translated_line_count != eligible.len() {
+            protected.extend(eligible.into_iter().map(|line| (node_id, line)));
+        }
+
+        let lines = text
+            .text
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let line = line.trim();
+                (!line.is_empty()).then_some((index, line))
+            })
+            .collect::<Vec<_>>();
+        let Some(polygons) = text.line_polygons.as_ref() else {
+            continue;
+        };
+        if polygons.len() != lines.len() {
+            continue;
+        }
+
+        for ((line_index, line), quad) in lines.into_iter().zip(polygons) {
+            if contains_han(line) {
+                continue;
+            }
+            let Some(bbox) = safe_mixed_line_bbox(quad, transform, image_width, image_height)
+            else {
+                continue;
+            };
+            protected.push((node_id, eligible_line(text, line_index, line, bbox, true)));
+        }
+    }
+
+    protected
+}
+
 fn eligible_line(
     text: &TextData,
     line_index: usize,
@@ -272,6 +368,53 @@ fn safe_node_bbox(transform: &Transform, image_width: u32, image_height: u32) ->
         ],
         [0.0, 0.0, image_width as f32, image_height as f32],
     )
+}
+
+fn safe_source_restore_bbox(
+    transform: &Transform,
+    image_width: u32,
+    image_height: u32,
+) -> Option<[f32; 4]> {
+    let values = [
+        transform.x,
+        transform.y,
+        transform.width,
+        transform.height,
+        transform.rotation_deg,
+    ];
+    if values.iter().any(|value| !value.is_finite())
+        || transform.width <= 0.0
+        || transform.height <= 0.0
+    {
+        return None;
+    }
+
+    let center_x = transform.x + transform.width * 0.5;
+    let center_y = transform.y + transform.height * 0.5;
+    let half_width = transform.width * 0.5;
+    let half_height = transform.height * 0.5;
+    let (sin, cos) = transform.rotation_deg.to_radians().sin_cos();
+    let corners = [
+        (-half_width, -half_height),
+        (half_width, -half_height),
+        (half_width, half_height),
+        (-half_width, half_height),
+    ];
+    let mut bbox = [
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    for (x, y) in corners {
+        let rotated_x = center_x + x * cos - y * sin;
+        let rotated_y = center_y + x * sin + y * cos;
+        bbox[0] = bbox[0].min(rotated_x);
+        bbox[1] = bbox[1].min(rotated_y);
+        bbox[2] = bbox[2].max(rotated_x);
+        bbox[3] = bbox[3].max(rotated_y);
+    }
+    intersect_bbox(bbox, [0.0, 0.0, image_width as f32, image_height as f32])
 }
 
 fn safe_mixed_line_bbox(
@@ -965,6 +1108,138 @@ mod tests {
     }
 
     #[test]
+    fn protected_latin_word_distinguishes_words_from_single_letter_labels() {
+        for value in [
+            "AI智能",
+            "Peach蜜桃",
+            "S-CURVE型",
+            "don't塑形",
+            "S’CURVE曲线",
+        ] {
+            assert!(
+                contains_protected_latin_word(value),
+                "expected word in {value}"
+            );
+        }
+        for value in ["S型曲线", "A版", "中文", "123"] {
+            assert!(
+                !contains_protected_latin_word(value),
+                "unexpected protected word in {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn eligible_single_latin_label_with_han_targets_the_whole_line() {
+        let text = text_data("S型曲线", None);
+
+        let lines = eligible_text_lines(&transform(), &text, 100, 100).expect("eligible line");
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].line_index, 0);
+        assert_eq!(lines[0].text, "S型曲线");
+    }
+
+    #[test]
+    fn eligible_inline_english_word_without_word_boxes_is_unsupported() {
+        for value in ["AI智能塑形", "Peach蜜桃臀", "S-CURVE型曲线"] {
+            let text = text_data(value, None);
+            assert!(eligible_text_lines(&transform(), &text, 100, 100).is_none());
+        }
+    }
+
+    #[test]
+    fn eligible_word_box_inline_mixed_targets_only_han_units() {
+        let text = text_data(
+            "Peach\n蜜桃臀",
+            Some(vec![
+                quad(12.0, 22.0, 48.0, 38.0),
+                quad(52.0, 22.0, 88.0, 38.0),
+            ]),
+        );
+
+        let lines = eligible_text_lines(&transform(), &text, 100, 100).expect("safe word boxes");
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].line_index, 1);
+        assert_eq!(lines[0].text, "蜜桃臀");
+        assert_eq!(
+            lines[0].region.line_polygons.as_deref(),
+            Some([quad(52.0, 22.0, 88.0, 38.0)].as_slice())
+        );
+    }
+
+    #[test]
+    fn protected_source_lines_keep_only_validated_english_word_boxes() {
+        let id = NodeId::new();
+        let mut data = text_data(
+            "Peach\n蜜桃臀",
+            Some(vec![
+                quad(12.0, 22.0, 48.0, 38.0),
+                quad(52.0, 22.0, 88.0, 38.0),
+            ]),
+        );
+        data.translation = Some("Sweet butt".to_string());
+        let node = Node {
+            id,
+            transform: transform(),
+            visible: true,
+            kind: NodeKind::Text(data),
+        };
+        let (scene, page) = translation_scene(vec![node]);
+
+        let protected = protected_source_lines_for_page(&scene, page);
+
+        assert_eq!(protected.len(), 1);
+        assert_eq!(protected[0].0, id);
+        assert_eq!(protected[0].1.text, "Peach");
+        assert_eq!(
+            protected[0].1.region.line_polygons.as_deref(),
+            Some([quad(12.0, 22.0, 48.0, 38.0)].as_slice())
+        );
+    }
+
+    #[test]
+    fn protected_source_lines_restore_rotated_unsupported_node() {
+        let id = NodeId::new();
+        let mut node_transform = Transform {
+            x: 40.0,
+            y: 40.0,
+            width: 20.0,
+            height: 10.0,
+            rotation_deg: 45.0,
+        };
+        let node = Node {
+            id,
+            transform: node_transform,
+            visible: true,
+            kind: NodeKind::Text(text_data("Peach\n蜜桃臀", None)),
+        };
+        let (scene, page) = translation_scene(vec![node]);
+
+        let protected = protected_source_lines_for_page(&scene, page);
+
+        assert_eq!(protected.len(), 1);
+        assert_eq!(protected[0].0, id);
+        let mask = line_support_mask(100, 100, std::slice::from_ref(&protected[0].1));
+        assert_ne!(mask.get_pixel(40, 35).0[0], 0);
+        assert!(
+            eligible_text_lines(&node_transform, &text_data("Peach\n蜜桃臀", None), 100, 100)
+                .is_none()
+        );
+
+        node_transform.rotation_deg = f32::NAN;
+        let invalid = Node {
+            id: NodeId::new(),
+            transform: node_transform,
+            visible: true,
+            kind: NodeKind::Text(text_data("Peach\n蜜桃臀", None)),
+        };
+        let (scene, page) = translation_scene(vec![invalid]);
+        assert!(protected_source_lines_for_page(&scene, page).is_empty());
+    }
+
+    #[test]
     fn eligible_mixed_node_returns_only_han_line_with_canonical_geometry() {
         let text = text_data(
             "S-CURVE\nS型曲线",
@@ -1205,6 +1480,39 @@ mod tests {
             assert_ne!(prepared.get_pixel(20, 8).0[0], 0);
             assert_eq!(prepared.get_pixel(23, 8).0[0], 0);
         }
+    }
+
+    #[test]
+    fn final_inpaint_mask_keeps_word_box_english_word_zero() {
+        let text = text_data(
+            "Peach\n蜜桃臀",
+            Some(vec![quad(2.0, 2.0, 12.0, 8.0), quad(18.0, 2.0, 30.0, 8.0)]),
+        );
+        let transform = Transform {
+            x: 0.0,
+            y: 0.0,
+            width: 32.0,
+            height: 12.0,
+            rotation_deg: 0.0,
+        };
+        let eligible = eligible_text_lines(&transform, &text, 32, 12).expect("safe word boxes");
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_pixel(32, 12, Luma([255])));
+        let bubble = DynamicImage::ImageLuma8(GrayImage::new(32, 12));
+
+        let (prepared, _) = prepare_inpaint_mask(
+            &mask,
+            &bubble,
+            &[],
+            &eligible,
+            SourceTextPolicy::HanOnly,
+            None,
+            |mask, _, _| mask.to_luma8(),
+        )
+        .expect("Han target");
+        let prepared = prepared.to_luma8();
+
+        assert_eq!(prepared.get_pixel(6, 5).0[0], 0);
+        assert_ne!(prepared.get_pixel(24, 5).0[0], 0);
     }
 
     #[test]

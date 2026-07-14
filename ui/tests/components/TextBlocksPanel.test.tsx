@@ -1,9 +1,10 @@
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TextBlocksPanel } from '@/components/panels/TextBlocksPanel'
+import * as sceneActions from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -12,6 +13,15 @@ import { useSelectionStore } from '@/lib/stores/selectionStore'
 import { renderWithQuery } from '../helpers'
 import { readyLlmState } from '../msw/fixtures'
 import { server } from '../msw/server'
+
+vi.mock('@/lib/io/scene', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/io/scene')>('@/lib/io/scene')
+  return {
+    ...actual,
+    applyOp: vi.fn(),
+    queueAutoRender: vi.fn(),
+  }
+})
 
 function sceneWithTextNodes() {
   return {
@@ -59,6 +69,7 @@ function sceneWithSingleTextNode(text: string, linePolygons?: number[][][]) {
 
 describe('TextBlocksPanel', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     useSelectionStore.getState().setPage('p1')
     useSelectionStore.getState().select('t2', false)
     useJobsStore.getState().clear()
@@ -69,12 +80,61 @@ describe('TextBlocksPanel', () => {
     })
   })
 
+  it('clears OCR line polygons when the OCR text is edited', async () => {
+    useSelectionStore.getState().select('t1', false)
+    const polygons = [
+      [
+        [0, 0],
+        [40, 0],
+        [40, 20],
+        [0, 20],
+      ],
+      [
+        [40, 0],
+        [80, 0],
+        [80, 20],
+        [40, 20],
+      ],
+    ]
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithSingleTextNode('Peach\n蜜桃臀', polygons)),
+      ),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+    )
+
+    renderWithQuery(<TextBlocksPanel />)
+    const textarea = await screen.findByTestId('textblock-ocr-0')
+    await userEvent.clear(textarea)
+    await userEvent.type(textarea, '蜜桃臀\nPeach')
+
+    const calls = vi.mocked(sceneActions.applyOp).mock.calls
+    const lastOp = calls.at(-1)?.[0] as any
+    expect(lastOp.updateNode.patch.data.text).toMatchObject({
+      text: '蜜桃臀\nPeach',
+      linePolygons: null,
+      translation: null,
+      sprite: null,
+      spriteTransform: null,
+      renderedDirection: null,
+    })
+  })
+
   it('generates translation only for the clicked text block', async () => {
     const pipelineRequests: unknown[] = []
     server.use(
       http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithTextNodes())),
       http.get('/api/v1/config', () =>
-        HttpResponse.json({ pipeline: { translator: 'llm', renderer: 'koharu-renderer' } }),
+        HttpResponse.json({
+          pipeline: {
+            translator: 'llm',
+            renderer: 'koharu-renderer',
+            source_text_policy: 'all_text',
+          },
+        }),
       ),
       http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
       http.post('/api/v1/pipelines', async ({ request }) => {
@@ -100,7 +160,7 @@ describe('TextBlocksPanel', () => {
     })
   })
 
-  it('warns and disables Generate for HanOnly mixed text without line geometry', async () => {
+  it('shows a safe-skip warning for HanOnly mixed text without line polygons', async () => {
     useSelectionStore.getState().select('t1', false)
     let pipelinePosts = 0
     server.use(
@@ -117,11 +177,131 @@ describe('TextBlocksPanel', () => {
 
     renderWithQuery(<TextBlocksPanel />)
 
-    expect(await screen.findByTestId('textblock-geometry-warning-0')).toBeVisible()
+    expect(await screen.findByTestId('textblock-geometry-warning-0')).toBeInTheDocument()
     const generateButton = screen.getByTestId('textblock-generate-0')
     expect(generateButton).toBeDisabled()
     await userEvent.click(generateButton)
     expect(pipelinePosts).toBe(0)
+  })
+
+  it('shows a safe-skip warning for HanOnly mixed text with mismatched line polygons', async () => {
+    useSelectionStore.getState().select('t1', false)
+    const polygons = [
+      [
+        [0, 0],
+        [40, 0],
+        [40, 20],
+        [0, 20],
+      ],
+    ]
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithSingleTextNode('中文文案\nENGLISH COPY', polygons)),
+      ),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+    )
+
+    renderWithQuery(<TextBlocksPanel />)
+
+    expect(await screen.findByTestId('textblock-geometry-warning-0')).toBeInTheDocument()
+    expect(screen.getByTestId('textblock-generate-0')).toBeDisabled()
+  })
+
+  it('disables Generate for pure non-Han text in HanOnly mode', async () => {
+    useSelectionStore.getState().select('t1', false)
+    let pipelinePosts = 0
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithSingleTextNode('ENGLISH COPY')),
+      ),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+      http.post('/api/v1/pipelines', () => {
+        pipelinePosts += 1
+        return HttpResponse.json({ operationId: 'unexpected' })
+      }),
+    )
+
+    renderWithQuery(<TextBlocksPanel />)
+
+    const generateButton = await screen.findByTestId('textblock-generate-0')
+    expect(generateButton).toBeDisabled()
+    expect(screen.getByTestId('textblock-geometry-warning-0')).toBeInTheDocument()
+    await userEvent.click(generateButton)
+    expect(pipelinePosts).toBe(0)
+  })
+
+  it('disables Generate for unresolved inline English word plus Han text', async () => {
+    useSelectionStore.getState().select('t1', false)
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithSingleTextNode('Peach蜜桃臀')),
+      ),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+    )
+
+    renderWithQuery(<TextBlocksPanel />)
+
+    expect(await screen.findByTestId('textblock-generate-0')).toBeDisabled()
+    expect(screen.getByTestId('textblock-geometry-warning-0')).toBeInTheDocument()
+  })
+
+  it('allows Generate for a single Latin label plus Han text', async () => {
+    useSelectionStore.getState().select('t1', false)
+    server.use(
+      http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithSingleTextNode('S型曲线'))),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+    )
+
+    renderWithQuery(<TextBlocksPanel />)
+
+    const generateButton = await screen.findByTestId('textblock-generate-0')
+    await waitFor(() => expect(generateButton).not.toBeDisabled())
+    expect(screen.queryByTestId('textblock-geometry-warning-0')).not.toBeInTheDocument()
+  })
+
+  it('allows Generate after PP-OCRv5 separates English and Han units', async () => {
+    useSelectionStore.getState().select('t1', false)
+    const polygons = [
+      [
+        [0, 0],
+        [40, 0],
+        [40, 20],
+        [0, 20],
+      ],
+      [
+        [40, 0],
+        [80, 0],
+        [80, 20],
+        [40, 20],
+      ],
+    ]
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithSingleTextNode('Peach\n蜜桃臀', polygons)),
+      ),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+    )
+
+    renderWithQuery(<TextBlocksPanel />)
+
+    const generateButton = await screen.findByTestId('textblock-generate-0')
+    await waitFor(() => expect(generateButton).not.toBeDisabled())
+    expect(screen.queryByTestId('textblock-geometry-warning-0')).not.toBeInTheDocument()
   })
 
   it('allows HanOnly mixed text when every non-empty line has geometry', async () => {
@@ -157,7 +337,7 @@ describe('TextBlocksPanel', () => {
     expect(screen.queryByTestId('textblock-geometry-warning-0')).not.toBeInTheDocument()
   })
 
-  it('does not warn for mixed text without geometry under AllText', async () => {
+  it('preserves legacy AllText behavior without recommending it in ecommerce UI', async () => {
     useSelectionStore.getState().select('t1', false)
     server.use(
       http.get('/api/v1/scene.json', () =>
@@ -176,23 +356,22 @@ describe('TextBlocksPanel', () => {
     expect(screen.queryByTestId('textblock-geometry-warning-0')).not.toBeInTheDocument()
   })
 
-  it.each(['纯中文文案', 'ENGLISH COPY'])(
-    'does not warn for a single-script node: %s',
-    async (text) => {
-      useSelectionStore.getState().select('t1', false)
-      server.use(
-        http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithSingleTextNode(text))),
-        http.get('/api/v1/config', () =>
-          HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
-        ),
-        http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
-      )
+  it('does not warn for pure Han text', async () => {
+    useSelectionStore.getState().select('t1', false)
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithSingleTextNode('纯中文文案')),
+      ),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+    )
 
-      renderWithQuery(<TextBlocksPanel />)
+    renderWithQuery(<TextBlocksPanel />)
 
-      const generateButton = await screen.findByTestId('textblock-generate-0')
-      await waitFor(() => expect(generateButton).not.toBeDisabled())
-      expect(screen.queryByTestId('textblock-geometry-warning-0')).not.toBeInTheDocument()
-    },
-  )
+    const generateButton = await screen.findByTestId('textblock-generate-0')
+    await waitFor(() => expect(generateButton).not.toBeDisabled())
+    expect(screen.queryByTestId('textblock-geometry-warning-0')).not.toBeInTheDocument()
+  })
 })

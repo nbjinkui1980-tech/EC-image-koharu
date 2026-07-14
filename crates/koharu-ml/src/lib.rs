@@ -13,6 +13,7 @@ pub mod manga_ocr;
 pub mod mit48px_ocr;
 mod ops;
 pub mod pp_doclayout_v3;
+pub mod pp_ocr_v5;
 pub mod probability_map;
 pub mod speech_bubble_segmentation;
 pub mod types;

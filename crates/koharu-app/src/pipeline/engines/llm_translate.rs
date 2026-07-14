@@ -173,6 +173,29 @@ mod tests {
         scene
     }
 
+    fn positioned_text_node(
+        id: NodeId,
+        text: &str,
+        line_polygons: Option<Vec<[[f32; 2]; 4]>>,
+    ) -> Node {
+        Node {
+            id,
+            transform: Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+                rotation_deg: 0.0,
+            },
+            visible: true,
+            kind: NodeKind::Text(TextData {
+                text: Some(text.to_string()),
+                line_polygons,
+                ..Default::default()
+            }),
+        }
+    }
+
     #[test]
     fn should_translate_only_requested_nodes() {
         let first = node_id(11);
@@ -208,5 +231,29 @@ mod tests {
             collect_translation_targets_from(&scene, page_id(), options.text_node_ids.as_deref());
 
         assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn han_only_translation_targets_skip_english_and_unsupported() {
+        let english = node_id(51);
+        let unsupported = node_id(52);
+        let spotted = node_id(53);
+        let quad = |left, right| [[left, 0.0], [right, 0.0], [right, 20.0], [left, 20.0]];
+        let scene = scene_with_texts(vec![
+            positioned_text_node(english, "English only", None),
+            positioned_text_node(unsupported, "Peach蜜桃臀", None),
+            positioned_text_node(
+                spotted,
+                "Peach\n蜜桃臀",
+                Some(vec![quad(0.0, 45.0), quad(55.0, 100.0)]),
+            ),
+        ]);
+
+        let targets = collect_han_translation_targets(&scene, page_id(), None);
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].0, spotted);
+        assert_eq!(targets[0].1.line_index, 1);
+        assert_eq!(targets[0].1.text, "蜜桃臀");
     }
 }
