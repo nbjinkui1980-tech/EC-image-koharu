@@ -24,7 +24,7 @@ impl Engine for Model {
         let layout = self.0.inference_one_fast(&image, CONFIDENCE_THRESHOLD)?;
         let blocks = build_text_blocks(&layout.regions);
 
-        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page);
+        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page, blocks.len());
         let removed = ops.len();
         let base_len = ctx.scene.page(ctx.page).map(|p| p.nodes.len()).unwrap_or(0);
         let insertion_start = base_len.saturating_sub(removed);

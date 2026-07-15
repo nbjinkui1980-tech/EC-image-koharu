@@ -884,12 +884,13 @@ pub fn page_node_count(scene: &Scene, page: PageId) -> usize {
     scene.page(page).map(|p| p.nodes.len()).unwrap_or(0)
 }
 
-/// Emit `RemoveNode` ops for every text node currently on `page`. Detectors
-/// prepend these so a re-detect replaces the previous blocks instead of
-/// layering on top. `prev_node` / `prev_index` are the best snapshot we have
-/// at emission time — `ops::apply` overwrites them with the live state for
-/// undo anyway.
-pub fn clear_text_nodes_ops(scene: &Scene, page: PageId) -> Vec<Op> {
+/// Emit `RemoveNode` ops for every text node currently on `page` when a
+/// detector has replacements ready. Empty detections preserve the previous
+/// blocks instead of destructively clearing the page.
+pub fn clear_text_nodes_ops(scene: &Scene, page: PageId, replacement_count: usize) -> Vec<Op> {
+    if replacement_count == 0 {
+        return Vec::new();
+    }
     let Some(page_ref) = scene.page(page) else {
         return Vec::new();
     };
@@ -1615,6 +1616,18 @@ mod tests {
                 ..Default::default()
             }),
         }
+    }
+
+    #[test]
+    fn text_replacement_cleanup_preserves_existing_nodes_when_new_count_is_zero() {
+        let id = NodeId::new();
+        let (scene, page) = translation_scene(vec![translated_node(id, "旧文本")]);
+
+        assert!(clear_text_nodes_ops(&scene, page, 0).is_empty());
+
+        let ops = clear_text_nodes_ops(&scene, page, 1);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], Op::RemoveNode { id: removed, .. } if removed == id));
     }
 
     fn target(node_id: NodeId, line_index: usize) -> (NodeId, EligibleTextLine) {

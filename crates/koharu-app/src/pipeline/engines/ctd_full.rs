@@ -25,10 +25,17 @@ impl Engine for Model {
         let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
         let det = self.0.inference(&image)?;
 
+        let mut pairs: Vec<([f32; 4], TextData)> = det
+            .text_blocks
+            .into_iter()
+            .map(|r| text_region_to_pair(r, DETECTOR_NAME))
+            .collect();
+        sort_manga_reading_order(&mut pairs, ctx.options.reading_order.unwrap_or_default());
+
         // Segmentation mask blob.
         let mask_blob = ctx.blobs.put_webp(&DynamicImage::ImageLuma8(det.mask))?;
 
-        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page);
+        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page, pairs.len());
         let removed = ops.len();
         let mut running_len = page_node_count(ctx.scene, ctx.page).saturating_sub(removed);
 
@@ -43,12 +50,6 @@ impl Engine for Model {
         }
         ops.push(mask_op);
 
-        let mut pairs: Vec<([f32; 4], TextData)> = det
-            .text_blocks
-            .into_iter()
-            .map(|r| text_region_to_pair(r, DETECTOR_NAME))
-            .collect();
-        sort_manga_reading_order(&mut pairs, ctx.options.reading_order.unwrap_or_default());
         for (bbox, text) in pairs {
             let node = new_text_node(bbox, text);
             ops.push(Op::AddNode {

@@ -29,7 +29,7 @@ impl Engine for Model {
             .collect();
         sort_manga_reading_order(&mut pairs, ctx.options.reading_order.unwrap_or_default());
 
-        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page);
+        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page, pairs.len());
         let removed = ops.len();
         let insertion_start = page_node_count(ctx.scene, ctx.page).saturating_sub(removed);
         ops.reserve(pairs.len());
