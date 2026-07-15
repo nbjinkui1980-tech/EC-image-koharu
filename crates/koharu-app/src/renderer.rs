@@ -8,7 +8,7 @@
 //! takes a `RenderOutput` and translates sprites + final composite into ops.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -129,26 +129,9 @@ impl Renderer {
                 }
             })
             .collect::<Vec<_>>();
-        let catalog = self.google_fonts.catalog();
-        for entry in &catalog.fonts {
-            for variant in &entry.variants {
-                // Unique PS name for Google Fonts to identify the specific weight/style
-                let post_script_name = format!(
-                    "{}:{}{}",
-                    entry.family,
-                    variant.weight,
-                    if variant.style == "italic" { "i" } else { "" }
-                );
-
-                fonts.push(FontFaceInfo {
-                    family_name: entry.family.clone(),
-                    post_script_name,
-                    source: FontSource::Google,
-                    category: Some(entry.category.clone()),
-                    cached: self.google_fonts.is_variant_cached(&entry.family, variant),
-                });
-            }
-        }
+        fonts.extend(self.google_fonts.default_faces());
+        let mut seen = HashSet::new();
+        fonts.retain(|font| seen.insert(font.post_script_name.clone()));
         fonts.sort();
         Ok(fonts)
     }
@@ -1092,6 +1075,44 @@ mod tests {
     use super::*;
     use image::{GrayImage, Luma, Rgba, RgbaImage};
     use koharu_core::NodeId;
+
+    #[test]
+    fn available_fonts_uses_default_google_face_boundary() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = camino::Utf8Path::from_path(temp.path()).expect("temp path should be UTF-8");
+        let cached_path = root
+            .join("fonts/google/abeezee")
+            .join("ABeeZee-Regular.ttf");
+        std::fs::create_dir_all(
+            cached_path
+                .parent()
+                .expect("cached font should have a parent"),
+        )?;
+        std::fs::write(cached_path, b"cached")?;
+
+        let mut fontbook = FontBook::new();
+        let symbol_fallbacks = load_symbol_fallbacks(&mut fontbook);
+        let renderer = Renderer {
+            fontbook: Arc::new(Mutex::new(fontbook)),
+            renderer: TinySkiaRenderer::new()?,
+            symbol_fallbacks,
+            google_fonts: Arc::new(GoogleFontService::new(root)?),
+        };
+
+        let fonts = renderer.available_fonts()?;
+        assert!(fonts.iter().any(|font| {
+            font.post_script_name == "Noto Sans SC:400"
+                && font.source == FontSource::Google
+                && !font.cached
+        }));
+        assert!(fonts.iter().any(|font| {
+            font.post_script_name == "ABeeZee:400"
+                && font.source == FontSource::Google
+                && font.cached
+        }));
+        assert!(!fonts.iter().any(|font| font.post_script_name == "Abel:400"));
+        Ok(())
+    }
 
     #[test]
     fn default_font_families_should_fill_empty_list() {

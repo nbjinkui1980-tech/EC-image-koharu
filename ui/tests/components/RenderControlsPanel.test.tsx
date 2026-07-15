@@ -1,9 +1,11 @@
+import { focusManager, onlineManager, QueryClient } from '@tanstack/react-query'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { RenderControlsPanel } from '@/components/panels/RenderControlsPanel'
+import { getGetGoogleFontsCatalogQueryKey } from '@/lib/api'
 import * as sceneActions from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -149,6 +151,217 @@ describe('RenderControlsPanel Font Assignment', () => {
         ),
       ),
     )
+  })
+
+  it('does not request the online catalog when the picker mounts or opens', async () => {
+    let catalogRequests = 0
+    server.use(
+      http.get('/api/v1/google-fonts', () => {
+        catalogRequests += 1
+        return HttpResponse.json({ fonts: [] })
+      }),
+    )
+
+    renderWithQuery(<RenderControlsPanel />)
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+
+    expect(catalogRequests).toBe(0)
+  })
+
+  it('requests the online catalog once after search intent', async () => {
+    let catalogRequests = 0
+    server.use(
+      http.get('/api/v1/google-fonts', () => {
+        catalogRequests += 1
+        return HttpResponse.json({
+          fonts: [
+            {
+              family: 'Online Sans',
+              category: 'sans-serif',
+              subsets: ['latin'],
+              variants: [{ weight: 400, style: 'normal', filename: 'OnlineSans-Regular.ttf' }],
+            },
+          ],
+        })
+      }),
+    )
+
+    const { client } = renderWithQuery(<RenderControlsPanel />)
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    expect(catalogRequests).toBe(0)
+
+    const search = screen.getByPlaceholderText('Search fonts…')
+    await userEvent.type(search, 'Online')
+    await screen.findByText('Online Sans')
+    await userEvent.type(search, ' Sans')
+
+    expect(catalogRequests).toBe(1)
+    expect(client.getQueriesData({ queryKey: getGetGoogleFontsCatalogQueryKey() })).toHaveLength(1)
+  })
+
+  it('requests the online catalog once after Google category intent', async () => {
+    let catalogRequests = 0
+    server.use(
+      http.get('/api/v1/google-fonts', () => {
+        catalogRequests += 1
+        return HttpResponse.json({ fonts: [] })
+      }),
+    )
+
+    renderWithQuery(<RenderControlsPanel />)
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    expect(catalogRequests).toBe(0)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Sans' }))
+    await waitFor(() => expect(catalogRequests).toBe(1))
+    await userEvent.click(screen.getByRole('button', { name: 'Serif' }))
+
+    expect(catalogRequests).toBe(1)
+  })
+
+  it('does not retry the online catalog after its first failed request', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retryDelay: 0 } },
+    })
+    let catalogRequests = 0
+    server.use(
+      http.get('/api/v1/google-fonts', () => {
+        catalogRequests += 1
+        return HttpResponse.json({ message: 'catalog unavailable' }, { status: 500 })
+      }),
+    )
+
+    renderWithQuery(<RenderControlsPanel />, { client })
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    await userEvent.type(screen.getByPlaceholderText('Search fonts…'), 'Online')
+
+    await waitFor(() =>
+      expect(client.getQueryState(getGetGoogleFontsCatalogQueryKey())?.status).toBe('error'),
+    )
+    expect(catalogRequests).toBe(1)
+  })
+
+  it('keeps a failed online catalog attempt terminal across lifecycle events and remount', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retryDelay: 0 } },
+    })
+    let catalogRequests = 0
+    server.use(
+      http.get('/api/v1/google-fonts', () => {
+        catalogRequests += 1
+        return HttpResponse.json({ message: 'catalog unavailable' }, { status: 500 })
+      }),
+    )
+
+    focusManager.setFocused(false)
+    try {
+      const firstRender = renderWithQuery(<RenderControlsPanel />, { client })
+      await userEvent.click(await screen.findByTestId('render-font-select'))
+      await userEvent.type(screen.getByPlaceholderText('Search fonts…'), 'Online')
+      await waitFor(() =>
+        expect(client.getQueryState(getGetGoogleFontsCatalogQueryKey())?.status).toBe('error'),
+      )
+
+      await userEvent.click(screen.getByRole('button', { name: 'Serif' }))
+      focusManager.setFocused(true)
+      onlineManager.setOnline(false)
+      onlineManager.setOnline(true)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      firstRender.unmount()
+      renderWithQuery(<RenderControlsPanel />, { client })
+      await userEvent.click(await screen.findByTestId('render-font-select'))
+      await userEvent.type(screen.getByPlaceholderText('Search fonts…'), 'Online')
+      await userEvent.click(screen.getByRole('button', { name: 'Sans' }))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(catalogRequests).toBe(1)
+    } finally {
+      focusManager.setFocused(undefined)
+      onlineManager.setOnline(true)
+    }
+  })
+
+  it('does not restart an in-flight online catalog request after unmount and new intent', async () => {
+    const client = new QueryClient()
+    let catalogRequests = 0
+    let releaseCatalog: (() => void) | undefined
+    const catalogDelay = new Promise<void>((resolve) => {
+      releaseCatalog = resolve
+    })
+    server.use(
+      http.get('/api/v1/google-fonts', async () => {
+        catalogRequests += 1
+        await catalogDelay
+        return HttpResponse.json({ fonts: [] })
+      }),
+    )
+
+    try {
+      const firstRender = renderWithQuery(<RenderControlsPanel />, { client })
+      await userEvent.click(await screen.findByTestId('render-font-select'))
+      await userEvent.type(screen.getByPlaceholderText('Search fonts…'), 'Online')
+      await waitFor(() => expect(catalogRequests).toBe(1))
+
+      firstRender.unmount()
+      renderWithQuery(<RenderControlsPanel />, { client })
+      await userEvent.click(await screen.findByTestId('render-font-select'))
+      await userEvent.type(screen.getByPlaceholderText('Search fonts…'), 'Online')
+      await userEvent.click(screen.getByRole('button', { name: 'Sans' }))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(catalogRequests).toBe(1)
+    } finally {
+      releaseCatalog?.()
+    }
+  })
+
+  it('keeps the loaded online catalog across focus, reconnect, remount, and repeated intent', async () => {
+    const client = new QueryClient()
+    let catalogRequests = 0
+    server.use(
+      http.get('/api/v1/google-fonts', () => {
+        catalogRequests += 1
+        return HttpResponse.json({
+          fonts: [
+            {
+              family: 'Online Sans',
+              category: 'sans-serif',
+              subsets: ['latin'],
+              variants: [{ weight: 400, style: 'normal', filename: 'OnlineSans-Regular.ttf' }],
+            },
+          ],
+        })
+      }),
+    )
+
+    focusManager.setFocused(false)
+    try {
+      const firstRender = renderWithQuery(<RenderControlsPanel />, { client })
+      await userEvent.click(await screen.findByTestId('render-font-select'))
+      const search = screen.getByPlaceholderText('Search fonts…')
+      await userEvent.type(search, 'Online')
+      await screen.findByText('Online Sans')
+      await userEvent.click(screen.getByRole('button', { name: 'Serif' }))
+
+      focusManager.setFocused(true)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      onlineManager.setOnline(false)
+      onlineManager.setOnline(true)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      firstRender.unmount()
+      renderWithQuery(<RenderControlsPanel />, { client })
+      await userEvent.click(await screen.findByTestId('render-font-select'))
+      await userEvent.type(screen.getByPlaceholderText('Search fonts…'), 'Online')
+      await screen.findByText('Online Sans')
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(catalogRequests).toBe(1)
+    } finally {
+      focusManager.setFocused(undefined)
+      onlineManager.setOnline(true)
+    }
   })
 
   it('applying a font to a singular text box only updates that box', async () => {
@@ -378,6 +591,85 @@ describe('RenderControlsPanel Font Assignment', () => {
     expect(events.slice(0, applyIndex).every((event) => event === 'download')).toBe(true)
     expect(events.slice(applyIndex)).toEqual(['apply', 'render'])
     expect(usePreferencesStore.getState().defaultFont).toBe('Cloud:400')
+  })
+
+  it('downloads a recommended uncached font and refreshes fonts before applying it', async () => {
+    const events: string[] = []
+    let fontRequests = 0
+    server.use(
+      http.get('/api/v1/fonts', () => {
+        fontRequests += 1
+        events.push(`fonts:${fontRequests}`)
+        return HttpResponse.json([
+          { familyName: 'Arial', postScriptName: 'Arial', source: 'system', cached: true },
+          {
+            familyName: 'Cloud',
+            postScriptName: 'Cloud:400',
+            source: 'google',
+            cached: fontRequests > 1,
+          },
+        ])
+      }),
+      http.post('/api/v1/google-fonts/:family/fetch', () => {
+        events.push('download')
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+    vi.mocked(sceneActions.applyOp).mockImplementationOnce(async () => {
+      events.push('apply')
+    })
+    vi.mocked(sceneActions.runAutoRenderNow).mockImplementationOnce(async () => {
+      events.push('render')
+    })
+
+    renderWithQuery(<RenderControlsPanel />)
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    await userEvent.click(await screen.findByText('Cloud'))
+
+    await waitFor(() => expect(events.at(-1)).toBe('render'))
+    expect(fontRequests).toBe(2)
+    expect(events).toEqual(['fonts:1', 'download', 'fonts:2', 'apply', 'render'])
+    expect(sceneActions.applyOp).toHaveBeenCalledTimes(1)
+    expect(sceneActions.runAutoRenderNow).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops before applying or rendering when the fonts refresh fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let fontRequests = 0
+    server.use(
+      http.get('/api/v1/fonts', () => {
+        fontRequests += 1
+        if (fontRequests > 1) {
+          return HttpResponse.json({ message: 'font list refresh failed' }, { status: 500 })
+        }
+        return HttpResponse.json([
+          { familyName: 'Arial', postScriptName: 'Arial', source: 'system', cached: true },
+          {
+            familyName: 'Cloud',
+            postScriptName: 'Cloud:400',
+            source: 'google',
+            cached: false,
+          },
+        ])
+      }),
+      http.post(
+        '/api/v1/google-fonts/:family/fetch',
+        () => new HttpResponse(null, { status: 204 }),
+      ),
+    )
+
+    renderWithQuery(<RenderControlsPanel />)
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    await userEvent.click(await screen.findByText('Cloud'))
+
+    await waitFor(
+      () =>
+        expect(useEditorUiStore.getState().error?.message).toContain('font list refresh failed'),
+      { timeout: 3_000 },
+    )
+    expect(usePreferencesStore.getState().defaultFont).toBe('Arial')
+    expect(sceneActions.applyOp).not.toHaveBeenCalled()
+    expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
   })
 
   it('preserves the global font and skips rendering when the scene update fails', async () => {

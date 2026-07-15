@@ -1,19 +1,26 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
-use koharu_core::{GoogleFontCatalog, GoogleFontEntry, GoogleFontVariant};
-use tokio::sync::Mutex;
+use koharu_core::{FontFaceInfo, FontSource, GoogleFontCatalog, GoogleFontEntry};
+use parking_lot::RwLock;
 use tracing::debug;
 
 const CATALOG_JSON: &str = include_str!("../data/google-fonts-catalog.json");
 
 const RECOMMENDED_FAMILIES: &[&str] = &[
-    "Comic Neue",
-    "Bangers",
-    "Patrick Hand",
-    "Caveat",
-    "Pangolin",
+    "Noto Sans SC",
+    "Noto Sans TC",
+    "Noto Sans JP",
+    "Noto Sans KR",
+    "Noto Serif SC",
+    "Roboto",
+    "Inter",
+    "Open Sans",
+    "Montserrat",
+    "Poppins",
+    "ZCOOL XiaoWei",
+    "Ma Shan Zheng",
 ];
 
 /// On-demand Google Fonts service with persistent disk caching.
@@ -21,7 +28,7 @@ pub struct GoogleFontService {
     catalog: GoogleFontCatalog,
     cache_dir: Utf8PathBuf,
     /// Tracks which families have been downloaded to disk.
-    cached_families: Mutex<HashMap<String, Vec<Utf8PathBuf>>>,
+    cached_families: RwLock<HashMap<String, Vec<Utf8PathBuf>>>,
 }
 
 impl GoogleFontService {
@@ -52,7 +59,7 @@ impl GoogleFontService {
         Ok(Self {
             catalog,
             cache_dir,
-            cached_families: Mutex::new(cached_families),
+            cached_families: RwLock::new(cached_families),
         })
     }
 
@@ -68,13 +75,61 @@ impl GoogleFontService {
 
     /// Checks if a family has been cached to disk.
     pub async fn is_cached(&self, family: &str) -> bool {
-        self.cached_families.lock().await.contains_key(family)
+        self.cached_families.read().contains_key(family)
     }
 
-    /// Checks if a specific variant has been cached to disk.
-    pub fn is_variant_cached(&self, family: &str, variant: &GoogleFontVariant) -> bool {
-        let family_dir = self.cache_dir.join(normalize_family_dir(family));
-        family_dir.join(&variant.filename).exists()
+    /// Returns the small default Google Fonts set for the combined `/fonts` response.
+    pub fn default_faces(&self) -> Vec<FontFaceInfo> {
+        let cached_families = self.cached_families.read();
+        let mut seen = HashSet::new();
+        let mut faces = Vec::new();
+
+        for entry in &self.catalog.fonts {
+            let recommended = if RECOMMENDED_FAMILIES.contains(&entry.family.as_str()) {
+                entry
+                    .variants
+                    .iter()
+                    .find(|variant| variant.weight == 400 && variant.style == "normal")
+                    .or_else(|| entry.variants.first())
+            } else {
+                None
+            };
+            let cached_paths = cached_families.get(&entry.family);
+
+            for variant in &entry.variants {
+                let path = self
+                    .cache_dir
+                    .join(normalize_family_dir(&entry.family))
+                    .join(&variant.filename);
+                let cached = cached_paths.is_some_and(|paths| paths.contains(&path));
+                let is_recommended_default = recommended.is_some_and(|default| {
+                    default.weight == variant.weight
+                        && default.style == variant.style
+                        && default.filename == variant.filename
+                });
+                if !cached && !is_recommended_default {
+                    continue;
+                }
+
+                let post_script_name = format!(
+                    "{}:{}{}",
+                    entry.family,
+                    variant.weight,
+                    if variant.style == "italic" { "i" } else { "" }
+                );
+                if seen.insert(post_script_name.clone()) {
+                    faces.push(FontFaceInfo {
+                        family_name: entry.family.clone(),
+                        post_script_name,
+                        source: FontSource::Google,
+                        category: Some(entry.category.clone()),
+                        cached,
+                    });
+                }
+            }
+        }
+
+        faces
     }
 
     /// Downloads a font family's regular variant to disk cache.
@@ -125,6 +180,11 @@ impl GoogleFontService {
 
         // Check cache first
         if file_path.exists() {
+            let mut cached = self.cached_families.write();
+            let entries = cached.entry(family.to_string()).or_default();
+            if !entries.contains(&file_path) {
+                entries.push(file_path.clone());
+            }
             return Ok(file_path);
         }
 
@@ -146,7 +206,7 @@ impl GoogleFontService {
                     std::fs::write(&file_path, &bytes)?;
 
                     // Update in-memory cache tracking
-                    let mut cached = self.cached_families.lock().await;
+                    let mut cached = self.cached_families.write();
                     let entries = cached.entry(family.to_string()).or_default();
                     if !entries.contains(&file_path) {
                         entries.push(file_path.clone());
@@ -241,5 +301,121 @@ pub fn parse_variant_query(query: &str) -> (&str, u16, &str) {
         (family, weight, style)
     } else {
         (query, 400, "normal")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_faces_include_only_recommended_and_cached_variants() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp.path()).expect("temp path should be UTF-8");
+        let cached_path = root
+            .join("fonts/google/abeezee")
+            .join("ABeeZee-Regular.ttf");
+        std::fs::create_dir_all(
+            cached_path
+                .parent()
+                .expect("cached font should have a parent"),
+        )?;
+        std::fs::write(&cached_path, b"cached")?;
+
+        let service = GoogleFontService::new(root)?;
+        let faces = service.default_faces();
+
+        assert!(!faces.iter().any(|face| face.family_name == "Abel"));
+        let cached = faces
+            .iter()
+            .find(|face| face.post_script_name == "ABeeZee:400")
+            .expect("cached non-recommended variant should be included");
+        assert!(cached.cached);
+
+        for family in RECOMMENDED_FAMILIES {
+            let family_faces = faces
+                .iter()
+                .filter(|face| face.family_name == *family)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                family_faces.len(),
+                1,
+                "{family} should expose one default face"
+            );
+
+            let entry = service
+                .find_entry(family)
+                .unwrap_or_else(|| panic!("recommended family missing from catalog: {family}"));
+            let expected = entry
+                .variants
+                .iter()
+                .find(|variant| variant.weight == 400 && variant.style == "normal")
+                .or_else(|| entry.variants.first())
+                .expect("recommended family should have a variant");
+            assert_eq!(
+                family_faces[0].post_script_name,
+                format!(
+                    "{}:{}{}",
+                    entry.family,
+                    expected.weight,
+                    if expected.style == "italic" { "i" } else { "" }
+                )
+            );
+            assert!(!family_faces[0].cached);
+        }
+
+        let mut post_script_names = faces
+            .iter()
+            .map(|face| face.post_script_name.as_str())
+            .collect::<Vec<_>>();
+        post_script_names.sort_unstable();
+        post_script_names.dedup();
+        assert_eq!(post_script_names.len(), faces.len());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fetch_variant_existing_file_updates_cache_index() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = Utf8Path::from_path(temp.path()).expect("temp path should be UTF-8");
+        let service = GoogleFontService::new(root)?;
+        let entry = service
+            .find_entry("ABeeZee")
+            .expect("ABeeZee should exist in the catalog");
+        let variant = entry
+            .variants
+            .iter()
+            .find(|variant| variant.weight == 400 && variant.style == "normal")
+            .expect("ABeeZee regular should exist");
+        let cached_path = root.join("fonts/google/abeezee").join(&variant.filename);
+        std::fs::create_dir_all(
+            cached_path
+                .parent()
+                .expect("cached font should have a parent"),
+        )?;
+        std::fs::write(&cached_path, b"cached")?;
+
+        let http = reqwest_middleware::ClientBuilder::new(
+            reqwest_middleware::reqwest::Client::builder()
+                .proxy(reqwest_middleware::reqwest::Proxy::all(
+                    "http://127.0.0.1:9",
+                )?)
+                .build()?,
+        )
+        .build();
+
+        assert_eq!(
+            service
+                .fetch_variant("ABeeZee", 400, "normal", &http)
+                .await?,
+            cached_path
+        );
+        assert!(
+            service
+                .default_faces()
+                .iter()
+                .any(|face| face.post_script_name == "ABeeZee:400" && face.cached)
+        );
+        Ok(())
     }
 }

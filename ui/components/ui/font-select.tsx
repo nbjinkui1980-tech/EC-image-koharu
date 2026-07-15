@@ -33,6 +33,7 @@ type FontSelectProps = {
   triggerClassName?: string
   triggerStyle?: React.CSSProperties
   contentStyle?: React.CSSProperties
+  onBrowseOnlineFonts?: () => void
   onChange: (value: string) => void
   'data-testid'?: string
 }
@@ -255,7 +256,11 @@ export function FontSelect({
         <input
           ref={inputRef}
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            const next = e.target.value
+            if (!search.trim() && next.trim()) props.onBrowseOnlineFonts?.()
+            setSearch(next)
+          }}
           placeholder='Search fonts…'
           className='w-full border-b bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground'
         />
@@ -282,7 +287,10 @@ export function FontSelect({
                       ? 'bg-primary text-primary-foreground'
                       : 'bg-muted text-muted-foreground hover:bg-accent',
                   )}
-                  onClick={() => setCategoryFilter(cat === 'all' ? null : full)}
+                  onClick={() => {
+                    setCategoryFilter(cat === 'all' ? null : full)
+                    if (cat !== 'all' && cat !== 'favs') props.onBrowseOnlineFonts?.()
+                  }}
                 >
                   {cat === 'favs' ? (
                     <StarIcon className='size-2.5 fill-current' />

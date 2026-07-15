@@ -1,5 +1,6 @@
 'use client'
 
+import { useQueryClient } from '@tanstack/react-query'
 import {
   AlignCenterIcon,
   AlignLeftIcon,
@@ -33,7 +34,12 @@ import {
   useTextNodes,
   type TextNodeEntry,
 } from '@/hooks/useCurrentPage'
-import { fetchGoogleFont, useGetGoogleFontsCatalog, useListFonts } from '@/lib/api'
+import {
+  fetchGoogleFont,
+  getListFontsQueryKey,
+  useGetGoogleFontsCatalog,
+  useListFonts,
+} from '@/lib/api'
 import type {
   FontFaceInfo,
   FontPrediction,
@@ -50,7 +56,7 @@ import {
   STYLE_KEYWORDS,
   uniqueFontFaces,
 } from '@/lib/font-utils'
-import { applyOp, invalidateScene, queueAutoRender, runAutoRenderNow } from '@/lib/io/scene'
+import { applyOp, queueAutoRender, runAutoRenderNow } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
@@ -62,6 +68,7 @@ const DEFAULT_STROKE_WIDTH = 1.6
 const MIN_STROKE_WIDTH = 0.2
 const MAX_STROKE_WIDTH = 24
 const STROKE_WIDTH_STEP = 0.1
+const GOOGLE_FONTS_CATALOG_ATTEMPTED_QUERY_KEY = ['ui', 'google-fonts-catalog-attempted'] as const
 
 const DEFAULT_FONT_FACES: FontFaceInfo[] = [
   {
@@ -128,12 +135,34 @@ const hasExplicitColor = (node: TextNodeEntry) => Array.isArray(node.data.style?
 
 export function RenderControlsPanel() {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const page = useCurrentPage()
   const textNodes = useTextNodes()
   const selectedNode = useSelectedTextNode()
   const selectedNodes = useSelectedTextNodes()
   const { data: availableFonts = [] } = useListFonts()
-  useGetGoogleFontsCatalog() // prefetch catalog so picker can decorate Google entries
+  const [browseOnlineFonts, setBrowseOnlineFonts] = useState(false)
+  const { data: googleFontCatalog } = useGetGoogleFontsCatalog({
+    query: {
+      enabled: browseOnlineFonts,
+      gcTime: Infinity,
+      staleTime: Infinity,
+      retry: false,
+      retryOnMount: false,
+      refetchOnMount: false,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+    },
+  })
+  const browseOnlineFontsOnce = () => {
+    if (queryClient.getQueryData<boolean>(GOOGLE_FONTS_CATALOG_ATTEMPTED_QUERY_KEY)) return
+    queryClient.setQueryDefaults(GOOGLE_FONTS_CATALOG_ATTEMPTED_QUERY_KEY, {
+      gcTime: Infinity,
+      staleTime: Infinity,
+    })
+    queryClient.setQueryData(GOOGLE_FONTS_CATALOG_ATTEMPTED_QUERY_KEY, true)
+    setBrowseOnlineFonts(true)
+  }
   const appDefaultFont = usePreferencesStore((s) => s.defaultFont)
   const favoriteFonts = usePreferencesStore((s) => s.favoriteFonts)
   const toggleFavoriteFont = usePreferencesStore((s) => s.toggleFavoriteFont)
@@ -160,19 +189,43 @@ export function RenderControlsPanel() {
   const firstNode = textNodes[0]
   const hasNodes = textNodes.length > 0
 
-  const fontCandidates = useMemo(
-    () =>
-      uniqueFontFaces(
-        [
-          ...sortedFonts,
-          ...(appDefaultFont ? [fallbackFontFace(appDefaultFont)] : []),
-          ...(selectedNode?.data.style?.fontFamilies?.slice(0, 1)?.map(fallbackFontFace) ?? []),
-          ...(firstNode?.data.style?.fontFamilies?.slice(0, 1)?.map(fallbackFontFace) ?? []),
-          ...DEFAULT_FONT_FACES,
-        ].filter((v): v is FontFaceInfo => !!v),
-      ),
-    [sortedFonts, appDefaultFont, selectedNode?.id, selectedNode?.data.style?.fontFamilies],
-  )
+  const fontCandidates = useMemo(() => {
+    const cachedGoogleFonts = new Map(
+      sortedFonts
+        .filter((font) => font.source === 'google')
+        .map((font) => [font.postScriptName, font.cached] as const),
+    )
+    const onlineFonts =
+      googleFontCatalog?.fonts.flatMap((entry) =>
+        entry.variants.map((variant) => {
+          const postScriptName = `${entry.family}:${variant.weight}${variant.style === 'italic' ? 'i' : ''}`
+          return {
+            familyName: entry.family,
+            postScriptName,
+            source: 'google' as const,
+            category: entry.category,
+            cached: cachedGoogleFonts.get(postScriptName) ?? false,
+          }
+        }),
+      ) ?? []
+
+    return uniqueFontFaces(
+      [
+        ...sortedFonts,
+        ...onlineFonts,
+        ...(appDefaultFont ? [fallbackFontFace(appDefaultFont)] : []),
+        ...(selectedNode?.data.style?.fontFamilies?.slice(0, 1)?.map(fallbackFontFace) ?? []),
+        ...(firstNode?.data.style?.fontFamilies?.slice(0, 1)?.map(fallbackFontFace) ?? []),
+        ...DEFAULT_FONT_FACES,
+      ].filter((v): v is FontFaceInfo => !!v),
+    )
+  }, [
+    sortedFonts,
+    googleFontCatalog,
+    appDefaultFont,
+    selectedNode?.data.style?.fontFamilies,
+    firstNode?.data.style?.fontFamilies,
+  ])
 
   const currentFontCandidate =
     selectedNode?.data.style?.fontFamilies?.[0] ??
@@ -337,7 +390,10 @@ export function RenderControlsPanel() {
     if (face.source !== 'google' || face.cached) return true
     try {
       await fetchGoogleFont(encodeURIComponent(face.postScriptName))
-      await invalidateScene()
+      await queryClient.invalidateQueries(
+        { queryKey: getListFontsQueryKey() },
+        { throwOnError: true },
+      )
       return true
     } catch (error) {
       console.error('Failed to fetch font:', error)
@@ -460,6 +516,7 @@ export function RenderControlsPanel() {
               options={familyOptions}
               favoriteFonts={favoriteFonts}
               onToggleFavorite={toggleFavoriteFont}
+              onBrowseOnlineFonts={browseOnlineFontsOnce}
               disabled={familyOptions.length === 0}
               placeholder={t('render.fontPlaceholder')}
               triggerStyle={
