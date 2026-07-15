@@ -32,10 +32,13 @@ import {
   useSelectedTextNode,
   useSelectedTextNodes,
   useTextNodes,
+  textNodesOf,
   type TextNodeEntry,
 } from '@/hooks/useCurrentPage'
 import {
   fetchGoogleFont,
+  getGetSceneJsonQueryKey,
+  getSceneJson,
   getListFontsQueryKey,
   useGetGoogleFontsCatalog,
   useListFonts,
@@ -56,10 +59,12 @@ import {
   STYLE_KEYWORDS,
   uniqueFontFaces,
 } from '@/lib/font-utils'
-import { applyOp, queueAutoRender, runAutoRenderNow } from '@/lib/io/scene'
+import { applyOp, invalidateScene, queueAutoRender, runAutoRenderNow } from '@/lib/io/scene'
 import { ops } from '@/lib/ops'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import { useSelectionStore } from '@/lib/stores/selectionStore'
 import { cn } from '@/lib/utils'
 
 const DEFAULT_COLOR: number[] = [0, 0, 0, 255]
@@ -169,6 +174,9 @@ export function RenderControlsPanel() {
   const renderEffect = useEditorUiStore((s) => s.renderEffect)
   const setRenderEffect = useEditorUiStore((s) => s.setRenderEffect)
   const setRenderStroke = useEditorUiStore((s) => s.setRenderStroke)
+  const isProcessing = useJobsStore((state) =>
+    Object.values(state.jobs).some((job) => job.status === 'running'),
+  )
 
   const sortedFonts = useMemo(() => {
     return [...(availableFonts ?? [])].sort((a, b) => a.familyName.localeCompare(b.familyName))
@@ -359,7 +367,14 @@ export function RenderControlsPanel() {
     renderImmediately = false,
     afterApply?: () => void,
   ): Promise<void> => {
-    if (!page || nodes.length === 0) return
+    if (
+      !page ||
+      nodes.length === 0 ||
+      useSelectionStore.getState().pageId !== page.id ||
+      Object.values(useJobsStore.getState().jobs).some((job) => job.status === 'running')
+    ) {
+      return
+    }
     const op =
       nodes.length === 1
         ? buildStyleOp(nodes[0], updates)
@@ -367,7 +382,13 @@ export function RenderControlsPanel() {
             label,
             nodes.map((n) => buildStyleOp(n, updates)),
           )
-    await applyOp(op)
+    try {
+      await applyOp(op)
+    } catch (error) {
+      await invalidateScene().catch(() => undefined)
+      useEditorUiStore.getState().showError(String(error))
+      return
+    }
     afterApply?.()
     if (renderImmediately) {
       await runAutoRenderNow(page.id)
@@ -403,26 +424,47 @@ export function RenderControlsPanel() {
   }
 
   const applyFontToCurrentScope = async (postScriptName: string): Promise<void> => {
-    const targets = selectedNodes.length > 0 ? selectedNodes : textNodes
-    const setGlobalDefault =
-      selectedNodes.length === 0
-        ? () => usePreferencesStore.getState().setDefaultFont(postScriptName)
-        : undefined
-    if (targets.length === 0) {
-      setGlobalDefault?.()
+    const pageId = useSelectionStore.getState().pageId
+    if (!pageId) return
+
+    let snapshot
+    try {
+      snapshot = await getSceneJson()
+    } catch (error) {
+      useEditorUiStore.getState().showError(String(error))
       return
     }
-    try {
+    queryClient.setQueryData(getGetSceneJsonQueryKey(), snapshot)
+
+    const currentPage = snapshot.scene.pages[pageId]
+    if (!currentPage) return
+    const currentNodes = textNodesOf(currentPage)
+    const selectedIds = useSelectionStore.getState().nodeIds
+
+    if (selectedIds.size > 0) {
+      const targets = currentNodes.filter((node) => selectedIds.has(node.id))
+      if (targets.length !== selectedIds.size) return
       await applyStyleToNodes(
         targets,
         { fontFamilies: [postScriptName] },
         'Font family update',
         true,
-        setGlobalDefault,
       )
-    } catch (error) {
-      useEditorUiStore.getState().showError(String(error))
+      return
     }
+
+    const setGlobalDefault = () => usePreferencesStore.getState().setDefaultFont(postScriptName)
+    if (currentNodes.length === 0) {
+      setGlobalDefault()
+      return
+    }
+    await applyStyleToNodes(
+      currentNodes,
+      { fontFamilies: [postScriptName] },
+      'Font family update',
+      true,
+      setGlobalDefault,
+    )
   }
 
   const commitCurrentFontColorIfImplicit = () => {
@@ -484,7 +526,10 @@ export function RenderControlsPanel() {
   }
 
   return (
-    <div className='flex w-full min-w-0 flex-col gap-2'>
+    <fieldset
+      disabled={isProcessing}
+      className='m-0 flex w-full min-w-0 flex-col gap-2 border-0 p-0'
+    >
       {/* Scope */}
       <div className='flex items-center justify-end'>
         <span
@@ -841,6 +886,6 @@ export function RenderControlsPanel() {
           </div>
         </div>
       </div>
-    </div>
+    </fieldset>
   )
 }

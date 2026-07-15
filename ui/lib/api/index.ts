@@ -49,6 +49,7 @@ export {
   getGetGoogleFontFileUrl,
   getGetPageThumbnailUrl,
   getMeta,
+  getSceneJson,
   patchConfig,
   putCurrentLlm,
   putCurrentProject,

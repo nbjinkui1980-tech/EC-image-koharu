@@ -8,6 +8,7 @@ import { RenderControlsPanel } from '@/components/panels/RenderControlsPanel'
 import { getGetGoogleFontsCatalogQueryKey } from '@/lib/api'
 import * as sceneActions from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
+import { useJobsStore } from '@/lib/stores/jobsStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
 
@@ -34,6 +35,7 @@ vi.mock('@/lib/io/scene', async () => {
   return {
     ...actual,
     applyOp: vi.fn(),
+    invalidateScene: vi.fn(async () => undefined),
     queueAutoRender: vi.fn(),
     runAutoRenderNow: vi.fn(),
   }
@@ -131,6 +133,7 @@ describe('RenderControlsPanel Font Assignment', () => {
     useSelectionStore.getState().clear()
     usePreferencesStore.getState().setDefaultFont('Arial')
     useEditorUiStore.getState().clearError()
+    useJobsStore.getState().clear()
     vi.clearAllMocks()
 
     server.use(
@@ -151,6 +154,55 @@ describe('RenderControlsPanel Font Assignment', () => {
         ),
       ),
     )
+  })
+
+  it('disables render controls while a pipeline job is running', async () => {
+    useJobsStore.getState().started('job-1', 'pipeline')
+    renderWithQuery(<RenderControlsPanel />)
+
+    expect(await screen.findByTestId('render-font-select')).toBeDisabled()
+  })
+
+  it('refreshes the scene and skips stale font target ids', async () => {
+    let sceneRequests = 0
+    server.use(
+      http.get('/api/v1/scene.json', () => {
+        sceneRequests += 1
+        return HttpResponse.json(
+          sceneRequests === 1
+            ? sceneWithTextNodes([
+                { id: 't1', kind: { text: { style: { fontFamilies: ['Arial'] } } } },
+              ])
+            : sceneWithTextNodes([]),
+        )
+      }),
+    )
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().select('t1', false)
+
+    await userEvent.click(await screen.findByTestId('render-font-select'))
+    await userEvent.click(await screen.findByText('Custom'))
+
+    await waitFor(() => expect(sceneRequests).toBeGreaterThanOrEqual(2))
+    expect(sceneActions.applyOp).not.toHaveBeenCalled()
+    expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
+  })
+
+  it('handles style apply failures without queueing a render', async () => {
+    vi.mocked(sceneActions.applyOp).mockRejectedValueOnce(new Error('node not found'))
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().select('t1', false)
+
+    fireEvent.change(await screen.findByTestId('render-font-size'), {
+      target: { value: '42' },
+    })
+
+    await waitFor(() =>
+      expect(useEditorUiStore.getState().error?.message).toContain('node not found'),
+    )
+    expect(sceneActions.invalidateScene).toHaveBeenCalled()
+    expect(sceneActions.queueAutoRender).not.toHaveBeenCalled()
+    expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
   })
 
   it('does not request the online catalog when the picker mounts or opens', async () => {
