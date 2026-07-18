@@ -18,6 +18,7 @@ pub mod mit48px_ocr;
 pub mod paddle_ocr;
 pub mod pp_doclayout;
 pub mod renderer;
+pub mod source_language_gate;
 pub mod support;
 pub mod typography;
 pub mod yuzumarker_font;

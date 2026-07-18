@@ -19,12 +19,12 @@ use crate::app::shared_llama_backend;
 use crate::config::SourceTextPolicy;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
+use crate::pipeline::engines::source_language_gate::{ValidatedWord, validate_pp_vl_alignment};
 use crate::pipeline::engines::support::{
     contains_han, contains_protected_latin_word, load_source_image, text_node_to_region, text_nodes,
 };
 
 const MAX_NEW_TOKENS: usize = 256;
-const MIN_WORD_CONFIDENCE: f32 = 0.5;
 
 fn needs_inline_word_boxes(policy: SourceTextPolicy, text: &str) -> bool {
     policy == SourceTextPolicy::HanOnly
@@ -37,14 +37,6 @@ fn needs_inline_word_boxes(policy: SourceTextPolicy, text: &str) -> bool {
 
 type WordBoxUpdate = (String, Vec<[[f32; 2]; 4]>);
 
-#[derive(Clone)]
-struct ValidatedWord {
-    line_index: usize,
-    text: String,
-    bbox: [f32; 4],
-    protected: bool,
-}
-
 fn build_pp_ocr_word_box_update(
     first_pass_text: &str,
     words: &[PpOcrWordBox],
@@ -52,78 +44,13 @@ fn build_pp_ocr_word_box_update(
     image_width: u32,
     image_height: u32,
 ) -> Option<WordBoxUpdate> {
-    let [crop_left, crop_top, crop_right, crop_bottom] = crop_bounds;
-    if crop_left >= crop_right
-        || crop_top >= crop_bottom
-        || crop_right > image_width
-        || crop_bottom > image_height
-        || words.is_empty()
-        || words
-            .windows(2)
-            .any(|pair| pair[0].line_index > pair[1].line_index)
-    {
-        return None;
-    }
-
-    let vl_chars = first_pass_text
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect::<Vec<_>>();
-    let mut vl_offset = 0_usize;
-    let mut validated = Vec::with_capacity(words.len());
-    let crop_width = (crop_right - crop_left) as f32;
-    let crop_height = (crop_bottom - crop_top) as f32;
-    for word in words {
-        let pp_chars = word
-            .text
-            .chars()
-            .filter(|ch| !ch.is_whitespace())
-            .collect::<Vec<_>>();
-        let end = vl_offset.checked_add(pp_chars.len())?;
-        let authoritative = vl_chars.get(vl_offset..end)?;
-        if pp_chars.is_empty()
-            || !word.confidence.is_finite()
-            || word.confidence < MIN_WORD_CONFIDENCE
-            || !pp_chars.iter().zip(authoritative).all(|(pp, vl)| {
-                pp == vl || (contains_han(&pp.to_string()) && contains_han(&vl.to_string()))
-            })
-        {
-            return None;
-        }
-        vl_offset = end;
-
-        let [left, top, right, bottom] = word.bbox;
-        if word.bbox.iter().any(|value| !value.is_finite())
-            || left < 0.0
-            || top < 0.0
-            || right > crop_width
-            || bottom > crop_height
-            || left >= right
-            || top >= bottom
-        {
-            return None;
-        }
-        let text = authoritative.iter().collect::<String>();
-        let has_han = contains_han(&text);
-        let protected = contains_protected_latin_word(&text);
-        if has_han && protected {
-            return None;
-        }
-        validated.push(ValidatedWord {
-            line_index: word.line_index,
-            text,
-            bbox: [
-                crop_left as f32 + left,
-                crop_top as f32 + top,
-                crop_left as f32 + right,
-                crop_top as f32 + bottom,
-            ],
-            protected,
-        });
-    }
-    if vl_offset != vl_chars.len() {
-        return None;
-    }
+    let validated = validate_pp_vl_alignment(
+        first_pass_text,
+        words,
+        crop_bounds,
+        image_width,
+        image_height,
+    )?;
 
     let han_indices = validated
         .iter()
