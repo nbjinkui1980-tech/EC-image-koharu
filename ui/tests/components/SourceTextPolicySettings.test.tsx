@@ -43,9 +43,7 @@ describe('source text policy settings', () => {
     const patches: unknown[] = []
     server.use(
       http.get('/api/v1/config', () => HttpResponse.json(currentConfig)),
-      http.get('/api/v1/llm/catalog', () =>
-        HttpResponse.json({ localModels: [], providers: [] }),
-      ),
+      http.get('/api/v1/llm/catalog', () => HttpResponse.json({ localModels: [], providers: [] })),
       http.get('/api/v1/engines', () => HttpResponse.json(engines)),
       http.get('/api/v1/meta', () => HttpResponse.json({ version: 'test' })),
       http.patch('/api/v1/config', async ({ request }) => {
@@ -63,9 +61,7 @@ describe('source text policy settings', () => {
     )
 
     await userEvent.click(await screen.findByTestId('source-text-policy'))
-    await userEvent.click(
-      await screen.findByRole('option', { name: 'settings.sourceTextAll' }),
-    )
+    await userEvent.click(await screen.findByRole('option', { name: 'settings.sourceTextAll' }))
     await waitFor(() => {
       const patch = patches.at(-1) as {
         pipeline?: { detector?: string; sourceTextPolicy?: string }

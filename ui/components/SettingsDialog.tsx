@@ -604,9 +604,7 @@ function EnginesPane({
             <SelectItem value='all_text'>{t('settings.sourceTextAll')}</SelectItem>
           </SelectContent>
         </Select>
-        <p className='text-xs text-muted-foreground'>
-          {t('settings.sourceTextDescription')}
-        </p>
+        <p className='text-xs text-muted-foreground'>{t('settings.sourceTextDescription')}</p>
       </div>
       {sections.map(({ label, key, engines }) => (
         <div key={key} className='space-y-1.5'>
