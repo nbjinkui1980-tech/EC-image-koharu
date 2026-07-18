@@ -31,7 +31,7 @@ pub use protocol::{
     ConfigPatch, DataConfigPatch, EngineCatalog, EngineCatalogEntry, FontFaceInfo, HttpConfigPatch,
     LlmCatalog, LlmCatalogModel, LlmGenerationOptions, LlmLoadRequest, LlmProviderCatalog,
     LlmProviderCatalogStatus, LlmState, LlmStateStatus, LlmTarget, LlmTargetKind, MetaInfo,
-    PipelineConfigPatch, PipelineLlmRequest, ProviderPatch, ReadingOrder, Region,
+    PipelineConfigPatch, PipelineLlmRequest, ProviderPatch, ReadingOrder, Region, SourceTextPolicy,
     TypographyPlannerConfigPatch,
 };
 pub use scene::{

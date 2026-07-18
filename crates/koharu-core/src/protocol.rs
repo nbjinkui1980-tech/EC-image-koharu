@@ -222,9 +222,21 @@ pub struct HttpConfigPatch {
     pub max_retries: Option<u32>,
 }
 
+/// Which OCR text is eligible for translation and image modification.
+#[derive(
+    Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceTextPolicy {
+    #[default]
+    HanOnly,
+    AllText,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineConfigPatch {
+    pub source_text_policy: Option<SourceTextPolicy>,
     pub detector: Option<String>,
     pub font_detector: Option<String>,
     pub segmenter: Option<String>,

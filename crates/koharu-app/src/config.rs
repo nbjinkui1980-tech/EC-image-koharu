@@ -9,6 +9,8 @@ use utoipa::ToSchema;
 
 use crate::pipeline::{Artifact, Registry};
 
+pub use koharu_core::SourceTextPolicy;
+
 const CONFIG_FILE: &str = "config.toml";
 const REDACTED: &str = "[REDACTED]";
 const SECRET_SERVICE: &str = "koharu";
@@ -73,15 +75,6 @@ pub struct AppConfig {
 pub struct TypographyPlannerConfig {
     pub enabled: bool,
     pub model_id: Option<String>,
-}
-
-/// Which OCR text is eligible for translation and image modification.
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceTextPolicy {
-    #[default]
-    HanOnly,
-    AllText,
 }
 
 /// Engine selection and source-text policy for the pipeline.
@@ -226,6 +219,9 @@ pub fn apply_patch(config: &mut AppConfig, patch: koharu_core::ConfigPatch) {
         }
     }
     if let Some(p) = patch.pipeline {
+        if let Some(v) = p.source_text_policy {
+            config.pipeline.source_text_policy = v;
+        }
         if let Some(v) = p.detector {
             config.pipeline.detector = v;
         }
@@ -554,6 +550,29 @@ mod tests {
                 .expect("config must serialize")
                 .contains("source_text_policy = \"all_text\"")
         );
+    }
+
+    #[test]
+    fn config_patch_updates_source_text_policy_without_changing_engines() {
+        let mut config = AppConfig::default();
+        let detector = config.pipeline.detector.clone();
+
+        apply_patch(
+            &mut config,
+            ConfigPatch {
+                pipeline: Some(PipelineConfigPatch {
+                    source_text_policy: Some(SourceTextPolicy::AllText),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            config.pipeline.source_text_policy,
+            SourceTextPolicy::AllText
+        );
+        assert_eq!(config.pipeline.detector, detector);
     }
 
     #[test]

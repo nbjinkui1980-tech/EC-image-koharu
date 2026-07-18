@@ -109,6 +109,7 @@ function appConfigToPatch(cfg: AppConfig): ConfigPatch {
   }
   if (cfg.pipeline) {
     patch.pipeline = {
+      sourceTextPolicy: cfg.pipeline.source_text_policy ?? 'han_only',
       detector: cfg.pipeline.detector,
       fontDetector: cfg.pipeline.font_detector,
       segmenter: cfg.pipeline.segmenter,
@@ -584,6 +585,29 @@ function EnginesPane({
   return (
     <div className='space-y-4'>
       <p className='text-xs text-muted-foreground'>{t('settings.enginesDescription')}</p>
+      <div className='space-y-1.5'>
+        <Label className='text-xs'>{t('settings.sourceText')}</Label>
+        <Select
+          value={pipeline.source_text_policy ?? 'han_only'}
+          onValueChange={(value) =>
+            onChange({
+              ...pipeline,
+              source_text_policy: value as import('@/lib/api/schemas').SourceTextPolicy,
+            })
+          }
+        >
+          <SelectTrigger data-testid='source-text-policy' className='w-full'>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='han_only'>{t('settings.sourceTextChinese')}</SelectItem>
+            <SelectItem value='all_text'>{t('settings.sourceTextAll')}</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className='text-xs text-muted-foreground'>
+          {t('settings.sourceTextDescription')}
+        </p>
+      </div>
       {sections.map(({ label, key, engines }) => (
         <div key={key} className='space-y-1.5'>
           <Label className='text-xs'>{label}</Label>

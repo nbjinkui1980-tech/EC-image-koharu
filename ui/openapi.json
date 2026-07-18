@@ -2629,6 +2629,16 @@
           "segmenter": {
             "type": ["string", "null"]
           },
+          "sourceTextPolicy": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SourceTextPolicy"
+              }
+            ]
+          },
           "translator": {
             "type": ["string", "null"]
           },
