@@ -128,7 +128,7 @@ inventory::submit! {
     EngineInfo {
         id: "llm",
         name: "LLM",
-        needs: &[Artifact::OcrText],
+        needs: &[Artifact::OcrText, Artifact::SourceTextBoxes],
         produces: &[Artifact::Translations],
         load: |_runtime, _cpu| Box::pin(async move {
             Ok(Box::new(Model) as Box<dyn Engine>)

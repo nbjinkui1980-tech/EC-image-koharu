@@ -27,6 +27,9 @@ pub enum Artifact {
     BrushMask,
     /// At least one `Text` node exists on the page.
     TextBoxes,
+    /// Candidate text boxes that passed the configured source-text gate.
+    /// DAG-only ordering token; accepted nodes remain ordinary Text nodes.
+    SourceTextBoxes,
     /// Every `Text` node has `text` set.
     OcrText,
     /// Every `Text` node has `font_prediction` set.
@@ -55,6 +58,7 @@ impl Artifact {
                 .nodes
                 .values()
                 .any(|n| matches!(n.kind, NodeKind::Text(_))),
+            Artifact::SourceTextBoxes => true,
             Artifact::OcrText => every_text(page, |t| {
                 t.text.as_ref().is_some_and(|s| !s.trim().is_empty())
             }),

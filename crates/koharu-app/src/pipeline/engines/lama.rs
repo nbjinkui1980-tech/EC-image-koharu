@@ -127,6 +127,7 @@ inventory::submit! {
             Artifact::SegmentMask,
             Artifact::BubbleMask,
             Artifact::Translations,
+            Artifact::SourceTextBoxes,
         ],
         produces: &[Artifact::Inpainted],
         load: |runtime, cpu| Box::pin(async move {

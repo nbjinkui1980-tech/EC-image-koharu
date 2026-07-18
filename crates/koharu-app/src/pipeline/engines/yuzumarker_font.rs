@@ -88,7 +88,7 @@ inventory::submit! {
     EngineInfo {
         id: "yuzumarker-font-detection",
         name: "YuzuMarker Font Detection",
-        needs: &[Artifact::TextBoxes],
+        needs: &[Artifact::TextBoxes, Artifact::SourceTextBoxes],
         produces: &[Artifact::FontPredictions],
         load: |runtime, cpu| Box::pin(async move {
             let m = FontDetector::load(runtime, cpu).await?;

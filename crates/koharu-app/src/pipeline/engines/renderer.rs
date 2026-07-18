@@ -480,6 +480,7 @@ inventory::submit! {
             Artifact::Translations,
             Artifact::FontPredictions,
             Artifact::TypographyStyles,
+            Artifact::SourceTextBoxes,
         ],
         produces: &[Artifact::FinalRender, Artifact::RenderedSprites],
         load: |_runtime, _cpu| Box::pin(async move {

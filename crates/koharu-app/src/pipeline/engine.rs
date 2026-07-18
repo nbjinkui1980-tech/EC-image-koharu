@@ -286,4 +286,32 @@ mod tests {
         );
         assert_eq!(ordered_ids(&["koharu-renderer"]), ["koharu-renderer"]);
     }
+
+    #[test]
+    fn orders_source_gate_after_detector_and_before_every_downstream_stage() {
+        let ids = ordered_ids(&[
+            "pp-doclayout-v3",
+            "pp-ocr-v5-source-gate",
+            "yuzumarker-font-detection",
+            "speech-bubble-segmentation",
+            "comic-text-detector-seg",
+            "llm",
+            "cloud-typography-planner",
+            "lama-manga",
+            "koharu-renderer",
+        ]);
+        let position = |id| ids.iter().position(|item| *item == id).unwrap();
+        assert!(position("pp-doclayout-v3") < position("pp-ocr-v5-source-gate"));
+        for consumer in [
+            "yuzumarker-font-detection",
+            "speech-bubble-segmentation",
+            "comic-text-detector-seg",
+            "llm",
+            "cloud-typography-planner",
+            "lama-manga",
+            "koharu-renderer",
+        ] {
+            assert!(position("pp-ocr-v5-source-gate") < position(consumer));
+        }
+    }
 }

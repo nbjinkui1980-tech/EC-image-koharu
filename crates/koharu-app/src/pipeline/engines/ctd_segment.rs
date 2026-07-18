@@ -121,7 +121,7 @@ inventory::submit! {
     EngineInfo {
         id: "comic-text-detector-seg",
         name: "Comic Text Detector (Segmentation)",
-        needs: &[Artifact::OcrText],
+        needs: &[Artifact::OcrText, Artifact::SourceTextBoxes],
         produces: &[Artifact::SegmentMask],
         load: |runtime, cpu| Box::pin(async move {
             let m = ComicTextDetector::load_segmentation_only(runtime, cpu).await?;

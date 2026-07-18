@@ -40,7 +40,11 @@ inventory::submit! {
     EngineInfo {
         id: "cloud-typography-planner",
         name: "Cloud Typography Planner",
-        needs: &[Artifact::Translations, Artifact::FontPredictions],
+        needs: &[
+            Artifact::Translations,
+            Artifact::FontPredictions,
+            Artifact::SourceTextBoxes,
+        ],
         produces: &[Artifact::TypographyStyles],
         load: |_runtime, _cpu| Box::pin(async move { Ok(Box::new(Model) as Box<dyn Engine>) }),
     }

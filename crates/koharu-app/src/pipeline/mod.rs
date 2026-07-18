@@ -77,7 +77,7 @@ fn step_for(info: &EngineInfo) -> Option<PipelineStep> {
         | Artifact::SegmentMask
         | Artifact::FontPredictions
         | Artifact::BubbleMask => Some(PipelineStep::Detect),
-        Artifact::OcrText => Some(PipelineStep::Ocr),
+        Artifact::OcrText | Artifact::SourceTextBoxes => Some(PipelineStep::Ocr),
         Artifact::Translations => Some(PipelineStep::LlmGenerate),
         Artifact::TypographyStyles => Some(PipelineStep::Typography),
         Artifact::Inpainted => Some(PipelineStep::Inpaint),
@@ -111,6 +111,63 @@ pub enum Scope {
     Pages(Vec<PageId>),
 }
 
+struct ResolvedInfos {
+    infos: Vec<&'static EngineInfo>,
+    detector_selected: bool,
+}
+
+fn touches_text_pipeline(info: &EngineInfo) -> bool {
+    const TEXT_ARTIFACTS: &[Artifact] = &[
+        Artifact::TextBoxes,
+        Artifact::OcrText,
+        Artifact::SourceTextBoxes,
+        Artifact::FontPredictions,
+        Artifact::SegmentMask,
+        Artifact::BubbleMask,
+        Artifact::Translations,
+        Artifact::TypographyStyles,
+        Artifact::Inpainted,
+        Artifact::RenderedSprites,
+        Artifact::FinalRender,
+    ];
+    info.needs
+        .iter()
+        .chain(info.produces.iter())
+        .any(|artifact| TEXT_ARTIFACTS.contains(artifact))
+}
+
+fn infos_for_spec(spec: &PipelineSpec) -> Result<ResolvedInfos> {
+    let mut infos = spec
+        .steps
+        .iter()
+        .map(|id| Registry::find(id))
+        .collect::<Result<Vec<_>>>()?;
+    if spec.options.source_text_policy == SourceTextPolicy::HanOnly
+        && spec.options.region.is_none()
+        && infos.iter().any(|info| info.id == "comic-text-detector")
+    {
+        bail!(
+            "comic-text-detector also runs segmentation and is unavailable in HanOnly; use pp-doclayout-v3, anime-text, or comic-text-bubble-detector"
+        );
+    }
+    let detector_selected = infos
+        .iter()
+        .any(|info| info.produces.contains(&Artifact::TextBoxes));
+    if spec.options.source_text_policy == SourceTextPolicy::HanOnly
+        && spec.options.region.is_none()
+        && infos.iter().any(|info| touches_text_pipeline(info))
+    {
+        infos.retain(|info| !info.produces.contains(&Artifact::OcrText));
+        if !infos.iter().any(|info| info.id == "pp-ocr-v5-source-gate") {
+            infos.push(Registry::find("pp-ocr-v5-source-gate")?);
+        }
+    }
+    Ok(ResolvedInfos {
+        infos,
+        detector_selected,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
@@ -138,12 +195,8 @@ pub async fn run(
     progress: Option<ProgressSink>,
     warnings: Option<WarningSink>,
 ) -> Result<RunOutcome> {
-    let infos: Vec<&EngineInfo> = spec
-        .steps
-        .iter()
-        .map(|id| Registry::find(id))
-        .collect::<Result<_>>()?;
-    let order = build_order(&infos)?;
+    let resolved = infos_for_spec(&spec)?;
+    let order = build_order(&resolved.infos)?;
 
     let pages = match &spec.scope {
         Scope::WholeProject => session
@@ -172,7 +225,7 @@ pub async fn run(
             if cancel.load(Ordering::Relaxed) {
                 bail!("cancelled");
             }
-            let info = infos[i];
+            let info = resolved.infos[i];
 
             if let Some(sink) = progress.as_ref() {
                 let percent = ((completed * 100) / total_units).min(100) as u8;
@@ -193,6 +246,16 @@ pub async fn run(
                 // of them against total_units so progress still reaches 100%.
                 completed += (total_steps - seq) as u64;
                 continue 'pages;
+            }
+
+            if info.id == "pp-ocr-v5-source-gate" {
+                let scene = session.scene_snapshot();
+                let has_candidates =
+                    engines::source_language_gate::has_gate_candidates(&scene, *page_id);
+                if !has_candidates && !resolved.detector_selected {
+                    completed += 1;
+                    continue;
+                }
             }
 
             let engine = match registry.get(info.id, &runtime, cpu).await {
@@ -262,51 +325,56 @@ pub async fn run(
                 }
             };
             completed += 1;
-            if ops.is_empty() {
-                continue;
-            }
-            let batch = Op::Batch {
-                ops,
-                label: format!("{}: page {}", info.id, page_id),
-            };
-            let apply = if info.produces.contains(&Artifact::TypographyStyles) {
-                match session.apply_if_epoch(scene_epoch, batch)? {
-                    Some(_) => Ok(()),
-                    None => {
-                        warning_count.fetch_add(1, Ordering::Relaxed);
-                        if let Some(sink) = warnings.as_ref() {
-                            sink(WarningTick {
-                                step_id: info.id.to_string(),
-                                page_index,
-                                total_pages,
-                                message:
-                                    "Typography Planner result discarded because the scene changed"
+            if !ops.is_empty() {
+                let batch = Op::Batch {
+                    ops,
+                    label: format!("{}: page {}", info.id, page_id),
+                };
+                let apply = if info.produces.contains(&Artifact::TypographyStyles) {
+                    match session.apply_if_epoch(scene_epoch, batch)? {
+                        Some(_) => Ok(()),
+                        None => {
+                            warning_count.fetch_add(1, Ordering::Relaxed);
+                            if let Some(sink) = warnings.as_ref() {
+                                sink(WarningTick {
+                                    step_id: info.id.to_string(),
+                                    page_index,
+                                    total_pages,
+                                    message: "Typography Planner result discarded because the scene changed"
                                         .into(),
-                            });
+                                });
+                            }
+                            continue;
                         }
-                        continue;
                     }
+                } else {
+                    session.apply(batch).map(|_| ())
+                };
+                if let Err(err) = apply {
+                    report_step_failure(
+                        info.id,
+                        page_id,
+                        seq,
+                        page_index,
+                        total_pages,
+                        total_steps,
+                        &err,
+                        &warning_count,
+                        warnings.as_ref(),
+                    );
+                    continue 'pages;
                 }
-            } else {
-                session.apply(batch).map(|_| ())
-            };
-            if let Err(err) = apply {
-                report_step_failure(
-                    info.id,
-                    page_id,
-                    seq,
-                    page_index,
-                    total_pages,
-                    total_steps,
-                    &err,
-                    &warning_count,
-                    warnings.as_ref(),
-                );
-                continue 'pages;
+                if spec.options.source_text_policy == SourceTextPolicy::HanOnly {
+                    let scene = session.scene_snapshot();
+                    new_unsupported_geometry(&scene, *page_id, &mut unsupported_seen);
+                }
             }
-            if spec.options.source_text_policy == SourceTextPolicy::HanOnly {
-                let scene = session.scene_snapshot();
-                new_unsupported_geometry(&scene, *page_id, &mut unsupported_seen);
+
+            if info.id == "pp-ocr-v5-source-gate"
+                && engines::support::text_nodes(&session.scene_snapshot(), *page_id).is_empty()
+            {
+                completed += (total_steps - seq - 1) as u64;
+                continue 'pages;
             }
         }
     }
@@ -534,6 +602,72 @@ mod tests {
         }
     }
 
+    fn resolved_ids(
+        policy: SourceTextPolicy,
+        region: Option<koharu_core::Region>,
+    ) -> Vec<&'static str> {
+        let resolved = infos_for_spec(&PipelineSpec {
+            scope: Scope::WholeProject,
+            steps: vec!["paddle-ocr-vl-1.6".into(), "koharu-renderer".into()],
+            options: PipelineRunOptions {
+                source_text_policy: policy,
+                region,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        resolved.infos.into_iter().map(|info| info.id).collect()
+    }
+
+    #[test]
+    fn han_only_replaces_selected_ocr_with_gate() {
+        let ids = resolved_ids(SourceTextPolicy::HanOnly, None);
+        assert!(!ids.contains(&"paddle-ocr-vl-1.6"));
+        assert!(ids.contains(&"pp-ocr-v5-source-gate"));
+        assert!(ids.contains(&"koharu-renderer"));
+    }
+
+    #[test]
+    fn all_text_keeps_selected_ocr_and_never_injects_gate() {
+        let ids = resolved_ids(SourceTextPolicy::AllText, None);
+        assert!(ids.contains(&"paddle-ocr-vl-1.6"));
+        assert!(!ids.contains(&"pp-ocr-v5-source-gate"));
+    }
+
+    #[test]
+    fn repair_region_never_injects_source_gate() {
+        let ids = resolved_ids(
+            SourceTextPolicy::HanOnly,
+            Some(koharu_core::Region {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            }),
+        );
+        assert!(ids.contains(&"paddle-ocr-vl-1.6"));
+        assert!(!ids.contains(&"pp-ocr-v5-source-gate"));
+    }
+
+    #[test]
+    fn han_only_rejects_ctd_full_before_registry_load() {
+        let Err(error) = infos_for_spec(&PipelineSpec {
+            scope: Scope::WholeProject,
+            steps: vec!["comic-text-detector".into()],
+            options: PipelineRunOptions {
+                source_text_policy: SourceTextPolicy::HanOnly,
+                ..Default::default()
+            },
+        }) else {
+            panic!("HanOnly must reject the combined detector")
+        };
+        let error = error.to_string();
+        assert!(error.contains("comic-text-detector"));
+        assert!(error.contains("pp-doclayout-v3"));
+        assert!(error.contains("anime-text"));
+        assert!(error.contains("comic-text-bubble-detector"));
+    }
+
     struct PipelineFixture {
         _dir: TempDir,
         runtime: Arc<RuntimeManager>,
@@ -601,6 +735,7 @@ mod tests {
                     },
                     visible: true,
                     kind: NodeKind::Text(TextData {
+                        detector: Some(engines::support::SOURCE_GATE_TARGET_DETECTOR.to_string()),
                         text: Some(source_text.to_string()),
                         translation: Some(translation.to_string()),
                         sprite: Some(BlobRef::new("old-sprite")),
@@ -669,6 +804,38 @@ mod tests {
         inspect: RendererInspect,
     }
 
+    struct CountingEngine {
+        calls: Arc<AtomicUsize>,
+        remove_text: bool,
+    }
+
+    #[async_trait]
+    impl Engine for CountingEngine {
+        async fn run(&self, ctx: EngineCtx<'_>) -> anyhow::Result<Vec<Op>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if !self.remove_text {
+                return Ok(Vec::new());
+            }
+            let page = ctx
+                .scene
+                .page(ctx.page)
+                .ok_or_else(|| anyhow::anyhow!("page not found"))?;
+            Ok(page
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(prev_index, (id, node))| {
+                    matches!(node.kind, NodeKind::Text(_)).then(|| Op::RemoveNode {
+                        page: ctx.page,
+                        id: *id,
+                        prev_node: node.clone(),
+                        prev_index,
+                    })
+                })
+                .collect())
+        }
+    }
+
     #[async_trait]
     impl Engine for InspectRenderer {
         async fn run(&self, ctx: EngineCtx<'_>) -> anyhow::Result<Vec<Op>> {
@@ -690,6 +857,202 @@ mod tests {
                 inspect: Arc::new(inspect),
             }),
         );
+    }
+
+    fn install_counting_engine(
+        fixture: &PipelineFixture,
+        id: &str,
+        calls: Arc<AtomicUsize>,
+        remove_text: bool,
+    ) {
+        fixture
+            .registry
+            .insert_test_engine(id, Arc::new(CountingEngine { calls, remove_text }));
+    }
+
+    async fn run_fixture_steps(
+        fixture: &PipelineFixture,
+        steps: &[&str],
+    ) -> anyhow::Result<RunOutcome> {
+        run(
+            fixture.session.clone(),
+            fixture.registry.clone(),
+            fixture.runtime.clone(),
+            true,
+            fixture.llm.clone(),
+            fixture.renderer.clone(),
+            Arc::new(TypographyPlanner::default()),
+            PipelineSpec {
+                scope: Scope::Pages(vec![fixture.page]),
+                steps: steps.iter().map(|step| (*step).into()).collect(),
+                options: PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::HanOnly,
+                    ..Default::default()
+                },
+            },
+            Arc::new(AtomicBool::new(false)),
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn han_only_downstream_only_existing_english_runs_gate_and_skips_renderer()
+    -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("English", "English")?;
+        fixture.session.apply(Op::UpdateNode {
+            page: fixture.page,
+            id: fixture.text,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    detector: Some(None),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        })?;
+        let gate_calls = Arc::new(AtomicUsize::new(0));
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_counting_engine(&fixture, "pp-ocr-v5-source-gate", gate_calls.clone(), true);
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        let outcome = run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        assert_eq!(outcome.warning_count, 0);
+        assert_eq!(gate_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
+        assert!(
+            fixture
+                .session
+                .scene_snapshot()
+                .node(fixture.page, fixture.text)
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn han_only_zero_text_standalone_renderer_keeps_existing_behavior_without_loading_gate()
+    -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("English", "English")?;
+        let node = fixture
+            .session
+            .scene_snapshot()
+            .node(fixture.page, fixture.text)
+            .unwrap()
+            .clone();
+        fixture.session.apply(Op::RemoveNode {
+            page: fixture.page,
+            id: fixture.text,
+            prev_node: node,
+            prev_index: 1,
+        })?;
+        let gate_calls = Arc::new(AtomicUsize::new(0));
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_counting_engine(&fixture, "pp-ocr-v5-source-gate", gate_calls.clone(), false);
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        let outcome = run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        assert_eq!(outcome.warning_count, 0);
+        assert_eq!(gate_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn han_only_detector_zero_candidates_still_runs_gate_then_stops_renderer()
+    -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("stale", "stale")?;
+        let detector_calls = Arc::new(AtomicUsize::new(0));
+        let gate_calls = Arc::new(AtomicUsize::new(0));
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_counting_engine(&fixture, "pp-doclayout-v3", detector_calls.clone(), true);
+        install_counting_engine(&fixture, "pp-ocr-v5-source-gate", gate_calls.clone(), false);
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        let outcome = run_fixture_steps(&fixture, &["pp-doclayout-v3", "koharu-renderer"]).await?;
+
+        assert_eq!(outcome.warning_count, 0);
+        assert_eq!(detector_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(gate_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn han_only_empty_source_gate_stops_every_downstream_engine() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("English", "English")?;
+        fixture.session.apply(Op::UpdateNode {
+            page: fixture.page,
+            id: fixture.text,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    detector: Some(None),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        })?;
+        let detector_calls = Arc::new(AtomicUsize::new(0));
+        install_counting_engine(&fixture, "pp-doclayout-v3", detector_calls.clone(), false);
+        let gate_calls = Arc::new(AtomicUsize::new(0));
+        install_counting_engine(&fixture, "pp-ocr-v5-source-gate", gate_calls.clone(), true);
+        let downstream = [
+            "yuzumarker-font-detection",
+            "speech-bubble-segmentation",
+            "comic-text-detector-seg",
+            "llm",
+            "cloud-typography-planner",
+            "lama-manga",
+            "koharu-renderer",
+        ];
+        let downstream_calls = downstream
+            .iter()
+            .map(|id| {
+                let calls = Arc::new(AtomicUsize::new(0));
+                install_counting_engine(&fixture, id, calls.clone(), false);
+                calls
+            })
+            .collect::<Vec<_>>();
+
+        let mut steps = vec!["pp-doclayout-v3"];
+        steps.extend(downstream);
+        let outcome = run_fixture_steps(&fixture, &steps).await?;
+
+        assert_eq!(outcome.warning_count, 0);
+        assert_eq!(detector_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(gate_calls.load(Ordering::Relaxed), 1);
+        for (id, calls) in downstream.iter().zip(downstream_calls) {
+            assert_eq!(calls.load(Ordering::Relaxed), 0, "unexpected call: {id}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn han_only_detect_then_ocr_reuses_accepted_targets_without_rerunning_gate_models()
+    -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("中文", "translated")?;
+        let gate_calls = Arc::new(AtomicUsize::new(0));
+        let segment_calls = Arc::new(AtomicUsize::new(0));
+        install_counting_engine(&fixture, "pp-ocr-v5-source-gate", gate_calls.clone(), false);
+        install_counting_engine(
+            &fixture,
+            "comic-text-detector-seg",
+            segment_calls.clone(),
+            false,
+        );
+
+        let outcome =
+            run_fixture_steps(&fixture, &["paddle-ocr-vl-1.6", "comic-text-detector-seg"]).await?;
+
+        assert_eq!(outcome.warning_count, 0);
+        assert_eq!(gate_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(segment_calls.load(Ordering::Relaxed), 1);
+        Ok(())
     }
 
     fn text(scene: &Scene, page: PageId, node: NodeId) -> &TextData {

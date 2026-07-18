@@ -68,7 +68,7 @@ inventory::submit! {
     EngineInfo {
         id: "speech-bubble-segmentation",
         name: "Speech Bubble Segmentation",
-        needs: &[],
+        needs: &[Artifact::TextBoxes, Artifact::SourceTextBoxes],
         produces: &[Artifact::BubbleMask],
         load: |runtime, cpu| Box::pin(async move {
             let m = SpeechBubbleSegmentation::load(runtime, cpu).await?;

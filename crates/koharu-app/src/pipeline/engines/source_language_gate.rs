@@ -11,7 +11,8 @@ use koharu_llm::paddleocr_vl::{PaddleOcrVl, PaddleOcrVlTask};
 use koharu_ml::pp_ocr_v5::{PpOcrV5, PpOcrWordBox};
 
 use crate::app::shared_llama_backend;
-use crate::pipeline::engine::{Engine, EngineCtx};
+use crate::pipeline::artifacts::Artifact;
+use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
     SOURCE_GATE_PROTECTED_DETECTOR, SOURCE_GATE_TARGET_DETECTOR, contains_han,
     contains_protected_latin_word, find_mask_node, load_source_image,
@@ -268,6 +269,14 @@ fn is_gate_marker(text: &TextData) -> bool {
         text.detector.as_deref(),
         Some(SOURCE_GATE_TARGET_DETECTOR | SOURCE_GATE_PROTECTED_DETECTOR)
     )
+}
+
+pub(crate) fn has_gate_candidates(scene: &Scene, page: PageId) -> bool {
+    scene.page(page).is_some_and(|page| {
+        page.nodes
+            .values()
+            .any(|node| matches!(&node.kind, NodeKind::Text(text) if !is_gate_marker(text)))
+    })
 }
 
 fn safe_crop_bounds(
@@ -608,6 +617,23 @@ impl Engine for Model {
             },
         )
         .await
+    }
+}
+
+inventory::submit! {
+    EngineInfo {
+        id: "pp-ocr-v5-source-gate",
+        name: "PP-OCRv5 Source Gate",
+        needs: &[Artifact::TextBoxes],
+        produces: &[Artifact::SourceTextBoxes],
+        load: |runtime, cpu| Box::pin(async move {
+            let word_boxes = PpOcrV5::load(runtime).await?;
+            Ok(Box::new(Model {
+                vl: tokio::sync::OnceCell::new(),
+                word_boxes: tokio::sync::Mutex::new(word_boxes),
+                cpu,
+            }) as Box<dyn Engine>)
+        }),
     }
 }
 
