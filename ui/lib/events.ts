@@ -128,6 +128,16 @@ function dispatch(event: AppEvent): void {
       // Authoritative replacement of the long-running-process mirrors.
       // Server-side snapshot is the source of truth after any lag/reconnect.
       useJobsStore.getState().setSnapshot(event.jobs)
+      const snapshotWarning = Object.values(useJobsStore.getState().jobs)
+        .filter(
+          (job) =>
+            job.status === 'completed_with_errors' &&
+            typeof job.error === 'string' &&
+            job.error.trim().length > 0,
+        )
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .at(-1)?.error
+      if (snapshotWarning) useEditorUiStore.getState().showError(snapshotWarning)
       useDownloadsStore.getState().setSnapshot(event.downloads)
       lastPageByJob.clear()
       return
@@ -157,9 +167,14 @@ function dispatch(event: AppEvent): void {
       return
 
     case 'jobFinished':
+      const job = useJobsStore.getState().jobs[event.id]
       useJobsStore.getState().finished(event.id, event.status, event.error)
       if (event.status === 'failed' && event.error) {
         useEditorUiStore.getState().showError(event.error)
+      }
+      if (event.status === 'completed_with_errors') {
+        const warning = job?.warnings?.at(-1)?.message ?? job?.error ?? event.error
+        if (warning) useEditorUiStore.getState().showError(warning)
       }
       lastPageByJob.delete(event.id)
       // Pipelines mutate the scene server-side without op-level SSE frames;

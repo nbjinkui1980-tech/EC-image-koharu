@@ -6,6 +6,7 @@ import type { DataConfigPatch } from './dataConfigPatch'
 import type { HttpConfigPatch } from './httpConfigPatch'
 import type { PipelineConfigPatch } from './pipelineConfigPatch'
 import type { ProviderPatch } from './providerPatch'
+import type { TypographyPlannerConfigPatch } from './typographyPlannerConfigPatch'
 
 /**
  * Sparse patch for `koharu_app::AppConfig`. Missing fields mean "leave
@@ -22,4 +23,5 @@ export interface ConfigPatch {
    * @nullable
    */
   providers?: ProviderPatch[] | null
+  typographyPlanner?: null | TypographyPlannerConfigPatch
 }

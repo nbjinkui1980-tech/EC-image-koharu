@@ -104,7 +104,8 @@
     "detectTooltip": "在目前頁面執行文字偵測",
     "ocr": "辨識",
     "ocrTooltip": "辨識已偵測區域中的文字",
-    "render": "渲染"
+    "render": "渲染",
+    "typography": "智慧排版"
   },
   "mask": {
     "showSegmentationMask": "顯示分割遮罩",
@@ -394,7 +395,18 @@
     "shortcutReset": "重置快捷鍵",
     "shortcutResetDescription": "這將恢復所有快捷鍵到默認值。您保存的更改將丟失。",
     "shortcutConflict": "按鍵組合已被使用",
-    "shortcutInvalid": "此按鍵不能用作快捷鍵"
+    "shortcutInvalid": "此按鍵不能用作快捷鍵",
+    "typography": "智慧排版",
+    "typographyDescription": "為智慧排版選擇獨立模型。",
+    "typographySharedConnection": "共用 OpenAI-compatible 連線；選擇排版模型不會取代目前的翻譯模型。",
+    "typographyModel": "排版模型",
+    "typographyModelPlaceholder": "選擇模型",
+    "typographyAutoEnable": "啟用自動排版",
+    "typographyAutoEnableDescription": "在支援智慧排版的流程中自動使用所選模型。",
+    "typographyConnectionRequired": "請先在提供者設定中設定 Base URL 並選擇模型，再啟用自動排版。",
+    "typographyOpenProviders": "開啟提供者設定",
+    "typographyInvalidModel": "所選模型已不在目前目錄中",
+    "typographyReloadTranslation": "共享 Base URL 或 API 金鑰的修改會立即套用到排版；請重新載入翻譯模型以套用到翻譯。"
   },
   "updater": {
     "available": {

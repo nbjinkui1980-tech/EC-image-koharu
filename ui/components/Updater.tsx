@@ -67,7 +67,7 @@ export function UpdaterProvider({ children }: { children: ReactNode }) {
   }, [update])
 
   const checkForUpdates = useCallback(async (showPrompt = false) => {
-    if (!isTauri()) {
+    if (!isTauri() || process.env.NODE_ENV !== 'production') {
       setStatus('idle')
       setUpdate(null)
       return

@@ -31,6 +31,7 @@ use crate::llm;
 use crate::pipeline::Registry;
 use crate::renderer;
 use crate::session::ProjectSession;
+use crate::typography::TypographyPlanner;
 
 /// Ring-buffer capacity for the event bus. Reconnecting clients can replay
 /// up to this many trailing events via `Last-Event-ID`. Sized to comfortably
@@ -66,6 +67,7 @@ pub struct App {
     pub ai: Arc<AiManager>,
     pub llm: Arc<llm::Model>,
     pub renderer: Arc<renderer::Renderer>,
+    pub typography_planner: Arc<TypographyPlanner>,
     /// Autosave handle (tx + join) for the currently-open session. `None` = no project open.
     autosave: Mutex<Option<autosave::AutosaveHandle>>,
     pub version: &'static str,
@@ -96,8 +98,13 @@ impl App {
         let llm = Arc::new(llm::Model::new((*runtime).clone(), cpu, backend));
         let ai = Arc::new(AiManager::new(&runtime));
         let renderer = Arc::new(renderer::Renderer::new()?);
+        let config = Arc::new(ArcSwap::from_pointee(config));
+        let typography_planner = Arc::new(TypographyPlanner::new(
+            config.clone(),
+            runtime.http_client(),
+        ));
         Ok(Self {
-            config: Arc::new(ArcSwap::from_pointee(config)),
+            config,
             runtime,
             registry: Arc::new(Registry::new()),
             session: Arc::new(ArcSwapOption::empty()),
@@ -107,6 +114,7 @@ impl App {
             ai,
             llm,
             renderer,
+            typography_planner,
             autosave: Mutex::new(None),
             version,
         })
@@ -135,6 +143,17 @@ impl App {
             Some(name) => ProjectSession::create(&dir, name)?,
             None => ProjectSession::open(&dir)?,
         };
+        self.session.store(Some(session.clone()));
+        let handle = autosave::spawn(session.clone());
+        *self.autosave.lock().await = Some(handle);
+        Ok(session)
+    }
+
+    /// Open an existing project supplied outside the managed-project root.
+    /// Trust markers are removed and persisted before activation.
+    pub async fn open_untrusted_project(&self, dir: Utf8PathBuf) -> Result<Arc<ProjectSession>> {
+        self.close_project().await?;
+        let session = ProjectSession::open_untrusted(&dir)?;
         self.session.store(Some(session.clone()));
         let handle = autosave::spawn(session.clone());
         *self.autosave.lock().await = Some(handle);

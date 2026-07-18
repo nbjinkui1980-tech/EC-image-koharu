@@ -11,7 +11,7 @@
 
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 /// Default cap for the in-memory undo stack. The log on disk is not capped —
 /// it's compacted on snapshot.
 const DEFAULT_UNDO_LIMIT: usize = 500;
+pub(crate) const LOG_FRAME_V2_PREFIX: &[u8] = b"KHARLOG\x02";
 
 // ---------------------------------------------------------------------------
 // Log frames
@@ -145,7 +146,10 @@ impl History {
             epoch: self.epoch,
             op: op.clone(),
         };
-        let bytes = postcard::to_allocvec(&frame).context("encode log frame")?;
+        let encoded = postcard::to_allocvec(&frame).context("encode log frame")?;
+        let mut bytes = Vec::with_capacity(LOG_FRAME_V2_PREFIX.len() + encoded.len());
+        bytes.extend_from_slice(LOG_FRAME_V2_PREFIX);
+        bytes.extend_from_slice(&encoded);
         let len = u32::try_from(bytes.len()).context("log frame too large")?;
         self.log.write_all(&len.to_le_bytes())?;
         self.log.write_all(&bytes)?;
@@ -169,6 +173,15 @@ impl History {
 /// Replay each frame in `log_path` with epoch greater than `start_epoch`
 /// against `scene`. Returns the final epoch seen.
 pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u64> {
+    replay_with_policy(log_path, start_epoch, scene, false)
+}
+
+pub(crate) fn replay_with_policy(
+    log_path: &Path,
+    start_epoch: u64,
+    scene: &mut Scene,
+    strict: bool,
+) -> Result<u64> {
     if !log_path.exists() {
         return Ok(start_epoch);
     }
@@ -177,17 +190,26 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
     let mut reader = BufReader::new(file);
     let mut epoch = start_epoch;
     loop {
+        if reader.fill_buf()?.is_empty() {
+            break;
+        }
         let mut len_buf = [0u8; 4];
         match reader.read_exact(&mut len_buf) {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !strict => {
+                tracing::warn!(
+                    path = %log_path.display(),
+                    "truncated trailing frame length in history log; discarding"
+                );
+                break;
+            }
             Err(e) => return Err(anyhow::Error::new(e).context("read log frame length")),
         }
         let len = u32::from_le_bytes(len_buf) as usize;
         let mut buf = vec![0u8; len];
         match reader.read_exact(&mut buf) {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !strict => {
                 // Truncated frame (likely crash mid-write) — stop cleanly.
                 tracing::warn!(
                     path = %log_path.display(),
@@ -198,9 +220,16 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read log frame body")),
         }
-        let frame: LogFrame = match postcard::from_bytes(&buf) {
+        let decoded = if let Some(bytes) = buf.strip_prefix(LOG_FRAME_V2_PREFIX) {
+            postcard::from_bytes::<LogFrame>(bytes)
+                .map(|frame| (frame.epoch, frame.op))
+                .map_err(anyhow::Error::new)
+        } else {
+            crate::persistence_v1::decode_log_frame(&buf)
+        };
+        let (frame_epoch, frame_op) = match decoded {
             Ok(frame) => frame,
-            Err(err) => {
+            Err(err) if !strict => {
                 tracing::warn!(
                     path = %log_path.display(),
                     error = %err,
@@ -208,14 +237,65 @@ pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u6
                 );
                 break;
             }
+            Err(err) => return Err(err.context("decode history log frame")),
         };
-        if frame.epoch > epoch {
-            let mut op = frame.op;
+        if frame_epoch > epoch {
+            let mut op = frame_op;
             op.apply(scene).context("replay op")?;
-            epoch = frame.epoch;
+            epoch = frame_epoch;
         }
     }
     // Seek to end so subsequent appends go after the last valid frame.
     let _ = reader.seek(SeekFrom::End(0));
     Ok(epoch)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koharu_core::{ProjectMetaPatch, op::Op};
+    use tempfile::tempdir;
+
+    #[test]
+    fn current_history_frame_uses_v2_prefix_and_replays() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut history = History::open(&path, 0).unwrap();
+        history
+            .apply(
+                &mut scene,
+                Op::UpdateProjectMeta {
+                    patch: ProjectMetaPatch {
+                        name: Some("v2".into()),
+                        ..Default::default()
+                    },
+                    prev: ProjectMetaPatch::default(),
+                },
+            )
+            .unwrap();
+        drop(history);
+
+        let bytes = std::fs::read(&path).unwrap();
+        let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+        assert_eq!(len, bytes.len() - 4);
+        assert!(bytes[4..].starts_with(LOG_FRAME_V2_PREFIX));
+
+        let mut replayed = Scene::default();
+        assert_eq!(replay(&path, 0, &mut replayed).unwrap(), 1);
+        assert_eq!(replayed.project.name, "v2");
+    }
+
+    #[test]
+    fn trusted_replay_tolerates_undecodable_complete_v1_tail() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let invalid_v1 = [0xff, 0xff, 0xff, 0xff];
+        let mut bytes = (invalid_v1.len() as u32).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&invalid_v1);
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(replay(&path, 7, &mut Scene::default()).unwrap(), 7);
+        assert!(replay_with_policy(&path, 7, &mut Scene::default(), true).is_err());
+    }
 }

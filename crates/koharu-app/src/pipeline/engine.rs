@@ -33,10 +33,13 @@ use crate::config::SourceTextPolicy;
 use crate::llm;
 use crate::pipeline::artifacts::Artifact;
 use crate::renderer;
+use crate::typography::TypographyPlanner;
 
 // ---------------------------------------------------------------------------
 // EngineCtx — everything an engine needs to produce ops
 // ---------------------------------------------------------------------------
+
+pub type EngineWarningSink<'a> = dyn Fn(String) + Send + Sync + 'a;
 
 pub struct EngineCtx<'a> {
     /// A cheap clone of the target page (read-only).
@@ -48,6 +51,16 @@ pub struct EngineCtx<'a> {
     pub options: &'a PipelineRunOptions,
     pub llm: &'a llm::Model,
     pub renderer: &'a renderer::Renderer,
+    pub typography_planner: &'a TypographyPlanner,
+    pub warnings: Option<&'a EngineWarningSink<'a>>,
+}
+
+impl EngineCtx<'_> {
+    pub fn warn(&self, message: impl Into<String>) {
+        if let Some(sink) = self.warnings {
+            sink(message.into());
+        }
+    }
 }
 
 /// Options threaded through a pipeline run.
@@ -139,6 +152,12 @@ impl Registry {
     /// Drop all cached engines (frees GPU memory).
     pub fn clear(&self) {
         self.engines.write().clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_engine(&self, id: &str, engine: Arc<dyn Engine>) {
+        let info = Self::find(id).expect("registered test engine id");
+        self.engines.write().insert(info.id, engine);
     }
 
     /// Find engine descriptor by id.
@@ -246,5 +265,25 @@ mod tests {
     #[test]
     fn orders_repair_engine_alone() {
         assert_eq!(ordered_ids(&["lama-manga"]), vec!["lama-manga"]);
+    }
+
+    #[test]
+    fn orders_typography_after_translator_before_renderer() {
+        let order = ordered_ids(&["llm", "cloud-typography-planner", "koharu-renderer"]);
+        let at = |id| order.iter().position(|candidate| *candidate == id).unwrap();
+        assert!(at("llm") < at("cloud-typography-planner"));
+        assert!(at("cloud-typography-planner") < at("koharu-renderer"));
+    }
+
+    #[test]
+    fn orders_font_detector_before_typography() {
+        let order = ordered_ids(&["yuzumarker-font-detection", "cloud-typography-planner"]);
+        let at = |id| order.iter().position(|candidate| *candidate == id).unwrap();
+        assert!(at("yuzumarker-font-detection") < at("cloud-typography-planner"));
+        assert_eq!(
+            ordered_ids(&["cloud-typography-planner"]),
+            ["cloud-typography-planner"]
+        );
+        assert_eq!(ordered_ids(&["koharu-renderer"]), ["koharu-renderer"]);
     }
 }

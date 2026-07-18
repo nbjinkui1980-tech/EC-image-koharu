@@ -9,11 +9,12 @@
 //! clients never collide on the same name.
 
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use camino::{Utf8Path, Utf8PathBuf};
 use koharu_core::ProjectSummary;
+use uuid::Uuid;
 
 use crate::AppConfig;
 
@@ -68,8 +69,30 @@ pub fn allocate_named(config: &AppConfig, name: &str) -> Result<Utf8PathBuf> {
 
 /// Pick a fresh path for an imported archive. Uses the archive-provided name
 /// as the base when it's non-empty; otherwise `imported`.
-pub fn allocate_imported(config: &AppConfig, name_hint: Option<&str>) -> Result<Utf8PathBuf> {
-    allocate_named(config, name_hint.unwrap_or("imported"))
+pub fn allocate_imported(
+    config: &AppConfig,
+    name_hint: Option<&str>,
+) -> Result<(Utf8PathBuf, Utf8PathBuf)> {
+    let root = projects_dir(config)?;
+    let base = match name_hint.map(slugify).filter(|name| !name.is_empty()) {
+        Some(name) => name,
+        None => "imported".to_string(),
+    };
+    loop {
+        let id = Uuid::new_v4().simple();
+        let staging = root.join(format!(".import-{id}.staging"));
+        let final_path = root.join(format!("{base}-{id}.{PROJECT_EXT}"));
+        if final_path.exists() {
+            continue;
+        }
+        match fs::create_dir(staging.as_std_path()) {
+            Ok(()) => return Ok((staging, final_path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(anyhow::Error::new(error).context(format!("create {staging}")));
+            }
+        }
+    }
 }
 
 /// List every `.khrproj/` directory under the managed projects root. Reads
@@ -173,7 +196,6 @@ fn slugify(input: &str) -> String {
         }
         // Other chars dropped silently.
     }
-    let _ = SystemTime::now().duration_since(UNIX_EPOCH); // silence unused import warn
     while out.ends_with('-') {
         out.pop();
     }
@@ -183,6 +205,7 @@ fn slugify(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn slugify_basic() {
@@ -191,5 +214,23 @@ mod tests {
         assert_eq!(slugify("under_score_already"), "under-score-already");
         assert_eq!(slugify("你好 hello"), "hello");
         assert_eq!(slugify("--dashes--"), "dashes");
+    }
+
+    #[test]
+    fn incomplete_import_staging_is_not_listed_or_openable_as_managed_project() {
+        let tmp = tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.data.path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+
+        let (staging, final_path) = allocate_imported(&config, Some("imported")).unwrap();
+        std::fs::write(staging.join("partial").as_std_path(), b"partial").unwrap();
+
+        assert!(staging.exists());
+        assert!(!final_path.exists());
+        assert!(id_from_dir(&staging).is_none());
+        assert!(list_projects(&config).unwrap().is_empty());
+
+        let staging_name = staging.file_name().unwrap();
+        assert_ne!(project_path(&config, staging_name).unwrap(), staging);
     }
 }

@@ -4,11 +4,13 @@ title: 设置参考
 
 # 设置参考
 
-当前 Koharu 的 Settings 页面主要包含以下 6 个区域：
+当前 Koharu 的 Settings 页面主要包含以下 8 个区域：
 
 - `Appearance`
 - `Engines`
 - `API Keys`
+- `Typography`
+- `AI`
 - `Keybinds`
 - `Runtime`
 - `About`
@@ -73,6 +75,25 @@ title: 设置参考
 API 响应不会返回原始密钥，而是返回已遮罩的值。
 
 Linux 文件系统凭据存储依赖本地文件系统权限，而不是操作系统级加密。
+
+## Typography
+
+`Typography` 标签页用于为云端智能排版选择独立模型。它不保存第二份连接信息，而是复用 `API Keys > OpenAI Compatible` 中的 Base URL 和可选 API key；翻译模型仍由现有 LLM 选择与加载流程独立管理。
+
+当前行为：
+
+- 排版模型列表来自同一个 OpenAI-compatible `/v1/models` 动态目录
+- 只有已配置 Base URL、模型目录就绪且所选模型仍存在时，才能启用自动排版
+- 只切换排版模型或自动排版开关时会立即保存并更新当前配置，不会重新请求模型目录
+- 修改共享 Base URL、保存或清除 API key 时会刷新模型目录
+- 共享连接的修改会在下一次排版请求立即生效；已经加载的翻译 Provider 必须重新加载后才会使用新 URL 或 key
+- 如果保存的排版模型已不在当前目录中，界面会标记该模型失效并阻止启用
+
+Full Pipeline 和单个文本块的 `Generate` 只有在启用自动排版时才会自动加入排版阶段。画布工具栏的 `智能排版` 是独立手动入口；即使自动排版关闭，只要已配置共享 Base URL、有效排版模型和 Planner 引擎，它仍会对当前页运行排版并立即调用 Renderer。
+
+排版失败不会阻断最终渲染。超时、连接/配额错误、缺少配置或无效模型输出会产生可见 warning；该页不会应用任何部分样式修改，Renderer 会继续使用当前译文和样式。
+
+排版模型只能修改 Koharu 已支持的显式换行、字体、字号上限、颜色、粗斜体、描边和对齐。它不能修改字距、行高或文本框坐标，也不会自动下载字体。
 
 ## Keybinds
 

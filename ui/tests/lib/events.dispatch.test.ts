@@ -30,6 +30,7 @@ vi.mock('@microsoft/fetch-event-source', () => ({
 
 import { connectEvents } from '@/lib/events'
 import { useDownloadsStore } from '@/lib/stores/downloadsStore'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useEventsStore } from '@/lib/stores/eventsStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
 
@@ -49,6 +50,7 @@ async function simulateOpen(status = 200, contentType: string | null = 'text/eve
 beforeEach(() => {
   useJobsStore.getState().clear()
   useDownloadsStore.getState().clear()
+  useEditorUiStore.getState().clearError()
   useEventsStore.getState().reset()
   captured.onopen = undefined
   captured.onmessage = undefined
@@ -86,6 +88,81 @@ describe('dispatch()', () => {
     send({ event: 'jobStarted', id: 'j-1', kind: 'pipeline' })
     send({ event: 'jobFinished', id: 'j-1', status: 'completed', error: null })
     expect(useJobsStore.getState().jobs['j-1'].status).toBe('completed')
+  })
+
+  it('uses the last stored warning for completed_with_errors before stored and event errors', () => {
+    send({ event: 'jobStarted', id: 'j-1', kind: 'pipeline' })
+    send({
+      event: 'jobWarning',
+      jobId: 'j-1',
+      message: 'first planner warning',
+      pageIndex: 0,
+      stepId: 'cloud-typography-planner',
+      totalPages: 1,
+    })
+    send({
+      event: 'jobWarning',
+      jobId: 'j-1',
+      message: 'last planner warning',
+      pageIndex: 0,
+      stepId: 'cloud-typography-planner',
+      totalPages: 1,
+    })
+    useJobsStore.setState((state) => ({
+      jobs: {
+        ...state.jobs,
+        'j-1': { ...state.jobs['j-1'], error: 'stored server error' },
+      },
+    }))
+
+    send({
+      event: 'jobFinished',
+      id: 'j-1',
+      status: 'completed_with_errors',
+      error: 'event error',
+    })
+
+    expect(useJobsStore.getState().jobs['j-1'].status).toBe('completed_with_errors')
+    expect(useEditorUiStore.getState().error?.message).toBe('last planner warning')
+  })
+
+  it('snapshot_then_completed_with_errors_uses_server_error_when_warning_array_is_absent', () => {
+    send({
+      event: 'snapshot',
+      jobs: [
+        {
+          id: 'j-1',
+          kind: 'pipeline',
+          status: 'completed_with_errors',
+          error: 'server planner warning',
+        },
+      ],
+      downloads: [],
+    })
+    useEditorUiStore.getState().clearError()
+
+    send({
+      event: 'jobFinished',
+      id: 'j-1',
+      status: 'completed_with_errors',
+      error: 'event fallback error',
+    })
+
+    expect(useEditorUiStore.getState().error?.message).toBe('server planner warning')
+  })
+
+  it('snapshot_only_completed_with_errors_surfaces_server_warning', () => {
+    send({
+      event: 'snapshot',
+      jobs: [
+        { id: 'z-job', kind: 'pipeline', status: 'completed_with_errors', error: 'last warning' },
+        { id: 'a-job', kind: 'pipeline', status: 'completed_with_errors', error: 'first warning' },
+        { id: 'middle', kind: 'pipeline', status: 'completed', error: 'ignored' },
+      ],
+      downloads: [],
+    })
+
+    expect(useEditorUiStore.getState().error?.message).toBe('last warning')
   })
 
   it('downloadProgress → downloadsStore.progress', () => {

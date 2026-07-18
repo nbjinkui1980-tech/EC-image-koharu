@@ -27,6 +27,7 @@ import { useTheme } from 'next-themes'
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { TypographyPlannerSettings } from '@/components/settings/TypographyPlannerSettings'
 import {
   Accordion,
   AccordionItem,
@@ -60,6 +61,7 @@ import {
   getConfig,
   getEngineCatalog,
   getGetCatalogQueryKey as getGetLlmCatalogQueryKey,
+  getGetConfigQueryKey,
   getMeta,
   patchConfig,
   deleteCodexSession,
@@ -115,6 +117,13 @@ function appConfigToPatch(cfg: AppConfig): ConfigPatch {
       translator: cfg.pipeline.translator,
       inpainter: cfg.pipeline.inpainter,
       renderer: cfg.pipeline.renderer,
+      typographyPlanner: cfg.pipeline.typography_planner,
+    }
+  }
+  if (cfg.typography_planner) {
+    patch.typographyPlanner = {
+      enabled: cfg.typography_planner.enabled,
+      modelId: cfg.typography_planner.model_id ?? null,
     }
   }
   if (cfg.providers) {
@@ -127,16 +136,13 @@ function appConfigToPatch(cfg: AppConfig): ConfigPatch {
   return patch
 }
 
-async function updateConfig(next: UpdateConfigBody): Promise<AppConfig> {
-  return (await patchConfig(appConfigToPatch(next))) as AppConfig
-}
-
 const GITHUB_REPO = 'mayocream/koharu'
 
 const TABS = [
   { id: 'appearance', icon: PaletteIcon, labelKey: 'settings.appearance' },
   { id: 'engines', icon: CpuIcon, labelKey: 'settings.engines' },
   { id: 'providers', icon: KeyIcon, labelKey: 'settings.apiKeys' },
+  { id: 'typography', icon: SparklesIcon, labelKey: 'settings.typography' },
   { id: 'ai', icon: SparklesIcon, labelKey: 'settings.ai' },
   { id: 'keybinds', icon: KeyboardIcon, labelKey: 'settings.keybinds' },
   { id: 'runtime', icon: HardDriveIcon, labelKey: 'settings.runtime' },
@@ -230,13 +236,28 @@ export function SettingsDialog({
     setStorageSettingsError(null)
   }, [appConfig])
 
-  const persistConfig = async (next: UpdateConfigBody) => {
+  const persistConfig = async (
+    next: UpdateConfigBody,
+    {
+      typographyOnly = false,
+      refreshCatalog = false,
+    }: {
+      typographyOnly?: boolean
+      refreshCatalog?: boolean
+    } = {},
+  ) => {
     try {
-      const saved = await updateConfig(next)
-      const catalog = await getLlmCatalog()
+      const patch = appConfigToPatch(next)
+      const saved = await patchConfig(
+        typographyOnly ? { typographyPlanner: patch.typographyPlanner } : patch,
+      )
       setAppConfig(saved)
-      setProviderCatalogs(catalog.providers)
-      queryClient.invalidateQueries({ queryKey: getGetLlmCatalogQueryKey() })
+      queryClient.setQueryData(getGetConfigQueryKey(), saved)
+      if (refreshCatalog) {
+        const catalog = await getLlmCatalog()
+        setProviderCatalogs(catalog.providers)
+        queryClient.setQueryData(getGetLlmCatalogQueryKey(), catalog)
+      }
       return saved
     } catch {
       return null
@@ -363,7 +384,9 @@ export function SettingsDialog({
                       base_url: v || null,
                     }))
                   }
-                  onBaseUrlBlur={() => appConfig && void persistConfig(appConfig)}
+                  onBaseUrlBlur={() =>
+                    appConfig && void persistConfig(appConfig, { refreshCatalog: true })
+                  }
                   onApiKeyChange={(id, v) => setApiKeyDrafts((c) => ({ ...c, [id]: v }))}
                   onSaveKey={(id) => {
                     const key = apiKeyDrafts[id]?.trim()
@@ -374,12 +397,13 @@ export function SettingsDialog({
                     const updated = { ...current, api_key: key }
                     if (idx >= 0) providers[idx] = updated
                     else providers.push(updated)
-                    void persistConfig({ ...appConfig, providers }).then(() =>
-                      setApiKeyDrafts((c) => {
-                        const n = { ...c }
-                        delete n[id]
-                        return n
-                      }),
+                    void persistConfig({ ...appConfig, providers }, { refreshCatalog: true }).then(
+                      () =>
+                        setApiKeyDrafts((c) => {
+                          const n = { ...c }
+                          delete n[id]
+                          return n
+                        }),
                     )
                   }}
                   onClearKey={(id) => {
@@ -387,14 +411,27 @@ export function SettingsDialog({
                     const providers = [...(appConfig.providers ?? [])]
                     const idx = providers.findIndex((p) => p.id === id)
                     if (idx >= 0) providers[idx] = { ...providers[idx], api_key: null }
-                    void persistConfig({ ...appConfig, providers }).then(() =>
-                      setApiKeyDrafts((c) => {
-                        const n = { ...c }
-                        delete n[id]
-                        return n
-                      }),
+                    void persistConfig({ ...appConfig, providers }, { refreshCatalog: true }).then(
+                      () =>
+                        setApiKeyDrafts((c) => {
+                          const n = { ...c }
+                          delete n[id]
+                          return n
+                        }),
                     )
                   }}
+                />
+              )}
+              {tab === 'typography' && appConfig && (
+                <TypographyPlannerSettings
+                  config={appConfig}
+                  catalog={providerCatalogs.find((provider) => provider.id === 'openai-compatible')}
+                  onChange={(typography_planner) => {
+                    const next = { ...appConfig, typography_planner }
+                    setAppConfig(next)
+                    void persistConfig(next, { typographyOnly: true })
+                  }}
+                  onOpenProviders={() => setTab('providers')}
                 />
               )}
               {tab === 'ai' && <CodexSettingsPane />}

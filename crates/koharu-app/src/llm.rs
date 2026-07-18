@@ -106,7 +106,10 @@ pub struct Model {
     state_tx: broadcast::Sender<LlmState>,
     runtime: RuntimeManager,
     cpu: bool,
+    #[cfg(not(test))]
     backend: Arc<LlamaBackend>,
+    #[cfg(test)]
+    backend: Option<Arc<LlamaBackend>>,
 }
 
 impl Model {
@@ -116,7 +119,21 @@ impl Model {
             state_tx: broadcast::channel(64).0,
             runtime,
             cpu,
+            #[cfg(not(test))]
             backend,
+            #[cfg(test)]
+            backend: Some(backend),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn empty_for_test(runtime: RuntimeManager, cpu: bool) -> Self {
+        Self {
+            state: Arc::new(RwLock::new(State::Empty)),
+            state_tx: broadcast::channel(64).0,
+            runtime,
+            cpu,
+            backend: None,
         }
     }
 
@@ -125,7 +142,17 @@ impl Model {
     }
 
     pub fn backend(&self) -> Arc<LlamaBackend> {
-        self.backend.clone()
+        #[cfg(not(test))]
+        {
+            self.backend.clone()
+        }
+        #[cfg(test)]
+        {
+            self.backend
+                .as_ref()
+                .expect("local LLM backend is unavailable in this test")
+                .clone()
+        }
     }
 
     /// Load a provider target (remote API) immediately.
@@ -151,7 +178,7 @@ impl Model {
         let state_tx = self.state_tx.clone();
         let runtime = self.runtime.clone();
         let cpu = self.cpu;
-        let backend = self.backend.clone();
+        let backend = self.backend();
         tokio::spawn(async move {
             let res = Llm::load(&runtime, id, cpu, backend).await;
             let mut guard = state_cloned.write().await;

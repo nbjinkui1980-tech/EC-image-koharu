@@ -1,9 +1,11 @@
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TextBlocksPanel } from '@/components/panels/TextBlocksPanel'
+import { getGetConfigQueryKey } from '@/lib/api'
+import type { SceneSnapshot, StartPipelineRequest } from '@/lib/api/schemas'
 import * as sceneActions from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
@@ -23,7 +25,7 @@ vi.mock('@/lib/io/scene', async () => {
   }
 })
 
-function sceneWithTextNodes() {
+function sceneWithTextNodes(): SceneSnapshot {
   return {
     epoch: 1,
     scene: {
@@ -49,12 +51,12 @@ function sceneWithTextNodes() {
           },
         },
       },
-      project: { name: 'Proj' },
+      project: { createdAt: '', name: 'Proj', updatedAt: '' },
     },
   }
 }
 
-function sceneWithSingleTextNode(text: string | null, linePolygons?: number[][][]) {
+function sceneWithSingleTextNode(text: string | null, linePolygons?: number[][][]): SceneSnapshot {
   const scene = sceneWithTextNodes()
   scene.scene.pages.p1.nodes = {
     t1: {
@@ -123,8 +125,8 @@ describe('TextBlocksPanel', () => {
     })
   })
 
-  it('generates translation only for the clicked text block', async () => {
-    const pipelineRequests: unknown[] = []
+  it('generates translation and rendering only for the clicked text block when planner is disabled', async () => {
+    const pipelineRequests: StartPipelineRequest[] = []
     server.use(
       http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithTextNodes())),
       http.get('/api/v1/config', () =>
@@ -134,11 +136,12 @@ describe('TextBlocksPanel', () => {
             renderer: 'koharu-renderer',
             source_text_policy: 'all_text',
           },
+          typography_planner: { enabled: false },
         }),
       ),
       http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
       http.post('/api/v1/pipelines', async ({ request }) => {
-        pipelineRequests.push(await request.json())
+        pipelineRequests.push((await request.json()) as StartPipelineRequest)
         return HttpResponse.json({ operationId: 'op-1' })
       }),
     )
@@ -157,6 +160,82 @@ describe('TextBlocksPanel', () => {
       targetLanguage: 'en',
       systemPrompt: 'translate naturally',
       defaultFont: 'Arial',
+    })
+  })
+
+  it('includes the enabled planner and preserves the clicked text node id', async () => {
+    const pipelineRequests: StartPipelineRequest[] = []
+    server.use(
+      http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithTextNodes())),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({
+          pipeline: {
+            translator: 'llm',
+            typography_planner: 'cloud-typography-planner',
+            renderer: 'koharu-renderer',
+            source_text_policy: 'all_text',
+          },
+          typography_planner: { enabled: true },
+        }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+      http.post('/api/v1/pipelines', async ({ request }) => {
+        pipelineRequests.push((await request.json()) as StartPipelineRequest)
+        return HttpResponse.json({ operationId: 'op-1' })
+      }),
+    )
+
+    renderWithQuery(<TextBlocksPanel />)
+
+    const generateButton = await screen.findByTestId('textblock-generate-1')
+    await waitFor(() => expect(generateButton).not.toBeDisabled())
+    await userEvent.click(generateButton)
+
+    await waitFor(() => expect(pipelineRequests).toHaveLength(1))
+    expect(pipelineRequests[0]).toMatchObject({
+      steps: ['llm', 'cloud-typography-planner', 'koharu-renderer'],
+      pages: ['p1'],
+      textNodeIds: ['t2'],
+    })
+  })
+
+  it('uses the updated config query cache for Generate without remounting', async () => {
+    const pipelineRequests: StartPipelineRequest[] = []
+    const disabledConfig = {
+      pipeline: {
+        translator: 'llm',
+        typography_planner: 'cloud-typography-planner',
+        renderer: 'koharu-renderer',
+        source_text_policy: 'all_text',
+      },
+      typography_planner: { enabled: false },
+    }
+    server.use(
+      http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithTextNodes())),
+      http.get('/api/v1/config', () => HttpResponse.json(disabledConfig)),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+      http.post('/api/v1/pipelines', async ({ request }) => {
+        pipelineRequests.push((await request.json()) as StartPipelineRequest)
+        return HttpResponse.json({ operationId: 'op-1' })
+      }),
+    )
+
+    const { client } = renderWithQuery(<TextBlocksPanel />)
+    const generateButton = await screen.findByTestId('textblock-generate-1')
+    await waitFor(() => expect(client.getQueryData(getGetConfigQueryKey())).toEqual(disabledConfig))
+
+    await act(async () => {
+      client.setQueryData(getGetConfigQueryKey(), {
+        ...disabledConfig,
+        typography_planner: { enabled: true },
+      })
+    })
+    await userEvent.click(generateButton)
+
+    await waitFor(() => expect(pipelineRequests).toHaveLength(1))
+    expect(pipelineRequests[0]).toMatchObject({
+      steps: ['llm', 'cloud-typography-planner', 'koharu-renderer'],
+      textNodeIds: ['t2'],
     })
   })
 

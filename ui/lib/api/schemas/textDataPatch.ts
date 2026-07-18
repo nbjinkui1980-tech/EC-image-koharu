@@ -37,4 +37,6 @@ export interface TextDataPatch {
   text?: string | null
   /** @nullable */
   translation?: string | null
+  /** @nullable */
+  typographyPlanVerified?: boolean | null
 }

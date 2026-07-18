@@ -6,10 +6,12 @@ import type { DataConfig } from './dataConfig'
 import type { HttpConfig } from './httpConfig'
 import type { PipelineConfig } from './pipelineConfig'
 import type { ProviderConfig } from './providerConfig'
+import type { TypographyPlannerConfig } from './typographyPlannerConfig'
 
 export interface AppConfig {
   data?: DataConfig
   http?: HttpConfig
   pipeline?: PipelineConfig
   providers?: ProviderConfig[]
+  typography_planner?: TypographyPlannerConfig
 }

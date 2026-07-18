@@ -54,6 +54,48 @@ fn source_text_policy_only_extends_pipeline_config() {
 }
 
 #[test]
+fn typography_contracts_extend_config_progress_and_text_without_changing_start_request() {
+    let (_, spec) = koharu_rpc::api::api();
+    let json = serde_json::to_value(&spec).expect("serialize OpenAPI");
+    let schemas = json["components"]["schemas"]
+        .as_object()
+        .expect("schemas object");
+
+    let app_config = schemas["AppConfig"]["properties"]
+        .as_object()
+        .expect("AppConfig properties");
+    assert!(app_config.contains_key("typography_planner"));
+
+    let config_patch = schemas["ConfigPatch"]["properties"]
+        .as_object()
+        .expect("ConfigPatch properties");
+    assert!(config_patch.contains_key("typographyPlanner"));
+
+    let pipeline = schemas["PipelineConfig"]["properties"]
+        .as_object()
+        .expect("PipelineConfig properties");
+    assert!(pipeline.contains_key("typography_planner"));
+
+    let request = schemas["StartPipelineRequest"]["properties"]
+        .as_object()
+        .expect("StartPipelineRequest properties");
+    assert!(!request.contains_key("typography"));
+    assert!(!request.contains_key("typographyPlanner"));
+
+    let steps = schemas["PipelineStep"]["enum"]
+        .as_array()
+        .expect("PipelineStep enum");
+    assert!(steps.iter().any(|step| step == "typography"));
+
+    for schema in ["TextData", "TextDataPatch"] {
+        let properties = schemas[schema]["properties"]
+            .as_object()
+            .expect("text properties");
+        assert!(properties.contains_key("typographyPlanVerified"));
+    }
+}
+
+#[test]
 fn custom_image_layer_route_is_not_exposed() {
     let (_, spec) = koharu_rpc::api::api();
     let json = serde_json::to_value(&spec).expect("serialize OpenAPI");

@@ -41,6 +41,25 @@ describe('ActivityBubble', () => {
     expect(screen.getByText(/25%/)).toBeInTheDocument()
   })
 
+  it('labels the typography pipeline step with the localized processing key', () => {
+    useJobsStore.getState().started('job-1', 'pipeline')
+    useJobsStore.getState().progress({
+      jobId: 'job-1',
+      status: { status: 'running' },
+      step: 'typography',
+      currentPage: 0,
+      totalPages: 1,
+      currentStepIndex: 0,
+      totalSteps: 1,
+      overallPercent: 10,
+    })
+
+    renderWithQuery(<ActivityBubble />)
+
+    expect(screen.getByText('processing.typography')).toBeInTheDocument()
+    expect(screen.queryByText('typography')).not.toBeInTheDocument()
+  })
+
   it('cancelling a job calls DELETE /operations/{id}', async () => {
     useJobsStore.getState().started('job-1', 'pipeline')
     const deletes: string[] = []

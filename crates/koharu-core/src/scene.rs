@@ -309,6 +309,9 @@ pub struct TextData {
     pub sprite_transform: Option<Transform>,
     #[serde(default)]
     pub lock_layout_box: bool,
+    /// Internal trust marker for an atomically validated Typography Planner result.
+    #[serde(default)]
+    pub typography_plan_verified: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -410,5 +413,12 @@ mod tests {
         assert_eq!(decoded.pages.len(), 1);
         assert_eq!(decoded.project.name, "hello");
         assert!(decoded.pages.contains_key(&page_id));
+    }
+
+    #[test]
+    fn old_json_text_data_defaults_typography_marker_to_false() {
+        let data: TextData = serde_json::from_str(r#"{"text":"source"}"#).expect("deserialize");
+
+        assert!(!data.typography_plan_verified);
     }
 }

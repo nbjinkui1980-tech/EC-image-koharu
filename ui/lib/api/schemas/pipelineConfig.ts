@@ -18,4 +18,5 @@ export interface PipelineConfig {
   segmenter?: string
   source_text_policy?: SourceTextPolicy
   translator?: string
+  typography_planner?: string
 }

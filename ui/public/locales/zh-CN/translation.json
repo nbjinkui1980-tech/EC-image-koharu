@@ -104,7 +104,8 @@
     "detectTooltip": "对当前页面运行文本检测",
     "ocr": "识别",
     "ocrTooltip": "识别已检测区域中的文本",
-    "render": "渲染"
+    "render": "渲染",
+    "typography": "智能排版"
   },
   "mask": {
     "showSegmentationMask": "显示分割遮罩",
@@ -394,7 +395,18 @@
     "shortcutReset": "重置快捷键",
     "shortcutResetDescription": "这将恢复所有快捷键到默认值。您保存的更改将丢失。",
     "shortcutConflict": "此按键组合已在使用中",
-    "shortcutInvalid": "此按键不能用作快捷键"
+    "shortcutInvalid": "此按键不能用作快捷键",
+    "typography": "智能排版",
+    "typographyDescription": "为智能排版选择独立模型。",
+    "typographySharedConnection": "共用 OpenAI-compatible 连接；选择排版模型不会替换当前翻译模型。",
+    "typographyModel": "排版模型",
+    "typographyModelPlaceholder": "选择模型",
+    "typographyAutoEnable": "启用自动排版",
+    "typographyAutoEnableDescription": "在支持智能排版的流程中自动使用所选模型。",
+    "typographyConnectionRequired": "请先在提供商设置中配置 Base URL 并选择模型，再启用自动排版。",
+    "typographyOpenProviders": "打开提供商设置",
+    "typographyInvalidModel": "所选模型已不在当前目录中",
+    "typographyReloadTranslation": "共享 Base URL 或 API 密钥的修改会立即用于排版；请重新加载翻译模型以应用到翻译。"
   },
   "updater": {
     "available": {

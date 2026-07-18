@@ -30,6 +30,15 @@
 - Rust uses `snake_case` modules/functions and `UpperCamelCase` types. React components use `PascalCase.tsx`; hooks use `useThing.ts`; tests use `.test.ts` or `.test.tsx`.
 - Do not edit `ui/lib/api/generated.ts` or generated schemas manually. Change the OpenAPI source or Orval config, then regenerate.
 
+## Karpathy Coding Contract
+
+- Apply these rules to every implementation, bug fix, review, and refactor, even when the `karpathy-guidelines` skill is unavailable.
+- Before editing, state material assumptions, ambiguities, the simplest viable approach, and verifiable success criteria. Ask only when ambiguity would change behavior, scope, or risk.
+- Implement only requested behavior. Reuse existing code; do not add speculative features, single-use abstractions, or unnecessary configurability.
+- Make surgical changes: every changed line must trace to the request. Do not refactor adjacent code or remove pre-existing dead code; remove only orphans created by the current change.
+- For nontrivial work, use a short goal-to-verification plan. Reproduce bugs with a focused regression test, then loop until the targeted checks pass.
+- If the implementation grows beyond the simplest adequate solution, stop and simplify it before continuing.
+
 ## Testing Guidelines
 
 - Add focused regression tests for behavior changes. Prefer deterministic MSW handlers and fixtures registered by each test.

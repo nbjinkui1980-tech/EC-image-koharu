@@ -19,4 +19,5 @@ pub mod paddle_ocr;
 pub mod pp_doclayout;
 pub mod renderer;
 pub mod support;
+pub mod typography;
 pub mod yuzumarker_font;

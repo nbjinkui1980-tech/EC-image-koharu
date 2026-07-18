@@ -13,10 +13,12 @@ pub mod config;
 pub mod google_fonts;
 pub mod history;
 pub mod llm;
+mod persistence_v1;
 pub mod pipeline;
 pub mod projects;
 pub mod renderer;
 pub mod session;
+pub mod typography;
 
 pub use ai::AiManager;
 pub use app::{App, AppSharedState};

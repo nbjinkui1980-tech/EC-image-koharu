@@ -121,7 +121,8 @@
     "detectTooltip": "Run text detection on current page",
     "ocr": "OCR",
     "ocrTooltip": "Recognize text for detected regions",
-    "render": "Render"
+    "render": "Render",
+    "typography": "Typography"
   },
   "mask": {
     "showSegmentationMask": "Show segmentation mask",
@@ -431,7 +432,18 @@
     "shortcutReset": "Reset Keybinds",
     "shortcutResetDescription": "This will restore all shortcuts to their default values. Your saved changes will be lost.",
     "shortcutConflict": "Key combination already in use",
-    "shortcutInvalid": "This key cannot be used as a shortcut"
+    "shortcutInvalid": "This key cannot be used as a shortcut",
+    "typography": "Typography",
+    "typographyDescription": "Choose a separate model for typography planning.",
+    "typographySharedConnection": "Shares the OpenAI-compatible connection. Choosing a typography model never replaces the current translation model.",
+    "typographyModel": "Typography model",
+    "typographyModelPlaceholder": "Choose a model",
+    "typographyAutoEnable": "Enable automatic typography",
+    "typographyAutoEnableDescription": "Use the selected model automatically where typography planning is available.",
+    "typographyConnectionRequired": "Set a Base URL and choose a model in Provider settings before enabling automatic typography.",
+    "typographyOpenProviders": "Open Provider settings",
+    "typographyInvalidModel": "Selected model is no longer in the current catalog",
+    "typographyReloadTranslation": "Changes to the shared Base URL or API key apply to typography immediately. Reload the translation model to apply them to translation."
   },
   "updater": {
     "available": {

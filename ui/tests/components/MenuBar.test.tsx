@@ -92,7 +92,7 @@ describe('MenuBar', () => {
     expect(screen.queryByText('menu.runCustomAll')).not.toBeInTheDocument()
   })
 
-  it('full_pipeline_still_uses_all_configured_engines', async () => {
+  it('full_pipeline_includes_planner_only_when_enabled', async () => {
     usePreferencesStore.setState({
       customSystemPrompt: 'translate products',
       defaultFont: 'Inter',
@@ -109,9 +109,11 @@ describe('MenuBar', () => {
             font_detector: 'font',
             ocr: 'ocr',
             translator: 'translator',
+            typography_planner: 'cloud-typography-planner',
             inpainter: 'inpainter',
             renderer: 'renderer',
           },
+          typography_planner: { enabled: true },
         }),
       ),
       http.post('/api/v1/pipelines', async ({ request: incoming }) => {
@@ -125,22 +127,61 @@ describe('MenuBar', () => {
     await userEvent.click(await screen.findByText('menu.processAll'))
 
     await waitFor(() => {
-      expect(request).toMatchObject({
-        steps: [
+      expect(request).toEqual(
+        expect.objectContaining({
+          targetLanguage: 'de-DE',
+          systemPrompt: 'translate products',
+          defaultFont: 'Inter',
+          readingOrder: 'ltr',
+        }),
+      )
+      expect(request?.steps).toEqual(
+        expect.arrayContaining([
           'detector',
           'segmenter',
           'bubble',
           'font',
           'ocr',
           'translator',
+          'cloud-typography-planner',
           'inpainter',
           'renderer',
-        ],
-        targetLanguage: 'de-DE',
-        systemPrompt: 'translate products',
-        defaultFont: 'Inter',
-        readingOrder: 'ltr',
-      })
+        ]),
+      )
+      expect(request?.steps).toHaveLength(9)
     })
+  })
+
+  it('full_pipeline_omits_planner_when_disabled', async () => {
+    let request: { steps?: string[] } | undefined
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({
+          pipeline: {
+            detector: 'detector',
+            segmenter: 'segmenter',
+            bubble_segmenter: 'bubble',
+            font_detector: 'font',
+            ocr: 'ocr',
+            translator: 'translator',
+            typography_planner: 'cloud-typography-planner',
+            inpainter: 'inpainter',
+            renderer: 'renderer',
+          },
+          typography_planner: { enabled: false },
+        }),
+      ),
+      http.post('/api/v1/pipelines', async ({ request: incoming }) => {
+        request = (await incoming.json()) as { steps: string[] }
+        return HttpResponse.json({ jobId: 'job' })
+      }),
+    )
+
+    renderWithQuery(<MenuBar />)
+    await userEvent.click(screen.getByTestId('menu-process-trigger'))
+    await userEvent.click(await screen.findByText('menu.processAll'))
+
+    await waitFor(() => expect(request).toBeDefined())
+    expect(request?.steps).not.toContain('cloud-typography-planner')
   })
 })

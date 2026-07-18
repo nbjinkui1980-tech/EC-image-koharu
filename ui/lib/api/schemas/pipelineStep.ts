@@ -10,5 +10,6 @@ export const PipelineStep = {
   ocr: 'ocr',
   inpaint: 'inpaint',
   llmGenerate: 'llmGenerate',
+  typography: 'typography',
   render: 'render',
 } as const

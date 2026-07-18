@@ -31,4 +31,6 @@ export interface TextData {
   text?: string | null
   /** @nullable */
   translation?: string | null
+  /** Internal trust marker for an atomically validated Typography Planner result. */
+  typographyPlanVerified?: boolean
 }

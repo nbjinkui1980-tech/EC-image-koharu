@@ -219,6 +219,8 @@ pub struct TextDataPatch {
     pub sprite_transform: Option<Option<Transform>>,
     #[serde(default)]
     pub lock_layout_box: Option<bool>,
+    #[serde(default)]
+    pub typography_plan_verified: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, ToSchema)]
@@ -407,6 +409,11 @@ impl Op {
             }
 
             Op::Batch { ops, .. } => {
+                if ops.iter().all(|op| matches!(op, Op::UpdateNode { .. })) {
+                    for op in ops.iter() {
+                        op.validate(scene)?;
+                    }
+                }
                 for op in ops.iter_mut() {
                     op.apply(scene)?;
                 }
@@ -696,6 +703,11 @@ fn capture_prev_text(kind: &NodeKind, p: &TextDataPatch) -> TextDataPatch {
         sprite: p.sprite.as_ref().map(|_| data.sprite.clone()),
         sprite_transform: p.sprite_transform.as_ref().map(|_| data.sprite_transform),
         lock_layout_box: p.lock_layout_box.as_ref().map(|_| data.lock_layout_box),
+        typography_plan_verified: (p.typography_plan_verified.is_some()
+            || p.text.is_some()
+            || p.translation.is_some()
+            || p.style.is_some())
+        .then_some(data.typography_plan_verified),
     }
 }
 
@@ -741,6 +753,11 @@ fn apply_node_patch(node: &mut Node, patch: &NodePatch) {
 }
 
 fn apply_text_patch(t: &mut TextData, p: &TextDataPatch) {
+    if (p.text.is_some() || p.translation.is_some() || p.style.is_some())
+        && p.typography_plan_verified != Some(true)
+    {
+        t.typography_plan_verified = false;
+    }
     if let Some(v) = p.confidence {
         t.confidence = v;
     }
@@ -786,6 +803,9 @@ fn apply_text_patch(t: &mut TextData, p: &TextDataPatch) {
     if let Some(v) = p.lock_layout_box {
         t.lock_layout_box = v;
     }
+    if let Some(v) = p.typography_plan_verified {
+        t.typography_plan_verified = v;
+    }
 }
 
 fn apply_image_patch(i: &mut ImageData, p: &ImageDataPatch) {
@@ -819,7 +839,7 @@ fn apply_mask_patch(m: &mut MaskData, p: &MaskDataPatch) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{ImageData, ImageRole, Node, NodeKind, Page};
+    use crate::scene::{ImageData, ImageRole, Node, NodeKind, Page, TextData};
 
     fn seed_scene() -> Scene {
         Scene::default()
@@ -843,6 +863,97 @@ mod tests {
                 name: Some("layer.png".into()),
             }),
         }
+    }
+
+    fn verified_text_scene() -> (Scene, PageId, NodeId) {
+        let mut scene = Scene::default();
+        let mut page = blank_page();
+        let page_id = page.id;
+        let node_id = NodeId::new();
+        page.nodes.insert(
+            node_id,
+            Node {
+                id: node_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Text(TextData {
+                    text: Some("source".into()),
+                    translation: Some("translated".into()),
+                    typography_plan_verified: true,
+                    ..Default::default()
+                }),
+            },
+        );
+        Op::AddPage { page, at: 0 }.apply(&mut scene).unwrap();
+        (scene, page_id, node_id)
+    }
+
+    fn text(scene: &Scene, page: PageId, node: NodeId) -> &TextData {
+        let NodeKind::Text(data) = &scene.node(page, node).expect("text node").kind else {
+            panic!("expected text node");
+        };
+        data
+    }
+
+    #[test]
+    fn text_translation_or_style_patch_clears_typography_marker_and_inverse_restores_it() {
+        let patches = [
+            TextDataPatch {
+                text: Some(Some("edited source".into())),
+                ..Default::default()
+            },
+            TextDataPatch {
+                translation: Some(Some("edited translation".into())),
+                ..Default::default()
+            },
+            TextDataPatch {
+                style: Some(Some(TextStyle::default())),
+                ..Default::default()
+            },
+        ];
+
+        for text_patch in patches {
+            let (mut scene, page, node) = verified_text_scene();
+            let mut op = Op::UpdateNode {
+                page,
+                id: node,
+                patch: NodePatch {
+                    data: Some(NodeDataPatch::Text(text_patch)),
+                    ..Default::default()
+                },
+                prev: NodePatch::default(),
+            };
+
+            op.apply(&mut scene).expect("apply edit");
+            assert!(!text(&scene, page, node).typography_plan_verified);
+
+            op.inverse().apply(&mut scene).expect("apply inverse");
+            assert!(text(&scene, page, node).typography_plan_verified);
+            assert_eq!(text(&scene, page, node).text.as_deref(), Some("source"));
+            assert_eq!(
+                text(&scene, page, node).translation.as_deref(),
+                Some("translated")
+            );
+            assert!(text(&scene, page, node).style.is_none());
+        }
+
+        let (mut scene, page, node) = verified_text_scene();
+        let mut planner_op = Op::UpdateNode {
+            page,
+            id: node,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    translation: Some(Some("planned\ntranslation".into())),
+                    style: Some(Some(TextStyle::default())),
+                    typography_plan_verified: Some(true),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        };
+        planner_op.apply(&mut scene).expect("apply planner patch");
+        assert!(text(&scene, page, node).typography_plan_verified);
     }
 
     #[test]
@@ -976,5 +1087,61 @@ mod tests {
         let mut undo = op.inverse();
         undo.apply(&mut scene).unwrap();
         assert_eq!(scene.pages.keys().copied().collect::<Vec<_>>(), ids);
+    }
+
+    #[test]
+    fn batch_apply_rejects_stale_typography_target_without_partial_updates() {
+        let (mut scene, page, first) = verified_text_scene();
+        let missing = NodeId::new();
+        let update = |id, translation: &str| Op::UpdateNode {
+            page,
+            id,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    translation: Some(Some(translation.to_string())),
+                    typography_plan_verified: Some(true),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        };
+        let mut batch = Op::Batch {
+            ops: vec![update(first, "planned"), update(missing, "stale")],
+            label: "typography".into(),
+        };
+
+        assert!(batch.apply(&mut scene).is_err());
+        assert_eq!(
+            text(&scene, page, first).translation.as_deref(),
+            Some("translated")
+        );
+    }
+
+    #[test]
+    fn batch_apply_preserves_sequential_add_page_dependencies() {
+        let mut scene = Scene::default();
+        let first = blank_page();
+        let second = Page::new("p2", 800, 1200);
+        let mut batch = Op::Batch {
+            ops: vec![
+                Op::AddPage {
+                    page: first.clone(),
+                    at: 0,
+                },
+                Op::AddPage {
+                    page: second.clone(),
+                    at: 1,
+                },
+            ],
+            label: "pages".into(),
+        };
+
+        batch.apply(&mut scene).unwrap();
+
+        assert_eq!(
+            scene.pages.keys().copied().collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
     }
 }

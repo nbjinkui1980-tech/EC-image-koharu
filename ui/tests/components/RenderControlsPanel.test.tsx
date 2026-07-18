@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { RenderControlsPanel } from '@/components/panels/RenderControlsPanel'
 import { getGetGoogleFontsCatalogQueryKey } from '@/lib/api'
+import type { Op } from '@/lib/api/schemas'
 import * as sceneActions from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { useJobsStore } from '@/lib/stores/jobsStore'
@@ -521,10 +522,19 @@ describe('RenderControlsPanel Font Assignment', () => {
     await waitFor(() => expect(sceneActions.runAutoRenderNow).toHaveBeenCalledWith('p1'))
 
     expect(usePreferencesStore.getState().defaultFont).toBe('Custom')
-    const op = vi.mocked(sceneActions.applyOp).mock.calls[0][0]
-    expect(op).toHaveProperty('batch')
+    const op: Op = vi.mocked(sceneActions.applyOp).mock.calls[0][0]
+    if (!('batch' in op)) throw new Error('expected a batch op')
     expect(op.batch.ops).toHaveLength(2)
-    expect(op.batch.ops[0].updateNode.patch.data.text.style).toMatchObject({
+    const [first, second] = op.batch.ops
+    if (!first || !('updateNode' in first) || !second || !('updateNode' in second)) {
+      throw new Error('expected updateNode ops')
+    }
+    const firstData = first.updateNode.patch.data
+    const secondData = second.updateNode.patch.data
+    if (!firstData || !('text' in firstData) || !secondData || !('text' in secondData)) {
+      throw new Error('expected text patches')
+    }
+    expect(firstData.text.style).toMatchObject({
       fontFamilies: ['Custom'],
       fontSize: 18,
       color: [1, 2, 3, 255],
@@ -532,7 +542,7 @@ describe('RenderControlsPanel Font Assignment', () => {
       stroke: { enabled: true, color: [7, 8, 9, 255], widthPx: 2 },
       textAlign: 'left',
     })
-    expect(op.batch.ops[1].updateNode.patch.data.text.style).toMatchObject({
+    expect(secondData.text.style).toMatchObject({
       fontFamilies: ['Custom'],
       fontSize: 24,
       color: [4, 5, 6, 255],
@@ -566,10 +576,14 @@ describe('RenderControlsPanel Font Assignment', () => {
 
     await waitFor(() => expect(sceneActions.runAutoRenderNow).toHaveBeenCalledWith('p1'))
     expect(usePreferencesStore.getState().defaultFont).toBe('Roboto-Bold')
-    const op = vi.mocked(sceneActions.applyOp).mock.calls[0][0]
+    const op: Op = vi.mocked(sceneActions.applyOp).mock.calls[0][0]
+    if (!('batch' in op)) throw new Error('expected a batch op')
     expect(op.batch.ops).toHaveLength(2)
     for (const child of op.batch.ops) {
-      expect(child.updateNode.patch.data.text.style.fontFamilies).toEqual(['Roboto-Bold'])
+      if (!('updateNode' in child)) throw new Error('expected an updateNode op')
+      const data = child.updateNode.patch.data
+      if (!data || !('text' in data)) throw new Error('expected a text patch')
+      expect(data.text.style?.fontFamilies).toEqual(['Roboto-Bold'])
     }
   })
 

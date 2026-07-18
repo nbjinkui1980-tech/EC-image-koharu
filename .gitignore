@@ -1,6 +1,7 @@
 # Logs
 logs
 *.log
+!crates/koharu-app/tests/fixtures/persistence-v1/history.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

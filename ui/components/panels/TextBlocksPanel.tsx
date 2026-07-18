@@ -121,12 +121,14 @@ export function TextBlocksPanel() {
     if (!page) return
     const cfg = config ?? (await getConfig())
     const translator = cfg.pipeline?.translator || 'llm'
+    const typographyPlanner =
+      cfg.typography_planner?.enabled === true ? cfg.pipeline?.typography_planner : undefined
     const renderer = cfg.pipeline?.renderer || 'koharu-renderer'
     const editor = useEditorUiStore.getState()
     const prefs = usePreferencesStore.getState()
     // Keep rendering page-scoped, but constrain translation to the clicked block.
     await startPipeline({
-      steps: [translator, renderer],
+      steps: [translator, typographyPlanner, renderer].filter((step): step is string => !!step),
       pages: [page.id],
       textNodeIds: [nodeId],
       targetLanguage: editor.selectedLanguage,

@@ -20,4 +20,6 @@ export interface PipelineConfigPatch {
   segmenter?: string | null
   /** @nullable */
   translator?: string | null
+  /** @nullable */
+  typographyPlanner?: string | null
 }

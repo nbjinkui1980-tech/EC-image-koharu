@@ -62,7 +62,17 @@ pub struct AppConfig {
     pub data: DataConfig,
     pub http: HttpConfig,
     pub pipeline: PipelineConfig,
+    pub typography_planner: TypographyPlannerConfig,
     pub providers: Vec<ProviderConfig>,
+}
+
+/// Typography Planner model selection. Connection details and credentials
+/// continue to come from the shared `openai-compatible` provider config.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(default)]
+pub struct TypographyPlannerConfig {
+    pub enabled: bool,
+    pub model_id: Option<String>,
 }
 
 /// Which OCR text is eligible for translation and image modification.
@@ -86,6 +96,7 @@ pub struct PipelineConfig {
     pub bubble_segmenter: String,
     pub ocr: String,
     pub translator: String,
+    pub typography_planner: String,
     pub inpainter: String,
     pub renderer: String,
 }
@@ -100,6 +111,7 @@ impl Default for PipelineConfig {
             bubble_segmenter: "speech-bubble-segmentation".to_string(),
             ocr: "paddle-ocr-vl-1.6".to_string(),
             translator: "llm".to_string(),
+            typography_planner: "cloud-typography-planner".to_string(),
             inpainter: "lama-manga".to_string(),
             renderer: "koharu-renderer".to_string(),
         }
@@ -174,15 +186,7 @@ pub fn load() -> Result<AppConfig> {
         save(&config)?;
     }
 
-    // Populate api_key from credential storage for every known provider.
-    let secrets = SecretStore::new(SECRET_SERVICE);
-    for provider in &mut config.providers {
-        if let Ok(Some(key)) = secrets.get(&provider_api_key_secret_key(&provider.id))
-            && !key.trim().is_empty()
-        {
-            provider.api_key = Some(RedactedSecret::new(key));
-        }
-    }
+    hydrate_provider_secrets(&mut config);
 
     Ok(config)
 }
@@ -240,11 +244,22 @@ pub fn apply_patch(config: &mut AppConfig, patch: koharu_core::ConfigPatch) {
         if let Some(v) = p.translator {
             config.pipeline.translator = v;
         }
+        if let Some(v) = p.typography_planner {
+            config.pipeline.typography_planner = v;
+        }
         if let Some(v) = p.inpainter {
             config.pipeline.inpainter = v;
         }
         if let Some(v) = p.renderer {
             config.pipeline.renderer = v;
+        }
+    }
+    if let Some(p) = patch.typography_planner {
+        if let Some(v) = p.enabled {
+            config.typography_planner.enabled = v;
+        }
+        if let Some(v) = p.model_id {
+            config.typography_planner.model_id = v;
         }
     }
     if let Some(providers) = patch.providers {
@@ -312,6 +327,12 @@ fn validate_pipeline_config(config: &mut AppConfig) -> bool {
         Artifact::Translations,
     );
     changed |= validate_engine_name(
+        "typography_planner",
+        &mut config.pipeline.typography_planner,
+        &defaults.typography_planner,
+        Artifact::TypographyStyles,
+    );
+    changed |= validate_engine_name(
         "inpainter",
         &mut config.pipeline.inpainter,
         &defaults.inpainter,
@@ -363,6 +384,26 @@ fn validate_engine_name(
 // Secret handling
 // ---------------------------------------------------------------------------
 
+/// Populate provider keys from the standard credential store without writing
+/// them back to TOML. Custom CLI config uses the same hydration path.
+pub fn hydrate_provider_secrets(config: &mut AppConfig) {
+    let secrets = SecretStore::new(SECRET_SERVICE);
+    hydrate_provider_secrets_with(config, |key| secrets.get(key).ok().flatten());
+}
+
+fn hydrate_provider_secrets_with(
+    config: &mut AppConfig,
+    mut read: impl FnMut(&str) -> Option<String>,
+) {
+    for provider in &mut config.providers {
+        if let Some(key) = read(&provider_api_key_secret_key(&provider.id))
+            && !key.trim().is_empty()
+        {
+            provider.api_key = Some(RedactedSecret::new(key));
+        }
+    }
+}
+
 /// Sync api_key fields to credential storage.
 /// - `Some(RedactedSecret)` with value != "[REDACTED]" → save to credential storage
 /// - `None` → clear from credential storage
@@ -395,7 +436,98 @@ fn provider_api_key_secret_key(provider_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koharu_core::{ConfigPatch, PipelineConfigPatch};
+    use koharu_core::{ConfigPatch, PipelineConfigPatch, TypographyPlannerConfigPatch};
+
+    #[test]
+    fn old_config_defaults_typography_planner_to_disabled() {
+        let config: AppConfig = toml::from_str("[pipeline]\ndetector = 'pp-doclayout-v3'")
+            .expect("old config must deserialize");
+
+        assert!(!config.typography_planner.enabled);
+        assert_eq!(config.typography_planner.model_id, None);
+    }
+
+    #[test]
+    fn typography_planner_config_round_trips_without_connection_fields() {
+        let mut config = AppConfig::default();
+        config.typography_planner.enabled = true;
+        config.typography_planner.model_id = Some("model-b".into());
+
+        let encoded = toml::to_string(&config).expect("config must serialize");
+        let table = encoded
+            .parse::<toml::Table>()
+            .expect("valid TOML")
+            .remove("typography_planner")
+            .and_then(|value| value.as_table().cloned())
+            .expect("typography planner table");
+
+        assert_eq!(table.len(), 2);
+        assert_eq!(table["enabled"].as_bool(), Some(true));
+        assert_eq!(table["model_id"].as_str(), Some("model-b"));
+        assert!(!table.contains_key("provider_id"));
+        assert!(!table.contains_key("base_url"));
+        assert!(!table.contains_key("api_key"));
+
+        let decoded: AppConfig = toml::from_str(&encoded).expect("config must deserialize");
+        assert!(decoded.typography_planner.enabled);
+        assert_eq!(
+            decoded.typography_planner.model_id.as_deref(),
+            Some("model-b")
+        );
+    }
+
+    #[test]
+    fn config_patch_updates_typography_fields_and_preserves_missing_values() {
+        let mut config = AppConfig::default();
+        config.typography_planner.model_id = Some("old-model".into());
+        let old_detector = config.pipeline.detector.clone();
+
+        apply_patch(
+            &mut config,
+            ConfigPatch {
+                typography_planner: Some(TypographyPlannerConfigPatch {
+                    enabled: Some(true),
+                    model_id: Some(Some("new-model".into())),
+                }),
+                pipeline: Some(PipelineConfigPatch {
+                    typography_planner: Some("custom-typography".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert!(config.typography_planner.enabled);
+        assert_eq!(
+            config.typography_planner.model_id.as_deref(),
+            Some("new-model")
+        );
+        assert_eq!(
+            config.pipeline.typography_planner,
+            PipelineConfig::default().typography_planner
+        );
+        assert_eq!(config.pipeline.detector, old_detector);
+
+        let clear: ConfigPatch = serde_json::from_value(serde_json::json!({
+            "typographyPlanner": { "modelId": null }
+        }))
+        .expect("nullable model patch");
+        apply_patch(&mut config, clear);
+        assert_eq!(config.typography_planner.model_id, None);
+
+        apply_patch(
+            &mut config,
+            ConfigPatch {
+                typography_planner: Some(TypographyPlannerConfigPatch {
+                    enabled: Some(false),
+                    model_id: None,
+                }),
+                ..Default::default()
+            },
+        );
+        assert!(!config.typography_planner.enabled);
+        assert_eq!(config.typography_planner.model_id, None);
+    }
 
     #[test]
     fn old_config_defaults_source_text_policy_to_han_only() {
@@ -501,5 +633,22 @@ mod tests {
         );
 
         assert_eq!(config.pipeline.renderer, PipelineConfig::default().renderer);
+    }
+
+    #[test]
+    fn typography_planner_config_accepts_registered_and_resets_unknown_engine() {
+        let mut config = AppConfig::default();
+        config.pipeline.typography_planner = " cloud-typography-planner ".into();
+        assert!(validate_pipeline_config(&mut config));
+        assert_eq!(
+            config.pipeline.typography_planner,
+            "cloud-typography-planner"
+        );
+        config.pipeline.typography_planner = "unknown".into();
+        assert!(validate_pipeline_config(&mut config));
+        assert_eq!(
+            config.pipeline.typography_planner,
+            PipelineConfig::default().typography_planner
+        );
     }
 }

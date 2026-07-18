@@ -91,6 +91,30 @@ pub fn import_khr_bytes(bytes: &[u8], project_dir: &Utf8Path) -> Result<Utf8Path
         anyhow::bail!("destination already exists: {project_dir}");
     }
     std::fs::create_dir_all(project_dir.as_std_path())?;
+    extract_khr_bytes(bytes, project_dir)?;
+    Ok(project_dir.to_path_buf())
+}
+
+/// Extract into an already-reserved staging directory without deleting or
+/// recreating it. The directory must exist and be empty.
+pub fn import_khr_bytes_into_empty_staging(
+    bytes: &[u8],
+    staging_dir: &Utf8Path,
+) -> Result<Utf8PathBuf> {
+    if !staging_dir.is_dir() {
+        anyhow::bail!("staging directory does not exist: {staging_dir}");
+    }
+    if std::fs::read_dir(staging_dir.as_std_path())?
+        .next()
+        .is_some()
+    {
+        anyhow::bail!("staging directory is not empty: {staging_dir}");
+    }
+    extract_khr_bytes(bytes, staging_dir)?;
+    Ok(staging_dir.to_path_buf())
+}
+
+fn extract_khr_bytes(bytes: &[u8], project_dir: &Utf8Path) -> Result<()> {
     let mut archive = ZipArchive::new(Cursor::new(bytes)).context("open zip archive")?;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
@@ -113,7 +137,7 @@ pub fn import_khr_bytes(bytes: &[u8], project_dir: &Utf8Path) -> Result<Utf8Path
         entry.read_to_end(&mut buf)?;
         out.write_all(&buf)?;
     }
-    Ok(project_dir.to_path_buf())
+    Ok(())
 }
 
 /// Unpack `khr_path` into `project_dir`. `project_dir` must not exist yet.
@@ -177,5 +201,28 @@ mod tests {
             !restored.join("cache/thumb.webp").exists(),
             "cache excluded"
         );
+    }
+
+    #[test]
+    fn archive_extracts_into_reserved_empty_staging_and_rejects_non_empty_staging() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let source = root.join("source.khrproj");
+        std::fs::create_dir_all(source.as_std_path()).unwrap();
+        std::fs::write(source.join("project.toml").as_std_path(), b"name = \"x\"\n").unwrap();
+        let bytes = export_khr_bytes(&source).unwrap();
+
+        let staging = root.join(".import-test.staging");
+        std::fs::create_dir(staging.as_std_path()).unwrap();
+        import_khr_bytes_into_empty_staging(&bytes, &staging).unwrap();
+        assert!(staging.join("project.toml").exists());
+
+        let non_empty = root.join(".import-non-empty.staging");
+        std::fs::create_dir(non_empty.as_std_path()).unwrap();
+        std::fs::write(non_empty.join("sentinel").as_std_path(), b"keep").unwrap();
+        let error = import_khr_bytes_into_empty_staging(&bytes, &non_empty).unwrap_err();
+        assert!(error.to_string().contains("not empty"));
+        assert_eq!(std::fs::read(non_empty.join("sentinel")).unwrap(), b"keep");
+        assert!(!non_empty.join("project.toml").exists());
     }
 }

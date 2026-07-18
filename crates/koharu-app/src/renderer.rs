@@ -49,6 +49,7 @@ pub struct RenderBlockInput {
     pub rendered_direction: Option<TextDirection>,
     pub lock_layout_box: bool,
     pub preserve_explicit_lines: bool,
+    pub typography_plan_verified: bool,
 }
 
 /// Document-level render options (shared across all blocks).
@@ -252,8 +253,9 @@ impl Renderer {
         if let Some(target_language) = target_language {
             layout_builder = layout_builder.with_hyphenation_language_tag(target_language);
         }
-        let max_font = max_font_size_for_box(layout_box, min_font_size);
-        let sizing_font_size = style.font_size.unwrap_or(max_font);
+        let (explicit_font_size, max_font) =
+            font_size_constraints(block, layout_box, min_font_size);
+        let sizing_font_size = explicit_font_size.unwrap_or(max_font);
         let sizing_padding = stroke_padding(resolve_stroke_style(
             block.font_prediction.as_ref(),
             style.stroke.as_ref(),
@@ -309,7 +311,7 @@ impl Renderer {
                 &layout_builder,
                 translation,
                 content_box,
-                style.font_size,
+                explicit_font_size,
                 min_font_size,
                 max_font,
                 block.preserve_explicit_lines,
@@ -329,7 +331,7 @@ impl Renderer {
             &layout_builder,
             translation,
             content_box,
-            style.font_size,
+            explicit_font_size,
             min_font_size,
             max_font,
             block.preserve_explicit_lines,
@@ -477,9 +479,23 @@ struct MaskCollisionAttempt {
     valid: bool,
 }
 
-fn min_font_size_for_image(image_width: u32, image_height: u32) -> f32 {
+pub(crate) fn min_font_size_for_image(image_width: u32, image_height: u32) -> f32 {
     let max_dim = image_width.max(image_height) as f32;
     (max_dim / 90.0).clamp(12.0, 28.0)
+}
+
+fn font_size_constraints(
+    block: &RenderBlockInput,
+    layout_box: LayoutBox,
+    min_size: f32,
+) -> (Option<f32>, f32) {
+    let auto_max = max_font_size_for_box(layout_box, min_size);
+    let scene_size = block.style.as_ref().and_then(|style| style.font_size);
+    if block.typography_plan_verified {
+        (None, scene_size.map_or(auto_max, |cap| auto_max.min(cap)))
+    } else {
+        (scene_size, auto_max)
+    }
 }
 
 /// Maximum font size for the given layout box, derived from its dimensions.
@@ -1122,6 +1138,125 @@ mod tests {
     }
 
     #[test]
+    fn typography_planner_font_size_is_fit_cap_not_explicit_override() {
+        let mut planned = block(0.0, 0.0, 100.0, 40.0, "planned text");
+        planned.style = Some(TextStyle {
+            font_size: Some(18.0),
+            ..Default::default()
+        });
+        planned.typography_plan_verified = true;
+        let layout_box = seed_layout_box(&planned);
+
+        let (explicit, max) = font_size_constraints(&planned, layout_box, 12.0);
+        assert_eq!(explicit, None);
+        assert_eq!(max, 18.0);
+
+        planned.typography_plan_verified = false;
+        let (explicit, _) = font_size_constraints(&planned, layout_box, 12.0);
+        assert_eq!(explicit, Some(18.0));
+    }
+
+    #[test]
+    fn typography_planner_font_cap_never_exceeds_auto_fit_normal_and_bubble() -> Result<()> {
+        let font = any_system_font();
+        let builder = TextLayout::new(&font, None);
+        let layout_box = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 100.0,
+        };
+        let normal = fit_font_size(&builder, "short", layout_box, None, 12.0, 18.0, false)?;
+        assert!(normal.font_size <= 18.0);
+
+        let mask = GrayImage::from_pixel(220, 120, Luma([1]));
+        let mut rendered_size = 0.0;
+        let mut render_candidate = |layout: &LayoutRun<'_>| -> Result<RenderedTextCandidate> {
+            rendered_size = layout.font_size;
+            Ok(RenderedTextCandidate {
+                image: RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 255])),
+                transform: Transform {
+                    x: 10.0,
+                    y: 10.0,
+                    width: 1.0,
+                    height: 1.0,
+                    rotation_deg: 0.0,
+                },
+            })
+        };
+        fit_rendered_with_mask_collision(
+            &builder,
+            "short",
+            layout_box,
+            None,
+            12.0,
+            18.0,
+            false,
+            &mask,
+            1,
+            &mut render_candidate,
+        )?;
+        assert!(rendered_size <= 18.0);
+        Ok(())
+    }
+
+    #[test]
+    fn typography_planner_no_fit_matches_existing_readability_floor() -> Result<()> {
+        let font = any_system_font();
+        let builder = TextLayout::new(&font, None);
+        let layout_box = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 8.0,
+            height: 8.0,
+        };
+        let baseline = fit_font_size(
+            &builder,
+            "text that cannot fit",
+            layout_box,
+            None,
+            12.0,
+            72.0,
+            false,
+        )?;
+        let planned = fit_font_size(
+            &builder,
+            "text that cannot fit",
+            layout_box,
+            None,
+            12.0,
+            72.0_f32.min(300.0),
+            false,
+        )?;
+        assert_eq!(planned.font_size, baseline.font_size);
+        assert_eq!(planned.width, baseline.width);
+        assert_eq!(planned.height, baseline.height);
+        Ok(())
+    }
+
+    #[test]
+    fn manual_explicit_font_size_keeps_existing_semantics() -> Result<()> {
+        let font = any_system_font();
+        let builder = TextLayout::new(&font, None);
+        let layout = fit_font_size(
+            &builder,
+            "manual",
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+            },
+            Some(42.0),
+            12.0,
+            18.0,
+            false,
+        )?;
+        assert_eq!(layout.font_size, 42.0);
+        Ok(())
+    }
+
+    #[test]
     fn default_stroke_color_uses_black_for_light_text() {
         let stroke = resolve_stroke_style(None, None, None, 16.0, [255, 255, 255, 255])
             .expect("default stroke should be present");
@@ -1664,6 +1799,7 @@ mod tests {
             rendered_direction: None,
             lock_layout_box: false,
             preserve_explicit_lines: false,
+            typography_plan_verified: false,
         }
     }
 
@@ -1745,6 +1881,7 @@ mod tests {
             rendered_direction: None,
             lock_layout_box: false,
             preserve_explicit_lines: false,
+            typography_plan_verified: false,
         })
     }
 

@@ -41,8 +41,37 @@ async fn apply_command(
     State(app): State<AppState>,
     Json(op): Json<Op>,
 ) -> ApiResult<Json<HistoryResult>> {
+    validate_external_op(&op).map_err(ApiError::bad_request)?;
     let epoch = app.apply(op).map_err(ApiError::internal)?;
     Ok(Json(HistoryResult { epoch: Some(epoch) }))
+}
+
+pub(crate) fn validate_external_op(op: &Op) -> Result<(), &'static str> {
+    let forged = match op {
+        Op::AddPage { page, .. } => page.nodes.values().any(|node| {
+            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified)
+        }),
+        Op::AddNode { node, .. } => {
+            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified)
+        }
+        Op::UpdateNode { patch, .. } => matches!(
+            &patch.data,
+            Some(koharu_core::NodeDataPatch::Text(text))
+                if text.typography_plan_verified == Some(true)
+        ),
+        Op::Batch { ops, .. } => {
+            for child in ops {
+                validate_external_op(child)?;
+            }
+            false
+        }
+        _ => false,
+    };
+    if forged {
+        Err("typographyPlanVerified is internal and cannot be set by external operations")
+    } else {
+        Ok(())
+    }
 }
 
 #[utoipa::path(post, path = "/history/undo", responses((status = 200, body = HistoryResult)))]
@@ -55,4 +84,81 @@ async fn undo(State(app): State<AppState>) -> ApiResult<Json<HistoryResult>> {
 async fn redo(State(app): State<AppState>) -> ApiResult<Json<HistoryResult>> {
     let epoch = app.redo().map_err(ApiError::internal)?;
     Ok(Json(HistoryResult { epoch }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use koharu_core::{
+        Node, NodeDataPatch, NodeId, NodeKind, NodePatch, Page, PageId, TextData, TextDataPatch,
+        Transform,
+    };
+
+    fn text_node(verified: bool) -> Node {
+        Node {
+            id: NodeId::new(),
+            transform: Transform::default(),
+            visible: true,
+            kind: NodeKind::Text(TextData {
+                typography_plan_verified: verified,
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn http_apply_rejects_forged_typography_plan_marker() {
+        let page_id = PageId::new();
+        let node_id = NodeId::new();
+        let mut page = Page::new("forged", 10, 10);
+        page.nodes.insert(node_id, text_node(true));
+        let forged = [
+            Op::AddPage { page, at: 0 },
+            Op::AddNode {
+                page: page_id,
+                node: text_node(true),
+                at: 0,
+            },
+            Op::UpdateNode {
+                page: page_id,
+                id: node_id,
+                patch: NodePatch {
+                    data: Some(NodeDataPatch::Text(TextDataPatch {
+                        typography_plan_verified: Some(true),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                prev: NodePatch::default(),
+            },
+            Op::Batch {
+                ops: vec![Op::Batch {
+                    ops: vec![Op::AddNode {
+                        page: page_id,
+                        node: text_node(true),
+                        at: 0,
+                    }],
+                    label: "inner".into(),
+                }],
+                label: "outer".into(),
+            },
+        ];
+        for op in forged {
+            assert!(validate_external_op(&op).is_err());
+        }
+
+        let allowed = Op::UpdateNode {
+            page: page_id,
+            id: node_id,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    typography_plan_verified: Some(false),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        };
+        assert!(validate_external_op(&allowed).is_ok());
+    }
 }

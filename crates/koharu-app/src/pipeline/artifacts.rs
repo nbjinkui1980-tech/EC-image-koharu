@@ -33,6 +33,9 @@ pub enum Artifact {
     FontPredictions,
     /// Every `Text` node has `translation` set (or has no OCR text).
     Translations,
+    /// Optional cloud Typography Planner completion. This is a DAG-only
+    /// ordering token, not persistent scene state.
+    TypographyStyles,
     /// Every `Text` node has a rendered sprite.
     RenderedSprites,
     /// `Image { role: Rendered }` node present.
@@ -64,6 +67,7 @@ impl Artifact {
                 }
                 t.translation.as_ref().is_some_and(|s| !s.trim().is_empty())
             }),
+            Artifact::TypographyStyles => true,
             Artifact::RenderedSprites => every_text(page, |t| t.sprite.is_some()),
             Artifact::FinalRender => has_image_role(page, ImageRole::Rendered),
         }

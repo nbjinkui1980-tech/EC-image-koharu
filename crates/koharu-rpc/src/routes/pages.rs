@@ -465,6 +465,8 @@ async fn put_mask(
             options: &options,
             llm: &app.llm,
             renderer: &app.renderer,
+            typography_planner: &app.typography_planner,
+            warnings: None,
         };
 
         // 3. Run Engine (Synchronously for this request)
@@ -623,5 +625,21 @@ mod tests {
             (actual.x, actual.y, actual.width, actual.height),
             (region.x, region.y, region.width, region.height)
         );
+    }
+
+    #[test]
+    fn repair_brush_engine_ctx_keeps_single_engine_path() {
+        let options = repair_options(
+            Region {
+                x: 4,
+                y: 5,
+                width: 6,
+                height: 7,
+            },
+            &AppConfig::default(),
+        );
+        assert_eq!(options.region.unwrap().width, 6);
+        assert!(pipeline::Registry::find("lama-manga").is_ok());
+        assert!(pipeline::Registry::find("cloud-typography-planner").is_ok());
     }
 }

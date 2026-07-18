@@ -105,7 +105,8 @@
     "detectTooltip": "Executar detecção de texto na página atual",
     "ocr": "OCR",
     "ocrTooltip": "Reconhecer texto nas regiões detectadas",
-    "render": "Renderizar"
+    "render": "Renderizar",
+    "typography": "Tipografia"
   },
   "mask": {
     "showSegmentationMask": "Mostrar máscara de segmentação",
@@ -395,7 +396,18 @@
     "shortcutReset": "Redefinir Atalhos",
     "shortcutResetDescription": "Isso restaurará todos os atalhos para seus valores padrão. Suas alterações salvas serão perdidas.",
     "shortcutConflict": "Combinação de teclas já em uso",
-    "shortcutInvalid": "Esta tecla não pode ser usada como atalho"
+    "shortcutInvalid": "Esta tecla não pode ser usada como atalho",
+    "typography": "Tipografia",
+    "typographyDescription": "Escolha um modelo separado para o planejamento tipográfico.",
+    "typographySharedConnection": "Compartilha a conexão compatível com OpenAI. Escolher um modelo de tipografia nunca substitui o modelo de tradução atual.",
+    "typographyModel": "Modelo de tipografia",
+    "typographyModelPlaceholder": "Escolha um modelo",
+    "typographyAutoEnable": "Ativar tipografia automática",
+    "typographyAutoEnableDescription": "Use automaticamente o modelo selecionado onde o planejamento tipográfico estiver disponível.",
+    "typographyConnectionRequired": "Defina uma URL base e escolha um modelo nas configurações do provedor antes de ativar a tipografia automática.",
+    "typographyOpenProviders": "Abrir configurações do provedor",
+    "typographyInvalidModel": "O modelo selecionado não está mais no catálogo atual",
+    "typographyReloadTranslation": "As alterações na URL base ou chave de API compartilhada se aplicam imediatamente à tipografia. Recarregue o modelo de tradução para aplicá-las à tradução."
   },
   "updater": {
     "available": {

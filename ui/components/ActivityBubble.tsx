@@ -160,6 +160,7 @@ function JobCard({ job, onCancel, t }: { job: JobEntry; onCancel: () => void; t:
     ocr: t('processing.ocr'),
     inpaint: t('mask.inpaint'),
     llmGenerate: t('llm.generate'),
+    typography: t('processing.typography'),
     render: t('processing.render'),
   }
   const stepLabel = progress?.step

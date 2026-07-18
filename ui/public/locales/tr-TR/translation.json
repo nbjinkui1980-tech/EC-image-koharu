@@ -104,7 +104,8 @@
     "detectTooltip": "Geçerli sayfada metin algılamayı çalıştır",
     "ocr": "OCR",
     "ocrTooltip": "Algılanan bölgelerdeki metni tanı",
-    "render": "Render"
+    "render": "Render",
+    "typography": "Tipografi"
   },
   "mask": {
     "showSegmentationMask": "Segmentasyon maskesini göster",
@@ -394,7 +395,18 @@
     "shortcutReset": "Kısayolları Sıfırla",
     "shortcutResetDescription": "Bu, tüm klavye kısayollarını varsayılan değerlerine döndürecektir. Kaydedilen değişiklikleriniz kaybolacaktır.",
     "shortcutConflict": "Tuş kombinasyonu zaten kullanılıyor",
-    "shortcutInvalid": "Bu tuş kısayol olarak kullanılamaz"
+    "shortcutInvalid": "Bu tuş kısayol olarak kullanılamaz",
+    "typography": "Tipografi",
+    "typographyDescription": "Tipografi planlaması için ayrı bir model seçin.",
+    "typographySharedConnection": "OpenAI uyumlu bağlantıyı paylaşır. Tipografi modeli seçmek mevcut çeviri modelini asla değiştirmez.",
+    "typographyModel": "Tipografi modeli",
+    "typographyModelPlaceholder": "Bir model seçin",
+    "typographyAutoEnable": "Otomatik tipografiyi etkinleştir",
+    "typographyAutoEnableDescription": "Tipografi planlamasının kullanılabildiği yerlerde seçilen modeli otomatik olarak kullanın.",
+    "typographyConnectionRequired": "Otomatik tipografiyi etkinleştirmeden önce sağlayıcı ayarlarında bir Base URL ayarlayın ve model seçin.",
+    "typographyOpenProviders": "Sağlayıcı ayarlarını aç",
+    "typographyInvalidModel": "Seçilen model artık mevcut katalogda yok",
+    "typographyReloadTranslation": "Paylaşılan Base URL veya API anahtarı değişiklikleri tipografiye hemen uygulanır. Çeviriye uygulamak için çeviri modelini yeniden yükleyin."
   },
   "updater": {
     "available": {

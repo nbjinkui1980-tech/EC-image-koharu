@@ -84,10 +84,6 @@ async fn start_pipeline(
     let session = app
         .current_session()
         .ok_or_else(|| ApiError::bad_request("no project open"))?;
-    // Validate every step resolves to a registered engine before spawning.
-    for id in &req.steps {
-        pipeline::Registry::find(id).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
-    }
     let options = options_from_request(&req, &app.config.load());
     let spec = PipelineSpec {
         scope: match req.pages {
@@ -97,6 +93,23 @@ async fn start_pipeline(
         steps: req.steps,
         options,
     };
+
+    let operation_id = spawn_pipeline_job(app.as_ref(), session, spec)
+        .map_err(|error| ApiError::bad_request(format!("{error:#}")))?;
+    Ok(Json(StartPipelineResponse { operation_id }))
+}
+
+/// Start a fully registered pipeline job. HTTP and MCP intentionally share
+/// this lifecycle so both expose the same id, warnings, cancellation and
+/// completion records.
+pub(crate) fn spawn_pipeline_job(
+    app: &koharu_app::App,
+    session: Arc<koharu_app::ProjectSession>,
+    spec: PipelineSpec,
+) -> anyhow::Result<String> {
+    for id in &spec.steps {
+        pipeline::Registry::find(id)?;
+    }
 
     let operation_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -117,13 +130,15 @@ async fn start_pipeline(
 
     // Detach the pipeline. Progress writes directly into the jobs registry;
     // clients observe via SSE.
-    let app_c = app.clone();
     let session_c = session.clone();
     let op_id_c = operation_id.clone();
     let registry_c = app.registry.clone();
     let runtime_c = app.runtime.clone();
     let llm_c = app.llm.clone();
     let renderer_c = app.renderer.clone();
+    let typography_planner_c = app.typography_planner.clone();
+    let jobs_c = app.jobs.clone();
+    let finished_bus = app.bus.clone();
     let cpu = app.cpu_only();
     let progress_bus = app.bus.clone();
     let progress_op_id = operation_id.clone();
@@ -140,8 +155,13 @@ async fn start_pipeline(
         }));
     });
     let warning_bus = app.bus.clone();
+    let warning_jobs = app.jobs.clone();
     let warning_op_id = operation_id.clone();
     let warning_sink: pipeline::WarningSink = Arc::new(move |tick: WarningTick| {
+        let message = tick.message.clone();
+        if let Some(mut job) = warning_jobs.get_mut(&warning_op_id) {
+            job.error = Some(message);
+        }
         warning_bus.publish(AppEvent::JobWarning(JobWarningEvent {
             job_id: warning_op_id.clone(),
             page_index: tick.page_index,
@@ -158,6 +178,7 @@ async fn start_pipeline(
             cpu,
             llm_c,
             renderer_c,
+            typography_planner_c,
             spec,
             cancel,
             Some(progress_sink),
@@ -166,12 +187,9 @@ async fn start_pipeline(
         .await;
         let (status, error) = match &result {
             Ok(outcome) if outcome.warning_count == 0 => (JobStatus::Completed, None),
-            Ok(outcome) => (
+            Ok(_) => (
                 JobStatus::CompletedWithErrors,
-                Some(format!(
-                    "{} step(s) failed; see warnings for details",
-                    outcome.warning_count
-                )),
+                jobs_c.get(&op_id_c).and_then(|job| job.error.clone()),
             ),
             Err(e) if e.to_string().contains("cancelled") => (JobStatus::Cancelled, None),
             Err(e) => {
@@ -179,7 +197,7 @@ async fn start_pipeline(
                 (JobStatus::Failed, Some(format!("{e:#}")))
             }
         };
-        app_c.jobs.insert(
+        jobs_c.insert(
             op_id_c.clone(),
             JobSummary {
                 id: op_id_c.clone(),
@@ -188,7 +206,7 @@ async fn start_pipeline(
                 error: error.clone(),
             },
         );
-        app_c.bus.publish(AppEvent::JobFinished(JobFinishedEvent {
+        finished_bus.publish(AppEvent::JobFinished(JobFinishedEvent {
             id: op_id_c.clone(),
             status,
             error,
@@ -196,7 +214,7 @@ async fn start_pipeline(
         unregister_cancel(&op_id_c);
     });
 
-    Ok(Json(StartPipelineResponse { operation_id }))
+    Ok(operation_id)
 }
 
 #[cfg(test)]

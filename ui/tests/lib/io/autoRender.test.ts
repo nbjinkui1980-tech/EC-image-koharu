@@ -26,7 +26,13 @@ describe('queueAutoRender', () => {
       []
     server.use(
       http.get('/api/v1/config', () =>
-        HttpResponse.json({ pipeline: { renderer: 'koharu-renderer' } }),
+        HttpResponse.json({
+          pipeline: {
+            typography_planner: 'cloud-typography-planner',
+            renderer: 'koharu-renderer',
+          },
+          typography_planner: { enabled: true },
+        }),
       ),
       http.post('/api/v1/pipelines', async ({ request }) => {
         pipelineHits.push((await request.json()) as (typeof pipelineHits)[number])

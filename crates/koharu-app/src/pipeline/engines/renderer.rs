@@ -146,6 +146,10 @@ fn run_renderer_page(
             .iter()
             .find(|i| i.node_id == block_out.node_id)
             .and_then(|i| i.style.clone());
+        let typography_plan_verified = inputs
+            .iter()
+            .find(|input| input.node_id == block_out.node_id)
+            .is_some_and(|input| input.typography_plan_verified);
         ops.push(Op::UpdateNode {
             page,
             id: block_out.node_id,
@@ -159,6 +163,7 @@ fn run_renderer_page(
                     // later renders treat implicit predicted colors as
                     // explicit black overrides.
                     style: preserve_existing_style(existing_style),
+                    typography_plan_verified: Some(typography_plan_verified),
                     ..Default::default()
                 })),
                 transform: None,
@@ -339,6 +344,7 @@ fn build_render_inputs(
                     rendered_direction: text.rendered_direction,
                     lock_layout_box: text.lock_layout_box,
                     preserve_explicit_lines: false,
+                    typography_plan_verified: text.typography_plan_verified,
                 })
             })
             .collect::<Vec<_>>();
@@ -377,7 +383,9 @@ fn build_render_inputs(
             .map(str::trim)
             .filter(|line| !line.is_empty())
             .collect::<Vec<_>>();
-        if translated_lines.len() != lines.len() {
+        let verified_single_region_reflow =
+            text.typography_plan_verified && !translation.trim().is_empty() && lines.len() == 1;
+        if translated_lines.len() != lines.len() && !verified_single_region_reflow {
             if in_scope {
                 cleanup.push(render_cleanup_op(page, node_id));
             }
@@ -422,7 +430,11 @@ fn build_render_inputs(
                 height: bottom - top,
                 rotation_deg: 0.0,
             },
-            translation: translated_lines.join("\n"),
+            translation: if verified_single_region_reflow {
+                translation.to_string()
+            } else {
+                translated_lines.join("\n")
+            },
             style: text.style.clone(),
             font_prediction: text.font_prediction.clone(),
             source_direction: text.source_direction,
@@ -431,6 +443,7 @@ fn build_render_inputs(
                 || lines.len() == 1
                 || lines.len() < source_line_count,
             preserve_explicit_lines: true,
+            typography_plan_verified: text.typography_plan_verified,
         });
         render_lines.extend(lines.iter().cloned().map(|line| (node_id, line)));
         if in_scope {
@@ -466,6 +479,7 @@ inventory::submit! {
             Artifact::Inpainted,
             Artifact::Translations,
             Artifact::FontPredictions,
+            Artifact::TypographyStyles,
         ],
         produces: &[Artifact::FinalRender, Artifact::RenderedSprites],
         load: |_runtime, _cpu| Box::pin(async move {
@@ -501,7 +515,8 @@ mod tests {
     use super::*;
     use image::{DynamicImage, Rgba, RgbaImage};
     use koharu_core::{
-        BlobRef, ImageData, ImageRole, Node, NodeId, NodeKind, Page, Scene, TextData, TextDirection,
+        BlobRef, FontSource, ImageData, ImageRole, Node, NodeId, NodeKind, Page, Scene, TextData,
+        TextDirection,
     };
 
     use crate::blobs::BlobStore;
@@ -994,6 +1009,7 @@ mod tests {
             rendered_direction: None,
             lock_layout_box: true,
             preserve_explicit_lines: true,
+            typography_plan_verified: false,
         };
         let base =
             DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 40, Rgba([10, 20, 30, 255])));
@@ -1106,6 +1122,7 @@ mod tests {
             rendered_direction: None,
             lock_layout_box: true,
             preserve_explicit_lines: true,
+            typography_plan_verified: false,
         };
         let source =
             DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 20, Rgba([10, 20, 30, 255])));
@@ -1279,6 +1296,7 @@ mod tests {
             rendered_direction: None,
             lock_layout_box: true,
             preserve_explicit_lines: true,
+            typography_plan_verified: false,
         };
         let inputs = vec![input(first_id, 10.0), input(second_id, 80.0)];
         let line = |x| EligibleTextLine {
@@ -1356,6 +1374,7 @@ mod tests {
             rendered_direction: None,
             lock_layout_box: true,
             preserve_explicit_lines: true,
+            typography_plan_verified: false,
         };
         let eligible_lines = vec![(
             node_id,
@@ -1439,6 +1458,361 @@ mod tests {
             output.final_render.to_rgba8().get_pixel(1, 1).0,
             [200, 10, 20, 255]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn renderer_style_writeback_preserves_typography_plan_marker() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let blobs = BlobStore::open(temp.path())?;
+        let id = NodeId::new();
+        let mut node = renderer_node(id, "中文", Some("planned"), None);
+        let NodeKind::Text(data) = &mut node.kind else {
+            unreachable!()
+        };
+        data.typography_plan_verified = true;
+        data.style = Some(TextStyle {
+            font_size: Some(24.0),
+            ..Default::default()
+        });
+        let (mut scene, page) = renderer_scene_with_images(&blobs, node)?;
+
+        let mut ops = run_renderer_page(
+            &scene,
+            page,
+            &blobs,
+            &PipelineRunOptions::default(),
+            |base, _, _, _, _, inputs, _| {
+                assert!(inputs[0].typography_plan_verified);
+                Ok(RenderOutput {
+                    final_render: base.clone(),
+                    blocks: vec![RenderedBlock {
+                        node_id: id,
+                        sprite: DynamicImage::new_rgba8(2, 2),
+                        rendered_direction: TextDirection::Horizontal,
+                        expanded_transform: None,
+                    }],
+                })
+            },
+        )?;
+        for op in &mut ops {
+            op.apply(&mut scene)?;
+        }
+
+        assert!(text(&scene, page, id).typography_plan_verified);
+        assert_eq!(
+            text(&scene, page, id)
+                .style
+                .as_ref()
+                .and_then(|style| style.font_size),
+            Some(24.0)
+        );
+
+        let NodeKind::Text(data) = &mut scene.node_mut(page, id).unwrap().kind else {
+            unreachable!()
+        };
+        data.style.as_mut().unwrap().font_size = None;
+        data.typography_plan_verified = true;
+        let mut ops = run_renderer_page(
+            &scene,
+            page,
+            &blobs,
+            &PipelineRunOptions::default(),
+            |base, _, _, _, _, inputs, _| {
+                assert!(inputs[0].typography_plan_verified);
+                assert!(
+                    inputs[0]
+                        .style
+                        .as_ref()
+                        .is_some_and(|style| style.font_size.is_none())
+                );
+                Ok(RenderOutput {
+                    final_render: base.clone(),
+                    blocks: vec![RenderedBlock {
+                        node_id: id,
+                        sprite: DynamicImage::new_rgba8(2, 2),
+                        rendered_direction: TextDirection::Horizontal,
+                        expanded_transform: None,
+                    }],
+                })
+            },
+        )?;
+        for op in &mut ops {
+            op.apply(&mut scene)?;
+        }
+        assert!(text(&scene, page, id).typography_plan_verified);
+        assert!(
+            text(&scene, page, id)
+                .style
+                .as_ref()
+                .is_some_and(|style| style.font_size.is_none())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn typography_han_only_single_line_can_render_two_explicit_lines() -> Result<()> {
+        let id = NodeId::new();
+        let mut node = renderer_node(id, "中文", Some("first\nsecond"), None);
+        let NodeKind::Text(text) = &mut node.kind else {
+            unreachable!()
+        };
+        text.typography_plan_verified = true;
+        let (scene, page) = renderer_scene(vec![node]);
+
+        let (inputs, _, _, _) = build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
+
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].translation, "first\nsecond");
+        assert!(inputs[0].preserve_explicit_lines);
+        Ok(())
+    }
+
+    #[test]
+    fn typography_reflow_does_not_restore_source_han_pixels() -> Result<()> {
+        let id = NodeId::new();
+        let mut node = renderer_node(id, "中文", Some("first\nsecond"), None);
+        let NodeKind::Text(text) = &mut node.kind else {
+            unreachable!()
+        };
+        text.typography_plan_verified = true;
+        let (scene, page) = renderer_scene(vec![node]);
+
+        let (inputs, _, _, eligible) =
+            build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        let protected = protected_source_lines_for_page(&scene, page);
+        assert!(protected.is_empty());
+        let source =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([10, 20, 30, 255])));
+        let base =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([200, 200, 200, 255])));
+        let output = dispatch_render_page(
+            SourceTextPolicy::HanOnly,
+            true,
+            &source,
+            &base,
+            None,
+            &inputs,
+            &eligible,
+            &protected,
+            || {
+                Ok(RenderOutput {
+                    final_render: base.clone(),
+                    blocks: vec![RenderedBlock {
+                        node_id: id,
+                        sprite: DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                            80,
+                            50,
+                            Rgba([250, 0, 0, 255]),
+                        )),
+                        rendered_direction: TextDirection::Horizontal,
+                        expanded_transform: None,
+                    }],
+                })
+            },
+        )?;
+        assert_eq!(
+            output.final_render.to_rgba8().get_pixel(20, 30).0,
+            [250, 0, 0, 255]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verified_reflow_marker_does_not_authorize_multiple_current_safe_regions() -> Result<()> {
+        let id = NodeId::new();
+        let mut node = renderer_node(
+            id,
+            "第一行\n第二行",
+            Some("planned as one line"),
+            Some(vec![
+                quad(10.0, 10.0, 90.0, 25.0),
+                quad(10.0, 35.0, 90.0, 50.0),
+            ]),
+        );
+        let NodeKind::Text(text) = &mut node.kind else {
+            unreachable!()
+        };
+        text.typography_plan_verified = true;
+        let (scene, page) = renderer_scene(vec![node]);
+        let (inputs, _, _, eligible) =
+            build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        let protected = protected_source_lines_for_page(&scene, page);
+        assert!(inputs.is_empty());
+        assert_eq!(protected.len(), 2);
+        let source =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([10, 20, 30, 255])));
+        let base =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([200, 200, 200, 255])));
+        let output = dispatch_render_page(
+            SourceTextPolicy::HanOnly,
+            true,
+            &source,
+            &base,
+            None,
+            &inputs,
+            &eligible,
+            &protected,
+            || unreachable!("multiple current safe regions must skip rendering"),
+        )?;
+        assert_eq!(
+            output.final_render.to_rgba8().get_pixel(20, 15).0,
+            [10, 20, 30, 255]
+        );
+        assert_eq!(
+            output.final_render.to_rgba8().get_pixel(20, 40).0,
+            [10, 20, 30, 255]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unverified_line_mismatch_restores_source_han_and_skips_render_input() -> Result<()> {
+        let id = NodeId::new();
+        let node = renderer_node(id, "中文", Some("first\nsecond"), None);
+        let (scene, page) = renderer_scene(vec![node]);
+
+        let (inputs, _, _, _) = build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
+
+        assert!(inputs.is_empty());
+        assert_eq!(protected_source_lines_for_page(&scene, page).len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn typography_empty_translation_restores_source_han_pixels() -> Result<()> {
+        for translation in [None, Some("")] {
+            let id = NodeId::new();
+            let mut node = renderer_node(id, "中文", translation, None);
+            let NodeKind::Text(text) = &mut node.kind else {
+                unreachable!()
+            };
+            text.typography_plan_verified = true;
+            let (scene, page) = renderer_scene(vec![node]);
+            let (inputs, _, _, _) =
+                build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
+            assert!(inputs.is_empty());
+            assert_eq!(protected_source_lines_for_page(&scene, page).len(), 1);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn typography_reflow_keeps_protected_english_roi_unchanged() -> Result<()> {
+        let id = NodeId::new();
+        let mut node = renderer_node(
+            id,
+            "English\n中文",
+            Some("first\nsecond"),
+            Some(vec![
+                quad(0.0, 0.0, 40.0, 20.0),
+                quad(50.0, 0.0, 100.0, 20.0),
+            ]),
+        );
+        let NodeKind::Text(text) = &mut node.kind else {
+            unreachable!()
+        };
+        text.typography_plan_verified = true;
+        let (scene, page) = renderer_scene(vec![node]);
+        let (inputs, _, _, eligible) =
+            build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        let protected = protected_source_lines_for_page(&scene, page);
+        let source =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([10, 20, 30, 255])));
+        let base =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([200, 200, 200, 255])));
+
+        let output = dispatch_render_page(
+            SourceTextPolicy::HanOnly,
+            true,
+            &source,
+            &base,
+            None,
+            &inputs,
+            &eligible,
+            &protected,
+            || {
+                Ok(RenderOutput {
+                    final_render: base.clone(),
+                    blocks: vec![RenderedBlock {
+                        node_id: id,
+                        sprite: DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                            50,
+                            20,
+                            Rgba([250, 0, 0, 255]),
+                        )),
+                        rendered_direction: TextDirection::Horizontal,
+                        expanded_transform: None,
+                    }],
+                })
+            },
+        )?;
+
+        assert_eq!(
+            output.final_render.to_rgba8().get_pixel(20, 10).0,
+            [10, 20, 30, 255]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verified_typography_font_cap_survives_consecutive_renders_and_geometry_expansion()
+    -> Result<()> {
+        let renderer = crate::renderer::Renderer::new()?;
+        let font = renderer
+            .available_fonts()?
+            .into_iter()
+            .find(|font| font.source == FontSource::System)
+            .expect("system font")
+            .post_script_name;
+        let id = NodeId::new();
+        let mut node = renderer_node(id, "中文", Some("Hi"), None);
+        let NodeKind::Text(text) = &mut node.kind else {
+            unreachable!()
+        };
+        text.typography_plan_verified = true;
+        text.style = Some(TextStyle {
+            font_families: vec![font],
+            font_size: Some(48.0),
+            ..Default::default()
+        });
+        let (scene, page) = renderer_scene(vec![node]);
+        let base = DynamicImage::new_rgba8(100, 100);
+        let options = PageRenderOptions::default();
+
+        let (first, _, _, _) = build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        assert_eq!(
+            first[0].style.as_ref().and_then(|style| style.font_size),
+            Some(48.0)
+        );
+        assert!(first[0].typography_plan_verified);
+        let first_output = renderer.render_page(&base, None, None, 100, 100, &first, &options)?;
+        let first_sprite = first_output.blocks[0].sprite.to_rgba8();
+
+        let mut expanded = scene.clone();
+        expanded.node_mut(page, id).unwrap().transform.width *= 2.0;
+        expanded.node_mut(page, id).unwrap().transform.height *= 2.0;
+        let (second, _, _, _) =
+            build_render_inputs(&expanded, page, SourceTextPolicy::HanOnly, None)?;
+        assert_eq!(
+            second[0].style.as_ref().and_then(|style| style.font_size),
+            Some(48.0)
+        );
+        assert!(second[0].typography_plan_verified);
+        let second_output = renderer.render_page(&base, None, None, 100, 100, &second, &options)?;
+        let second_sprite = second_output.blocks[0].sprite.to_rgba8();
+        assert!(
+            second_sprite.width() > first_sprite.width()
+                || second_sprite.height() > first_sprite.height()
+        );
+
+        let mut explicit = second[0].clone();
+        explicit.typography_plan_verified = false;
+        let explicit_output =
+            renderer.render_page(&base, None, None, 100, 100, &[explicit], &options)?;
+        let explicit_sprite = explicit_output.blocks[0].sprite.to_rgba8();
+        assert!(second_sprite.width() <= explicit_sprite.width());
+        assert!(second_sprite.height() <= explicit_sprite.height());
         Ok(())
     }
 }

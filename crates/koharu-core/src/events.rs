@@ -71,6 +71,7 @@ pub enum PipelineStep {
     Ocr,
     Inpaint,
     LlmGenerate,
+    Typography,
     Render,
 }
 
@@ -80,6 +81,7 @@ impl PipelineStep {
         PipelineStep::Ocr,
         PipelineStep::Inpaint,
         PipelineStep::LlmGenerate,
+        PipelineStep::Typography,
         PipelineStep::Render,
     ];
 }
@@ -232,5 +234,14 @@ mod tests {
         };
         let encoded = serde_json::to_string(&value).expect("serialize");
         let _: PipelineProgress = serde_json::from_str(&encoded).expect("deserialize");
+    }
+
+    #[test]
+    fn typography_pipeline_step_serializes_as_typography() {
+        assert_eq!(
+            serde_json::to_string(&PipelineStep::Typography).expect("serialize"),
+            "\"typography\""
+        );
+        assert!(PipelineStep::ALL.contains(&PipelineStep::Typography));
     }
 }

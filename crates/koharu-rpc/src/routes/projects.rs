@@ -201,25 +201,36 @@ async fn import_project(
         return Err(ApiError::bad_request("empty archive body"));
     }
     let config = (**app.config.load()).clone();
-    let dest =
-        project_dirs::allocate_imported(&config, Some("imported")).map_err(ApiError::internal)?;
-    // Atomic-created dir must be removed so `import_khr_bytes` can do its
-    // own exists-check + populate.
-    std::fs::remove_dir(dest.as_std_path())
-        .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?;
-
     let body_vec = body.to_vec();
-    let dest_c = dest.clone();
-    tokio::task::spawn_blocking(move || koharu_app::archive::import_khr_bytes(&body_vec, &dest_c))
-        .await
-        .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?
-        .map_err(ApiError::internal)?;
+    let published =
+        tokio::task::spawn_blocking(move || sanitize_and_publish_import(&config, &body_vec))
+            .await
+            .map_err(|e| ApiError::internal(anyhow::Error::new(e)))?
+            .map_err(ApiError::internal)?;
 
     let session = app
-        .open_project(dest, None)
+        .open_project(published, None)
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(koharu_app::app::project_summary(&session)))
+}
+
+fn sanitize_and_publish_import(
+    config: &koharu_app::AppConfig,
+    bytes: &[u8],
+) -> anyhow::Result<camino::Utf8PathBuf> {
+    let (staging, final_path) = project_dirs::allocate_imported(config, Some("imported"))?;
+    let result = (|| {
+        koharu_app::archive::import_khr_bytes_into_empty_staging(bytes, &staging)?;
+        let session = koharu_app::ProjectSession::open_untrusted(&staging)?;
+        drop(session);
+        std::fs::rename(staging.as_std_path(), final_path.as_std_path())?;
+        Ok(final_path.clone())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(staging.as_std_path());
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -454,5 +465,165 @@ fn sanitize(name: &str, fallback: &str) -> String {
         fallback.to_string()
     } else {
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use camino::Utf8PathBuf;
+    use koharu_app::{AppConfig, ProjectSession};
+    use koharu_core::{
+        Node, NodeDataPatch, NodeId, NodeKind, NodePatch, Op, Page, TextData, TextDataPatch,
+        Transform,
+    };
+
+    struct TempRoot(Utf8PathBuf);
+
+    impl TempRoot {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("koharu-import-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&path).unwrap();
+            Self(Utf8PathBuf::from_path_buf(path).unwrap())
+        }
+
+        fn config(&self) -> AppConfig {
+            let mut config = AppConfig::default();
+            config.data.path = self.0.clone();
+            config
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(self.0.as_std_path());
+        }
+    }
+
+    fn verified_archive(root: &Utf8PathBuf) -> Vec<u8> {
+        let path = root.join("source.khrproj");
+        let session = ProjectSession::create(&path, "import source").unwrap();
+        let mut page = Page::new("p1", 100, 100);
+        let page_id = page.id;
+        let id = NodeId::new();
+        page.nodes.insert(
+            id,
+            Node {
+                id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Text(TextData {
+                    text: Some("source".into()),
+                    translation: Some("planned".into()),
+                    typography_plan_verified: true,
+                    ..Default::default()
+                }),
+            },
+        );
+        session.apply(Op::AddPage { page, at: 0 }).unwrap();
+        session.compact().unwrap();
+        session
+            .apply(Op::UpdateNode {
+                page: page_id,
+                id,
+                patch: NodePatch {
+                    data: Some(NodeDataPatch::Text(TextDataPatch {
+                        translation: Some(Some("planned from history".into())),
+                        typography_plan_verified: Some(true),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                prev: NodePatch::default(),
+            })
+            .unwrap();
+        drop(session);
+        let bytes = koharu_app::archive::export_khr_bytes(&path).unwrap();
+        std::fs::remove_dir_all(path.as_std_path()).unwrap();
+        bytes
+    }
+
+    fn only_text_marker(session: &ProjectSession) -> bool {
+        session
+            .scene
+            .read()
+            .pages
+            .values()
+            .flat_map(|page| page.nodes.values())
+            .find_map(|node| match &node.kind {
+                NodeKind::Text(text) => Some(text.typography_plan_verified),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn http_import_clears_forged_typography_marker_before_activation() {
+        let root = TempRoot::new();
+        let config = root.config();
+        let bytes = verified_archive(&root.0);
+
+        let published = sanitize_and_publish_import(&config, &bytes).unwrap();
+        let session = ProjectSession::open(&published).unwrap();
+        assert!(!only_text_marker(&session));
+        assert_eq!(
+            std::fs::metadata(published.join("history.log"))
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn failed_import_sanitization_never_publishes_project() {
+        let root = TempRoot::new();
+        let config = root.config();
+
+        assert!(sanitize_and_publish_import(&config, b"not a zip").is_err());
+        let corrupt_project = koharu_app::archive::zip_files_to_bytes(&[
+            ("project.toml".into(), b"name = \"corrupt\"\n".to_vec()),
+            ("scene.bin".into(), b"KHARSCN\x02not-postcard".to_vec()),
+        ])
+        .unwrap();
+        assert!(sanitize_and_publish_import(&config, &corrupt_project).is_err());
+        let truncated_history = koharu_app::archive::zip_files_to_bytes(&[
+            (
+                "scene.bin".into(),
+                include_bytes!("../../../koharu-app/tests/fixtures/persistence-v1/scene.bin")
+                    .to_vec(),
+            ),
+            ("history.log".into(), vec![1]),
+        ])
+        .unwrap();
+        assert!(sanitize_and_publish_import(&config, &truncated_history).is_err());
+        assert!(project_dirs::list_projects(&config).unwrap().is_empty());
+        let projects = project_dirs::projects_dir(&config).unwrap();
+        assert!(
+            std::fs::read_dir(projects)
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry.file_name().to_string_lossy().ends_with(".khrproj"))
+        );
+    }
+
+    #[test]
+    fn successful_import_publishes_after_sanitize_and_atomic_rename() {
+        let root = TempRoot::new();
+        let config = root.config();
+        let bytes = verified_archive(&root.0);
+
+        assert!(project_dirs::list_projects(&config).unwrap().is_empty());
+        let published = sanitize_and_publish_import(&config, &bytes).unwrap();
+        assert!(published.exists());
+        assert_eq!(project_dirs::list_projects(&config).unwrap().len(), 1);
+        let session = ProjectSession::open(&published).unwrap();
+        assert!(!only_text_marker(&session));
+        assert_eq!(
+            std::fs::metadata(published.join("history.log"))
+                .unwrap()
+                .len(),
+            0
+        );
     }
 }

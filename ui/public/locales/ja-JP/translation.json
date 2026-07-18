@@ -104,7 +104,8 @@
     "detectTooltip": "現在のページでテキスト検出を実行",
     "ocr": "OCR",
     "ocrTooltip": "検出された領域のテキストを認識",
-    "render": "レンダー"
+    "render": "レンダー",
+    "typography": "タイポグラフィ"
   },
   "mask": {
     "showSegmentationMask": "セグメンテーションマスクを表示",
@@ -394,7 +395,18 @@
     "shortcutReset": "ショートカットのリセット",
     "shortcutResetDescription": "すべてのショートカットをデフォルト値に戻します。保存された変更は失われます。",
     "shortcutConflict": "そのキーの組み合わせは既に使用されています",
-    "shortcutInvalid": "このキーはショートカットとして使用できません"
+    "shortcutInvalid": "このキーはショートカットとして使用できません",
+    "typography": "タイポグラフィ",
+    "typographyDescription": "文字組み計画用に別のモデルを選択します。",
+    "typographySharedConnection": "OpenAI 互換接続を共有します。文字組みモデルを選んでも、現在の翻訳モデルは置き換えられません。",
+    "typographyModel": "文字組みモデル",
+    "typographyModelPlaceholder": "モデルを選択",
+    "typographyAutoEnable": "自動文字組みを有効にする",
+    "typographyAutoEnableDescription": "文字組み計画を利用できる場所で、選択したモデルを自動的に使用します。",
+    "typographyConnectionRequired": "自動文字組みを有効にする前に、プロバイダー設定で Base URL を設定し、モデルを選択してください。",
+    "typographyOpenProviders": "プロバイダー設定を開く",
+    "typographyInvalidModel": "選択したモデルは現在のカタログにありません",
+    "typographyReloadTranslation": "共有 Base URL または API キーの変更は文字組みにすぐ適用されます。翻訳に適用するには翻訳モデルを再読み込みしてください。"
   },
   "updater": {
     "available": {

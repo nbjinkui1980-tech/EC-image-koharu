@@ -80,6 +80,7 @@ export function MenuBar() {
       p.font_detector,
       p.ocr,
       p.translator,
+      ...(cfg.typography_planner?.enabled === true ? [p.typography_planner] : []),
       p.inpainter,
       p.renderer,
     ].filter((s): s is string => !!s)

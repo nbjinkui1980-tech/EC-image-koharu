@@ -243,39 +243,22 @@ async fn run() -> Result<()> {
             );
         });
 
-    let pipeline_result: Result<()> = async {
-        if !first_steps.is_empty() {
-            eprintln!("=> running first phase: {}", first_steps.join(" → "));
-            let outcome = run_pipeline_phase(
+    let pipeline_result = run_pipeline_phases(
+        first_steps,
+        render_steps,
+        |steps| {
+            run_pipeline_phase(
                 &app,
                 session.clone(),
                 page_id,
-                first_steps,
+                steps,
                 options.clone(),
                 progress_sink.clone(),
                 warning_sink.clone(),
             )
-            .await?;
-            require_clean_phase(&outcome)?;
-        }
-
-        if !render_steps.is_empty() {
-            synthesize_translations(&app, page_id).await?;
-            eprintln!("=> running render phase: {}", render_steps.join(" → "));
-            let outcome = run_pipeline_phase(
-                &app,
-                session.clone(),
-                page_id,
-                render_steps,
-                options,
-                progress_sink,
-                warning_sink,
-            )
-            .await?;
-            require_clean_phase(&outcome)?;
-        }
-        Ok(())
-    }
+        },
+        || synthesize_translations(&app, page_id),
+    )
     .await;
 
     match &pipeline_result {
@@ -288,6 +271,30 @@ async fn run() -> Result<()> {
 
     app.close_project().await.ok();
     pipeline_result
+}
+
+async fn run_pipeline_phases<RunPhase, RunFuture, Fallback, FallbackFuture>(
+    first_steps: Vec<String>,
+    render_steps: Vec<String>,
+    mut run_phase: RunPhase,
+    fallback: Fallback,
+) -> Result<()>
+where
+    RunPhase: FnMut(Vec<String>) -> RunFuture,
+    RunFuture: std::future::Future<Output = Result<koharu_app::pipeline::RunOutcome>>,
+    Fallback: FnOnce() -> FallbackFuture,
+    FallbackFuture: std::future::Future<Output = Result<()>>,
+{
+    if !first_steps.is_empty() {
+        eprintln!("=> running first phase: {}", first_steps.join(" → "));
+        require_clean_phase(&run_phase(first_steps).await?)?;
+    }
+    if !render_steps.is_empty() {
+        fallback().await?;
+        eprintln!("=> running render phase: {}", render_steps.join(" → "));
+        require_clean_phase(&run_phase(render_steps).await?)?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -307,6 +314,7 @@ async fn run_pipeline_phase(
         app.cpu_only(),
         app.llm.clone(),
         app.renderer.clone(),
+        app.typography_planner.clone(),
         koharu_app::pipeline::PipelineSpec {
             scope: koharu_app::pipeline::Scope::Pages(vec![page_id]),
             steps,
@@ -319,15 +327,30 @@ async fn run_pipeline_phase(
     .await
 }
 
-/// Load `AppConfig` from TOML at `path` or default.
+/// Load standard desktop config by default; custom TOML shares the same secret
+/// hydration path without writing its keys back to disk.
 fn load_config(path: Option<&std::path::Path>) -> Result<AppConfig> {
+    load_config_with(
+        path,
+        koharu_app::config::load,
+        koharu_app::config::hydrate_provider_secrets,
+    )
+}
+
+fn load_config_with(
+    path: Option<&std::path::Path>,
+    standard_load: impl FnOnce() -> Result<AppConfig>,
+    hydrate: impl FnOnce(&mut AppConfig),
+) -> Result<AppConfig> {
     match path {
         Some(p) => {
             let text = std::fs::read_to_string(p)
                 .with_context(|| format!("read config {}", p.display()))?;
-            Ok(toml::from_str(&text)?)
+            let mut config = toml::from_str(&text)?;
+            hydrate(&mut config);
+            Ok(config)
         }
-        None => Ok(AppConfig::default()),
+        None => standard_load(),
     }
 }
 
@@ -412,6 +435,9 @@ fn resolve_steps(cli: &Cli, cfg: &AppConfig) -> Result<Vec<String>> {
     if cli.with_translate {
         push(&mut steps, &p.translator);
     }
+    if cfg.typography_planner.enabled {
+        push(&mut steps, &p.typography_planner);
+    }
     push(&mut steps, &p.inpainter);
     push(&mut steps, &p.renderer);
     Ok(steps)
@@ -432,7 +458,11 @@ fn split_render_phase(steps: Vec<String>) -> Result<(Vec<String>, Vec<String>)> 
     let mut first = Vec::new();
     let mut render = Vec::new();
     for (id, info) in steps.into_iter().zip(infos) {
-        if info.produces.contains(&koharu_app::Artifact::FinalRender) {
+        if info
+            .produces
+            .contains(&koharu_app::Artifact::TypographyStyles)
+            || info.produces.contains(&koharu_app::Artifact::FinalRender)
+        {
             render.push(id);
         } else {
             first.push(id);
@@ -574,6 +604,9 @@ fn save_blob_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use koharu_app::config::SourceTextPolicy;
     use koharu_core::{BlobRef, Scene, TextData, TextDirection};
 
@@ -720,5 +753,182 @@ mod tests {
             text(&all_scene, page, english).translation.as_deref(),
             Some("English")
         );
+    }
+
+    #[tokio::test]
+    async fn typography_planner_cli_runs_fallback_before_planner_and_renderer() {
+        let mut config = AppConfig::default();
+        config.typography_planner.enabled = true;
+        let cli = Cli {
+            input: PathBuf::from("input"),
+            output_dir: PathBuf::from("output"),
+            config: None,
+            steps: None,
+            target_lang: "en".into(),
+            system_prompt: None,
+            default_font: None,
+            with_translate: false,
+            llm: None,
+            cpu: true,
+        };
+        let steps = resolve_steps(&cli, &config).unwrap();
+        let (first, render) = split_render_phase(steps).unwrap();
+        let blocked_fallback = Arc::new(AtomicBool::new(false));
+        let blocked_flag = blocked_fallback.clone();
+        let error = run_pipeline_phases(
+            vec!["first".into()],
+            vec!["cloud-typography-planner".into()],
+            |_| async { Ok(koharu_app::pipeline::RunOutcome { warning_count: 1 }) },
+            move || async move {
+                blocked_flag.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .expect_err("warning in the first phase must block fallback");
+        assert!(error.to_string().contains("pipeline phase failed"));
+        assert!(!blocked_fallback.load(Ordering::SeqCst));
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let first_clean = Arc::new(AtomicBool::new(false));
+        let fallback_done = Arc::new(AtomicBool::new(false));
+        let phase_events = events.clone();
+        let fallback_events = events.clone();
+        let phase_clean = first_clean.clone();
+        let phase_fallback = fallback_done.clone();
+
+        run_pipeline_phases(
+            first,
+            render,
+            move |steps| {
+                let events = phase_events.clone();
+                let clean = phase_clean.clone();
+                let fallback_done = phase_fallback.clone();
+                async move {
+                    if steps.iter().any(|step| step == "cloud-typography-planner") {
+                        assert!(fallback_done.load(Ordering::SeqCst));
+                        events
+                            .lock()
+                            .unwrap()
+                            .extend(steps.into_iter().filter(|step| {
+                                step == "cloud-typography-planner" || step == "koharu-renderer"
+                            }));
+                    } else {
+                        events.lock().unwrap().push("first-phase".into());
+                        clean.store(true, Ordering::SeqCst);
+                    }
+                    Ok(koharu_app::pipeline::RunOutcome { warning_count: 0 })
+                }
+            },
+            move || {
+                let events = fallback_events.clone();
+                async move {
+                    assert!(first_clean.load(Ordering::SeqCst));
+                    events.lock().unwrap().push("fallback".into());
+                    fallback_done.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "first-phase",
+                "fallback",
+                "cloud-typography-planner",
+                "koharu-renderer",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn typography_planner_cli_translator_steps_skip_fallback() {
+        let steps = vec![
+            "llm".to_string(),
+            "cloud-typography-planner".to_string(),
+            "koharu-renderer".to_string(),
+        ];
+        let (first, render) = split_render_phase(steps.clone()).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let phase_events = events.clone();
+        let fallback_called = Arc::new(AtomicBool::new(false));
+        let fallback_flag = fallback_called.clone();
+
+        run_pipeline_phases(
+            first,
+            render,
+            move |steps| {
+                let events = phase_events.clone();
+                async move {
+                    events.lock().unwrap().extend(steps);
+                    Ok(koharu_app::pipeline::RunOutcome { warning_count: 0 })
+                }
+            },
+            move || async move {
+                fallback_flag.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(*events.lock().unwrap(), steps);
+        assert!(!fallback_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn typography_planner_cli_default_config_uses_standard_loader() {
+        let loaded = load_config_with(
+            None,
+            || {
+                let mut config = AppConfig::default();
+                config.providers.push(koharu_app::config::ProviderConfig {
+                    id: "openai-compatible".into(),
+                    base_url: Some("http://saved".into()),
+                    api_key: Some(koharu_app::config::RedactedSecret::new("secret")),
+                });
+                Ok(config)
+            },
+            |_| panic!("standard loader already hydrates secrets"),
+        )
+        .unwrap();
+        assert_eq!(
+            loaded.providers[0].base_url.as_deref(),
+            Some("http://saved")
+        );
+        assert_eq!(
+            loaded.providers[0].api_key.as_ref().unwrap().expose(),
+            "secret"
+        );
+    }
+
+    #[test]
+    fn typography_planner_cli_custom_config_hydrates_provider_secret() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "[[providers]]\nid = 'openai-compatible'\nbase_url = 'http://custom'\n",
+        )
+        .unwrap();
+        let config = load_config_with(
+            Some(file.path()),
+            || panic!("custom config must not use standard loader"),
+            |config| {
+                config.providers[0].api_key = Some(koharu_app::config::RedactedSecret::new(
+                    "custom-config-secret",
+                ));
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            config.providers[0].api_key.as_ref().unwrap().expose(),
+            "custom-config-secret"
+        );
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.contains("[REDACTED]"));
+        assert!(!serialized.contains("custom-config-secret"));
     }
 }

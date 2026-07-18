@@ -200,6 +200,8 @@ pub struct ConfigPatch {
     pub http: Option<HttpConfigPatch>,
     #[serde(default)]
     pub pipeline: Option<PipelineConfigPatch>,
+    #[serde(default)]
+    pub typography_planner: Option<TypographyPlannerConfigPatch>,
     /// If present, replaces the entire list. Api_key values of `"[REDACTED]"`
     /// are interpreted as "leave the existing secret alone".
     #[serde(default)]
@@ -229,8 +231,26 @@ pub struct PipelineConfigPatch {
     pub bubble_segmenter: Option<String>,
     pub ocr: Option<String>,
     pub translator: Option<String>,
+    pub typography_planner: Option<String>,
     pub inpainter: Option<String>,
     pub renderer: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TypographyPlannerConfigPatch {
+    pub enabled: Option<bool>,
+    /// Outer `Option` means the field is patched; inner `Option` clears or sets it.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub model_id: Option<Option<String>>,
+}
+
+fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, ToSchema)]

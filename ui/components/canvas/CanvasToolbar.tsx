@@ -112,9 +112,21 @@ function WorkflowButtons() {
    */
   const runStep = async (
     pick: (p: NonNullable<Awaited<ReturnType<typeof getConfig>>['pipeline']>) => string[],
+    requiresTypography = false,
   ) => {
     if (!pageId) return
     const cfg = await getConfig()
+    if (
+      requiresTypography &&
+      (!cfg.typography_planner?.model_id?.trim() ||
+        !cfg.pipeline?.typography_planner?.trim() ||
+        !cfg.providers?.some(
+          (provider) => provider.id === 'openai-compatible' && Boolean(provider.base_url?.trim()),
+        ))
+    ) {
+      useEditorUiStore.getState().showError(t('settings.typographyConnectionRequired'))
+      return
+    }
     if (!cfg.pipeline) return
     const steps = pick(cfg.pipeline).filter((s): s is string => !!s)
     if (steps.length === 0) return
@@ -138,11 +150,13 @@ function WorkflowButtons() {
   const translateChain: PipelinePick = (p) => [p.translator!]
   const inpaintChain: PipelinePick = (p) => [p.inpainter!]
   const renderChain: PipelinePick = (p) => [p.renderer!]
+  const typographyChain: PipelinePick = (p) => [p.typography_planner!, p.renderer!]
 
   const isDetecting = currentStep === 'detect'
   const isOcr = currentStep === 'ocr'
   const isInpainting = currentStep === 'inpaint'
   const isTranslating = currentStep === 'llmGenerate'
+  const isTypography = currentStep === 'typography'
   const isRendering = currentStep === 'render'
 
   return (
@@ -205,6 +219,21 @@ function WorkflowButtons() {
           <Wand2Icon className='size-4' />
         )}
         {t('mask.inpaint')}
+      </Button>
+      <Separator orientation='vertical' className='mx-0.5 h-4' />
+      <Button
+        variant='ghost'
+        size='xs'
+        onClick={() => void runStep(typographyChain, true)}
+        data-testid='toolbar-typography'
+        disabled={!hasPage || isProcessing}
+      >
+        {isTypography ? (
+          <LoaderCircleIcon className='size-4 animate-spin' />
+        ) : (
+          <TypeIcon className='size-4' />
+        )}
+        {t('processing.typography')}
       </Button>
       <Separator orientation='vertical' className='mx-0.5 h-4' />
       <Button
