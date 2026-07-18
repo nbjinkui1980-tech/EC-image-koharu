@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use koharu_core::{Op, TextData, TextDirection};
 use koharu_ml::pp_doclayout_v3::{LayoutRegion, PPDocLayoutV3};
 
+use crate::config::SourceTextPolicy;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{clear_text_nodes_ops, load_source_image, new_text_node};
@@ -24,13 +25,14 @@ impl Engine for Model {
         let layout = self.0.inference_one_fast(&image, CONFIDENCE_THRESHOLD)?;
         let blocks = build_text_blocks(&layout.regions);
 
-        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page, blocks.len());
+        let han_only = ctx.options.source_text_policy == SourceTextPolicy::HanOnly;
+        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page, blocks.len(), han_only);
         let removed = ops.len();
         let base_len = ctx.scene.page(ctx.page).map(|p| p.nodes.len()).unwrap_or(0);
         let insertion_start = base_len.saturating_sub(removed);
         ops.reserve(blocks.len());
         for (at, (bbox, text)) in (insertion_start..).zip(blocks) {
-            let node = new_text_node(bbox, text);
+            let node = new_text_node(bbox, text, !han_only);
             ops.push(Op::AddNode {
                 page: ctx.page,
                 node,

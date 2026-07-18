@@ -73,6 +73,7 @@ export type TextNodeEntry = {
 export function textNodesOf(page: Page): TextNodeEntry[] {
   const out: TextNodeEntry[] = []
   for (const [id, node] of Object.entries(page.nodes)) {
+    if (node.visible === false) continue
     if (!isTextNode(node)) continue
     out.push({
       id,

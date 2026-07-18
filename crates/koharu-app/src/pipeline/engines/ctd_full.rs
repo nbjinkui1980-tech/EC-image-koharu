@@ -35,7 +35,7 @@ impl Engine for Model {
         // Segmentation mask blob.
         let mask_blob = ctx.blobs.put_webp(&DynamicImage::ImageLuma8(det.mask))?;
 
-        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page, pairs.len());
+        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page, pairs.len(), false);
         let removed = ops.len();
         let mut running_len = page_node_count(ctx.scene, ctx.page).saturating_sub(removed);
 
@@ -51,7 +51,7 @@ impl Engine for Model {
         ops.push(mask_op);
 
         for (bbox, text) in pairs {
-            let node = new_text_node(bbox, text);
+            let node = new_text_node(bbox, text, true);
             ops.push(Op::AddNode {
                 page: ctx.page,
                 node,

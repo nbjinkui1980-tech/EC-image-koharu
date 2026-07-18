@@ -21,17 +21,7 @@ impl Engine for Model {
             return Ok(Vec::new());
         }
         let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
-        let crops: Vec<DynamicImage> = texts
-            .iter()
-            .map(|(_, t, _)| {
-                image.crop_imm(
-                    t.x.max(0.0) as u32,
-                    t.y.max(0.0) as u32,
-                    t.width.max(1.0) as u32,
-                    t.height.max(1.0) as u32,
-                )
-            })
-            .collect();
+        let crops = text_crops(&image, &texts);
 
         let mut preds = self.0.inference(&crops, 1)?;
         for p in &mut preds {
@@ -58,6 +48,40 @@ impl Engine for Model {
         }
         Ok(ops)
     }
+}
+
+fn text_crops(
+    image: &DynamicImage,
+    texts: &[(
+        koharu_core::NodeId,
+        &koharu_core::Transform,
+        &koharu_core::TextData,
+    )],
+) -> Vec<DynamicImage> {
+    if image.width() == 0 || image.height() == 0 {
+        return vec![DynamicImage::new_rgba8(1, 1); texts.len()];
+    }
+    texts
+        .iter()
+        .map(|(_, transform, _)| {
+            let left = transform.x.floor().max(0.0) as u32;
+            let top = transform.y.floor().max(0.0) as u32;
+            let left = left.min(image.width() - 1);
+            let top = top.min(image.height() - 1);
+            let right = (transform.x + transform.width)
+                .ceil()
+                .max(left as f32 + 1.0) as u32;
+            let bottom = (transform.y + transform.height)
+                .ceil()
+                .max(top as f32 + 1.0) as u32;
+            image.crop_imm(
+                left,
+                top,
+                right.min(image.width()) - left,
+                bottom.min(image.height()) - top,
+            )
+        })
+        .collect()
 }
 
 inventory::submit! {
@@ -148,4 +172,62 @@ fn gray(c: [u8; 3]) -> bool {
 
 fn colors_similar(a: [u8; 3], b: [u8; 3]) -> bool {
     (0..3).all(|i| a[i].abs_diff(b[i]) <= 16)
+}
+
+#[cfg(test)]
+mod tests {
+    use image::{DynamicImage, Rgb, RgbImage};
+    use koharu_core::{Node, NodeId, NodeKind, Page, Scene, TextData, Transform};
+
+    use super::*;
+
+    #[test]
+    fn font_crops_exclude_english_between_han_targets() {
+        let mut pixels = RgbImage::from_pixel(100, 60, Rgb([0, 0, 0]));
+        for y in 20..40 {
+            for x in 0..100 {
+                pixels.put_pixel(x, y, Rgb([255, 0, 0]));
+            }
+        }
+        let image = DynamicImage::ImageRgb8(pixels);
+        let nodes = [
+            ([10.0, 2.0, 50.0, 18.0], "中文一"),
+            ([10.0, 42.0, 50.0, 58.0], "中文二"),
+        ]
+        .into_iter()
+        .map(|(bbox, value)| {
+            let id = NodeId::new();
+            Node {
+                id,
+                transform: Transform {
+                    x: bbox[0],
+                    y: bbox[1],
+                    width: bbox[2] - bbox[0],
+                    height: bbox[3] - bbox[1],
+                    rotation_deg: 0.0,
+                },
+                visible: true,
+                kind: NodeKind::Text(TextData {
+                    text: Some(value.into()),
+                    ..Default::default()
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+        let mut page = Page::new("page", 100, 60);
+        let page_id = page.id;
+        page.nodes = nodes.into_iter().map(|node| (node.id, node)).collect();
+        let mut scene = Scene::default();
+        scene.pages.insert(page_id, page);
+        let texts = text_nodes(&scene, page_id);
+
+        let crops = text_crops(&image, &texts);
+
+        assert_eq!(crops.len(), 2);
+        assert!(
+            crops
+                .iter()
+                .all(|crop| { crop.to_rgb8().pixels().all(|pixel| pixel.0 != [255, 0, 0]) })
+        );
+    }
 }

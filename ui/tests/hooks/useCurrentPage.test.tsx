@@ -126,6 +126,12 @@ describe('textNodesOf', () => {
     const out = textNodesOf(page)
     expect(out.map((n) => n.id)).toEqual(['t1', 't2'])
   })
+
+  it('omits invisible provisional text nodes', () => {
+    const page = samplePage()
+    page.nodes.t2.visible = false
+    expect(textNodesOf(page).map((node) => node.id)).toEqual(['t1'])
+  })
 })
 
 // ---------------------------------------------------------------------------

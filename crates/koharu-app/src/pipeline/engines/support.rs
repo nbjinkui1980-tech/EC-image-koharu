@@ -16,6 +16,9 @@ use koharu_ml::types::TextRegion;
 
 use crate::{blobs::BlobStore, config::SourceTextPolicy};
 
+pub const SOURCE_GATE_TARGET_DETECTOR: &str = "pp-ocr-v5-source-gate";
+pub const SOURCE_GATE_PROTECTED_DETECTOR: &str = "pp-ocr-v5-source-gate-protected";
+
 #[derive(Clone, Debug)]
 pub struct EligibleTextLine {
     pub line_index: usize,
@@ -106,6 +109,7 @@ pub fn text_nodes(scene: &Scene, page: PageId) -> Vec<(NodeId, &Transform, &Text
     };
     page.nodes
         .iter()
+        .filter(|(_, node)| node.visible)
         .filter_map(|(id, node)| match &node.kind {
             NodeKind::Text(t) => Some((*id, &node.transform, t)),
             _ => None,
@@ -260,9 +264,24 @@ pub fn protected_source_lines_for_page(
     let (image_width, image_height) = (page_ref.width, page_ref.height);
     let mut protected = Vec::new();
 
-    for (node_id, transform, text) in text_nodes(scene, page) {
+    for (node_id, node) in &page_ref.nodes {
+        let NodeKind::Text(text) = &node.kind else {
+            continue;
+        };
+        let node_id = *node_id;
+        let transform = &node.transform;
         let body = text.text.as_deref().unwrap_or_default().trim();
         if body.is_empty() {
+            continue;
+        }
+        if text.detector.as_deref() == Some(SOURCE_GATE_PROTECTED_DETECTOR) {
+            let Some(bbox) = safe_source_restore_bbox(transform, image_width, image_height) else {
+                continue;
+            };
+            protected.push((node_id, eligible_line(text, 0, body, bbox, false)));
+            continue;
+        }
+        if !node.visible {
             continue;
         }
         let eligible = eligible_text_lines(transform, text, image_width, image_height);
@@ -838,7 +857,7 @@ pub fn upsert_mask_blob(scene: &Scene, page: PageId, role: MaskRole, blob: BlobR
 }
 
 /// Build a `Node` ready to be added for a new Text region.
-pub fn new_text_node(bbox: [f32; 4], text_data: TextData) -> Node {
+pub fn new_text_node(bbox: [f32; 4], text_data: TextData, visible: bool) -> Node {
     Node {
         id: NodeId::new(),
         transform: Transform {
@@ -848,7 +867,7 @@ pub fn new_text_node(bbox: [f32; 4], text_data: TextData) -> Node {
             height: bbox[3] - bbox[1],
             rotation_deg: text_data.rotation_deg.unwrap_or(0.0),
         },
-        visible: true,
+        visible,
         kind: NodeKind::Text(text_data),
     }
 }
@@ -893,8 +912,13 @@ pub fn page_node_count(scene: &Scene, page: PageId) -> usize {
 /// Emit `RemoveNode` ops for every text node currently on `page` when a
 /// detector has replacements ready. Empty detections preserve the previous
 /// blocks instead of destructively clearing the page.
-pub fn clear_text_nodes_ops(scene: &Scene, page: PageId, replacement_count: usize) -> Vec<Op> {
-    if replacement_count == 0 {
+pub fn clear_text_nodes_ops(
+    scene: &Scene,
+    page: PageId,
+    replacement_count: usize,
+    clear_on_empty: bool,
+) -> Vec<Op> {
+    if replacement_count == 0 && !clear_on_empty {
         return Vec::new();
     }
     let Some(page_ref) = scene.page(page) else {
@@ -1625,13 +1649,17 @@ mod tests {
     }
 
     #[test]
-    fn text_replacement_cleanup_preserves_existing_nodes_when_new_count_is_zero() {
+    fn detector_cleanup_clears_empty_han_only_but_preserves_empty_all_text() {
         let id = NodeId::new();
         let (scene, page) = translation_scene(vec![translated_node(id, "旧文本")]);
 
-        assert!(clear_text_nodes_ops(&scene, page, 0).is_empty());
+        let han_only = clear_text_nodes_ops(&scene, page, 0, true);
+        assert_eq!(han_only.len(), 1);
+        assert!(matches!(han_only[0], Op::RemoveNode { id: removed, .. } if removed == id));
 
-        let ops = clear_text_nodes_ops(&scene, page, 1);
+        assert!(clear_text_nodes_ops(&scene, page, 0, false).is_empty());
+
+        let ops = clear_text_nodes_ops(&scene, page, 1, false);
         assert_eq!(ops.len(), 1);
         assert!(matches!(ops[0], Op::RemoveNode { id: removed, .. } if removed == id));
     }

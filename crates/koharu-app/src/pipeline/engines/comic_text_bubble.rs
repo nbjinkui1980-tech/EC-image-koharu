@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use koharu_core::{Op, TextData};
 use koharu_ml::comic_text_bubble_detector::{ComicTextBubbleDetection, ComicTextBubbleDetector};
 
+use crate::config::SourceTextPolicy;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
@@ -62,12 +63,13 @@ impl Engine for Model {
             .collect();
         sort_manga_reading_order(&mut pairs, ctx.options.reading_order.unwrap_or_default());
 
-        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page, pairs.len());
+        let han_only = ctx.options.source_text_policy == SourceTextPolicy::HanOnly;
+        let mut ops = clear_text_nodes_ops(ctx.scene, ctx.page, pairs.len(), han_only);
         let removed = ops.len();
         let insertion_start = page_node_count(ctx.scene, ctx.page).saturating_sub(removed);
         ops.reserve(pairs.len());
         for (at, (bbox, text)) in (insertion_start..).zip(pairs) {
-            let node = new_text_node(bbox, text);
+            let node = new_text_node(bbox, text, !han_only);
             ops.push(Op::AddNode {
                 page: ctx.page,
                 node,
