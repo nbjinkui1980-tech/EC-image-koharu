@@ -499,7 +499,7 @@ pub fn catalog() -> EngineCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -507,9 +507,10 @@ mod tests {
     use camino::Utf8PathBuf;
     use image::{DynamicImage, Rgba, RgbaImage};
     use koharu_core::{
-        BlobRef, FontSource, ImageData, ImageRole, Node, NodeDataPatch, NodeId, NodeKind,
-        NodePatch, Page, Scene, TextData, TextDataPatch, TextStyle, Transform,
+        BlobRef, FontSource, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId,
+        NodeKind, NodePatch, Page, Scene, TextData, TextDataPatch, TextStyle, Transform,
     };
+    use koharu_ml::pp_ocr_v5::PpOcrWordBox;
     use koharu_runtime::{ComputePolicy, RuntimeManager};
     use serde_json::json;
     use tempfile::TempDir;
@@ -809,6 +810,14 @@ mod tests {
         remove_text: bool,
     }
 
+    struct ProductionGateEngine {
+        calls: Arc<AtomicUsize>,
+        pp_calls: Arc<AtomicUsize>,
+        vl_calls: Arc<AtomicUsize>,
+        word_boxes: HashMap<NodeId, Vec<PpOcrWordBox>>,
+        vl_texts: Vec<String>,
+    }
+
     #[async_trait]
     impl Engine for CountingEngine {
         async fn run(&self, ctx: EngineCtx<'_>) -> anyhow::Result<Vec<Op>> {
@@ -824,15 +833,36 @@ mod tests {
                 .nodes
                 .iter()
                 .enumerate()
-                .filter_map(|(prev_index, (id, node))| {
-                    matches!(node.kind, NodeKind::Text(_)).then(|| Op::RemoveNode {
-                        page: ctx.page,
-                        id: *id,
-                        prev_node: node.clone(),
-                        prev_index,
-                    })
+                .filter(|(_, (_, node))| matches!(node.kind, NodeKind::Text(_)))
+                .map(|(prev_index, (id, node))| Op::RemoveNode {
+                    page: ctx.page,
+                    id: *id,
+                    prev_node: node.clone(),
+                    prev_index,
                 })
                 .collect())
+        }
+    }
+
+    #[async_trait]
+    impl Engine for ProductionGateEngine {
+        async fn run(&self, ctx: EngineCtx<'_>) -> anyhow::Result<Vec<Op>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let image = engines::support::load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
+            engines::source_language_gate::dispatch_source_gate(
+                &image,
+                ctx.scene,
+                ctx.page,
+                |node_id, _| {
+                    self.pp_calls.fetch_add(1, Ordering::Relaxed);
+                    Ok(self.word_boxes.get(&node_id).cloned().unwrap_or_default())
+                },
+                |crops| {
+                    self.vl_calls.fetch_add(crops.len(), Ordering::Relaxed);
+                    std::future::ready(Ok(self.vl_texts.clone()))
+                },
+            )
+            .await
         }
     }
 
@@ -870,9 +900,104 @@ mod tests {
             .insert_test_engine(id, Arc::new(CountingEngine { calls, remove_text }));
     }
 
+    fn install_production_gate(
+        fixture: &PipelineFixture,
+        word_boxes: HashMap<NodeId, Vec<PpOcrWordBox>>,
+        vl_texts: Vec<String>,
+    ) -> (Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let pp_calls = Arc::new(AtomicUsize::new(0));
+        let vl_calls = Arc::new(AtomicUsize::new(0));
+        fixture.registry.insert_test_engine(
+            "pp-ocr-v5-source-gate",
+            Arc::new(ProductionGateEngine {
+                calls: calls.clone(),
+                pp_calls: pp_calls.clone(),
+                vl_calls: vl_calls.clone(),
+                word_boxes,
+                vl_texts,
+            }),
+        );
+        (calls, pp_calls, vl_calls)
+    }
+
+    fn pp_word(
+        text: &str,
+        line_index: usize,
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+    ) -> PpOcrWordBox {
+        PpOcrWordBox {
+            line_index,
+            text: text.into(),
+            bbox: [left, top, right, bottom],
+            confidence: 0.9,
+        }
+    }
+
+    fn make_legacy_candidate(fixture: &PipelineFixture, text: &str) -> anyhow::Result<()> {
+        fixture.session.apply(Op::UpdateNode {
+            page: fixture.page,
+            id: fixture.text,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    detector: Some(None),
+                    text: Some(Some(text.into())),
+                    translation: Some(None),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        })?;
+        Ok(())
+    }
+
+    fn visible_texts(scene: &Scene, page: PageId) -> Vec<String> {
+        engines::support::text_nodes(scene, page)
+            .into_iter()
+            .filter_map(|(_, _, text)| text.text.clone())
+            .collect()
+    }
+
+    fn protected_texts(scene: &Scene, page: PageId) -> Vec<String> {
+        scene
+            .page(page)
+            .into_iter()
+            .flat_map(|page| page.nodes.values())
+            .filter_map(|node| match &node.kind {
+                NodeKind::Text(text)
+                    if text.detector.as_deref()
+                        == Some(engines::support::SOURCE_GATE_PROTECTED_DETECTOR) =>
+                {
+                    text.text.clone()
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     async fn run_fixture_steps(
         fixture: &PipelineFixture,
         steps: &[&str],
+    ) -> anyhow::Result<RunOutcome> {
+        run_fixture_steps_with_options(
+            fixture,
+            steps,
+            PipelineRunOptions {
+                source_text_policy: SourceTextPolicy::HanOnly,
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn run_fixture_steps_with_options(
+        fixture: &PipelineFixture,
+        steps: &[&str],
+        options: PipelineRunOptions,
     ) -> anyhow::Result<RunOutcome> {
         run(
             fixture.session.clone(),
@@ -885,10 +1010,7 @@ mod tests {
             PipelineSpec {
                 scope: Scope::Pages(vec![fixture.page]),
                 steps: steps.iter().map(|step| (*step).into()).collect(),
-                options: PipelineRunOptions {
-                    source_text_policy: SourceTextPolicy::HanOnly,
-                    ..Default::default()
-                },
+                options,
             },
             Arc::new(AtomicBool::new(false)),
             None,
@@ -1052,6 +1174,417 @@ mod tests {
         assert_eq!(outcome.warning_count, 0);
         assert_eq!(gate_calls.load(Ordering::Relaxed), 0);
         assert_eq!(segment_calls.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pure_english_has_no_visible_text_nodes_and_source_pixels_are_unchanged()
+    -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("English only", "unused")?;
+        make_legacy_candidate(&fixture, "English only")?;
+        let before = {
+            let scene = fixture.session.scene_snapshot();
+            engines::support::source_node(&scene, fixture.page)?
+                .1
+                .blob
+                .clone()
+        };
+        let (_, pp_calls, vl_calls) = install_production_gate(
+            &fixture,
+            HashMap::from([(
+                fixture.text,
+                vec![pp_word("English", 0, 0.0, 0.0, 60.0, 20.0)],
+            )]),
+            Vec::new(),
+        );
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        let scene = fixture.session.scene_snapshot();
+        assert!(visible_texts(&scene, fixture.page).is_empty());
+        assert_eq!(pp_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(vl_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            engines::support::source_node(&scene, fixture.page)?.1.blob,
+            before
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn complete_english_word_is_preserved_while_adjacent_han_runs_downstream()
+    -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("Peach蜜桃臀", "unused")?;
+        make_legacy_candidate(&fixture, "Peach蜜桃臀")?;
+        install_production_gate(
+            &fixture,
+            HashMap::from([(
+                fixture.text,
+                vec![
+                    pp_word("Peach", 0, 0.0, 0.0, 30.0, 20.0),
+                    pp_word("蜜桃臀", 0, 35.0, 0.0, 70.0, 20.0),
+                ],
+            )]),
+            vec!["Peach蜜桃臀".into()],
+        );
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        let scene = fixture.session.scene_snapshot();
+        assert_eq!(visible_texts(&scene, fixture.page), ["蜜桃臀"]);
+        assert_eq!(protected_texts(&scene, fixture.page), ["Peach"]);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn english_on_both_sides_keeps_two_disjoint_source_regions() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("Slim中文Fit", "unused")?;
+        make_legacy_candidate(&fixture, "Slim中文Fit")?;
+        install_production_gate(
+            &fixture,
+            HashMap::from([(
+                fixture.text,
+                vec![
+                    pp_word("Slim", 0, 0.0, 0.0, 20.0, 20.0),
+                    pp_word("中文", 0, 25.0, 0.0, 45.0, 20.0),
+                    pp_word("Fit", 0, 50.0, 0.0, 70.0, 20.0),
+                ],
+            )]),
+            vec!["Slim中文Fit".into()],
+        );
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        let scene = fixture.session.scene_snapshot();
+        assert_eq!(visible_texts(&scene, fixture.page), ["中文"]);
+        assert_eq!(protected_texts(&scene, fixture.page), ["Slim", "Fit"]);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn single_latin_label_with_han_is_one_translation_target() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("S型曲线", "unused")?;
+        make_legacy_candidate(&fixture, "S型曲线")?;
+        install_production_gate(
+            &fixture,
+            HashMap::from([(
+                fixture.text,
+                vec![
+                    pp_word("S", 0, 0.0, 0.0, 10.0, 20.0),
+                    pp_word("型曲线", 0, 10.0, 0.0, 50.0, 20.0),
+                ],
+            )]),
+            vec!["S型曲线".into()],
+        );
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        let scene = fixture.session.scene_snapshot();
+        assert_eq!(visible_texts(&scene, fixture.page), ["S型曲线"]);
+        assert!(protected_texts(&scene, fixture.page).is_empty());
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn single_latin_on_another_line_is_protected_not_translated() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("S\n中文", "unused")?;
+        make_legacy_candidate(&fixture, "S\n中文")?;
+        install_production_gate(
+            &fixture,
+            HashMap::from([(
+                fixture.text,
+                vec![
+                    pp_word("S", 0, 0.0, 0.0, 10.0, 10.0),
+                    pp_word("中文", 1, 0.0, 20.0, 30.0, 35.0),
+                ],
+            )]),
+            vec!["S\n中文".into()],
+        );
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        let scene = fixture.session.scene_snapshot();
+        assert_eq!(visible_texts(&scene, fixture.page), ["中文"]);
+        assert_eq!(protected_texts(&scene, fixture.page), ["S"]);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn han_lines_around_english_create_two_tight_downstream_nodes() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("中文一\nEnglish\n中文二", "unused")?;
+        make_legacy_candidate(&fixture, "中文一\nEnglish\n中文二")?;
+        install_production_gate(
+            &fixture,
+            HashMap::from([(
+                fixture.text,
+                vec![
+                    pp_word("中文一", 0, 0.0, 0.0, 30.0, 10.0),
+                    pp_word("English", 1, 0.0, 12.0, 45.0, 22.0),
+                    pp_word("中文二", 2, 0.0, 25.0, 30.0, 35.0),
+                ],
+            )]),
+            vec!["中文一\nEnglish\n中文二".into()],
+        );
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        let scene = fixture.session.scene_snapshot();
+        assert_eq!(visible_texts(&scene, fixture.page), ["中文一", "中文二"]);
+        assert_eq!(protected_texts(&scene, fixture.page), ["English"]);
+        let transforms = engines::support::text_nodes(&scene, fixture.page)
+            .into_iter()
+            .map(|(_, transform, _)| *transform)
+            .collect::<Vec<_>>();
+        assert!(transforms[0].y + transforms[0].height <= transforms[1].y);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pp_false_han_requires_vl_confirmation_before_downstream() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("误报", "unused")?;
+        make_legacy_candidate(&fixture, "误报")?;
+        let (_, pp_calls, vl_calls) = install_production_gate(
+            &fixture,
+            HashMap::from([(fixture.text, vec![pp_word("误报", 0, 0.0, 0.0, 30.0, 20.0)])]),
+            vec!["English".into()],
+        );
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        let scene = fixture.session.scene_snapshot();
+        assert!(visible_texts(&scene, fixture.page).is_empty());
+        assert_eq!(pp_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(vl_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn separable_ai_han_keeps_ai_and_translates_han() -> anyhow::Result<()> {
+        let separated = PipelineFixture::new("AI智能塑形", "unused")?;
+        make_legacy_candidate(&separated, "AI智能塑形")?;
+        install_production_gate(
+            &separated,
+            HashMap::from([(
+                separated.text,
+                vec![
+                    pp_word("AI", 0, 0.0, 0.0, 20.0, 20.0),
+                    pp_word("智能塑形", 0, 25.0, 0.0, 70.0, 20.0),
+                ],
+            )]),
+            vec!["AI智能塑形".into()],
+        );
+        let separated_renderer = Arc::new(AtomicUsize::new(0));
+        install_renderer(&separated, separated_renderer.clone(), |_, _| {});
+        run_fixture_steps(&separated, &["koharu-renderer"]).await?;
+        let scene = separated.session.scene_snapshot();
+        assert_eq!(visible_texts(&scene, separated.page), ["智能塑形"]);
+        assert_eq!(protected_texts(&scene, separated.page), ["AI"]);
+        assert_eq!(separated_renderer.load(Ordering::Relaxed), 1);
+
+        let unseparated = PipelineFixture::new("AI智能塑形", "unused")?;
+        make_legacy_candidate(&unseparated, "AI智能塑形")?;
+        install_production_gate(
+            &unseparated,
+            HashMap::from([(
+                unseparated.text,
+                vec![pp_word("AI智能塑形", 0, 0.0, 0.0, 70.0, 20.0)],
+            )]),
+            vec!["AI智能塑形".into()],
+        );
+        let unseparated_renderer = Arc::new(AtomicUsize::new(0));
+        install_renderer(&unseparated, unseparated_renderer.clone(), |_, _| {});
+        run_fixture_steps(&unseparated, &["koharu-renderer"]).await?;
+        let scene = unseparated.session.scene_snapshot();
+        assert!(visible_texts(&scene, unseparated.page).is_empty());
+        assert_eq!(unseparated_renderer.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unsafe_mixed_geometry_is_removed_and_never_reaches_downstream() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("English中文", "unused")?;
+        make_legacy_candidate(&fixture, "English中文")?;
+        fixture.session.apply(Op::UpdateNode {
+            page: fixture.page,
+            id: fixture.text,
+            patch: NodePatch {
+                transform: Some(Transform {
+                    rotation_deg: 30.0,
+                    ..fixture
+                        .session
+                        .scene_snapshot()
+                        .node(fixture.page, fixture.text)
+                        .unwrap()
+                        .transform
+                }),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        })?;
+        let (_, pp_calls, vl_calls) = install_production_gate(&fixture, HashMap::new(), Vec::new());
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        assert!(visible_texts(&fixture.session.scene_snapshot(), fixture.page).is_empty());
+        assert_eq!(pp_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(vl_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn empty_targets_keep_repair_brush_inpainted_pixels() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("English", "unused")?;
+        make_legacy_candidate(&fixture, "English")?;
+        let source_blob = {
+            let scene = fixture.session.scene_snapshot();
+            engines::support::source_node(&scene, fixture.page)?
+                .1
+                .blob
+                .clone()
+        };
+        let mut at = fixture
+            .session
+            .scene_snapshot()
+            .page(fixture.page)
+            .unwrap()
+            .nodes
+            .len();
+        for role in [ImageRole::Inpainted, ImageRole::Rendered] {
+            let id = NodeId::new();
+            fixture.session.apply(Op::AddNode {
+                page: fixture.page,
+                node: Node {
+                    id,
+                    transform: Transform::default(),
+                    visible: true,
+                    kind: NodeKind::Image(ImageData {
+                        role,
+                        blob: source_blob.clone(),
+                        opacity: 1.0,
+                        natural_width: 100,
+                        natural_height: 100,
+                        name: None,
+                    }),
+                },
+                at,
+            })?;
+            at += 1;
+        }
+        for role in [MaskRole::BrushInpaint, MaskRole::Segment, MaskRole::Bubble] {
+            let id = NodeId::new();
+            fixture.session.apply(Op::AddNode {
+                page: fixture.page,
+                node: Node {
+                    id,
+                    transform: Transform::default(),
+                    visible: true,
+                    kind: NodeKind::Mask(MaskData {
+                        role,
+                        blob: source_blob.clone(),
+                    }),
+                },
+                at,
+            })?;
+            at += 1;
+        }
+        install_production_gate(
+            &fixture,
+            HashMap::from([(
+                fixture.text,
+                vec![pp_word("English", 0, 0.0, 0.0, 50.0, 20.0)],
+            )]),
+            Vec::new(),
+        );
+        let renderer_calls = Arc::new(AtomicUsize::new(0));
+        install_renderer(&fixture, renderer_calls.clone(), |_, _| {});
+
+        run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
+
+        let scene = fixture.session.scene_snapshot();
+        assert!(
+            engines::support::find_image_node(&scene, fixture.page, ImageRole::Inpainted).is_some()
+        );
+        assert!(
+            engines::support::find_mask_node(&scene, fixture.page, MaskRole::BrushInpaint)
+                .is_some()
+        );
+        assert!(
+            engines::support::find_image_node(&scene, fixture.page, ImageRole::Rendered).is_none()
+        );
+        assert!(
+            engines::support::find_mask_node(&scene, fixture.page, MaskRole::Segment).is_none()
+        );
+        assert!(engines::support::find_mask_node(&scene, fixture.page, MaskRole::Bubble).is_none());
+        assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn all_text_keeps_existing_nodes_and_runs_existing_ocr_path() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("English", "unused")?;
+        let second = NodeId::new();
+        fixture.session.apply(Op::AddNode {
+            page: fixture.page,
+            node: Node {
+                id: second,
+                transform: Transform {
+                    x: 10.0,
+                    y: 70.0,
+                    width: 40.0,
+                    height: 20.0,
+                    rotation_deg: 0.0,
+                },
+                visible: true,
+                kind: NodeKind::Text(TextData {
+                    text: Some("中文".into()),
+                    ..Default::default()
+                }),
+            },
+            at: 2,
+        })?;
+        let gate_calls = Arc::new(AtomicUsize::new(0));
+        let ocr_calls = Arc::new(AtomicUsize::new(0));
+        install_counting_engine(&fixture, "pp-ocr-v5-source-gate", gate_calls.clone(), false);
+        install_counting_engine(&fixture, "paddle-ocr-vl-1.6", ocr_calls.clone(), false);
+
+        run_fixture_steps_with_options(
+            &fixture,
+            &["paddle-ocr-vl-1.6"],
+            PipelineRunOptions {
+                source_text_policy: SourceTextPolicy::AllText,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let scene = fixture.session.scene_snapshot();
+        assert_eq!(visible_texts(&scene, fixture.page).len(), 2);
+        assert_eq!(gate_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(ocr_calls.load(Ordering::Relaxed), 1);
         Ok(())
     }
 

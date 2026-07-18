@@ -487,7 +487,7 @@ fn zero_target_cleanup(scene: &Scene, page: PageId) -> Result<Vec<Op>> {
         .collect()
 }
 
-pub(super) async fn dispatch_source_gate<WordBoxes, Validate, Fut>(
+pub(crate) async fn dispatch_source_gate<WordBoxes, Validate, Fut>(
     image: &DynamicImage,
     scene: &Scene,
     page: PageId,

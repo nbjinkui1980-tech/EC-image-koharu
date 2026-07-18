@@ -82,6 +82,28 @@ describe('TextBlocksPanel', () => {
     })
   })
 
+  it('shows only visible Chinese targets when English candidates are provisional', async () => {
+    const scene = sceneWithTextNodes()
+    scene.scene.pages.p1.nodes.t1.visible = false
+    scene.scene.pages.p1.nodes.t1.kind = { text: { text: 'ENGLISH COPY' } }
+    scene.scene.pages.p1.nodes.t2.kind = { text: { text: '中文文案' } }
+    server.use(
+      http.get('/api/v1/scene.json', () => HttpResponse.json(scene)),
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { source_text_policy: 'han_only' } }),
+      ),
+      http.get('/api/v1/llm/current', () => HttpResponse.json(readyLlmState)),
+    )
+
+    renderWithQuery(<TextBlocksPanel />)
+
+    expect(await screen.findByDisplayValue('中文文案')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('ENGLISH COPY')).not.toBeInTheDocument()
+    expect(screen.getByTestId('textblocks-count')).toHaveAttribute('data-count', '1')
+    expect(screen.getByTestId('textblock-generate-0')).toBeInTheDocument()
+    expect(screen.queryByTestId('textblock-generate-1')).not.toBeInTheDocument()
+  })
+
   it('clears OCR line polygons when the OCR text is edited', async () => {
     useSelectionStore.getState().select('t1', false)
     const polygons = [
