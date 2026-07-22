@@ -499,7 +499,8 @@ pub fn catalog() -> EngineCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::path::Path;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -511,7 +512,9 @@ mod tests {
         NodeKind, NodePatch, Page, Scene, TextData, TextDataPatch, TextStyle, Transform,
     };
     use koharu_ml::pp_ocr_v5::PpOcrWordBox;
-    use koharu_runtime::{ComputePolicy, RuntimeManager};
+    use koharu_runtime::{ComputePolicy, RuntimeManager, default_app_data_root};
+    use serde::ser::SerializeStruct;
+    use serde::{Deserialize, Serialize};
     use serde_json::json;
     use tempfile::TempDir;
     use tokio::sync::Notify;
@@ -770,6 +773,16 @@ mod tests {
             planner: Arc<TypographyPlanner>,
             warnings: Arc<Mutex<Vec<WarningTick>>>,
         ) -> anyhow::Result<RunOutcome> {
+            self.run_with_policy(planner, warnings, SourceTextPolicy::HanOnly)
+                .await
+        }
+
+        async fn run_with_policy(
+            &self,
+            planner: Arc<TypographyPlanner>,
+            warnings: Arc<Mutex<Vec<WarningTick>>>,
+            source_text_policy: SourceTextPolicy,
+        ) -> anyhow::Result<RunOutcome> {
             let warning_sink: WarningSink = Arc::new(move |warning| {
                 warnings.lock().unwrap().push(warning);
             });
@@ -785,7 +798,7 @@ mod tests {
                     scope: Scope::Pages(vec![self.page]),
                     steps: vec!["cloud-typography-planner".into(), "koharu-renderer".into()],
                     options: PipelineRunOptions {
-                        source_text_policy: SourceTextPolicy::HanOnly,
+                        source_text_policy,
                         default_font: Some(self.font.clone()),
                         ..Default::default()
                     },
@@ -1690,7 +1703,9 @@ mod tests {
         ));
         let warnings = Arc::new(Mutex::new(Vec::new()));
 
-        let outcome = fixture.run(planner, warnings.clone()).await?;
+        let outcome = fixture
+            .run_with_policy(planner, warnings.clone(), SourceTextPolicy::AllText)
+            .await?;
 
         assert_eq!(outcome.warning_count, 0);
         assert!(warnings.lock().unwrap().is_empty());
@@ -1858,6 +1873,1693 @@ mod tests {
         let (outcome, renderer_calls) = run_epoch_conflict(ConflictEdit::Translation).await?;
         assert_eq!(outcome.warning_count, 1);
         assert_eq!(renderer_calls, 1);
+        Ok(())
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct MatrixEnvironment {
+        backend: String,
+        layout_backend: String,
+        pp_backend: String,
+        vl_backend: String,
+        raw_blake3: String,
+        decoded_rgba_blake3: String,
+        model_blake3: String,
+        config_blake3: String,
+        binary_blake3: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+    struct MatrixDecision {
+        decision: engines::source_language_gate::SourceGateDecision,
+    }
+
+    impl MatrixDecision {
+        fn vl_calls(&self) -> u8 {
+            self.decision.vl_calls()
+        }
+    }
+
+    impl Serialize for MatrixDecision {
+        fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            let mut state = serializer.serialize_struct("MatrixDecision", 5)?;
+            state.serialize_field("decision", &self.decision)?;
+            state.serialize_field("fallback", self.decision.fallback())?;
+            state.serialize_field("pp_calls", &self.decision.pp_calls())?;
+            state.serialize_field("vl_calls", &self.decision.vl_calls())?;
+            state.serialize_field("vl_stage", self.decision.vl_stage())?;
+            state.end()
+        }
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct MatrixPpWord {
+        line_index: usize,
+        character_count: usize,
+        script: String,
+        confidence_bits: u32,
+        bbox_bits: [u32; 4],
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct MatrixVlSummary {
+        contains_han: bool,
+        character_count: usize,
+        line_count: usize,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct MatrixSelection {
+        role: String,
+        bbox_bits: [u32; 4],
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct MatrixCandidate {
+        candidate_key: usize,
+        confidence_bits: u32,
+        layout_bbox_bits: [u32; 4],
+        crop_bounds: Option<[u32; 4]>,
+        crop_rgba_blake3: Option<String>,
+        pp_words: Vec<MatrixPpWord>,
+        vl_summary: Option<MatrixVlSummary>,
+        decision: MatrixDecision,
+        selection: Vec<MatrixSelection>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct MatrixRun {
+        policy: String,
+        candidates: Vec<MatrixCandidate>,
+        input_fingerprint: String,
+        pp_fingerprint: String,
+        outcome_fingerprint: String,
+        elapsed_ms: u128,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct SourceGateMatrixReport {
+        schema_version: u32,
+        environment: MatrixEnvironment,
+        policy_probes: Vec<MatrixRun>,
+        full_image_runs: Vec<MatrixRun>,
+        #[serde(default)]
+        fixture_runs: BTreeMap<String, Vec<MatrixRun>>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct SourceGatePolicySelectionReport {
+        schema_version: u32,
+        selected_policy: String,
+        common_passing_policies: Vec<String>,
+        sum_added_area: u64,
+        max_added_area: u64,
+        nominal_padding: u32,
+        policy_ordinal: u32,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SourceGateRootCause {
+        H1,
+        H2,
+        H3,
+        H4,
+        Unresolved,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct RootCauseEvidence {
+        environment_drift: bool,
+        integer_crop_changed: bool,
+        policy_restored_outcome: bool,
+        primary_passed_pre_vl: bool,
+        alignment_mismatch: bool,
+    }
+
+    fn classify_root_cause(evidence: RootCauseEvidence) -> SourceGateRootCause {
+        if evidence.environment_drift {
+            return SourceGateRootCause::H4;
+        }
+        if evidence.integer_crop_changed {
+            return if evidence.policy_restored_outcome {
+                SourceGateRootCause::H1
+            } else {
+                SourceGateRootCause::Unresolved
+            };
+        }
+        if !evidence.primary_passed_pre_vl {
+            return SourceGateRootCause::H2;
+        }
+        if evidence.alignment_mismatch {
+            return SourceGateRootCause::H3;
+        }
+        SourceGateRootCause::Unresolved
+    }
+
+    #[test]
+    fn source_gate_root_cause_precedence_blocks_ambiguous_behavior_fixes() {
+        let cases = [
+            (
+                RootCauseEvidence {
+                    environment_drift: false,
+                    integer_crop_changed: false,
+                    policy_restored_outcome: false,
+                    primary_passed_pre_vl: false,
+                    alignment_mismatch: false,
+                },
+                SourceGateRootCause::H2,
+            ),
+            (
+                RootCauseEvidence {
+                    environment_drift: false,
+                    integer_crop_changed: true,
+                    policy_restored_outcome: true,
+                    primary_passed_pre_vl: true,
+                    alignment_mismatch: true,
+                },
+                SourceGateRootCause::H1,
+            ),
+            (
+                RootCauseEvidence {
+                    environment_drift: false,
+                    integer_crop_changed: false,
+                    policy_restored_outcome: false,
+                    primary_passed_pre_vl: true,
+                    alignment_mismatch: true,
+                },
+                SourceGateRootCause::H3,
+            ),
+            (
+                RootCauseEvidence {
+                    environment_drift: true,
+                    integer_crop_changed: true,
+                    policy_restored_outcome: true,
+                    primary_passed_pre_vl: true,
+                    alignment_mismatch: true,
+                },
+                SourceGateRootCause::H4,
+            ),
+            (
+                RootCauseEvidence {
+                    environment_drift: false,
+                    integer_crop_changed: true,
+                    policy_restored_outcome: false,
+                    primary_passed_pre_vl: true,
+                    alignment_mismatch: true,
+                },
+                SourceGateRootCause::Unresolved,
+            ),
+        ];
+
+        for (evidence, expected) in cases {
+            assert_eq!(classify_root_cause(evidence), expected);
+        }
+    }
+
+    fn hash_file(path: &Path) -> anyhow::Result<String> {
+        let bytes = std::fs::read(path)?;
+        Ok(blake3::hash(&bytes).to_hex().to_string())
+    }
+
+    fn hash_model_trees(root: &Path) -> anyhow::Result<String> {
+        let model_root = root.join("models").join("huggingface");
+        let names = [
+            "models--PaddlePaddle--PP-DocLayoutV3_safetensors",
+            "models--marsena--paddleocr-onnx-models",
+            "models--PaddlePaddle--PaddleOCR-VL-1.6-GGUF",
+        ];
+        let mut files = Vec::new();
+        for name in names {
+            let dir = model_root.join(name);
+            anyhow::ensure!(dir.is_dir(), "missing model directory: {}", dir.display());
+            for entry in walkdir::WalkDir::new(&dir).follow_links(true) {
+                let entry = entry?;
+                if entry.file_type().is_file() {
+                    files.push(entry.into_path());
+                }
+            }
+        }
+        files.sort();
+        let mut hasher = blake3::Hasher::new();
+        for path in files {
+            hasher.update(path.strip_prefix(&model_root)?.to_string_lossy().as_bytes());
+            hasher.update(&std::fs::read(path)?);
+        }
+        Ok(hasher.finalize().to_hex().to_string())
+    }
+
+    fn f32_bits(values: [f32; 4]) -> [u32; 4] {
+        values.map(f32::to_bits)
+    }
+
+    fn transform_bits(transform: &Transform) -> [u32; 4] {
+        f32_bits([transform.x, transform.y, transform.width, transform.height])
+    }
+
+    fn matrix_fingerprint(value: impl Serialize) -> anyhow::Result<String> {
+        Ok(blake3::hash(&serde_json::to_vec(&value)?)
+            .to_hex()
+            .to_string())
+    }
+
+    impl MatrixRun {
+        fn refresh_fingerprints(&mut self) -> anyhow::Result<()> {
+            self.input_fingerprint = matrix_fingerprint(
+                self.candidates
+                    .iter()
+                    .map(|candidate| {
+                        (
+                            candidate.candidate_key,
+                            candidate.confidence_bits,
+                            candidate.layout_bbox_bits,
+                            candidate.crop_bounds,
+                            candidate.crop_rgba_blake3.as_deref(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )?;
+            self.pp_fingerprint = matrix_fingerprint(
+                self.candidates
+                    .iter()
+                    .map(|candidate| (candidate.candidate_key, &candidate.pp_words))
+                    .collect::<Vec<_>>(),
+            )?;
+            self.outcome_fingerprint = matrix_fingerprint(
+                self.candidates
+                    .iter()
+                    .map(|candidate| {
+                        (
+                            candidate.candidate_key,
+                            &candidate.decision,
+                            &candidate.selection,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )?;
+            Ok(())
+        }
+    }
+
+    fn create_matrix_session(
+        bytes: &[u8],
+        image: &DynamicImage,
+    ) -> anyhow::Result<(TempDir, Arc<ProjectSession>, PageId)> {
+        let temp = tempfile::tempdir()?;
+        let project = Utf8PathBuf::from_path_buf(temp.path().join("matrix.khrproj"))
+            .map_err(|_| anyhow::anyhow!("matrix project path is not UTF-8"))?;
+        let session = ProjectSession::create(project, "source-gate-matrix")?;
+        let blob = session.blobs.put_bytes(bytes)?;
+        let mut page = Page::new("matrix", image.width(), image.height());
+        let page_id = page.id;
+        let source_id = NodeId::new();
+        page.nodes.insert(
+            source_id,
+            Node {
+                id: source_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Image(ImageData {
+                    role: ImageRole::Source,
+                    blob,
+                    opacity: 1.0,
+                    natural_width: image.width(),
+                    natural_height: image.height(),
+                    name: None,
+                }),
+            },
+        );
+        session.apply(Op::AddPage { page, at: 0 })?;
+        Ok((temp, session, page_id))
+    }
+
+    fn create_gate_fixture_session(
+        bytes: &[u8],
+        image: &DynamicImage,
+    ) -> anyhow::Result<(TempDir, Arc<ProjectSession>, PageId)> {
+        let (temp, session, page) = create_matrix_session(bytes, image)?;
+        let id = NodeId::new();
+        session.apply(Op::AddNode {
+            page,
+            node: Node {
+                id,
+                transform: Transform {
+                    x: 0.0,
+                    y: 0.0,
+                    width: image.width() as f32,
+                    height: image.height() as f32,
+                    rotation_deg: 0.0,
+                },
+                visible: true,
+                kind: NodeKind::Text(TextData {
+                    confidence: 1.0,
+                    detector: Some("source-gate-fixture".into()),
+                    ..Default::default()
+                }),
+            },
+            at: 1,
+        })?;
+        Ok((temp, session, page))
+    }
+
+    fn within_layout(candidate: [f32; 4], transform: &Transform) -> bool {
+        let center_x = transform.x + transform.width / 2.0;
+        let center_y = transform.y + transform.height / 2.0;
+        center_x >= candidate[0] - 4.0
+            && center_x <= candidate[0] + candidate[2] + 4.0
+            && center_y >= candidate[1] - 4.0
+            && center_y <= candidate[1] + candidate[3] + 4.0
+    }
+
+    fn matrix_selection_for_candidate(
+        scene: &Scene,
+        page: PageId,
+        bbox: [f32; 4],
+    ) -> Vec<MatrixSelection> {
+        let mut selection = scene
+            .page(page)
+            .into_iter()
+            .flat_map(|page| page.nodes.values())
+            .filter_map(|node| {
+                let NodeKind::Text(text) = &node.kind else {
+                    return None;
+                };
+                let role = match text.detector.as_deref() {
+                    Some(engines::support::SOURCE_GATE_TARGET_DETECTOR) => "target",
+                    Some(engines::support::SOURCE_GATE_PROTECTED_DETECTOR) => "protected",
+                    _ => return None,
+                };
+                within_layout(bbox, &node.transform).then(|| MatrixSelection {
+                    role: role.into(),
+                    bbox_bits: transform_bits(&node.transform),
+                })
+            })
+            .collect::<Vec<_>>();
+        selection.sort_by_key(|item| (item.bbox_bits[1], item.bbox_bits[0], item.role.clone()));
+        selection
+    }
+
+    #[derive(Default)]
+    struct MatrixCandidateBuilder {
+        candidate_index: Option<usize>,
+        confidence: Option<f32>,
+        bbox: Option<[f32; 4]>,
+        crop_bounds: Option<[u32; 4]>,
+        crop_hash: Option<String>,
+        pp_words: Option<Vec<MatrixPpWord>>,
+        vl_summary: Option<MatrixVlSummary>,
+        decision: Option<engines::source_language_gate::SourceGateDecision>,
+    }
+
+    fn matrix_run_from_diagnostics(
+        scene: &Scene,
+        page: PageId,
+        policy: engines::source_language_gate::SourceGateCropPolicy,
+        events: Vec<engines::source_language_gate::SourceGateDiagnosticEvent>,
+        expected_candidates: usize,
+        elapsed_ms: u128,
+    ) -> anyhow::Result<MatrixRun> {
+        use engines::source_language_gate::SourceGateDiagnosticEvent;
+
+        let mut builders = HashMap::<NodeId, MatrixCandidateBuilder>::new();
+        for event in events {
+            match event {
+                SourceGateDiagnosticEvent::Input { .. } => {}
+                SourceGateDiagnosticEvent::LayoutCandidate {
+                    candidate_index,
+                    node_id,
+                    confidence,
+                    bbox,
+                } => {
+                    let item = builders.entry(node_id).or_default();
+                    item.candidate_index = Some(candidate_index);
+                    item.confidence = Some(confidence);
+                    item.bbox = Some(bbox);
+                }
+                SourceGateDiagnosticEvent::Crop {
+                    node_id,
+                    bounds,
+                    crop_rgba_hash,
+                    ..
+                } => {
+                    let item = builders.entry(node_id).or_default();
+                    item.crop_bounds = Some(bounds);
+                    item.crop_hash = Some(crop_rgba_hash);
+                }
+                SourceGateDiagnosticEvent::PpSummary { node_id, words } => {
+                    builders.entry(node_id).or_default().pp_words = Some(
+                        words
+                            .into_iter()
+                            .map(|word| MatrixPpWord {
+                                line_index: word.line_index,
+                                character_count: word.character_count,
+                                script: word.script.into(),
+                                confidence_bits: word.confidence.to_bits(),
+                                bbox_bits: f32_bits(word.bbox),
+                            })
+                            .collect(),
+                    );
+                }
+                SourceGateDiagnosticEvent::VlSummary {
+                    node_id,
+                    contains_han,
+                    character_count,
+                    line_count,
+                } => {
+                    builders.entry(node_id).or_default().vl_summary = Some(MatrixVlSummary {
+                        contains_han,
+                        character_count,
+                        line_count,
+                    });
+                }
+                SourceGateDiagnosticEvent::Decision { node_id, decision } => {
+                    builders.entry(node_id).or_default().decision = Some(decision);
+                }
+            }
+        }
+
+        let mut candidates = builders
+            .into_values()
+            .map(|builder| -> anyhow::Result<MatrixCandidate> {
+                let candidate_key = builder
+                    .candidate_index
+                    .ok_or_else(|| anyhow::anyhow!("candidate index missing"))?;
+                let confidence = builder
+                    .confidence
+                    .ok_or_else(|| anyhow::anyhow!("layout confidence missing"))?;
+                let bbox = builder
+                    .bbox
+                    .ok_or_else(|| anyhow::anyhow!("layout bbox missing"))?;
+                let decision = builder
+                    .decision
+                    .ok_or_else(|| anyhow::anyhow!("candidate decision missing"))?;
+                Ok(MatrixCandidate {
+                    candidate_key,
+                    confidence_bits: confidence.to_bits(),
+                    layout_bbox_bits: f32_bits(bbox),
+                    crop_bounds: builder.crop_bounds,
+                    crop_rgba_blake3: builder.crop_hash,
+                    pp_words: builder.pp_words.unwrap_or_default(),
+                    vl_summary: builder.vl_summary,
+                    decision: MatrixDecision { decision },
+                    selection: matrix_selection_for_candidate(scene, page, bbox),
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        candidates.sort_by_key(|candidate| candidate.candidate_key);
+        anyhow::ensure!(
+            candidates.len() == expected_candidates,
+            "expected {expected_candidates} source gate candidates"
+        );
+        let mut run = MatrixRun {
+            policy: format!("{policy:?}"),
+            candidates,
+            input_fingerprint: String::new(),
+            pp_fingerprint: String::new(),
+            outcome_fingerprint: String::new(),
+            elapsed_ms,
+        };
+        run.refresh_fingerprints()?;
+        Ok(run)
+    }
+
+    #[test]
+    fn source_gate_matrix_selection_includes_invisible_protected_geometry() {
+        let target_id = NodeId::new();
+        let protected_id = NodeId::new();
+        let mut page = Page::new("matrix", 100, 100);
+        let page_id = page.id;
+        page.nodes.insert(
+            target_id,
+            Node {
+                id: target_id,
+                transform: Transform {
+                    x: 20.0,
+                    y: 30.0,
+                    width: 20.0,
+                    height: 10.0,
+                    rotation_deg: 0.0,
+                },
+                visible: true,
+                kind: NodeKind::Text(TextData {
+                    detector: Some(engines::support::SOURCE_GATE_TARGET_DETECTOR.to_string()),
+                    ..Default::default()
+                }),
+            },
+        );
+        page.nodes.insert(
+            protected_id,
+            Node {
+                id: protected_id,
+                transform: Transform {
+                    x: 45.0,
+                    y: 30.0,
+                    width: 20.0,
+                    height: 10.0,
+                    rotation_deg: 0.0,
+                },
+                visible: false,
+                kind: NodeKind::Text(TextData {
+                    detector: Some(engines::support::SOURCE_GATE_PROTECTED_DETECTOR.to_string()),
+                    ..Default::default()
+                }),
+            },
+        );
+        let mut scene = Scene::default();
+        scene.pages.insert(page_id, page);
+
+        let selection = matrix_selection_for_candidate(&scene, page_id, [10.0, 20.0, 70.0, 40.0]);
+        assert_eq!(
+            selection
+                .iter()
+                .map(|item| item.role.as_str())
+                .collect::<Vec<_>>(),
+            ["target", "protected"]
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_matrix_once(
+        bytes: &[u8],
+        image: &DynamicImage,
+        registry: Arc<Registry>,
+        runtime: Arc<RuntimeManager>,
+        cpu: bool,
+        llm: Arc<llm::Model>,
+        renderer: Arc<renderer::Renderer>,
+        planner: Arc<TypographyPlanner>,
+        policy: engines::source_language_gate::SourceGateCropPolicy,
+    ) -> anyhow::Result<MatrixRun> {
+        use engines::source_language_gate::{
+            SourceGateCropPolicyGuard, SourceGateDiagnosticCapture,
+        };
+
+        let (_temp, session, page) = create_matrix_session(bytes, image)?;
+        let capture = SourceGateDiagnosticCapture::start();
+        let _policy = SourceGateCropPolicyGuard::set(policy);
+        let started = std::time::Instant::now();
+        let outcome = run(
+            session.clone(),
+            registry,
+            runtime,
+            cpu,
+            llm,
+            renderer,
+            planner,
+            PipelineSpec {
+                scope: Scope::Pages(vec![page]),
+                steps: vec!["pp-doclayout-v3".into(), "pp-ocr-v5-source-gate".into()],
+                options: PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::HanOnly,
+                    ..Default::default()
+                },
+            },
+            Arc::new(AtomicBool::new(false)),
+            None,
+            None,
+        )
+        .await?;
+        anyhow::ensure!(
+            outcome.warning_count == 0,
+            "matrix pipeline emitted a warning"
+        );
+        let elapsed_ms = started.elapsed().as_millis();
+        let events = capture.take();
+        let scene = session.scene_snapshot();
+        matrix_run_from_diagnostics(&scene, page, policy, events, 5, elapsed_ms)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_fixture_once(
+        bytes: &[u8],
+        image: &DynamicImage,
+        registry: Arc<Registry>,
+        runtime: Arc<RuntimeManager>,
+        cpu: bool,
+        llm: Arc<llm::Model>,
+        renderer: Arc<renderer::Renderer>,
+        planner: Arc<TypographyPlanner>,
+        policy: engines::source_language_gate::SourceGateCropPolicy,
+    ) -> anyhow::Result<MatrixRun> {
+        use engines::source_language_gate::{
+            SourceGateCropPolicyGuard, SourceGateDiagnosticCapture,
+        };
+
+        let (_temp, session, page) = create_gate_fixture_session(bytes, image)?;
+        let capture = SourceGateDiagnosticCapture::start();
+        let _policy = SourceGateCropPolicyGuard::set(policy);
+        let started = std::time::Instant::now();
+        let outcome = run(
+            session.clone(),
+            registry,
+            runtime,
+            cpu,
+            llm,
+            renderer,
+            planner,
+            PipelineSpec {
+                scope: Scope::Pages(vec![page]),
+                steps: vec!["pp-ocr-v5-source-gate".into()],
+                options: PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::HanOnly,
+                    ..Default::default()
+                },
+            },
+            Arc::new(AtomicBool::new(false)),
+            None,
+            None,
+        )
+        .await?;
+        anyhow::ensure!(
+            outcome.warning_count == 0,
+            "fixture source gate emitted a warning"
+        );
+        let elapsed_ms = started.elapsed().as_millis();
+        let events = capture.take();
+        let scene = session.scene_snapshot();
+        matrix_run_from_diagnostics(&scene, page, policy, events, 1, elapsed_ms)
+    }
+
+    fn normalize_run(reference: &MatrixRun, mut current: MatrixRun) -> anyhow::Result<MatrixRun> {
+        let mut matched = HashSet::new();
+        let mut normalized = Vec::with_capacity(reference.candidates.len());
+        for expected in &reference.candidates {
+            let [x, y, width, height] = expected.layout_bbox_bits.map(f32::from_bits);
+            let expected_area = width * height;
+            let matches = current
+                .candidates
+                .iter()
+                .enumerate()
+                .filter(|(_, candidate)| {
+                    let [cx, cy, cw, ch] = candidate.layout_bbox_bits.map(f32::from_bits);
+                    let center_x = cx + cw / 2.0;
+                    let center_y = cy + ch / 2.0;
+                    let ratio = (cw * ch) / expected_area;
+                    center_x >= x - 4.0
+                        && center_x <= x + width + 4.0
+                        && center_y >= y - 4.0
+                        && center_y <= y + height + 4.0
+                        && (0.5..=2.0).contains(&ratio)
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            anyhow::ensure!(
+                matches.len() == 1,
+                "ambiguous source gate candidate mapping"
+            );
+            let index = matches[0];
+            anyhow::ensure!(matched.insert(index), "source gate candidate matched twice");
+            let mut candidate = current.candidates[index].clone();
+            candidate.candidate_key = expected.candidate_key;
+            normalized.push(candidate);
+        }
+        anyhow::ensure!(
+            matched.len() == current.candidates.len(),
+            "unmatched source gate candidate"
+        );
+        normalized.sort_by_key(|candidate| candidate.candidate_key);
+        current.candidates = normalized;
+        current.refresh_fingerprints()?;
+        Ok(current)
+    }
+
+    fn compare_same_backend(
+        reference: &SourceGateMatrixReport,
+        current: &SourceGateMatrixReport,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            reference.environment == current.environment,
+            "environment drift"
+        );
+        let expected = &reference.full_image_runs[0];
+        for run in &current.full_image_runs {
+            anyhow::ensure!(
+                run.input_fingerprint == expected.input_fingerprint,
+                "input drift"
+            );
+            anyhow::ensure!(run.pp_fingerprint == expected.pp_fingerprint, "PP drift");
+            anyhow::ensure!(
+                run.outcome_fingerprint == expected.outcome_fingerprint,
+                "outcome drift"
+            );
+        }
+        anyhow::ensure!(
+            reference
+                .fixture_runs
+                .keys()
+                .eq(current.fixture_runs.keys()),
+            "fixture set drift"
+        );
+        for (name, runs) in &current.fixture_runs {
+            let expected = &reference.fixture_runs[name][0];
+            for run in runs {
+                anyhow::ensure!(
+                    run.input_fingerprint == expected.input_fingerprint,
+                    "fixture {name} input drift"
+                );
+                anyhow::ensure!(
+                    run.pp_fingerprint == expected.pp_fingerprint,
+                    "fixture {name} PP drift"
+                );
+                anyhow::ensure!(
+                    run.outcome_fingerprint == expected.outcome_fingerprint,
+                    "fixture {name} outcome drift"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn compare_outcome(
+        reference: &SourceGateMatrixReport,
+        current: &SourceGateMatrixReport,
+    ) -> anyhow::Result<()> {
+        let expected_environment = &reference.environment;
+        let current_environment = &current.environment;
+        anyhow::ensure!(
+            expected_environment.raw_blake3 == current_environment.raw_blake3
+                && expected_environment.decoded_rgba_blake3
+                    == current_environment.decoded_rgba_blake3
+                && expected_environment.model_blake3 == current_environment.model_blake3
+                && expected_environment.config_blake3 == current_environment.config_blake3
+                && expected_environment.binary_blake3 == current_environment.binary_blake3
+                && expected_environment.pp_backend == current_environment.pp_backend,
+            "cross-backend environment drift"
+        );
+        let expected = &reference.full_image_runs[0];
+        for run in &current.full_image_runs {
+            let normalized = normalize_run(expected, run.clone())?;
+            anyhow::ensure!(
+                normalized.policy == expected.policy
+                    && normalized.outcome_fingerprint == expected.outcome_fingerprint,
+                "cross-backend outcome drift"
+            );
+        }
+        anyhow::ensure!(
+            reference
+                .fixture_runs
+                .keys()
+                .eq(current.fixture_runs.keys()),
+            "cross-backend fixture set drift"
+        );
+        for (name, runs) in &current.fixture_runs {
+            let expected = &reference.fixture_runs[name][0];
+            for run in runs {
+                let normalized = normalize_run(expected, run.clone())?;
+                anyhow::ensure!(
+                    normalized.policy == expected.policy
+                        && normalized.outcome_fingerprint == expected.outcome_fingerprint,
+                    "fixture {name} cross-backend outcome drift"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn policy_probe<'a>(
+        report: &'a SourceGateMatrixReport,
+        policy: &str,
+    ) -> anyhow::Result<&'a MatrixRun> {
+        let matches = report
+            .policy_probes
+            .iter()
+            .filter(|run| run.policy == policy)
+            .collect::<Vec<_>>();
+        anyhow::ensure!(matches.len() == 1, "policy probe {policy} must appear once");
+        Ok(matches[0])
+    }
+
+    fn policy_rank(policy: &str) -> anyhow::Result<(u32, u32)> {
+        match policy {
+            "C1" => Ok((1, 1)),
+            "C2" => Ok((2, 2)),
+            "C4" => Ok((4, 3)),
+            "Q2" => Ok((2, 4)),
+            _ => anyhow::bail!("unsupported selectable source gate policy: {policy}"),
+        }
+    }
+
+    fn crop_area([left, top, right, bottom]: [u32; 4]) -> anyhow::Result<u64> {
+        anyhow::ensure!(left < right && top < bottom, "invalid policy crop bounds");
+        Ok(u64::from(right - left) * u64::from(bottom - top))
+    }
+
+    fn policy_area_key(
+        cpu: &SourceGateMatrixReport,
+        metal: &SourceGateMatrixReport,
+        policy: &str,
+    ) -> anyhow::Result<(u64, u64, u32, u32)> {
+        let mut observed = BTreeMap::<[u32; 4], u64>::new();
+        for report in [cpu, metal] {
+            let control = policy_probe(report, "C0")?;
+            let candidate = policy_probe(report, policy)?;
+            anyhow::ensure!(
+                control.candidates.len() == candidate.candidates.len(),
+                "policy candidate count changed"
+            );
+            for base in &control.candidates {
+                let current = candidate
+                    .candidates
+                    .iter()
+                    .find(|item| item.candidate_key == base.candidate_key)
+                    .ok_or_else(|| anyhow::anyhow!("policy candidate mapping changed"))?;
+                let base_bounds = base
+                    .crop_bounds
+                    .ok_or_else(|| anyhow::anyhow!("C0 crop bounds missing"))?;
+                let current_bounds = current
+                    .crop_bounds
+                    .ok_or_else(|| anyhow::anyhow!("policy crop bounds missing"))?;
+                let added = crop_area(current_bounds)?.saturating_sub(crop_area(base_bounds)?);
+                if let Some(previous) = observed.insert(base_bounds, added) {
+                    anyhow::ensure!(
+                        previous == added,
+                        "same observed C0 crop produced different policy area"
+                    );
+                }
+            }
+        }
+        let sum = observed.values().sum();
+        let max = observed.values().copied().max().unwrap_or(0);
+        let (nominal_padding, ordinal) = policy_rank(policy)?;
+        Ok((sum, max, nominal_padding, ordinal))
+    }
+
+    fn select_source_gate_policy(
+        cpu: &SourceGateMatrixReport,
+        metal: &SourceGateMatrixReport,
+    ) -> anyhow::Result<SourceGatePolicySelectionReport> {
+        let expected = &cpu.environment;
+        let current = &metal.environment;
+        anyhow::ensure!(
+            expected.raw_blake3 == current.raw_blake3
+                && expected.decoded_rgba_blake3 == current.decoded_rgba_blake3
+                && expected.model_blake3 == current.model_blake3
+                && expected.config_blake3 == current.config_blake3
+                && expected.binary_blake3 == current.binary_blake3
+                && expected.pp_backend == current.pp_backend,
+            "policy search environment drift"
+        );
+        anyhow::ensure!(
+            expected.backend == "cpu" && current.backend == "metal",
+            "policy reports must be ordered cpu then metal"
+        );
+
+        let mut passing = Vec::new();
+        let mut ranked = Vec::new();
+        for policy in ["C1", "C2", "C4", "Q2"] {
+            if validate_final_recall(policy_probe(cpu, policy)?).is_ok()
+                && validate_final_recall(policy_probe(metal, policy)?).is_ok()
+            {
+                let key = policy_area_key(cpu, metal, policy)?;
+                passing.push(policy.to_string());
+                ranked.push((key, policy));
+            }
+        }
+        anyhow::ensure!(
+            !ranked.is_empty(),
+            "no common CPU/Metal source gate policy winner"
+        );
+        ranked.sort_by_key(|(key, _)| *key);
+        let ((sum_added_area, max_added_area, nominal_padding, policy_ordinal), selected) =
+            ranked[0];
+        Ok(SourceGatePolicySelectionReport {
+            schema_version: 1,
+            selected_policy: selected.into(),
+            common_passing_policies: passing,
+            sum_added_area,
+            max_added_area,
+            nominal_padding,
+            policy_ordinal,
+        })
+    }
+
+    fn validate_final_recall(run: &MatrixRun) -> anyhow::Result<()> {
+        use engines::source_language_gate::SourceGateDecision;
+
+        let expected_accepted = [(0, 2, 0), (2, 1, 0), (3, 1, 1), (4, 1, 1)];
+        for (candidate_key, target_count, protected_count) in expected_accepted {
+            let candidate = run
+                .candidates
+                .iter()
+                .find(|candidate| candidate.candidate_key == candidate_key)
+                .ok_or_else(|| anyhow::anyhow!("candidate {candidate_key} missing"))?;
+            let (actual_targets, actual_protected) = match &candidate.decision.decision {
+                SourceGateDecision::AcceptedPrimary {
+                    target_count,
+                    protected_count,
+                } if candidate_key != 4 => (target_count, protected_count),
+                SourceGateDecision::AcceptedIsolatedProtectedLatinGeometry {
+                    target_count,
+                    protected_count,
+                } if candidate_key == 4 => (target_count, protected_count),
+                _ => anyhow::bail!("candidate {candidate_key} was not restored"),
+            };
+            anyhow::ensure!(
+                *actual_targets == target_count,
+                "candidate {candidate_key} target count changed"
+            );
+            anyhow::ensure!(
+                *actual_protected == protected_count,
+                "candidate {candidate_key} protected Latin count changed"
+            );
+            let actual_target_geometry = candidate
+                .selection
+                .iter()
+                .filter(|item| item.role == "target")
+                .count();
+            let actual_protected_geometry = candidate
+                .selection
+                .iter()
+                .filter(|item| item.role == "protected")
+                .count();
+            anyhow::ensure!(
+                actual_target_geometry == target_count,
+                "candidate {candidate_key} target geometry count changed"
+            );
+            anyhow::ensure!(
+                actual_protected_geometry == protected_count,
+                "candidate {candidate_key} protected geometry count changed"
+            );
+        }
+
+        let pure_english = run
+            .candidates
+            .iter()
+            .find(|candidate| candidate.candidate_key == 1)
+            .ok_or_else(|| anyhow::anyhow!("pure English candidate missing"))?;
+        anyhow::ensure!(
+            matches!(
+                pure_english.decision.decision,
+                SourceGateDecision::RejectedBeforeVl {
+                    reason:
+                        engines::source_language_gate::SourceGateRejectReason::PpNoHanProtectedLatin
+                }
+            ) && pure_english.decision.vl_calls() == 0,
+            "pure English protection changed"
+        );
+        Ok(())
+    }
+
+    fn validate_fixture_recall(name: &str, run: &MatrixRun) -> anyhow::Result<()> {
+        use engines::source_language_gate::SourceGateDecision;
+
+        anyhow::ensure!(run.candidates.len() == 1, "fixture candidate count changed");
+        let candidate = &run.candidates[0];
+        anyhow::ensure!(
+            candidate.candidate_key == 0,
+            "fixture candidate key changed"
+        );
+        let (target_count, protected_count) = match (name, &candidate.decision.decision) {
+            (
+                "peach-hip.png",
+                SourceGateDecision::AcceptedIsolatedProtectedLatinGeometry {
+                    target_count,
+                    protected_count,
+                },
+            ) => (*target_count, *protected_count),
+            (
+                "s-curve.png" | "full-body-shaping.png" | "slim-waist.png" | "confidence-body.png",
+                SourceGateDecision::AcceptedPrimary {
+                    target_count,
+                    protected_count,
+                },
+            ) => (*target_count, *protected_count),
+            _ => anyhow::bail!(
+                "fixture {name} did not use its expected acceptance path: {:?}",
+                candidate.decision.decision
+            ),
+        };
+        anyhow::ensure!(target_count > 0, "fixture {name} lost Han targets");
+        if name == "peach-hip.png" {
+            anyhow::ensure!(
+                protected_count > 0,
+                "fixture {name} lost protected Latin geometry"
+            );
+        }
+        anyhow::ensure!(
+            candidate
+                .selection
+                .iter()
+                .filter(|item| item.role == "target")
+                .count()
+                == target_count,
+            "fixture {name} target geometry count changed"
+        );
+        anyhow::ensure!(
+            candidate
+                .selection
+                .iter()
+                .filter(|item| item.role == "protected")
+                .count()
+                == protected_count,
+            "fixture {name} protected geometry count changed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_gate_final_recall_gate_rejects_stable_partial_results() {
+        fn candidate(
+            candidate_key: usize,
+            outcome: &str,
+            reason: Option<&str>,
+            target_count: usize,
+            protected_count: usize,
+            vl_calls: u8,
+        ) -> MatrixCandidate {
+            use engines::source_language_gate::{SourceGateDecision, SourceGateRejectReason};
+            let decision = match outcome {
+                "accepted_primary" => SourceGateDecision::AcceptedPrimary {
+                    target_count,
+                    protected_count,
+                },
+                "accepted_isolated_protected_latin_geometry" => {
+                    SourceGateDecision::AcceptedIsolatedProtectedLatinGeometry {
+                        target_count,
+                        protected_count,
+                    }
+                }
+                "rejected_before_vl" => SourceGateDecision::RejectedBeforeVl {
+                    reason: match reason {
+                        Some("pp_no_han_protected_latin") => {
+                            SourceGateRejectReason::PpNoHanProtectedLatin
+                        }
+                        _ => panic!("unsupported rejection reason"),
+                    },
+                },
+                _ => panic!("unsupported outcome"),
+            };
+            assert_eq!(decision.vl_calls(), vl_calls);
+            MatrixCandidate {
+                candidate_key,
+                confidence_bits: 0,
+                layout_bbox_bits: [0; 4],
+                crop_bounds: None,
+                crop_rgba_blake3: None,
+                pp_words: Vec::new(),
+                vl_summary: None,
+                decision: MatrixDecision { decision },
+                selection: (0..target_count)
+                    .map(|_| MatrixSelection {
+                        role: "target".into(),
+                        bbox_bits: [0; 4],
+                    })
+                    .chain((0..protected_count).map(|_| MatrixSelection {
+                        role: "protected".into(),
+                        bbox_bits: [0; 4],
+                    }))
+                    .collect(),
+            }
+        }
+
+        let mut run = MatrixRun {
+            policy: "C1".into(),
+            candidates: vec![
+                candidate(0, "accepted_primary", None, 2, 0, 1),
+                candidate(
+                    1,
+                    "rejected_before_vl",
+                    Some("pp_no_han_protected_latin"),
+                    0,
+                    0,
+                    0,
+                ),
+                candidate(2, "accepted_primary", None, 1, 0, 1),
+                candidate(3, "accepted_primary", None, 1, 1, 1),
+                candidate(
+                    4,
+                    "accepted_isolated_protected_latin_geometry",
+                    None,
+                    1,
+                    1,
+                    1,
+                ),
+            ],
+            input_fingerprint: String::new(),
+            pp_fingerprint: String::new(),
+            outcome_fingerprint: String::new(),
+            elapsed_ms: 0,
+        };
+        assert!(validate_final_recall(&run).is_ok());
+
+        run.candidates[4]
+            .selection
+            .retain(|item| item.role != "protected");
+        let error = validate_final_recall(&run).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("protected geometry count changed")
+        );
+
+        let mut peach_fixture = MatrixRun {
+            policy: "C2".into(),
+            candidates: vec![run.candidates[4].clone()],
+            input_fingerprint: String::new(),
+            pp_fingerprint: String::new(),
+            outcome_fingerprint: String::new(),
+            elapsed_ms: 0,
+        };
+        peach_fixture.candidates[0].candidate_key = 0;
+        peach_fixture.candidates[0].selection.push(MatrixSelection {
+            role: "protected".into(),
+            bbox_bits: [1; 4],
+        });
+        assert!(validate_fixture_recall("peach-hip.png", &peach_fixture).is_ok());
+        peach_fixture.candidates[0].decision.decision =
+            engines::source_language_gate::SourceGateDecision::AcceptedPrimary {
+                target_count: 1,
+                protected_count: 1,
+            };
+        assert!(validate_fixture_recall("peach-hip.png", &peach_fixture).is_err());
+
+        run.candidates[4].decision.decision =
+            engines::source_language_gate::SourceGateDecision::RejectedAfterVl {
+                reason:
+                    engines::source_language_gate::SourceGateRejectReason::PpVlCharacterMismatch,
+            };
+        let error = validate_final_recall(&run).unwrap_err();
+        assert!(error.to_string().contains("candidate 4 was not restored"));
+    }
+
+    #[test]
+    fn source_gate_policy_selector_uses_the_cpu_metal_intersection_and_area_order() {
+        use engines::source_language_gate::{SourceGateDecision, SourceGateRejectReason};
+
+        fn candidate(candidate_key: usize, accepted: bool, crop: [u32; 4]) -> MatrixCandidate {
+            let decision = match candidate_key {
+                1 => SourceGateDecision::RejectedBeforeVl {
+                    reason: SourceGateRejectReason::PpNoHanProtectedLatin,
+                },
+                4 if accepted => SourceGateDecision::AcceptedIsolatedProtectedLatinGeometry {
+                    target_count: 1,
+                    protected_count: 1,
+                },
+                4 => SourceGateDecision::RejectedAfterVl {
+                    reason: SourceGateRejectReason::PpVlCharacterMismatch,
+                },
+                0 => SourceGateDecision::AcceptedPrimary {
+                    target_count: 2,
+                    protected_count: 0,
+                },
+                2 => SourceGateDecision::AcceptedPrimary {
+                    target_count: 1,
+                    protected_count: 0,
+                },
+                _ => SourceGateDecision::AcceptedPrimary {
+                    target_count: 1,
+                    protected_count: 1,
+                },
+            };
+            let (target_count, protected_count) = match &decision {
+                SourceGateDecision::AcceptedPrimary {
+                    target_count,
+                    protected_count,
+                }
+                | SourceGateDecision::AcceptedIsolatedProtectedLatinGeometry {
+                    target_count,
+                    protected_count,
+                } => (*target_count, *protected_count),
+                _ => (0, 0),
+            };
+            MatrixCandidate {
+                candidate_key,
+                confidence_bits: 1.0_f32.to_bits(),
+                layout_bbox_bits: [0.0_f32.to_bits(); 4],
+                crop_bounds: Some(crop),
+                crop_rgba_blake3: Some(format!("crop-{candidate_key}")),
+                pp_words: Vec::new(),
+                vl_summary: None,
+                decision: MatrixDecision { decision },
+                selection: (0..target_count)
+                    .map(|_| MatrixSelection {
+                        role: "target".into(),
+                        bbox_bits: [0; 4],
+                    })
+                    .chain((0..protected_count).map(|_| MatrixSelection {
+                        role: "protected".into(),
+                        bbox_bits: [0; 4],
+                    }))
+                    .collect(),
+            }
+        }
+
+        fn run(policy: &str, accepted: bool, inset: u32) -> MatrixRun {
+            let crop = [10 - inset, 10 - inset, 20 + inset, 20 + inset];
+            MatrixRun {
+                policy: policy.into(),
+                candidates: (0..5)
+                    .map(|candidate_key| candidate(candidate_key, accepted, crop))
+                    .collect(),
+                input_fingerprint: String::new(),
+                pp_fingerprint: String::new(),
+                outcome_fingerprint: String::new(),
+                elapsed_ms: 0,
+            }
+        }
+
+        fn report(backend: &str, c2_accepted: bool) -> SourceGateMatrixReport {
+            SourceGateMatrixReport {
+                schema_version: 2,
+                environment: MatrixEnvironment {
+                    backend: backend.into(),
+                    layout_backend: backend.into(),
+                    pp_backend: "rten_cpu".into(),
+                    vl_backend: backend.into(),
+                    raw_blake3: "raw".into(),
+                    decoded_rgba_blake3: "rgba".into(),
+                    model_blake3: "model".into(),
+                    config_blake3: "config".into(),
+                    binary_blake3: "binary".into(),
+                },
+                policy_probes: vec![
+                    run("C0", false, 0),
+                    run("C1", false, 1),
+                    run("C2", c2_accepted, 2),
+                    run("C4", true, 4),
+                    run("Q2", true, 3),
+                ],
+                full_image_runs: Vec::new(),
+                fixture_runs: BTreeMap::new(),
+            }
+        }
+
+        let cpu = report("cpu", true);
+        let metal = report("metal", true);
+        let selection = select_source_gate_policy(&cpu, &metal).unwrap();
+        assert_eq!(selection.selected_policy, "C2");
+
+        let metal_without_c2 = report("metal", false);
+        let selection = select_source_gate_policy(&cpu, &metal_without_c2).unwrap();
+        assert_eq!(selection.selected_policy, "Q2");
+    }
+
+    #[test]
+    fn source_gate_cross_backend_gate_freezes_environment_and_normalizes_candidates() {
+        use engines::source_language_gate::{SourceGateDecision, SourceGateRejectReason};
+
+        fn candidate(
+            candidate_key: usize,
+            x: f32,
+            decision: SourceGateDecision,
+        ) -> MatrixCandidate {
+            MatrixCandidate {
+                candidate_key,
+                confidence_bits: 1.0_f32.to_bits(),
+                layout_bbox_bits: [
+                    x.to_bits(),
+                    0.0_f32.to_bits(),
+                    10.0_f32.to_bits(),
+                    10.0_f32.to_bits(),
+                ],
+                crop_bounds: Some([x as u32, 0, x as u32 + 10, 10]),
+                crop_rgba_blake3: Some(format!("crop-{x}")),
+                pp_words: Vec::new(),
+                vl_summary: None,
+                decision: MatrixDecision { decision },
+                selection: Vec::new(),
+            }
+        }
+
+        let first = SourceGateDecision::InvalidCandidateGeometry;
+        let second = SourceGateDecision::RejectedBeforeVl {
+            reason: SourceGateRejectReason::PpNoHanProtectedLatin,
+        };
+        let mut reference_run = MatrixRun {
+            policy: "C1".into(),
+            candidates: vec![
+                candidate(0, 0.0, first.clone()),
+                candidate(1, 100.0, second.clone()),
+            ],
+            input_fingerprint: String::new(),
+            pp_fingerprint: String::new(),
+            outcome_fingerprint: String::new(),
+            elapsed_ms: 1,
+        };
+        reference_run.refresh_fingerprints().unwrap();
+        let mut current_run = MatrixRun {
+            policy: "C1".into(),
+            candidates: vec![candidate(0, 100.0, second), candidate(1, 0.0, first)],
+            input_fingerprint: String::new(),
+            pp_fingerprint: String::new(),
+            outcome_fingerprint: String::new(),
+            elapsed_ms: 1,
+        };
+        current_run.refresh_fingerprints().unwrap();
+        assert_ne!(
+            reference_run.outcome_fingerprint,
+            current_run.outcome_fingerprint
+        );
+
+        let environment = MatrixEnvironment {
+            backend: "cpu".into(),
+            layout_backend: "cpu".into(),
+            pp_backend: "rten_cpu".into(),
+            vl_backend: "cpu".into(),
+            raw_blake3: "raw".into(),
+            decoded_rgba_blake3: "rgba".into(),
+            model_blake3: "model".into(),
+            config_blake3: "config".into(),
+            binary_blake3: "binary".into(),
+        };
+        let reference = SourceGateMatrixReport {
+            schema_version: 2,
+            environment: environment.clone(),
+            policy_probes: Vec::new(),
+            full_image_runs: vec![reference_run],
+            fixture_runs: BTreeMap::new(),
+        };
+        let mut current_environment = environment;
+        current_environment.backend = "metal".into();
+        current_environment.vl_backend = "metal".into();
+        let mut current = SourceGateMatrixReport {
+            schema_version: 2,
+            environment: current_environment,
+            policy_probes: Vec::new(),
+            full_image_runs: vec![current_run],
+            fixture_runs: BTreeMap::new(),
+        };
+        assert!(compare_outcome(&reference, &current).is_ok());
+
+        current.environment.raw_blake3 = "different".into();
+        assert!(
+            compare_outcome(&reference, &current)
+                .unwrap_err()
+                .to_string()
+                .contains("environment drift")
+        );
+    }
+
+    #[test]
+    fn source_gate_matrix_decision_report_is_derived_from_the_enum() {
+        let report = MatrixDecision {
+            decision: engines::source_language_gate::SourceGateDecision::RejectedAfterVl {
+                reason:
+                    engines::source_language_gate::SourceGateRejectReason::PpVlCharacterMismatch,
+            },
+        };
+        let encoded = serde_json::to_value(&report).unwrap();
+        assert_eq!(encoded["pp_calls"], 1);
+        assert_eq!(encoded["vl_calls"], 1);
+        assert_eq!(encoded["vl_stage"], "completed");
+        assert_eq!(encoded["fallback"], "none");
+        assert_eq!(
+            serde_json::from_value::<MatrixDecision>(encoded).unwrap(),
+            report
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires installed PP-DocLayout, PP-OCRv5, and PaddleOCR-VL models"]
+    async fn source_gate_real_crop_source_gate_runtime_matrix() -> anyhow::Result<()> {
+        use engines::source_language_gate::SourceGateCropPolicy;
+
+        let report_path_env = std::env::var("SOURCE_GATE_MATRIX_REPORT").ok();
+        let fallback_report_dir = report_path_env
+            .is_none()
+            .then(tempfile::tempdir)
+            .transpose()?;
+        let report_path = report_path_env
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                fallback_report_dir
+                    .as_ref()
+                    .expect("fallback report directory")
+                    .path()
+                    .join("source-gate-matrix.json")
+            });
+        let mode = std::env::var("SOURCE_GATE_MATRIX_MODE").unwrap_or_else(|_| "write".into());
+        if mode == "select_policy" {
+            let cpu_path =
+                std::env::var("SOURCE_GATE_MATRIX_POLICY_CPU_REFERENCE").map_err(|_| {
+                    anyhow::anyhow!("SOURCE_GATE_MATRIX_POLICY_CPU_REFERENCE is required")
+                })?;
+            let metal_path =
+                std::env::var("SOURCE_GATE_MATRIX_POLICY_METAL_REFERENCE").map_err(|_| {
+                    anyhow::anyhow!("SOURCE_GATE_MATRIX_POLICY_METAL_REFERENCE is required")
+                })?;
+            let cpu: SourceGateMatrixReport = serde_json::from_slice(&std::fs::read(cpu_path)?)?;
+            let metal: SourceGateMatrixReport =
+                serde_json::from_slice(&std::fs::read(metal_path)?)?;
+            let selection = select_source_gate_policy(&cpu, &metal)?;
+            std::fs::write(&report_path, serde_json::to_vec_pretty(&selection)?)?;
+            return Ok(());
+        }
+
+        let input = std::env::var("SOURCE_GATE_MATRIX_INPUT")
+            .map_err(|_| anyhow::anyhow!("SOURCE_GATE_MATRIX_INPUT is required"))?;
+        let runs = std::env::var("SOURCE_GATE_MATRIX_RUNS")
+            .unwrap_or_else(|_| "1".into())
+            .parse::<usize>()?;
+        anyhow::ensure!(runs > 0, "SOURCE_GATE_MATRIX_RUNS must be positive");
+        let backend = std::env::var("SOURCE_GATE_MATRIX_BACKEND").unwrap_or_else(|_| "cpu".into());
+        let (cpu, compute) = match backend.as_str() {
+            "cpu" => (true, ComputePolicy::CpuOnly),
+            "metal" => (false, ComputePolicy::PreferGpu),
+            _ => anyhow::bail!("SOURCE_GATE_MATRIX_BACKEND must be cpu or metal"),
+        };
+        let primary_policy = match std::env::var("SOURCE_GATE_MATRIX_POLICY").ok().as_deref() {
+            Some("C0") => SourceGateCropPolicy::C0,
+            Some("C1") => SourceGateCropPolicy::C1,
+            Some("C2") => SourceGateCropPolicy::C2,
+            Some("C4") => SourceGateCropPolicy::C4,
+            Some("Q2") => SourceGateCropPolicy::Q2,
+            Some(_) => anyhow::bail!("SOURCE_GATE_MATRIX_POLICY must be C0, C1, C2, C4, or Q2"),
+            None => SourceGateCropPolicy::production(),
+        };
+
+        let bytes = std::fs::read(&input)?;
+        let image = image::load_from_memory(&bytes)?;
+        let data_root = default_app_data_root();
+        let runtime = Arc::new(RuntimeManager::new(data_root.as_std_path(), compute)?);
+        runtime.prepare().await?;
+        let layout_device = koharu_ml::device(cpu)?;
+        let layout_backend = if layout_device.is_metal() {
+            "metal"
+        } else if layout_device.is_cuda() {
+            "cuda"
+        } else {
+            "cpu"
+        };
+        let llama_backend = crate::app::shared_llama_backend(&runtime)?;
+        let vl_backend = if !cpu && llama_backend.supports_gpu_offload() {
+            backend.clone()
+        } else {
+            "cpu".into()
+        };
+        let registry = Arc::new(Registry::new());
+        let llm = Arc::new(llm::Model::empty_for_test((*runtime).clone(), cpu));
+        let renderer = Arc::new(renderer::Renderer::new()?);
+        let planner = Arc::new(TypographyPlanner::default());
+
+        eprintln!("source-gate matrix {primary_policy:?} run 1/{runs}");
+        let reference_run = run_matrix_once(
+            &bytes,
+            &image,
+            registry.clone(),
+            runtime.clone(),
+            cpu,
+            llm.clone(),
+            renderer.clone(),
+            planner.clone(),
+            primary_policy,
+        )
+        .await?;
+        let mut policy_probes = Vec::new();
+        let run_policy_probes =
+            std::env::var("SOURCE_GATE_MATRIX_RUN_POLICY_PROBES").as_deref() == Ok("1");
+        if run_policy_probes {
+            for policy in [
+                SourceGateCropPolicy::C0,
+                SourceGateCropPolicy::C1,
+                SourceGateCropPolicy::C2,
+                SourceGateCropPolicy::C4,
+                SourceGateCropPolicy::Q2,
+            ] {
+                let probe = if policy == primary_policy {
+                    reference_run.clone()
+                } else {
+                    run_matrix_once(
+                        &bytes,
+                        &image,
+                        registry.clone(),
+                        runtime.clone(),
+                        cpu,
+                        llm.clone(),
+                        renderer.clone(),
+                        planner.clone(),
+                        policy,
+                    )
+                    .await?
+                };
+                policy_probes.push(normalize_run(&reference_run, probe)?);
+            }
+        }
+
+        let mut full_image_runs = vec![reference_run.clone()];
+        while full_image_runs.len() < runs {
+            eprintln!(
+                "source-gate matrix {primary_policy:?} run {}/{runs}",
+                full_image_runs.len() + 1
+            );
+            let current = run_matrix_once(
+                &bytes,
+                &image,
+                registry.clone(),
+                runtime.clone(),
+                cpu,
+                llm.clone(),
+                renderer.clone(),
+                planner.clone(),
+                primary_policy,
+            )
+            .await?;
+            full_image_runs.push(normalize_run(&reference_run, current)?);
+        }
+        for current in &full_image_runs {
+            anyhow::ensure!(
+                current.input_fingerprint == reference_run.input_fingerprint,
+                "same-process input drift"
+            );
+            anyhow::ensure!(
+                current.pp_fingerprint == reference_run.pp_fingerprint,
+                "same-process PP drift"
+            );
+            anyhow::ensure!(
+                current.outcome_fingerprint == reference_run.outcome_fingerprint,
+                "same-process outcome drift"
+            );
+        }
+
+        let mut fixture_runs = BTreeMap::new();
+        if !run_policy_probes {
+            let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/source-gate-deterministic-recall");
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(fixture_dir.join("fixture-manifest.json"))?)?;
+            for fixture in manifest["fixtures"]
+                .as_array()
+                .ok_or_else(|| anyhow::anyhow!("fixture manifest entries missing"))?
+            {
+                let name = fixture["name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("fixture name missing"))?;
+                let fixture_bytes = std::fs::read(fixture_dir.join(name))?;
+                let fixture_image = image::load_from_memory(&fixture_bytes)?;
+                eprintln!("source-gate fixture {name} run 1/{runs}");
+                let reference_fixture = run_fixture_once(
+                    &fixture_bytes,
+                    &fixture_image,
+                    registry.clone(),
+                    runtime.clone(),
+                    cpu,
+                    llm.clone(),
+                    renderer.clone(),
+                    planner.clone(),
+                    primary_policy,
+                )
+                .await?;
+                validate_fixture_recall(name, &reference_fixture)?;
+                let mut repeated = vec![reference_fixture.clone()];
+                while repeated.len() < runs {
+                    eprintln!(
+                        "source-gate fixture {name} run {}/{runs}",
+                        repeated.len() + 1
+                    );
+                    let current = run_fixture_once(
+                        &fixture_bytes,
+                        &fixture_image,
+                        registry.clone(),
+                        runtime.clone(),
+                        cpu,
+                        llm.clone(),
+                        renderer.clone(),
+                        planner.clone(),
+                        primary_policy,
+                    )
+                    .await?;
+                    let current = normalize_run(&reference_fixture, current)?;
+                    anyhow::ensure!(
+                        current.input_fingerprint == reference_fixture.input_fingerprint,
+                        "fixture {name} same-process input drift"
+                    );
+                    anyhow::ensure!(
+                        current.pp_fingerprint == reference_fixture.pp_fingerprint,
+                        "fixture {name} same-process PP drift"
+                    );
+                    anyhow::ensure!(
+                        current.outcome_fingerprint == reference_fixture.outcome_fingerprint,
+                        "fixture {name} same-process outcome drift"
+                    );
+                    validate_fixture_recall(name, &current)?;
+                    repeated.push(current);
+                }
+                fixture_runs.insert(name.to_string(), repeated);
+            }
+        }
+
+        let executable = std::env::current_exe()?;
+        let environment = MatrixEnvironment {
+            backend,
+            layout_backend: layout_backend.into(),
+            pp_backend: "rten_cpu".into(),
+            vl_backend,
+            raw_blake3: blake3::hash(&bytes).to_hex().to_string(),
+            decoded_rgba_blake3: engines::source_language_gate::rgba_fingerprint(&image),
+            model_blake3: hash_model_trees(data_root.as_std_path())?,
+            config_blake3: blake3::hash(b"HanOnly|pp-doclayout-v3|pp-ocr-v5-source-gate|0.5")
+                .to_hex()
+                .to_string(),
+            binary_blake3: hash_file(&executable)?,
+        };
+        let report = SourceGateMatrixReport {
+            schema_version: 3,
+            environment,
+            policy_probes,
+            full_image_runs,
+            fixture_runs,
+        };
+        let report_json = serde_json::to_vec_pretty(&report)?;
+        std::fs::write(&report_path, &report_json)?;
+
+        if report.policy_probes.is_empty()
+            && let Ok(selection_path) = std::env::var("SOURCE_GATE_MATRIX_SELECTION_REPORT")
+        {
+            let selection: SourceGatePolicySelectionReport =
+                serde_json::from_slice(&std::fs::read(selection_path)?)?;
+            anyhow::ensure!(
+                report
+                    .full_image_runs
+                    .iter()
+                    .all(|run| run.policy == selection.selected_policy),
+                "active source gate policy differs from selected policy"
+            );
+            anyhow::ensure!(
+                report
+                    .fixture_runs
+                    .values()
+                    .flatten()
+                    .all(|run| run.policy == selection.selected_policy),
+                "fixture source gate policy differs from selected policy"
+            );
+            for run in &report.full_image_runs {
+                validate_final_recall(run)?;
+            }
+        }
+
+        if mode != "write" {
+            let reference_path = std::env::var("SOURCE_GATE_MATRIX_REFERENCE")
+                .map_err(|_| anyhow::anyhow!("SOURCE_GATE_MATRIX_REFERENCE is required"))?;
+            let reference: SourceGateMatrixReport =
+                serde_json::from_slice(&std::fs::read(reference_path)?)?;
+            match mode.as_str() {
+                "compare_same_backend" => compare_same_backend(&reference, &report)?,
+                "compare_outcome" => compare_outcome(&reference, &report)?,
+                _ => anyhow::bail!("unknown SOURCE_GATE_MATRIX_MODE: {mode}"),
+            }
+        }
         Ok(())
     }
 }

@@ -9,6 +9,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    ops::RangeInclusive,
     sync::{Arc, Mutex},
 };
 
@@ -41,10 +42,13 @@ use crate::google_fonts::GoogleFontService;
 #[derive(Debug, Clone)]
 pub struct RenderBlockInput {
     pub node_id: NodeId,
+    /// Original Scene geometry used only for transient Source-relative grouping.
+    pub source_transform: Transform,
     pub transform: Transform,
     pub translation: String,
     pub style: Option<TextStyle>,
     pub font_prediction: Option<FontPrediction>,
+    pub detected_font_size_px: Option<f32>,
     pub source_direction: Option<TextDirection>,
     pub rendered_direction: Option<TextDirection>,
     pub lock_layout_box: bool,
@@ -59,7 +63,14 @@ pub struct PageRenderOptions {
     pub shader_stroke: Option<TextStrokeStyle>,
     pub document_font: Option<String>,
     pub target_language: Option<String>,
+    pub(crate) source_relative_font_size_policy: Option<SourceRelativeFontSizePolicy>,
     pub raster: RasterOptions,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SourceRelativeFontSizePolicy {
+    pub offset: f32,
+    pub prefer_detected: bool,
 }
 
 /// Per-block sprite output. `transform` becomes `TextData.sprite_transform`
@@ -160,10 +171,39 @@ impl Renderer {
         // lookups in O(seed_area).
         let bubble_index: Option<BubbleIndex> = bubble_mask.map(|m| BubbleIndex::new(m.to_luma8()));
         let layout_boxes = resolve_layout_boxes(blocks, bubble_index.as_ref());
+        let mut automatic = HashMap::new();
+        if let Some(policy) = opts.source_relative_font_size_policy {
+            for (block, resolved_box) in blocks.iter().zip(layout_boxes.iter().copied()) {
+                if let Some(prepared) = self.prepare_source_relative_automatic(
+                    block,
+                    resolved_box,
+                    opts,
+                    policy,
+                    min_font,
+                )? {
+                    automatic.insert(block.node_id, prepared);
+                }
+            }
+        }
+        let grouped_font_sizes = grouped_fitted_source_relative_font_sizes(blocks, &automatic);
         let bubble_mask = bubble_index.as_ref().map(BubbleIndex::mask);
 
         let mut rendered_blocks = Vec::with_capacity(blocks.len());
         for (block, layout_box) in blocks.iter().zip(layout_boxes.iter().copied()) {
+            if let Some(prepared) = automatic.get(&block.node_id) {
+                let final_size = grouped_font_sizes
+                    .get(&block.node_id)
+                    .copied()
+                    .unwrap_or(prepared.independent_font_size);
+                rendered_blocks.push(self.render_prepared_source_relative(
+                    block,
+                    prepared,
+                    final_size,
+                    opts.target_language.as_deref(),
+                    opts.raster,
+                )?);
+                continue;
+            }
             match self.render_one(
                 block,
                 layout_box,
@@ -172,6 +212,8 @@ impl Renderer {
                 &opts.shader_stroke,
                 opts.document_font.as_deref(),
                 opts.target_language.as_deref(),
+                opts.source_relative_font_size_policy,
+                grouped_font_sizes.get(&block.node_id).copied(),
                 opts.raster,
                 min_font,
             ) {
@@ -196,6 +238,185 @@ impl Renderer {
         })
     }
 
+    fn prepare_source_relative_automatic(
+        &self,
+        block: &RenderBlockInput,
+        resolved_box: ResolvedLayoutBox,
+        opts: &PageRenderOptions,
+        policy: SourceRelativeFontSizePolicy,
+        min_font_size: f32,
+    ) -> Result<Option<PreparedAutomaticBlock>> {
+        let translation = block.translation.trim();
+        if translation.is_empty() {
+            return Ok(None);
+        }
+
+        let layout_box = resolved_box.layout_box;
+        let (explicit_font_size, cap) =
+            font_size_constraints_with_group(block, layout_box, min_font_size, Some(policy), None);
+        if explicit_font_size.is_some() {
+            return Ok(None);
+        }
+
+        let mut style = block.style.clone().unwrap_or_default();
+        if style.font_families.is_empty()
+            && let Some(font) = opts.document_font.as_deref()
+        {
+            style.font_families.push(font.to_string());
+        }
+        apply_default_font_families(&mut style.font_families, translation);
+        let font = self.select_font(&style)?;
+        let color =
+            resolve_text_color(block.style.as_ref(), &style, block.font_prediction.as_ref());
+        let layout_source = layout_source_from_input(block, translation);
+        let writing_mode = writing_mode_for_block(&layout_source);
+        let align = style
+            .text_align
+            .map(core_align_to_renderer)
+            .unwrap_or(RendererTextAlign::Center);
+        let stroke = style.stroke.clone();
+        let prediction = block.font_prediction.as_ref();
+        let global_stroke = opts.shader_stroke.clone();
+        let block_effect = style.effect.unwrap_or(opts.shader_effect);
+        let independent_font_size = {
+            let layout_builder = automatic_layout_builder(
+                &font,
+                &self.symbol_fallbacks,
+                writing_mode,
+                align,
+                opts.target_language.as_deref(),
+            );
+            let fits = |run: &LayoutRun<'_>| {
+                source_relative_raster_dimensions(
+                    run,
+                    resolve_stroke_style(
+                        prediction,
+                        stroke.as_ref(),
+                        global_stroke.as_ref(),
+                        run.font_size,
+                        color,
+                    ),
+                    block_effect,
+                )
+                .is_some_and(|(width, height, _)| {
+                    width as f32 <= layout_box.width && height as f32 <= layout_box.height
+                })
+            };
+            fit_font_size_with_predicate(
+                &layout_builder,
+                translation,
+                layout_box,
+                min_font_size.ceil() as i32..=cap.floor() as i32,
+                block.preserve_explicit_lines,
+                fits,
+                true,
+            )
+            .with_context(|| format!("automatic font size does not fit node {}", block.node_id))?
+            .font_size
+        };
+
+        Ok(Some(PreparedAutomaticBlock {
+            font,
+            stroke,
+            global_stroke,
+            effect: block_effect,
+            color,
+            writing_mode,
+            align,
+            layout_box,
+            cap,
+            independent_font_size,
+        }))
+    }
+
+    fn render_prepared_source_relative(
+        &self,
+        block: &RenderBlockInput,
+        prepared: &PreparedAutomaticBlock,
+        font_size: f32,
+        target_language: Option<&str>,
+        raster: RasterOptions,
+    ) -> Result<RenderedBlock> {
+        anyhow::ensure!(
+            font_size <= prepared.independent_font_size + FIT_EPSILON,
+            "group font size exceeds independent safe size for node {}",
+            block.node_id
+        );
+        let builder = automatic_layout_builder(
+            &prepared.font,
+            &self.symbol_fallbacks,
+            prepared.writing_mode,
+            prepared.align,
+            target_language,
+        );
+        let layout = run_layout_at(
+            &builder,
+            block.translation.trim(),
+            prepared.layout_box,
+            font_size,
+            block.preserve_explicit_lines,
+        )?;
+        let resolved_stroke = resolve_stroke_style(
+            block.font_prediction.as_ref(),
+            prepared.stroke.as_ref(),
+            prepared.global_stroke.as_ref(),
+            font_size,
+            prepared.color,
+        );
+        let (predicted_width, predicted_height, padding) =
+            source_relative_raster_dimensions(&layout, resolved_stroke, prepared.effect)
+                .context("automatic layout has invalid raster dimensions")?;
+        anyhow::ensure!(
+            predicted_width as f32 <= prepared.layout_box.width
+                && predicted_height as f32 <= prepared.layout_box.height,
+            "automatic font size does not fit node {}",
+            block.node_id
+        );
+        let rendered = self.render_layout(
+            &layout,
+            prepared.writing_mode,
+            &RenderOptions {
+                font_size,
+                color: prepared.color,
+                effect: shader_core_to_renderer(prepared.effect),
+                stroke: resolved_stroke,
+                padding,
+                raster,
+                ..Default::default()
+            },
+            block.node_id,
+            RasterPath::SourceRelative,
+        )?;
+        debug_assert_eq!(rendered.width(), predicted_width);
+        debug_assert_eq!(rendered.height(), predicted_height);
+        tracing::debug!(
+            node = %block.node_id,
+            cap = prepared.cap,
+            independent_font_size = prepared.independent_font_size,
+            final_font_size = font_size,
+            ink_width = layout.width,
+            ink_height = layout.height,
+            padding,
+            sprite_width = rendered.width(),
+            sprite_height = rendered.height(),
+            source_width = prepared.layout_box.width,
+            source_height = prepared.layout_box.height,
+            "source-relative automatic layout"
+        );
+        let transform = centred_sprite_transform(
+            prepared.layout_box,
+            rendered.width(),
+            rendered.height(),
+            block.transform.rotation_deg,
+        );
+        Ok(RenderedBlock {
+            node_id: block.node_id,
+            sprite: DynamicImage::ImageRgba8(rendered),
+            rendered_direction: rendered_direction_for_writing_mode(prepared.writing_mode),
+            expanded_transform: Some(transform),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn render_one(
         &self,
@@ -206,6 +427,8 @@ impl Renderer {
         global_stroke: &Option<TextStrokeStyle>,
         document_font: Option<&str>,
         target_language: Option<&str>,
+        source_relative_font_size_policy: Option<SourceRelativeFontSizePolicy>,
+        grouped_source_relative_font_size: Option<f32>,
         raster: RasterOptions,
         min_font_size: f32,
     ) -> Result<Option<RenderedBlock>> {
@@ -253,8 +476,13 @@ impl Renderer {
         if let Some(target_language) = target_language {
             layout_builder = layout_builder.with_hyphenation_language_tag(target_language);
         }
-        let (explicit_font_size, max_font) =
-            font_size_constraints(block, layout_box, min_font_size);
+        let (explicit_font_size, max_font) = font_size_constraints_with_group(
+            block,
+            layout_box,
+            min_font_size,
+            source_relative_font_size_policy,
+            grouped_source_relative_font_size,
+        );
         let sizing_font_size = explicit_font_size.unwrap_or(max_font);
         let sizing_padding = stroke_padding(resolve_stroke_style(
             block.font_prediction.as_ref(),
@@ -281,7 +509,7 @@ impl Renderer {
             );
             let padding = stroke_padding(resolved_stroke);
 
-            let rendered = self.renderer.render(
+            let rendered = self.render_layout(
                 layout,
                 writing_mode,
                 &RenderOptions {
@@ -293,6 +521,8 @@ impl Renderer {
                     raster,
                     ..Default::default()
                 },
+                block.node_id,
+                RasterPath::Legacy,
             )?;
             let transform = centred_sprite_transform(
                 layout_box,
@@ -460,6 +690,30 @@ impl Renderer {
             style.font_families
         ))
     }
+
+    fn render_layout(
+        &self,
+        layout: &LayoutRun<'_>,
+        writing_mode: WritingMode,
+        options: &RenderOptions,
+        node_id: NodeId,
+        path: RasterPath,
+    ) -> Result<RgbaImage> {
+        let rendered = self.renderer.render(layout, writing_mode, options)?;
+
+        #[cfg(test)]
+        RASTER_TRACE.with(|trace| {
+            trace.borrow_mut().push(RasterTrace {
+                node_id,
+                path,
+                font_size: layout.font_size,
+            });
+        });
+        #[cfg(not(test))]
+        let _ = (node_id, path);
+
+        Ok(rendered)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -469,9 +723,102 @@ impl Renderer {
 const MASK_COLLISION_ALPHA_THRESHOLD: u8 = 8;
 const FIT_EPSILON: f32 = 0.5;
 
+#[cfg(test)]
+std::thread_local! {
+    static RASTER_TRACE: std::cell::RefCell<Vec<RasterTrace>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum RasterPath {
+    SourceRelative,
+    Legacy,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq)]
+struct RasterTrace {
+    node_id: NodeId,
+    path: RasterPath,
+    font_size: f32,
+}
+
+#[cfg(test)]
+fn clear_raster_trace() {
+    RASTER_TRACE.with(|trace| trace.borrow_mut().clear());
+}
+
+#[cfg(test)]
+fn raster_trace() -> Vec<RasterTrace> {
+    RASTER_TRACE.with(|trace| trace.borrow().clone())
+}
+
 struct RenderedTextCandidate {
     image: RgbaImage,
     transform: Transform,
+}
+
+struct PreparedAutomaticBlock {
+    font: Font,
+    stroke: Option<TextStrokeStyle>,
+    global_stroke: Option<TextStrokeStyle>,
+    effect: TextShaderEffect,
+    color: [u8; 4],
+    writing_mode: WritingMode,
+    align: RendererTextAlign,
+    layout_box: LayoutBox,
+    cap: f32,
+    independent_font_size: f32,
+}
+
+fn automatic_layout_builder<'a>(
+    font: &'a Font,
+    fallbacks: &'a [Font],
+    writing_mode: WritingMode,
+    align: RendererTextAlign,
+    target_language: Option<&str>,
+) -> TextLayout<'a> {
+    let mut builder = TextLayout::new(font, None)
+        .with_fallback_fonts(fallbacks)
+        .with_writing_mode(writing_mode)
+        .with_alignment(align);
+    if let Some(target_language) = target_language {
+        builder = builder.with_hyphenation_language_tag(target_language);
+    }
+    builder
+}
+
+fn source_relative_raster_dimensions(
+    layout: &LayoutRun<'_>,
+    stroke: Option<RenderStrokeOptions>,
+    effect: TextShaderEffect,
+) -> Option<(u32, u32, f32)> {
+    const BOLD_EFFECT_PADDING: f32 = 4.0;
+    const ITALIC_EFFECT_PADDING: f32 = 3.0;
+    const ITALIC_SLANT_FACTOR: f32 = 0.22;
+    const MIN_ITALIC_SLANT: f32 = 1.0;
+
+    let effect_padding = if effect.bold {
+        BOLD_EFFECT_PADDING
+    } else if effect.italic {
+        ITALIC_EFFECT_PADDING
+    } else {
+        0.0
+    };
+    let italic_slant = if effect.italic {
+        (layout.width.min(layout.height) * ITALIC_SLANT_FACTOR)
+            .max(MIN_ITALIC_SLANT)
+            .ceil()
+    } else {
+        0.0
+    };
+    let padding = stroke_padding(stroke).max(effect_padding) + italic_slant;
+    let width = (layout.width + padding * 2.0).ceil();
+    let height = (layout.height + padding * 2.0).ceil();
+    (width.is_finite() && height.is_finite() && width >= 0.0 && height >= 0.0).then_some((
+        width as u32,
+        height as u32,
+        padding,
+    ))
 }
 
 struct MaskCollisionAttempt {
@@ -484,18 +831,177 @@ pub(crate) fn min_font_size_for_image(image_width: u32, image_height: u32) -> f3
     (max_dim / 90.0).clamp(12.0, 28.0)
 }
 
+#[cfg(test)]
 fn font_size_constraints(
     block: &RenderBlockInput,
     layout_box: LayoutBox,
     min_size: f32,
+    source_relative_offset: Option<f32>,
+) -> (Option<f32>, f32) {
+    font_size_constraints_with_group(
+        block,
+        layout_box,
+        min_size,
+        source_relative_offset.map(|offset| SourceRelativeFontSizePolicy {
+            offset,
+            prefer_detected: false,
+        }),
+        None,
+    )
+}
+
+fn font_size_constraints_with_group(
+    block: &RenderBlockInput,
+    layout_box: LayoutBox,
+    min_size: f32,
+    source_relative_policy: Option<SourceRelativeFontSizePolicy>,
+    grouped_source_relative_font_size: Option<f32>,
 ) -> (Option<f32>, f32) {
     let auto_max = max_font_size_for_box(layout_box, min_size);
     let scene_size = block.style.as_ref().and_then(|style| style.font_size);
-    if block.typography_plan_verified {
-        (None, scene_size.map_or(auto_max, |cap| auto_max.min(cap)))
-    } else {
-        (scene_size, auto_max)
+    let Some(policy) = source_relative_policy else {
+        return if block.typography_plan_verified {
+            (None, scene_size.map_or(auto_max, |cap| auto_max.min(cap)))
+        } else {
+            (scene_size, auto_max)
+        };
+    };
+    let valid_scene_size = scene_size.filter(|size| size.is_finite() && *size > 0.0);
+    if !block.typography_plan_verified
+        && let Some(scene_size) = valid_scene_size
+    {
+        return (Some(scene_size), auto_max);
     }
+    let cap = grouped_source_relative_font_size.unwrap_or_else(|| {
+        source_relative_font_size_candidate(block, source_geometry_font_size(block), policy)
+    });
+    (None, cap)
+}
+
+fn source_geometry_font_size(block: &RenderBlockInput) -> f32 {
+    block.transform.width.min(block.transform.height).max(1.0)
+}
+
+fn source_relative_font_size_candidate(
+    block: &RenderBlockInput,
+    auto_max: f32,
+    policy: SourceRelativeFontSizePolicy,
+) -> f32 {
+    let prediction = block
+        .font_prediction
+        .as_ref()
+        .map(|prediction| prediction.font_size_px)
+        .filter(|size| size.is_finite() && *size > 0.0);
+    let detected = block
+        .detected_font_size_px
+        .filter(|size| size.is_finite() && *size > 0.0);
+    let source_size = if policy.prefer_detected {
+        detected.or(prediction)
+    } else {
+        prediction.or(detected)
+    }
+    .unwrap_or(auto_max);
+    (source_size + policy.offset).max(1.0)
+}
+
+fn grouped_fitted_source_relative_font_sizes(
+    blocks: &[RenderBlockInput],
+    automatic: &HashMap<NodeId, PreparedAutomaticBlock>,
+) -> HashMap<NodeId, f32> {
+    let automatic = blocks
+        .iter()
+        .filter_map(|block| {
+            automatic
+                .get(&block.node_id)
+                .filter(|prepared| prepared.writing_mode == WritingMode::Horizontal)
+                .map(|prepared| {
+                    (
+                        block.node_id,
+                        block.source_transform,
+                        prepared.independent_font_size,
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    group_source_relative_font_sizes(automatic)
+}
+
+#[cfg(test)]
+fn grouped_source_relative_font_sizes(
+    blocks: &[RenderBlockInput],
+    layout_boxes: &[ResolvedLayoutBox],
+    min_size: f32,
+    policy: Option<SourceRelativeFontSizePolicy>,
+) -> HashMap<NodeId, f32> {
+    let Some(policy) = policy else {
+        return HashMap::new();
+    };
+    let automatic = blocks
+        .iter()
+        .zip(layout_boxes)
+        .filter(|(block, _)| {
+            !block.translation.trim().is_empty()
+                && block.source_direction != Some(TextDirection::Vertical)
+                && !(block
+                    .style
+                    .as_ref()
+                    .and_then(|style| style.font_size)
+                    .is_some_and(|size| size.is_finite() && size > 0.0)
+                    && !block.typography_plan_verified)
+        })
+        .map(|(block, resolved)| {
+            let auto_max = max_font_size_for_box(resolved.layout_box, min_size);
+            (
+                block.node_id,
+                block.source_transform,
+                source_relative_font_size_candidate(block, auto_max, policy),
+            )
+        })
+        .collect::<Vec<_>>();
+    group_source_relative_font_sizes(automatic)
+}
+
+fn group_source_relative_font_sizes(
+    mut automatic: Vec<(NodeId, Transform, f32)>,
+) -> HashMap<NodeId, f32> {
+    automatic.sort_by_key(|(node_id, _, _)| *node_id);
+
+    let mut sizes = HashMap::with_capacity(automatic.len());
+    let mut visited = vec![false; automatic.len()];
+    for start in 0..automatic.len() {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        let mut stack = vec![start];
+        let mut component = Vec::new();
+        while let Some(index) = stack.pop() {
+            component.push(index);
+            for other in 0..automatic.len() {
+                if !visited[other] && same_source_row(automatic[index].1, automatic[other].1) {
+                    visited[other] = true;
+                    stack.push(other);
+                }
+            }
+        }
+        let minimum = component
+            .iter()
+            .map(|index| automatic[*index].2)
+            .fold(f32::INFINITY, f32::min);
+        for index in component {
+            sizes.insert(automatic[index].0, minimum);
+        }
+    }
+    sizes
+}
+
+fn same_source_row(left: Transform, right: Transform) -> bool {
+    let values = [left.y, left.height, right.y, right.height];
+    if !values.iter().all(|value| value.is_finite()) || left.height <= 0.0 || right.height <= 0.0 {
+        return false;
+    }
+    let center_delta = ((left.y + left.height * 0.5) - (right.y + right.height * 0.5)).abs();
+    center_delta <= 4.0_f32.max(left.height.min(right.height) * 0.25)
 }
 
 /// Maximum font size for the given layout box, derived from its dimensions.
@@ -533,12 +1039,45 @@ fn fit_font_size<'a>(
         return run_at(s);
     }
 
-    let fits =
-        |run: &LayoutRun<'a>| run.width <= layout_box.width && run.height <= layout_box.height;
-
     let min_size = min_size.max(1.0).round() as i32;
     let max_size = (max_size.round() as i32).max(min_size);
+    fit_font_size_with_predicate(
+        layout_builder,
+        text,
+        layout_box,
+        min_size..=max_size,
+        preserve_explicit_lines,
+        |run| run.width <= layout_box.width && run.height <= layout_box.height,
+        false,
+    )
+}
 
+fn fit_font_size_with_predicate<'a, F>(
+    layout_builder: &TextLayout<'a>,
+    text: &str,
+    layout_box: LayoutBox,
+    font_size_range: RangeInclusive<i32>,
+    preserve_explicit_lines: bool,
+    fits: F,
+    require_fit: bool,
+) -> Result<LayoutRun<'a>>
+where
+    F: Fn(&LayoutRun<'a>) -> bool,
+{
+    let (min_size, max_size) = font_size_range.into_inner();
+    anyhow::ensure!(
+        max_size >= min_size,
+        "font size cap is below the readability floor"
+    );
+    let run_at = |size: f32| {
+        run_layout_at(
+            layout_builder,
+            text,
+            layout_box,
+            size,
+            preserve_explicit_lines,
+        )
+    };
     let at_max = run_at(max_size as f32)?;
     if fits(&at_max) {
         return Ok(at_max);
@@ -548,6 +1087,7 @@ fn fit_font_size<'a>(
     let mut hi = max_size - 1;
     let mut best = run_at(min_size as f32)?;
     if !fits(&best) {
+        anyhow::ensure!(!require_fit, "text does not fit at the readability floor");
         return Ok(best);
     }
     while lo <= hi {
@@ -1089,7 +1629,7 @@ pub(crate) fn placement_origin(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{GrayImage, Luma, Rgba, RgbaImage};
+    use image::{GenericImageView, GrayImage, Luma, Rgba, RgbaImage};
     use koharu_core::NodeId;
 
     #[test]
@@ -1147,12 +1687,12 @@ mod tests {
         planned.typography_plan_verified = true;
         let layout_box = seed_layout_box(&planned);
 
-        let (explicit, max) = font_size_constraints(&planned, layout_box, 12.0);
+        let (explicit, max) = font_size_constraints(&planned, layout_box, 12.0, None);
         assert_eq!(explicit, None);
         assert_eq!(max, 18.0);
 
         planned.typography_plan_verified = false;
-        let (explicit, _) = font_size_constraints(&planned, layout_box, 12.0);
+        let (explicit, _) = font_size_constraints(&planned, layout_box, 12.0, None);
         assert_eq!(explicit, Some(18.0));
     }
 
@@ -1253,6 +1793,1178 @@ mod tests {
             false,
         )?;
         assert_eq!(layout.font_size, 42.0);
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_auto_size_uses_source_minus_five_for_other_targets() {
+        let mut input = block(0.0, 0.0, 100.0, 50.0, "translated");
+        input.font_prediction = Some(FontPrediction {
+            font_size_px: 60.0,
+            ..Default::default()
+        });
+        let (explicit, cap) =
+            font_size_constraints(&input, seed_layout_box(&input), 12.0, Some(-5.0));
+        assert_eq!(explicit, None);
+        assert_eq!(cap, 55.0);
+    }
+
+    #[test]
+    fn han_only_zero_offset_keeps_source_size() {
+        let mut input = block(0.0, 0.0, 100.0, 50.0, "translated");
+        input.font_prediction = Some(FontPrediction {
+            font_size_px: 60.0,
+            ..Default::default()
+        });
+        let (explicit, cap) =
+            font_size_constraints(&input, seed_layout_box(&input), 12.0, Some(0.0));
+        assert_eq!(explicit, None);
+        assert_eq!(cap, 60.0);
+    }
+
+    #[test]
+    fn han_only_manual_size_overrides_language_offset() {
+        let mut input = block(0.0, 0.0, 100.0, 50.0, "translated");
+        input.style = Some(TextStyle {
+            font_size: Some(72.0),
+            ..Default::default()
+        });
+        input.font_prediction = Some(FontPrediction {
+            font_size_px: 60.0,
+            ..Default::default()
+        });
+        let (exact, _) = font_size_constraints(&input, seed_layout_box(&input), 12.0, Some(-5.0));
+        assert_eq!(exact, Some(72.0));
+    }
+
+    #[test]
+    fn han_only_source_size_falls_back_prediction_then_detected_then_box() {
+        let mut input = block(0.0, 0.0, 100.0, 50.0, "translated");
+        input.detected_font_size_px = Some(44.0);
+        input.font_prediction = Some(FontPrediction {
+            font_size_px: 60.0,
+            ..Default::default()
+        });
+        assert_eq!(
+            font_size_constraints(&input, seed_layout_box(&input), 12.0, Some(-5.0)),
+            (None, 55.0)
+        );
+        input.font_prediction.as_mut().unwrap().font_size_px = f32::NAN;
+        assert_eq!(
+            font_size_constraints(&input, seed_layout_box(&input), 12.0, Some(-5.0)),
+            (None, 39.0)
+        );
+        input.detected_font_size_px = Some(0.0);
+        assert_eq!(
+            font_size_constraints(&input, seed_layout_box(&input), 12.0, Some(-5.0)),
+            (None, 45.0)
+        );
+    }
+
+    #[test]
+    fn english_detected_size_is_a_thirty_four_pixel_cap_not_an_explicit_size() {
+        let mut input = block(0.0, 0.0, 208.0, 39.0, "Full-Body Sculpt");
+        input.detected_font_size_px = Some(39.0);
+        input.font_prediction = Some(FontPrediction {
+            font_size_px: 54.222416,
+            ..Default::default()
+        });
+        let layout_box = seed_layout_box(&input);
+        let (explicit, cap) = font_size_constraints_with_group(
+            &input,
+            layout_box,
+            12.0,
+            Some(SourceRelativeFontSizePolicy {
+                offset: -5.0,
+                prefer_detected: true,
+            }),
+            None,
+        );
+
+        assert_eq!(explicit, None);
+        assert_eq!(cap, 34.0);
+    }
+
+    #[test]
+    fn fractional_automatic_cap_never_rounds_up() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let block = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 1000.0,
+                rotation_deg: 0.0,
+            },
+            "fit",
+            34.75,
+            34.75,
+            TextDirection::Horizontal,
+        );
+        let resolved_box = resolve_layout_boxes(std::slice::from_ref(&block), None)[0];
+        let prepared = renderer
+            .prepare_source_relative_automatic(
+                &block,
+                resolved_box,
+                &PageRenderOptions::default(),
+                SourceRelativeFontSizePolicy {
+                    offset: 0.0,
+                    prefer_detected: true,
+                },
+                12.0,
+            )?
+            .expect("automatic block must prepare");
+
+        assert_eq!(prepared.cap, 34.75);
+        assert_eq!(prepared.independent_font_size, 34.0);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_auto_fit_rounds_a_fractional_cap_without_source_relative_policy() -> Result<()> {
+        let font = any_system_font();
+        let layout = fit_font_size(
+            &TextLayout::new(&font, None),
+            "fit",
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 1000.0,
+                height: 1000.0,
+            },
+            None,
+            12.0,
+            22.5,
+            true,
+        )?;
+
+        assert_eq!(layout.font_size, 23.0);
+        Ok(())
+    }
+
+    #[test]
+    fn english_auto_size_prefers_detected_before_prediction_and_subtracts_five() {
+        let mut input = block(0.0, 0.0, 100.0, 50.0, "translated");
+        input.font_prediction = Some(FontPrediction {
+            font_size_px: 66.0,
+            ..Default::default()
+        });
+        input.detected_font_size_px = Some(60.0);
+        let node_id = input.node_id;
+        let blocks = vec![input];
+        let layout_boxes = resolve_layout_boxes(&blocks, None);
+
+        let sizes = grouped_source_relative_font_sizes(
+            &blocks,
+            &layout_boxes,
+            12.0,
+            Some(SourceRelativeFontSizePolicy {
+                offset: -5.0,
+                prefer_detected: true,
+            }),
+        );
+
+        assert_eq!(sizes.get(&node_id), Some(&55.0));
+    }
+
+    #[test]
+    fn horizontal_source_group_uses_minimum_candidate_independent_of_input_order() {
+        let mut left = block(0.0, 0.0, 100.0, 20.0, "left");
+        left.source_transform = Transform {
+            x: 0.0,
+            y: 856.5,
+            width: 100.0,
+            height: 40.0,
+            rotation_deg: 0.0,
+        };
+        left.detected_font_size_px = Some(37.437256);
+        left.source_direction = Some(TextDirection::Horizontal);
+
+        let mut middle = block(120.0, 200.0, 100.0, 20.0, "middle");
+        middle.source_transform = Transform {
+            x: 120.0,
+            y: 857.5,
+            width: 100.0,
+            height: 40.0,
+            rotation_deg: 0.0,
+        };
+        middle.detected_font_size_px = Some(76.79797);
+        middle.source_direction = Some(TextDirection::Horizontal);
+
+        let mut right = block(240.0, 400.0, 100.0, 20.0, "right");
+        right.source_transform = Transform {
+            x: 240.0,
+            y: 856.75,
+            width: 100.0,
+            height: 40.0,
+            rotation_deg: 0.0,
+        };
+        right.detected_font_size_px = Some(37.19812);
+        right.source_direction = Some(TextDirection::Horizontal);
+
+        let node_ids = [left.node_id, middle.node_id, right.node_id];
+        let blocks = vec![middle, right, left];
+        let layout_boxes = resolve_layout_boxes(&blocks, None);
+        let sizes = grouped_source_relative_font_sizes(
+            &blocks,
+            &layout_boxes,
+            12.0,
+            Some(SourceRelativeFontSizePolicy {
+                offset: -5.0,
+                prefer_detected: true,
+            }),
+        );
+
+        for node_id in node_ids {
+            assert!((sizes[&node_id] - 32.19812).abs() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn source_group_excludes_manual_vertical_and_other_rows() {
+        let policy = Some(SourceRelativeFontSizePolicy {
+            offset: -5.0,
+            prefer_detected: true,
+        });
+        let mut selected = block(0.0, 0.0, 100.0, 20.0, "selected");
+        selected.detected_font_size_px = Some(60.0);
+        selected.source_direction = Some(TextDirection::Horizontal);
+
+        let mut manual = block(120.0, 0.0, 100.0, 20.0, "manual");
+        manual.detected_font_size_px = Some(10.0);
+        manual.style = Some(TextStyle {
+            font_size: Some(40.0),
+            ..Default::default()
+        });
+
+        let mut vertical = block(240.0, 0.0, 100.0, 20.0, "vertical");
+        vertical.detected_font_size_px = Some(8.0);
+        vertical.source_direction = Some(TextDirection::Vertical);
+
+        let mut other_row = block(360.0, 80.0, 100.0, 20.0, "other");
+        other_row.detected_font_size_px = Some(12.0);
+
+        let ids = (
+            selected.node_id,
+            manual.node_id,
+            vertical.node_id,
+            other_row.node_id,
+        );
+        let blocks = vec![selected, manual, vertical, other_row];
+        let boxes = resolve_layout_boxes(&blocks, None);
+        let sizes = grouped_source_relative_font_sizes(&blocks, &boxes, 12.0, policy);
+
+        assert_eq!(sizes.get(&ids.0), Some(&55.0));
+        assert!(!sizes.contains_key(&ids.1));
+        assert!(!sizes.contains_key(&ids.2));
+        assert_eq!(sizes.get(&ids.3), Some(&7.0));
+        assert_eq!(
+            font_size_constraints_with_group(&blocks[2], boxes[2].layout_box, 12.0, policy, None,),
+            (None, 3.0)
+        );
+    }
+
+    #[test]
+    fn legacy_language_modes_render_identically() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let auto = block(20.0, 20.0, 180.0, 60.0, "Legacy auto");
+        let mut manual = block(240.0, 20.0, 180.0, 60.0, "Legacy manual");
+        manual.style = Some(TextStyle {
+            font_size: Some(18.0),
+            ..Default::default()
+        });
+        let expected_ids = HashSet::from([auto.node_id, manual.node_id]);
+        let cases = [
+            ("invalid HanOnly", Some("invalid")),
+            ("missing HanOnly", None),
+            ("AllText", Some("en-US")),
+        ];
+        let mut baseline = None;
+
+        for (name, target_language) in cases {
+            clear_raster_trace();
+            let output = renderer.render_page(
+                &DynamicImage::new_rgba8(480, 140),
+                None,
+                None,
+                480,
+                140,
+                &[auto.clone(), manual.clone()],
+                &PageRenderOptions {
+                    target_language: target_language.map(str::to_string),
+                    source_relative_font_size_policy: None,
+                    ..Default::default()
+                },
+            )?;
+            assert_eq!(
+                output
+                    .blocks
+                    .iter()
+                    .map(|block| block.node_id)
+                    .collect::<HashSet<_>>(),
+                expected_ids,
+                "{name}: every expected node must render"
+            );
+            let signature = output
+                .blocks
+                .iter()
+                .map(|block| {
+                    (
+                        block.node_id,
+                        block.sprite.dimensions(),
+                        block.sprite.to_rgba8().into_raw(),
+                        block.expanded_transform.map(|transform| {
+                            (
+                                transform.x,
+                                transform.y,
+                                transform.width,
+                                transform.height,
+                                transform.rotation_deg,
+                            )
+                        }),
+                        block.rendered_direction,
+                    )
+                })
+                .collect::<Vec<_>>();
+            if let Some(baseline) = &baseline {
+                assert_eq!(&signature, baseline, "{name}: legacy render drifted");
+            } else {
+                baseline = Some(signature);
+            }
+
+            let trace = raster_trace();
+            assert_eq!(
+                trace.iter().find(|entry| entry.node_id == manual.node_id),
+                Some(&RasterTrace {
+                    node_id: manual.node_id,
+                    path: RasterPath::Legacy,
+                    font_size: 18.0,
+                }),
+                "{name}: manual size must remain explicit"
+            );
+            let auto_trace = trace
+                .iter()
+                .find(|entry| entry.node_id == auto.node_id)
+                .expect("automatic legacy node must raster");
+            assert_eq!(auto_trace.path, RasterPath::Legacy);
+            assert_ne!(auto_trace.font_size, 18.0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn all_text_nonpositive_manual_size_keeps_legacy_explicit_path_and_layout_clamp() -> Result<()>
+    {
+        let font = any_system_font();
+        for scene_size in [0.0, -5.0] {
+            let mut input = block(0.0, 0.0, 100.0, 50.0, "translated");
+            input.style = Some(TextStyle {
+                font_size: Some(scene_size),
+                ..Default::default()
+            });
+            let (explicit, _) = font_size_constraints(&input, seed_layout_box(&input), 12.0, None);
+            assert_eq!(explicit, Some(scene_size));
+            let layout = run_layout_at(
+                &TextLayout::new(&font, None),
+                &input.translation,
+                seed_layout_box(&input),
+                explicit.unwrap(),
+                false,
+            )?;
+            assert_eq!(layout.font_size, 1.0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_invalid_target_nonpositive_manual_size_keeps_legacy_explicit_path() {
+        for scene_size in [0.0, -5.0] {
+            let mut input = block(0.0, 0.0, 100.0, 50.0, "translated");
+            input.style = Some(TextStyle {
+                font_size: Some(scene_size),
+                ..Default::default()
+            });
+            assert_eq!(
+                font_size_constraints(&input, seed_layout_box(&input), 12.0, None).0,
+                Some(scene_size)
+            );
+        }
+    }
+
+    #[test]
+    fn han_only_long_spaced_text_stays_one_line_without_hyphen() -> Result<()> {
+        let font = any_system_font();
+        for mode in [WritingMode::Horizontal, WritingMode::VerticalRl] {
+            let layout = run_layout_at(
+                &TextLayout::new(&font, None).with_writing_mode(mode),
+                "a very long translated product title with spaces",
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 20.0,
+                    height: 20.0,
+                },
+                60.0,
+                true,
+            )?;
+            assert_eq!(layout.lines.len(), 1);
+            assert!(!has_synthetic_hyphen(&layout));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn all_text_keeps_existing_auto_fit_and_soft_wrap() -> Result<()> {
+        let font = any_system_font();
+        let input = block(0.0, 0.0, 80.0, 200.0, "antidisestablishmentarianism");
+        assert!(
+            font_size_constraints(&input, seed_layout_box(&input), 12.0, None)
+                .0
+                .is_none()
+        );
+        let layout = run_layout_at(
+            &TextLayout::new(&font, None),
+            &input.translation,
+            seed_layout_box(&input),
+            24.0,
+            false,
+        )?;
+        assert!(layout.lines.len() > 1);
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_full_body_sculpt_fits_the_final_source_region() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let source = Transform {
+            x: 100.0,
+            y: 200.0,
+            width: 208.0,
+            height: 39.0,
+            rotation_deg: 0.0,
+        };
+        let block = automatic_test_block(
+            &renderer,
+            source,
+            "Full-Body Sculpt",
+            39.0,
+            54.222416,
+            TextDirection::Horizontal,
+        );
+        let font = test_block_font(&renderer, &block);
+        let (safe_size, expected) = expected_safe_raster(
+            &renderer,
+            &font,
+            &block,
+            WritingMode::Horizontal,
+            12.0,
+            34.0,
+        )?;
+        assert!(safe_size < 34.0, "fixture must exercise down-fitting");
+
+        let output =
+            render_automatic_test_blocks(&renderer, std::slice::from_ref(&block), 790, 1023, -5.0)?;
+        let rendered = output.blocks.first().expect("automatic block must render");
+        assert_eq!(rendered.sprite.dimensions(), expected);
+        assert!(rendered.sprite.width() <= source.width as u32);
+        assert!(rendered.sprite.height() <= source.height as u32);
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_automatic_bold_preserves_complete_effect_ink() -> Result<()> {
+        assert_source_relative_effect_surface(TextShaderEffect {
+            bold: true,
+            italic: false,
+        })
+    }
+
+    #[test]
+    fn han_only_automatic_italic_preserves_complete_effect_ink() -> Result<()> {
+        assert_source_relative_effect_surface(TextShaderEffect {
+            bold: false,
+            italic: true,
+        })
+    }
+
+    #[test]
+    fn han_only_automatic_bold_italic_preserves_complete_effect_ink() -> Result<()> {
+        assert_source_relative_effect_surface(TextShaderEffect {
+            bold: true,
+            italic: true,
+        })
+    }
+
+    #[test]
+    fn han_only_automatic_effect_surface_matrix_preserves_complete_ink() -> Result<()> {
+        let cases = [
+            (
+                "stroke bold",
+                TextShaderEffect {
+                    bold: true,
+                    italic: false,
+                },
+                Some(3.0),
+                TextDirection::Horizontal,
+                "Effect",
+                42.0,
+            ),
+            (
+                "stroke italic",
+                TextShaderEffect {
+                    bold: false,
+                    italic: true,
+                },
+                Some(3.0),
+                TextDirection::Horizontal,
+                "Effect",
+                42.0,
+            ),
+            (
+                "vertical italic",
+                TextShaderEffect {
+                    bold: false,
+                    italic: true,
+                },
+                None,
+                TextDirection::Vertical,
+                "AB",
+                42.0,
+            ),
+            (
+                "multiline bold",
+                TextShaderEffect {
+                    bold: true,
+                    italic: false,
+                },
+                None,
+                TextDirection::Horizontal,
+                "Line\nTwo",
+                42.0,
+            ),
+            (
+                "single glyph minimum slant",
+                TextShaderEffect {
+                    bold: false,
+                    italic: true,
+                },
+                None,
+                TextDirection::Horizontal,
+                "I",
+                12.0,
+            ),
+        ];
+
+        for (name, effect, stroke_width, direction, text, font_size) in cases {
+            assert_source_relative_effect_surface_case(
+                name,
+                effect,
+                stroke_width,
+                direction,
+                text,
+                font_size,
+            )
+            .with_context(|| name.to_string())?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_relative_preflight_does_not_raster() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let block = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 208.0,
+                height: 39.0,
+                rotation_deg: 0.0,
+            },
+            "Full-Body Sculpt",
+            39.0,
+            54.222416,
+            TextDirection::Horizontal,
+        );
+        let resolved_box = resolve_layout_boxes(std::slice::from_ref(&block), None)[0];
+        clear_raster_trace();
+        renderer
+            .prepare_source_relative_automatic(
+                &block,
+                resolved_box,
+                &PageRenderOptions {
+                    target_language: Some("en".into()),
+                    ..Default::default()
+                },
+                SourceRelativeFontSizePolicy {
+                    offset: -5.0,
+                    prefer_detected: true,
+                },
+                min_font_size_for_image(790, 1023),
+            )?
+            .expect("automatic block must prepare");
+
+        assert!(raster_trace().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn source_relative_full_render_rasters_each_successful_node_once() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let first = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 20.0,
+                y: 20.0,
+                width: 208.0,
+                height: 39.0,
+                rotation_deg: 0.0,
+            },
+            "Full-Body Sculpt",
+            39.0,
+            54.222416,
+            TextDirection::Horizontal,
+        );
+        let second = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 260.0,
+                y: 20.0,
+                width: 180.0,
+                height: 39.0,
+                rotation_deg: 0.0,
+            },
+            "Peach Hip",
+            39.0,
+            48.0,
+            TextDirection::Horizontal,
+        );
+
+        clear_raster_trace();
+        let one =
+            render_automatic_test_blocks(&renderer, std::slice::from_ref(&first), 790, 1023, -5.0)?;
+        assert_eq!(
+            one.blocks
+                .iter()
+                .map(|block| block.node_id)
+                .collect::<Vec<_>>(),
+            vec![first.node_id]
+        );
+        let one_trace = raster_trace();
+        assert_eq!(one_trace.len(), 1);
+        assert_eq!(one_trace[0].node_id, first.node_id);
+        assert_eq!(one_trace[0].path, RasterPath::SourceRelative);
+
+        clear_raster_trace();
+        let many = render_automatic_test_blocks(
+            &renderer,
+            &[first.clone(), second.clone()],
+            790,
+            1023,
+            -5.0,
+        )?;
+        assert_eq!(
+            many.blocks
+                .iter()
+                .map(|block| block.node_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([first.node_id, second.node_id])
+        );
+        let trace = raster_trace();
+        for node_id in [first.node_id, second.node_id] {
+            assert_eq!(
+                trace
+                    .iter()
+                    .filter(|entry| {
+                        entry.node_id == node_id && entry.path == RasterPath::SourceRelative
+                    })
+                    .count(),
+                1,
+                "node {node_id} must raster exactly once"
+            );
+        }
+        assert_eq!(trace.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_real_renders_are_not_recorded_as_successes() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let font = any_system_font();
+        let shaped = TextLayout::new(&font, None)
+            .with_font_size(24.0)
+            .run("Real glyphs")?;
+        assert!(shaped.width > 0.0);
+        assert!(shaped.height > 0.0);
+
+        let mut invalid = shaped.clone();
+        invalid.width = 0.0;
+        assert!(invalid.height > 0.0);
+        assert!(!invalid.lines.is_empty());
+        assert!(invalid.lines.iter().any(|line| !line.glyphs.is_empty()));
+
+        let cases = [
+            (NodeId::new(), RasterPath::SourceRelative),
+            (NodeId::new(), RasterPath::Legacy),
+        ];
+        clear_raster_trace();
+        for (node_id, path) in cases {
+            let error = renderer
+                .render_layout(
+                    &invalid,
+                    WritingMode::Horizontal,
+                    &RenderOptions {
+                        font_size: invalid.font_size,
+                        effect: RendererEffect::default(),
+                        stroke: None,
+                        padding: 0.0,
+                        ..Default::default()
+                    },
+                    node_id,
+                    path,
+                )
+                .expect_err("zero-width layout must reach the real renderer failure");
+            let message = format!("{error:#}");
+            let height = message
+                .strip_prefix("invalid surface size 0x")
+                .and_then(|height| height.parse::<u32>().ok())
+                .expect("real renderer error must contain the exact zero-width prefix");
+            assert!(height > 0);
+        }
+
+        let trace = raster_trace();
+        for (node_id, path) in cases {
+            assert_eq!(
+                trace
+                    .iter()
+                    .filter(|entry| entry.node_id == node_id && entry.path == path)
+                    .count(),
+                0,
+                "failed {path:?} raster must not be recorded as successful"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn render_page_keeps_manual_explicit_and_out_of_auto_group() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let row = Transform {
+            x: 20.0,
+            y: 40.0,
+            width: 180.0,
+            height: 60.0,
+            rotation_deg: 0.0,
+        };
+        let left = automatic_test_block(
+            &renderer,
+            row,
+            "Slim",
+            50.0,
+            50.0,
+            TextDirection::Horizontal,
+        );
+        let right = automatic_test_block(
+            &renderer,
+            Transform { x: 240.0, ..row },
+            "Full-Body Sculpt Collection",
+            60.0,
+            60.0,
+            TextDirection::Horizontal,
+        );
+        let mut manual = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 460.0,
+                width: 80.0,
+                ..row
+            },
+            "M",
+            8.0,
+            8.0,
+            TextDirection::Horizontal,
+        );
+        manual.style.as_mut().expect("manual style").font_size = Some(8.0);
+        let mut vertical = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 600.0,
+                y: 30.0,
+                width: 70.0,
+                height: 240.0,
+                rotation_deg: 0.0,
+            },
+            "縦書き",
+            52.0,
+            52.0,
+            TextDirection::Vertical,
+        );
+        vertical.source_transform = Transform {
+            x: 600.0,
+            y: 40.0,
+            width: 70.0,
+            height: 60.0,
+            rotation_deg: 0.0,
+        };
+        let other_row = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 20.0,
+                y: 330.0,
+                width: 220.0,
+                height: 70.0,
+                rotation_deg: 0.0,
+            },
+            "Other",
+            42.0,
+            42.0,
+            TextDirection::Horizontal,
+        );
+        let automatic_ids = [
+            left.node_id,
+            right.node_id,
+            vertical.node_id,
+            other_row.node_id,
+        ];
+
+        clear_raster_trace();
+        let with_manual = render_automatic_test_blocks(
+            &renderer,
+            &[
+                left.clone(),
+                right.clone(),
+                manual.clone(),
+                vertical.clone(),
+                other_row.clone(),
+            ],
+            900,
+            500,
+            -5.0,
+        )?;
+        assert_eq!(
+            with_manual
+                .blocks
+                .iter()
+                .map(|block| block.node_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from([
+                left.node_id,
+                right.node_id,
+                manual.node_id,
+                vertical.node_id,
+                other_row.node_id,
+            ])
+        );
+        let with_manual_trace = raster_trace();
+        assert_eq!(
+            with_manual_trace
+                .iter()
+                .find(|entry| entry.node_id == manual.node_id),
+            Some(&RasterTrace {
+                node_id: manual.node_id,
+                path: RasterPath::Legacy,
+                font_size: 8.0,
+            })
+        );
+        let with_manual_auto = automatic_ids
+            .into_iter()
+            .map(|node_id| {
+                let entry = with_manual_trace
+                    .iter()
+                    .find(|entry| {
+                        entry.node_id == node_id && entry.path == RasterPath::SourceRelative
+                    })
+                    .expect("every automatic node must raster");
+                (node_id, entry.font_size)
+            })
+            .collect::<HashMap<_, _>>();
+
+        clear_raster_trace();
+        let without_manual = render_automatic_test_blocks(
+            &renderer,
+            &[
+                left.clone(),
+                right.clone(),
+                vertical.clone(),
+                other_row.clone(),
+            ],
+            900,
+            500,
+            -5.0,
+        )?;
+        assert_eq!(
+            without_manual
+                .blocks
+                .iter()
+                .map(|block| block.node_id)
+                .collect::<HashSet<_>>(),
+            HashSet::from(automatic_ids)
+        );
+        let without_manual_trace = raster_trace();
+        let without_manual_auto = automatic_ids
+            .into_iter()
+            .map(|node_id| {
+                let entry = without_manual_trace
+                    .iter()
+                    .find(|entry| {
+                        entry.node_id == node_id && entry.path == RasterPath::SourceRelative
+                    })
+                    .expect("every automatic node must raster");
+                (node_id, entry.font_size)
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(with_manual_auto, without_manual_auto);
+        assert_eq!(
+            with_manual_auto[&left.node_id],
+            with_manual_auto[&right.node_id]
+        );
+        assert_ne!(
+            with_manual_auto[&vertical.node_id],
+            with_manual_auto[&left.node_id]
+        );
+        assert_ne!(
+            with_manual_auto[&other_row.node_id],
+            with_manual_auto[&left.node_id]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_longer_translations_choose_nonincreasing_safe_sizes() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let source = Transform {
+            x: 0.0,
+            y: 0.0,
+            width: 208.0,
+            height: 39.0,
+            rotation_deg: 0.0,
+        };
+        let texts = ["Sculpt", "Body Sculpt", "Full-Body Sculpt Collection"];
+        let mut selected = Vec::new();
+        for text in texts {
+            let block = automatic_test_block(
+                &renderer,
+                source,
+                text,
+                39.0,
+                54.222416,
+                TextDirection::Horizontal,
+            );
+            let font = test_block_font(&renderer, &block);
+            let (safe_size, expected) = expected_safe_raster(
+                &renderer,
+                &font,
+                &block,
+                WritingMode::Horizontal,
+                12.0,
+                34.0,
+            )?;
+            let output = render_automatic_test_blocks(
+                &renderer,
+                std::slice::from_ref(&block),
+                790,
+                1023,
+                -5.0,
+            )?;
+            assert_eq!(
+                output.blocks[0].sprite.dimensions(),
+                expected,
+                "text={text}"
+            );
+            selected.push(safe_size);
+        }
+        assert!(selected.windows(2).all(|pair| pair[0] >= pair[1]));
+        assert!(selected[1] > selected[2]);
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_equivalent_two_x_geometry_scales_without_a_sample_size_constant() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let one_x = Transform {
+            x: 0.0,
+            y: 0.0,
+            width: 160.0,
+            height: 40.0,
+            rotation_deg: 0.0,
+        };
+        let two_x = Transform {
+            width: 320.0,
+            height: 80.0,
+            ..one_x
+        };
+        let one = automatic_test_block(
+            &renderer,
+            one_x,
+            "Body Sculpt",
+            32.0,
+            32.0,
+            TextDirection::Horizontal,
+        );
+        let two = automatic_test_block(
+            &renderer,
+            two_x,
+            "Body Sculpt",
+            64.0,
+            64.0,
+            TextDirection::Horizontal,
+        );
+        let one_output = render_automatic_test_blocks(&renderer, &[one], 400, 200, 0.0)?;
+        let two_output = render_automatic_test_blocks(&renderer, &[two], 800, 400, 0.0)?;
+        let (one_w, one_h) = one_output.blocks[0].sprite.dimensions();
+        let (two_w, two_h) = two_output.blocks[0].sprite.dimensions();
+        let width_ratio = two_w as f32 / one_w as f32;
+        let height_ratio = two_h as f32 / one_h as f32;
+        assert!((1.7..=2.2).contains(&width_ratio), "ratio={width_ratio}");
+        assert!((1.7..=2.2).contains(&height_ratio), "ratio={height_ratio}");
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_vertical_fit_uses_physical_source_axes() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let source = Transform {
+            x: 0.0,
+            y: 0.0,
+            width: 39.0,
+            height: 208.0,
+            rotation_deg: 0.0,
+        };
+        let block = automatic_test_block(
+            &renderer,
+            source,
+            "縦書き文字",
+            39.0,
+            39.0,
+            TextDirection::Vertical,
+        );
+        let font = test_block_font(&renderer, &block);
+        let (_, expected) = expected_safe_raster(
+            &renderer,
+            &font,
+            &block,
+            WritingMode::VerticalRl,
+            12.0,
+            39.0,
+        )?;
+        let output =
+            render_automatic_test_blocks(&renderer, std::slice::from_ref(&block), 200, 400, 0.0)?;
+        assert_eq!(output.blocks[0].sprite.dimensions(), expected);
+        assert!(output.blocks[0].sprite.width() <= source.width as u32);
+        assert!(output.blocks[0].sprite.height() <= source.height as u32);
+        Ok(())
+    }
+
+    #[test]
+    fn horizontal_group_uses_minimum_independent_safe_size_and_is_order_invariant() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let source = Transform {
+            x: 0.0,
+            y: 20.0,
+            width: 208.0,
+            height: 39.0,
+            rotation_deg: 0.0,
+        };
+        let left = automatic_test_block(
+            &renderer,
+            source,
+            "Slim",
+            39.0,
+            39.0,
+            TextDirection::Horizontal,
+        );
+        let right = automatic_test_block(
+            &renderer,
+            Transform { x: 220.0, ..source },
+            "Full-Body Sculpt",
+            60.0,
+            60.0,
+            TextDirection::Horizontal,
+        );
+        let left_font = test_block_font(&renderer, &left);
+        let right_font = test_block_font(&renderer, &right);
+        let (left_safe, _) = expected_safe_raster(
+            &renderer,
+            &left_font,
+            &left,
+            WritingMode::Horizontal,
+            12.0,
+            34.0,
+        )?;
+        let (right_safe, _) = expected_safe_raster(
+            &renderer,
+            &right_font,
+            &right,
+            WritingMode::Horizontal,
+            12.0,
+            55.0,
+        )?;
+        let group_size = left_safe.min(right_safe);
+        let expected = HashMap::from([
+            (
+                left.node_id,
+                predicted_raster_at_size(
+                    &renderer,
+                    &left_font,
+                    &left,
+                    WritingMode::Horizontal,
+                    group_size,
+                )?,
+            ),
+            (
+                right.node_id,
+                predicted_raster_at_size(
+                    &renderer,
+                    &right_font,
+                    &right,
+                    WritingMode::Horizontal,
+                    group_size,
+                )?,
+            ),
+        ]);
+
+        let first = render_automatic_test_blocks(
+            &renderer,
+            &[left.clone(), right.clone()],
+            500,
+            120,
+            -5.0,
+        )?;
+        let second = render_automatic_test_blocks(&renderer, &[right, left], 500, 120, -5.0)?;
+        for output in [first, second] {
+            let actual = output
+                .blocks
+                .into_iter()
+                .map(|block| (block.node_id, block.sprite.dimensions()))
+                .collect::<HashMap<_, _>>();
+            assert_eq!(actual, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_cap_below_readability_floor_returns_no_fit() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let block = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 4.0,
+                height: 4.0,
+                rotation_deg: 0.0,
+            },
+            "text",
+            5.0,
+            5.0,
+            TextDirection::Horizontal,
+        );
+        let error = render_automatic_test_blocks(&renderer, &[block], 100, 100, -5.0)
+            .err()
+            .expect("cap below the readability floor must be a direct no-fit");
+        assert!(error.to_string().contains("fit"));
         Ok(())
     }
 
@@ -1782,9 +3494,278 @@ mod tests {
         ));
     }
 
+    fn automatic_test_block(
+        renderer: &Renderer,
+        transform: Transform,
+        translation: &str,
+        detected_font_size_px: f32,
+        predicted_font_size_px: f32,
+        direction: TextDirection,
+    ) -> RenderBlockInput {
+        let font = test_font_post_script_name(
+            &renderer
+                .fontbook
+                .lock()
+                .expect("failed to lock renderer fontbook")
+                .all_families(),
+        );
+        RenderBlockInput {
+            node_id: NodeId::new(),
+            source_transform: transform,
+            transform,
+            translation: translation.to_string(),
+            style: Some(TextStyle {
+                font_families: vec![font],
+                font_size: None,
+                color: [255, 255, 255, 255],
+                effect: None,
+                stroke: Some(TextStrokeStyle {
+                    enabled: true,
+                    color: [0, 0, 0, 255],
+                    width_px: None,
+                }),
+                text_align: None,
+            }),
+            font_prediction: Some(FontPrediction {
+                font_size_px: predicted_font_size_px,
+                ..Default::default()
+            }),
+            detected_font_size_px: Some(detected_font_size_px),
+            source_direction: Some(direction),
+            rendered_direction: None,
+            lock_layout_box: true,
+            preserve_explicit_lines: true,
+            typography_plan_verified: false,
+        }
+    }
+
+    fn test_block_font(renderer: &Renderer, block: &RenderBlockInput) -> Font {
+        renderer
+            .select_font(block.style.as_ref().expect("test style"))
+            .expect("test font must resolve")
+    }
+
+    fn render_automatic_test_blocks(
+        renderer: &Renderer,
+        blocks: &[RenderBlockInput],
+        image_width: u32,
+        image_height: u32,
+        offset: f32,
+    ) -> Result<RenderOutput> {
+        renderer.render_page(
+            &DynamicImage::new_rgba8(image_width, image_height),
+            None,
+            None,
+            image_width,
+            image_height,
+            blocks,
+            &PageRenderOptions {
+                source_relative_font_size_policy: Some(SourceRelativeFontSizePolicy {
+                    offset,
+                    prefer_detected: true,
+                }),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn assert_source_relative_effect_surface(effect: TextShaderEffect) -> Result<()> {
+        assert_source_relative_effect_surface_case(
+            "horizontal effect",
+            effect,
+            None,
+            TextDirection::Horizontal,
+            "Effect",
+            42.0,
+        )
+    }
+
+    fn assert_source_relative_effect_surface_case(
+        name: &str,
+        effect: TextShaderEffect,
+        stroke_width: Option<f32>,
+        direction: TextDirection,
+        text: &str,
+        font_size: f32,
+    ) -> Result<()> {
+        const REFERENCE_PADDING: f32 = 16.0;
+        const ALPHA_RESAMPLING_TOLERANCE_DIVISOR: u64 = 100_000;
+
+        let renderer = Renderer::new()?;
+        let source = match direction {
+            TextDirection::Horizontal => Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 240.0,
+                height: 96.0,
+                rotation_deg: 0.0,
+            },
+            TextDirection::Vertical => Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 96.0,
+                height: 420.0,
+                rotation_deg: 0.0,
+            },
+        };
+        let mut block =
+            automatic_test_block(&renderer, source, text, font_size, font_size, direction);
+        let style = block.style.as_mut().expect("test style");
+        style.effect = Some(effect);
+        style.stroke = stroke_width.map(|width_px| TextStrokeStyle {
+            enabled: true,
+            color: [0, 0, 0, 255],
+            width_px: Some(width_px),
+        });
+        let color = style.color;
+        block
+            .font_prediction
+            .as_mut()
+            .expect("test prediction")
+            .stroke_width_px = 0.0;
+
+        let resolved_box = resolve_layout_boxes(std::slice::from_ref(&block), None)[0];
+        let prepared = renderer
+            .prepare_source_relative_automatic(
+                &block,
+                resolved_box,
+                &PageRenderOptions::default(),
+                SourceRelativeFontSizePolicy {
+                    offset: 0.0,
+                    prefer_detected: true,
+                },
+                12.0,
+            )?
+            .expect("automatic block must prepare");
+        let final_size = prepared.independent_font_size;
+        let layout_builder = automatic_layout_builder(
+            &prepared.font,
+            &renderer.symbol_fallbacks,
+            prepared.writing_mode,
+            prepared.align,
+            None,
+        );
+        let layout = run_layout_at(
+            &layout_builder,
+            &block.translation,
+            prepared.layout_box,
+            final_size,
+            true,
+        )?;
+        let resolved_stroke = resolve_stroke_style(
+            block.font_prediction.as_ref(),
+            block.style.as_ref().and_then(|style| style.stroke.as_ref()),
+            None,
+            final_size,
+            color,
+        );
+        let predicted = source_relative_raster_dimensions(&layout, resolved_stroke, effect)
+            .expect("effect surface dimensions must be valid");
+        let reference = renderer.renderer.render(
+            &layout,
+            prepared.writing_mode,
+            &RenderOptions {
+                font_size: final_size,
+                color,
+                effect: shader_core_to_renderer(effect),
+                stroke: resolved_stroke,
+                padding: REFERENCE_PADDING,
+                ..Default::default()
+            },
+        )?;
+        let rendered = renderer.render_prepared_source_relative(
+            &block,
+            &prepared,
+            final_size,
+            None,
+            RasterOptions::default(),
+        )?;
+        assert_eq!(
+            rendered.sprite.dimensions(),
+            (predicted.0, predicted.1),
+            "{name}: preflight and final raster must use the same effect-aware surface dimensions"
+        );
+        assert!(rendered.sprite.width() <= source.width as u32);
+        assert!(rendered.sprite.height() <= source.height as u32);
+        let rendered_alpha = alpha_coverage(&rendered.sprite.to_rgba8());
+        let reference_alpha = alpha_coverage(&reference);
+        // Lanczos downsampling may shift a tiny amount of alpha at glyph edges.
+        let resampling_tolerance = reference_alpha / ALPHA_RESAMPLING_TOLERANCE_DIVISOR + 1;
+        assert!(
+            rendered_alpha + resampling_tolerance >= reference_alpha,
+            "{name}: predicted surface clipped effect ink: rendered alpha {rendered_alpha}, reference alpha {reference_alpha}"
+        );
+        Ok(())
+    }
+
+    fn alpha_coverage(image: &RgbaImage) -> u64 {
+        image.pixels().map(|pixel| u64::from(pixel.0[3])).sum()
+    }
+
+    fn expected_safe_raster(
+        renderer: &Renderer,
+        font: &Font,
+        block: &RenderBlockInput,
+        writing_mode: WritingMode,
+        min_size: f32,
+        cap: f32,
+    ) -> Result<(f32, (u32, u32))> {
+        let minimum = min_size.ceil() as i32;
+        let maximum = cap.floor() as i32;
+        anyhow::ensure!(maximum >= minimum, "no fit below readability floor");
+        for size in (minimum..=maximum).rev() {
+            let dimensions =
+                predicted_raster_at_size(renderer, font, block, writing_mode, size as f32)?;
+            if dimensions.0 <= block.source_transform.width.floor() as u32
+                && dimensions.1 <= block.source_transform.height.floor() as u32
+            {
+                return Ok((size as f32, dimensions));
+            }
+        }
+        anyhow::bail!("no fit at readability floor")
+    }
+
+    fn predicted_raster_at_size(
+        renderer: &Renderer,
+        font: &Font,
+        block: &RenderBlockInput,
+        writing_mode: WritingMode,
+        size: f32,
+    ) -> Result<(u32, u32)> {
+        let layout = run_layout_at(
+            &TextLayout::new(font, None)
+                .with_fallback_fonts(&renderer.symbol_fallbacks)
+                .with_writing_mode(writing_mode)
+                .with_alignment(RendererTextAlign::Center),
+            &block.translation,
+            seed_layout_box(block),
+            size,
+            block.preserve_explicit_lines,
+        )?;
+        let style = block.style.as_ref().expect("test style");
+        let padding = stroke_padding(resolve_stroke_style(
+            block.font_prediction.as_ref(),
+            style.stroke.as_ref(),
+            None,
+            size,
+            style.color,
+        ));
+        Ok((
+            (layout.width + padding * 2.0).ceil() as u32,
+            (layout.height + padding * 2.0).ceil() as u32,
+        ))
+    }
+
     fn block(x: f32, y: f32, width: f32, height: f32, translation: &str) -> RenderBlockInput {
         RenderBlockInput {
             node_id: NodeId::new(),
+            source_transform: Transform {
+                x,
+                y,
+                width,
+                height,
+                rotation_deg: 0.0,
+            },
             transform: Transform {
                 x,
                 y,
@@ -1795,6 +3776,7 @@ mod tests {
             translation: translation.to_string(),
             style: None,
             font_prediction: None,
+            detected_font_size_px: None,
             source_direction: None,
             rendered_direction: None,
             lock_layout_box: false,
@@ -1862,6 +3844,7 @@ mod tests {
 
         Ok(RenderBlockInput {
             node_id: NodeId::new(),
+            source_transform: transform,
             transform,
             translation: translation.to_string(),
             style: Some(TextStyle {
@@ -1877,6 +3860,7 @@ mod tests {
                 text_align: None,
             }),
             font_prediction: None,
+            detected_font_size_px: None,
             source_direction: Some(direction),
             rendered_direction: None,
             lock_layout_box: false,

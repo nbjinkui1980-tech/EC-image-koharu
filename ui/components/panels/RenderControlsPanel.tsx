@@ -18,13 +18,7 @@ import { Button } from '@/components/ui/button'
 import { ColorPicker } from '@/components/ui/color-picker'
 import { FontSelect, useGoogleFontPreview } from '@/components/ui/font-select'
 import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { VariantItem } from '@/components/ui/variant-item'
 import {
@@ -40,6 +34,7 @@ import {
   getGetSceneJsonQueryKey,
   getSceneJson,
   getListFontsQueryKey,
+  useGetConfig,
   useGetGoogleFontsCatalog,
   useListFonts,
 } from '@/lib/api'
@@ -73,7 +68,57 @@ const DEFAULT_STROKE_WIDTH = 1.6
 const MIN_STROKE_WIDTH = 0.2
 const MAX_STROKE_WIDTH = 24
 const STROKE_WIDTH_STEP = 0.1
+const F32_EPSILON = 2 ** -23
 const GOOGLE_FONTS_CATALOG_ATTEMPTED_QUERY_KEY = ['ui', 'google-fonts-catalog-attempted'] as const
+const SOURCE_RELATIVE_LANGUAGE_ALIASES = new Map(
+  [
+    'zh|Simplified Chinese,zh-CN,zh,zh-Hans',
+    'en|English,en-US,en',
+    'fr|French,fr-FR,fr',
+    'pt|Portuguese,pt-PT,pt',
+    'pt|Brazilian Portuguese,pt-BR',
+    'es|Spanish,es-ES,es',
+    'ja|Japanese,ja-JP,ja',
+    'tr|Turkish,tr-TR,tr',
+    'ru|Russian,ru-RU,ru',
+    'ar|Arabic,ar-SA,ar',
+    'ko|Korean,ko-KR,ko',
+    'th|Thai,th-TH,th',
+    'it|Italian,it-IT,it',
+    'de|German,de-DE,de',
+    'vi|Vietnamese,vi-VN,vi',
+    'ms|Malay,ms-MY,ms',
+    'id|Indonesian,id-ID,id',
+    'fil|Filipino,fil-PH,fil,tl',
+    'hi|Hindi,hi-IN,hi',
+    'zh|Traditional Chinese,zh-TW,zh-Hant',
+    'pl|Polish,pl-PL,pl',
+    'cs|Czech,cs-CZ,cs',
+    'nl|Dutch,nl-NL,nl',
+    'km|Khmer,km-KH,km',
+    'my|Burmese,my-MM,my',
+    'fa|Persian,fa-IR,fa',
+    'gu|Gujarati,gu-IN,gu',
+    'ur|Urdu,ur-PK,ur',
+    'te|Telugu,te-IN,te',
+    'mr|Marathi,mr-IN,mr',
+    'he|Hebrew,he-IL,he',
+    'bn|Bengali,bn-BD,bn',
+    'bg|Bulgarian,bg-BG,bg',
+    'ta|Tamil,ta-IN,ta',
+    'uk|Ukrainian,uk-UA,uk',
+    'bo|Tibetan,bo-CN,bo',
+    'kk|Kazakh,kk-KZ,kk',
+    'mn|Mongolian,mn-MN,mn',
+    'ug|Uyghur,ug-CN,ug',
+    'yue|Cantonese,yue-HK,yue',
+    'be|Belarusian,be-BY,be',
+    'hu|Hungarian,hu-HU,hu',
+  ].flatMap((entry) => {
+    const [code, aliases] = entry.split('|')
+    return aliases.split(',').map((alias) => [alias, code] as const)
+  }),
+)
 
 const DEFAULT_FONT_FACES: FontFaceInfo[] = [
   {
@@ -138,6 +183,217 @@ const effectiveColorOf = (style?: TextStyle | null, prediction?: FontPrediction 
 
 const hasExplicitColor = (node: TextNodeEntry) => Array.isArray(node.data.style?.color)
 
+const canonicalSourceLanguageCode = (value?: string) =>
+  value === undefined ? undefined : SOURCE_RELATIVE_LANGUAGE_ALIASES.get(value.trim())
+
+const positiveFinite = (value?: number | null) =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+
+type SourceLayoutBox = { width: number; height: number }
+type Bbox = [number, number, number, number]
+
+const hasHan = (value: string) => /\p{Script=Han}/u.test(value)
+
+const hasProtectedLatinWord = (value: string) => {
+  let letters = 0
+  for (const char of value) {
+    if (/\p{Script=Latin}/u.test(char) && /\p{Letter}/u.test(char)) {
+      letters += 1
+    } else if ((char === '-' || char === "'" || char === '’') && letters > 0) {
+      continue
+    } else {
+      if (letters >= 2) return true
+      letters = 0
+    }
+  }
+  return letters >= 2
+}
+
+const intersectBbox = (left: Bbox, right: Bbox): Bbox | undefined => {
+  const bbox: Bbox = [
+    Math.max(left[0], right[0]),
+    Math.max(left[1], right[1]),
+    Math.min(left[2], right[2]),
+    Math.min(left[3], right[3]),
+  ]
+  return bbox[2] > bbox[0] && bbox[3] > bbox[1] ? bbox : undefined
+}
+
+const sourceNodeBbox = (node: TextNodeEntry, pageWidth: number, pageHeight: number) => {
+  const { x, y, width, height, rotationDeg = 0 } = node.transform
+  if (![x, y, width, height, rotationDeg].every(Number.isFinite)) return undefined
+  if (width <= 0 || height <= 0 || rotationDeg !== 0) return undefined
+  return intersectBbox([x, y, x + width, y + height], [0, 0, pageWidth, pageHeight])
+}
+
+const sourceLineBbox = (quad: number[][], nodeBbox: Bbox): Bbox | undefined => {
+  if (quad.length !== 4 || quad.some((point) => point.length !== 2)) return undefined
+  if (quad.flat().some((value) => !Number.isFinite(value))) return undefined
+  if (
+    quad.some((point, index) => {
+      const next = quad[(index + 1) % 4]
+      return point[0] !== next[0] && point[1] !== next[1]
+    })
+  ) {
+    return undefined
+  }
+  const area =
+    Math.abs(
+      quad.reduce((sum, point, index) => {
+        const next = quad[(index + 1) % 4]
+        return sum + point[0] * next[1] - next[0] * point[1]
+      }, 0),
+    ) * 0.5
+  if (area <= F32_EPSILON) return undefined
+  const xs = quad.map((point) => point[0])
+  const ys = quad.map((point) => point[1])
+  return intersectBbox(
+    [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+    nodeBbox,
+  )
+}
+
+const eligibleSourceLayout = (
+  node: TextNodeEntry,
+  pageWidth: number,
+  pageHeight: number,
+): SourceLayoutBox | undefined => {
+  const sourceLines = (node.data.text ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (sourceLines.length === 0) return undefined
+  if (sourceLines.some((line) => hasHan(line) && hasProtectedLatinWord(line))) return undefined
+  const nodeBbox = sourceNodeBbox(node, pageWidth, pageHeight)
+  if (!nodeBbox) return undefined
+  const hanLines = sourceLines.map(hasHan)
+  const hanCount = hanLines.filter(Boolean).length
+  if (hanCount === 0) return undefined
+
+  const polygons = node.data.linePolygons
+  const boxes =
+    polygons?.length === sourceLines.length
+      ? polygons.map((quad) => sourceLineBbox(quad, nodeBbox))
+      : undefined
+  const safeBoxes = boxes?.every((box) => box !== undefined) ? (boxes as Bbox[]) : undefined
+  let eligibleBoxes: Bbox[]
+  if (hanCount !== sourceLines.length) {
+    if (
+      node.data.rotationDeg !== null &&
+      node.data.rotationDeg !== undefined &&
+      (!Number.isFinite(node.data.rotationDeg) || node.data.rotationDeg !== 0)
+    ) {
+      return undefined
+    }
+    if (!safeBoxes) return undefined
+    eligibleBoxes = safeBoxes.filter((_, index) => hanLines[index])
+  } else {
+    eligibleBoxes = safeBoxes ?? sourceLines.map(() => nodeBbox)
+  }
+
+  const translatedLineCount = (node.data.translation ?? '')
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0).length
+  if (translatedLineCount !== eligibleBoxes.length) return undefined
+  const union = eligibleBoxes.reduce<Bbox>(
+    (bbox, line) => [
+      Math.min(bbox[0], line[0]),
+      Math.min(bbox[1], line[1]),
+      Math.max(bbox[2], line[2]),
+      Math.max(bbox[3], line[3]),
+    ],
+    [Infinity, Infinity, -Infinity, -Infinity],
+  )
+  return { width: union[2] - union[0], height: union[3] - union[1] }
+}
+
+const automaticSourceSize = (
+  node: TextNodeEntry,
+  layout: SourceLayoutBox,
+  languageCode: string,
+  minFontSize: number,
+) => {
+  const predicted = positiveFinite(node.data.fontPrediction?.fontSizePx)
+  const detected = positiveFinite(node.data.detectedFontSizePx)
+  const autoMax = Math.min(layout.height * 0.45, layout.width * 0.9)
+  const boxFallback = Math.max(minFontSize + 1, Math.min(72, autoMax))
+  const source =
+    languageCode === 'en'
+      ? (detected ?? predicted ?? boxFallback)
+      : (predicted ?? detected ?? boxFallback)
+  return Math.max(1, source + (languageCode === 'ja' || languageCode === 'ko' ? 0 : -5))
+}
+
+const isAutomaticSourceNode = (node: TextNodeEntry) =>
+  Boolean(node.data.translation?.trim()) &&
+  !(positiveFinite(node.data.style?.fontSize) !== undefined && !node.data.typographyPlanVerified)
+
+const sameSourceRow = (left: TextNodeEntry, right: TextNodeEntry) => {
+  const values = [
+    left.transform.y,
+    left.transform.height,
+    right.transform.y,
+    right.transform.height,
+  ]
+  if (values.some((value) => !Number.isFinite(value))) return false
+  if (left.transform.height <= 0 || right.transform.height <= 0) return false
+  const centerDelta = Math.abs(
+    left.transform.y +
+      left.transform.height * 0.5 -
+      (right.transform.y + right.transform.height * 0.5),
+  )
+  return centerDelta <= Math.max(4, Math.min(left.transform.height, right.transform.height) * 0.25)
+}
+
+const groupedAutomaticSourceSizes = (
+  nodes: TextNodeEntry[],
+  languageCode: string,
+  pageWidth: number,
+  pageHeight: number,
+) => {
+  const minFontSize = Math.max(12, Math.min(28, Math.max(pageWidth, pageHeight) / 90))
+  // ponytail: O(n²) is simpler for page-sized text-node sets; use spatial buckets if this grows.
+  const automatic = nodes
+    .filter(isAutomaticSourceNode)
+    .map((node) => ({ node, layout: eligibleSourceLayout(node, pageWidth, pageHeight) }))
+    .filter(
+      (entry): entry is { node: TextNodeEntry; layout: SourceLayoutBox } =>
+        entry.layout !== undefined,
+    )
+    .map(({ node, layout }) => ({
+      node,
+      size: automaticSourceSize(node, layout, languageCode, minFontSize),
+    }))
+    .sort((left, right) => left.node.id.localeCompare(right.node.id))
+  const sizes = new Map<string, number>()
+  const visited = new Set<number>()
+  for (let start = 0; start < automatic.length; start += 1) {
+    if (visited.has(start)) continue
+    visited.add(start)
+    const stack = [start]
+    const component: number[] = []
+    while (stack.length > 0) {
+      const index = stack.pop()!
+      component.push(index)
+      for (let other = 0; other < automatic.length; other += 1) {
+        if (
+          visited.has(other) ||
+          automatic[index].node.data.sourceDirection === 'vertical' ||
+          automatic[other].node.data.sourceDirection === 'vertical' ||
+          !sameSourceRow(automatic[index].node, automatic[other].node)
+        ) {
+          continue
+        }
+        visited.add(other)
+        stack.push(other)
+      }
+    }
+    const minimum = Math.min(...component.map((index) => automatic[index].size))
+    for (const index of component) sizes.set(automatic[index].node.id, minimum)
+  }
+  return sizes
+}
+
 export function RenderControlsPanel() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -145,6 +401,7 @@ export function RenderControlsPanel() {
   const textNodes = useTextNodes()
   const selectedNode = useSelectedTextNode()
   const selectedNodes = useSelectedTextNodes()
+  const { data: config } = useGetConfig()
   const { data: availableFonts = [] } = useListFonts()
   const [browseOnlineFonts, setBrowseOnlineFonts] = useState(false)
   const { data: googleFontCatalog } = useGetGoogleFontsCatalog({
@@ -172,6 +429,7 @@ export function RenderControlsPanel() {
   const favoriteFonts = usePreferencesStore((s) => s.favoriteFonts)
   const toggleFavoriteFont = usePreferencesStore((s) => s.toggleFavoriteFont)
   const renderEffect = useEditorUiStore((s) => s.renderEffect)
+  const selectedLanguage = useEditorUiStore((s) => s.selectedLanguage)
   const setRenderEffect = useEditorUiStore((s) => s.setRenderEffect)
   const setRenderStroke = useEditorUiStore((s) => s.setRenderStroke)
   const isProcessing = useJobsStore((state) =>
@@ -325,9 +583,23 @@ export function RenderControlsPanel() {
   const currentStrokeColorHex = colorToHex(currentStroke.color ?? DEFAULT_STROKE_COLOR)
   const currentStrokeWidth = currentStroke.widthPx ?? DEFAULT_STROKE_WIDTH
   const currentEffect = normalizeEffect(selectedStyle?.effect ?? renderEffect)
-  // The scene only persists manual overrides in `style.fontSize`. Font detector
-  // metadata describes the source text, not the renderer's current auto-fit size.
-  const currentFontSize: number | undefined = selectedNode?.data.style?.fontSize ?? undefined
+  const persistedFontSize = selectedNode?.data.style?.fontSize ?? undefined
+  const languageCode = canonicalSourceLanguageCode(selectedLanguage)
+  const sourceRelativeMode =
+    config?.pipeline?.source_text_policy === 'han_only' && languageCode !== undefined
+  const currentFontSize: number | undefined =
+    sourceRelativeMode && selectedNode?.data.typographyPlanVerified ? undefined : persistedFontSize
+  const displayedCurrentFontSize =
+    currentFontSize === undefined ? undefined : Number(currentFontSize.toFixed(1))
+  const groupedAutomaticFontSizes =
+    sourceRelativeMode && languageCode && page
+      ? groupedAutomaticSourceSizes(textNodes, languageCode, page.width, page.height)
+      : new Map<string, number>()
+  const sourceFontSize = selectedNode ? groupedAutomaticFontSizes.get(selectedNode.id) : undefined
+  const automaticFontSize =
+    currentFontSize === undefined && sourceRelativeMode && sourceFontSize !== undefined
+      ? Number(sourceFontSize.toFixed(1))
+      : undefined
 
   const effectiveAlign: TextAlign =
     selectedNode?.data.style?.textAlign ??
@@ -658,8 +930,17 @@ export function RenderControlsPanel() {
 
       {/* Size / Effect / Align */}
       <div className='grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-end gap-x-1.5'>
-        <span className='text-[10px] font-medium text-muted-foreground uppercase'>
-          {t('render.fontSizeLabel')}
+        <span className='flex items-center justify-between gap-1 text-[10px] font-medium text-muted-foreground uppercase'>
+          <span>{t('render.fontSizeLabel')}</span>
+          {automaticFontSize !== undefined && (
+            <span
+              className='font-normal normal-case'
+              data-size={automaticFontSize}
+              data-testid='render-font-size-auto-hint'
+            >
+              {t('render.fontSizeAutoHint', { size: automaticFontSize })}
+            </span>
+          )}
         </span>
         <span className='text-[10px] font-medium text-muted-foreground uppercase'>
           {t('render.effectLabel')}
@@ -674,9 +955,12 @@ export function RenderControlsPanel() {
             variant='ghost'
             size='icon-sm'
             className='size-6 shrink-0 rounded-r-none border-r'
+            data-testid='render-font-size-decrease'
             disabled={!selectedNode}
             onClick={() => {
-              const next = Math.max(6, Math.round((currentFontSize ?? 16) - 1))
+              const next = Number(
+                Math.max(6, (displayedCurrentFontSize ?? automaticFontSize ?? 16) - 1).toFixed(1),
+              )
               applyStyleToSelected({ fontSize: next })
             }}
           >
@@ -684,19 +968,19 @@ export function RenderControlsPanel() {
           </Button>
           <Input
             type='number'
-            step='1'
+            step='0.1'
             min='6'
             max='300'
-            inputMode='numeric'
+            inputMode='decimal'
             className='h-6 min-w-0 flex-1 [appearance:textfield] rounded-none border-0 px-0.5 text-center text-xs shadow-none focus-visible:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
             data-testid='render-font-size'
             disabled={!selectedNode}
-            value={currentFontSize !== undefined ? Math.round(currentFontSize) : ''}
+            value={displayedCurrentFontSize ?? ''}
             placeholder='auto'
             onChange={(event) => {
-              const parsed = Number.parseInt(event.target.value, 10)
+              const parsed = Number.parseFloat(event.target.value)
               if (!Number.isFinite(parsed) || parsed < 1) return
-              applyStyleToSelected({ fontSize: Math.min(300, parsed) })
+              applyStyleToSelected({ fontSize: Number(Math.min(300, parsed).toFixed(1)) })
             }}
           />
           <Button
@@ -704,9 +988,12 @@ export function RenderControlsPanel() {
             variant='ghost'
             size='icon-sm'
             className='size-6 shrink-0 rounded-l-none border-l'
+            data-testid='render-font-size-increase'
             disabled={!selectedNode}
             onClick={() => {
-              const next = Math.min(300, Math.round((currentFontSize ?? 16) + 1))
+              const next = Number(
+                Math.min(300, (displayedCurrentFontSize ?? automaticFontSize ?? 16) + 1).toFixed(1),
+              )
               applyStyleToSelected({ fontSize: next })
             }}
           >

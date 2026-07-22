@@ -1,0 +1,56 @@
+{
+  "source_raw_blake3": "d913ecaa34ae2490e8d5aff6b38f5c927b960e78645c40eb57ac07fbda9b6842",
+  "source_decoded_rgba_blake3": "e90ec7b3dd96d820adfd8ce5b8d159daa230da437a204e7b938feeea2f1b2fb3",
+  "fixtures": [
+    {
+      "name": "s-curve.png",
+      "baseline_crop_bounds": [331, 818, 458, 897],
+      "baseline_decoded_rgba_blake3": "0e0f9ff8b7392ab399a5a143aed1dcdda7d118d3f743d14b3e1e456b4c49d786",
+      "final_crop_bounds": [329, 816, 460, 899],
+      "final_decoded_rgba_blake3": "46c73489fb6e47b3d7aac67e5becd88492addfc9b004e2b025da87958c543b32",
+      "crop_bounds": [329, 816, 460, 899],
+      "size": [131, 83],
+      "decoded_rgba_blake3": "46c73489fb6e47b3d7aac67e5becd88492addfc9b004e2b025da87958c543b32"
+    },
+    {
+      "name": "peach-hip.png",
+      "baseline_crop_bounds": [594, 818, 698, 897],
+      "baseline_decoded_rgba_blake3": "eacd2491ffdefa34e512d4bd796d251fe6a58894ce37f18110096ffbefaad72e",
+      "final_crop_bounds": [592, 816, 700, 899],
+      "final_decoded_rgba_blake3": "895903cd11430899ba97d13adc5632f892f919a67cb884f3fa3a58aad84a745e",
+      "crop_bounds": [592, 816, 700, 899],
+      "size": [108, 83],
+      "decoded_rgba_blake3": "895903cd11430899ba97d13adc5632f892f919a67cb884f3fa3a58aad84a745e"
+    },
+    {
+      "name": "full-body-shaping.png",
+      "baseline_crop_bounds": [298, 139, 509, 179],
+      "baseline_decoded_rgba_blake3": "a8bedde8ced85eb71dc85a9b99822c2959caa16f8babc3bf3977a048cd080f9e",
+      "final_crop_bounds": [193, 104, 594, 197],
+      "final_decoded_rgba_blake3": "c8948f18cb1a9ae663f2ba3dbf0461e828c71511eb7fbfd98b8bc9ba2068b464",
+      "crop_bounds": [193, 104, 594, 197],
+      "size": [401, 93],
+      "decoded_rgba_blake3": "c8948f18cb1a9ae663f2ba3dbf0461e828c71511eb7fbfd98b8bc9ba2068b464"
+    },
+    {
+      "name": "slim-waist.png",
+      "baseline_crop_bounds": [110, 867, 189, 887],
+      "baseline_decoded_rgba_blake3": "c1d5971398f0f4b1e3ff384d69c912b4b0d1faa247d49f43c2cb16682dff8496",
+      "final_crop_bounds": [90, 856, 200, 899],
+      "final_decoded_rgba_blake3": "4798addefd897f5c60ddaf5447c2c897b6ae23112d7927baf58b71828b0b2e1a",
+      "crop_bounds": [90, 856, 200, 899],
+      "size": [110, 43],
+      "decoded_rgba_blake3": "4798addefd897f5c60ddaf5447c2c897b6ae23112d7927baf58b71828b0b2e1a"
+    },
+    {
+      "name": "confidence-body.png",
+      "baseline_crop_bounds": [245, 215, 572, 252],
+      "baseline_decoded_rgba_blake3": "3d68389aff09b0032563217aa004f1ccb826bb7bbe1b4e8540669bfb5ca8d62a",
+      "final_crop_bounds": [193, 197, 594, 275],
+      "final_decoded_rgba_blake3": "1fb561137b4b5e1e100c9b1fadf0c81f5aa969f589db1d8214db171da0445182",
+      "crop_bounds": [193, 197, 594, 275],
+      "size": [401, 78],
+      "decoded_rgba_blake3": "1fb561137b4b5e1e100c9b1fadf0c81f5aa969f589db1d8214db171da0445182"
+    }
+  ]
+}

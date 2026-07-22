@@ -196,6 +196,7 @@
     "fontPlaceholder": "选择字体",
     "fontColorLabel": "字体颜色",
     "fontSizeLabel": "大小",
+    "fontSizeAutoHint": "自动 {{size}} px",
     "fontStylePlaceholder": "样式",
     "fontScopeGlobal": "全局",
     "fontScopeBlock": "按文本块",

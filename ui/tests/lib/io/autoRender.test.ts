@@ -11,6 +11,7 @@ describe('queueAutoRender', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     useEditorUiStore.getState().clearError()
+    useEditorUiStore.getState().setSelectedLanguage(undefined)
   })
 
   afterEach(() => {
@@ -19,11 +20,16 @@ describe('queueAutoRender', () => {
   })
 
   it('runAutoRenderNow starts the configured renderer immediately', async () => {
+    useEditorUiStore.getState().setSelectedLanguage('de-DE')
     vi.spyOn(usePreferencesStore, 'getState').mockReturnValue({
       defaultFont: 'Noto Sans CJK SC',
     } as ReturnType<typeof usePreferencesStore.getState>)
-    const pipelineHits: Array<{ steps: string[]; pages: string[]; defaultFont?: string | null }> =
-      []
+    const pipelineHits: Array<{
+      steps: string[]
+      pages: string[]
+      defaultFont?: string | null
+      targetLanguage?: string | null
+    }> = []
     server.use(
       http.get('/api/v1/config', () =>
         HttpResponse.json({
@@ -47,6 +53,7 @@ describe('queueAutoRender', () => {
         steps: ['koharu-renderer'],
         pages: ['p-now'],
         defaultFont: 'Noto Sans CJK SC',
+        targetLanguage: 'de-DE',
       },
     ])
   })
@@ -122,8 +129,12 @@ describe('queueAutoRender', () => {
     vi.spyOn(usePreferencesStore, 'getState').mockReturnValue({
       defaultFont: 'Comic Sans MS',
     } as ReturnType<typeof usePreferencesStore.getState>)
-    const pipelineHits: Array<{ steps: string[]; pages: string[]; defaultFont?: string | null }> =
-      []
+    const pipelineHits: Array<{
+      steps: string[]
+      pages: string[]
+      defaultFont?: string | null
+      targetLanguage?: string | null
+    }> = []
     server.use(
       http.get('/api/v1/config', () =>
         HttpResponse.json({ pipeline: { renderer: 'koharu-renderer' } }),
@@ -133,11 +144,13 @@ describe('queueAutoRender', () => {
           steps: string[]
           pages: string[]
           defaultFont?: string | null
+          targetLanguage?: string | null
         }
         pipelineHits.push({
           steps: body.steps,
           pages: body.pages,
           defaultFont: body.defaultFont,
+          targetLanguage: body.targetLanguage,
         })
         return HttpResponse.json({ operationId: `op-${pipelineHits.length}` })
       }),
@@ -157,6 +170,7 @@ describe('queueAutoRender', () => {
     expect(pipelineHits[0].steps).toEqual(['koharu-renderer'])
     expect(pipelineHits[0].pages).toEqual(['p-1'])
     expect(pipelineHits[0].defaultFont).toBe('Comic Sans MS')
+    expect(pipelineHits[0].targetLanguage).toBeUndefined()
   })
 
   it('is a no-op when no renderer is configured', async () => {

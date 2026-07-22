@@ -300,13 +300,7 @@ pub fn protected_source_lines_for_page(
             .flat_map(str::lines)
             .filter(|line| !line.trim().is_empty())
             .count();
-        let verified_single_region_reflow = text.typography_plan_verified
-            && text
-                .translation
-                .as_deref()
-                .is_some_and(|translation| !translation.trim().is_empty())
-            && eligible.len() == 1;
-        if translated_line_count != eligible.len() && !verified_single_region_reflow {
+        if translated_line_count != eligible.len() {
             protected.extend(eligible.into_iter().map(|line| (node_id, line)));
         }
 

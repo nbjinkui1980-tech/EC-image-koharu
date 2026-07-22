@@ -7,7 +7,7 @@
 //!
 //! Requires an `Image { role: Inpainted }` node on the page.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -27,7 +27,9 @@ use crate::pipeline::engines::support::{
     line_support_mask, load_source_image, protected_source_lines_for_page, text_nodes,
     upsert_image_blob,
 };
-use crate::renderer::{PageRenderOptions, RenderBlockInput, RenderOutput, RenderedBlock};
+use crate::renderer::{
+    PageRenderOptions, RenderBlockInput, RenderOutput, RenderedBlock, SourceRelativeFontSizePolicy,
+};
 
 pub struct Model;
 
@@ -88,12 +90,18 @@ fn run_renderer_page(
     };
 
     let has_text_nodes = !text_nodes(scene, page).is_empty();
-    let (inputs, mutable_ids, mut ops, eligible_lines) = build_render_inputs(
+    let recognized_target = options.target_language.as_deref().and_then(Language::parse);
+    let (mut inputs, mutable_ids, mut ops, eligible_lines) = build_render_inputs(
         scene,
         page,
         options.source_text_policy,
         options.text_node_ids.as_deref(),
     )?;
+    if options.source_text_policy == SourceTextPolicy::HanOnly && recognized_target.is_some() {
+        for input in &mut inputs {
+            input.lock_layout_box = true;
+        }
+    }
     let protected_source_lines = if options.source_text_policy == SourceTextPolicy::HanOnly {
         protected_source_lines_for_page(scene, page)
     } else {
@@ -108,6 +116,18 @@ fn run_renderer_page(
             .target_language
             .as_deref()
             .map(render_target_language_tag),
+        source_relative_font_size_policy: if options.source_text_policy == SourceTextPolicy::HanOnly
+        {
+            recognized_target.map(|language| SourceRelativeFontSizePolicy {
+                offset: match language {
+                    Language::Japanese | Language::Korean => 0.0,
+                    _ => -5.0,
+                },
+                prefer_detected: language == Language::English,
+            })
+        } else {
+            None
+        },
         raster: Default::default(),
     };
 
@@ -211,7 +231,7 @@ fn dispatch_render_page(
     }
     let output = render()?;
     if policy == SourceTextPolicy::HanOnly {
-        clip_han_render_output(
+        validate_and_composite_han_render_output(
             source,
             base,
             brush,
@@ -225,7 +245,7 @@ fn dispatch_render_page(
     }
 }
 
-fn clip_han_render_output(
+fn validate_and_composite_han_render_output(
     source: &DynamicImage,
     base: &DynamicImage,
     brush: Option<&DynamicImage>,
@@ -234,32 +254,183 @@ fn clip_han_render_output(
     protected_source_lines: &[NodeEligibleLine],
     mut output: RenderOutput,
 ) -> Result<RenderOutput> {
+    let mut input_ids = HashSet::with_capacity(inputs.len());
+    for input in inputs {
+        anyhow::ensure!(
+            !input.translation.trim().is_empty(),
+            "unsafe Han sprite for node {}: empty renderer input",
+            input.node_id
+        );
+        anyhow::ensure!(
+            input_ids.insert(input.node_id),
+            "unsafe Han sprite for node {}: duplicate renderer input",
+            input.node_id
+        );
+    }
+    let mut output_ids = HashSet::new();
+    for block in &output.blocks {
+        anyhow::ensure!(
+            input_ids.contains(&block.node_id),
+            "unsafe Han sprite for node {}: unknown output",
+            block.node_id
+        );
+        anyhow::ensure!(
+            output_ids.insert(block.node_id),
+            "unsafe Han sprite for node {}: duplicate output",
+            block.node_id
+        );
+    }
+    for input in inputs {
+        anyhow::ensure!(
+            output_ids.contains(&input.node_id),
+            "unsafe Han sprite for node {}: missing output",
+            input.node_id
+        );
+    }
+
+    let protected = protected_source_lines
+        .iter()
+        .map(|(_, line)| line.clone())
+        .collect::<Vec<_>>();
+    let protected_mask = line_support_mask(base.width(), base.height(), &protected);
+    let mut occupancy = image::GrayImage::new(base.width(), base.height());
+    let mut placements = HashMap::with_capacity(output.blocks.len());
     for block in &mut output.blocks {
         let input = inputs
             .iter()
             .find(|input| input.node_id == block.node_id)
-            .ok_or_else(|| anyhow::anyhow!("rendered block has no matching input"))?;
-        let block_lines = eligible_lines
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unsafe Han sprite for node {}: unknown output",
+                    block.node_id
+                )
+            })?;
+        let other_lines = eligible_lines
             .iter()
-            .filter(|(node_id, _)| *node_id == block.node_id)
+            .filter(|(node_id, _)| *node_id != block.node_id)
             .map(|(_, line)| line.clone())
             .collect::<Vec<_>>();
-        let allowed = line_support_mask(base.width(), base.height(), &block_lines);
+        let other_mask = line_support_mask(base.width(), base.height(), &other_lines);
+        let sprite = block.sprite.to_rgba8();
+        let mut transform = block.expanded_transform.unwrap_or(input.transform);
+        let values = [
+            transform.x,
+            transform.y,
+            transform.width,
+            transform.height,
+            transform.rotation_deg,
+        ];
+        anyhow::ensure!(
+            values.iter().all(|value| value.is_finite()),
+            "unsafe Han sprite for node {}: non-finite geometry",
+            block.node_id
+        );
+        anyhow::ensure!(
+            transform.rotation_deg == 0.0,
+            "unsafe Han sprite for node {}: rotated geometry",
+            block.node_id
+        );
+        anyhow::ensure!(
+            transform.width > 0.0 && transform.height > 0.0,
+            "unsafe Han sprite for node {}: zero-size geometry",
+            block.node_id
+        );
+        anyhow::ensure!(
+            sprite.width() > 0 && sprite.height() > 0,
+            "unsafe Han sprite for node {}: zero-size raster",
+            block.node_id
+        );
+        anyhow::ensure!(
+            transform.width.round() as u32 == sprite.width()
+                && transform.height.round() as u32 == sprite.height(),
+            "unsafe Han sprite for node {}: raster geometry mismatch",
+            block.node_id
+        );
+        anyhow::ensure!(
+            sprite.width() <= base.width() && sprite.height() <= base.height(),
+            "unsafe Han sprite for node {}: sprite exceeds image",
+            block.node_id
+        );
         let (origin_x, origin_y) = render_origin(input, &block.expanded_transform);
-        let mut sprite = block.sprite.to_rgba8();
-        for (x, y, pixel) in sprite.enumerate_pixels_mut() {
+        let sprite_right = origin_x + i64::from(sprite.width());
+        let sprite_bottom = origin_y + i64::from(sprite.height());
+        anyhow::ensure!(
+            origin_x >= 0
+                && origin_y >= 0
+                && sprite_right <= i64::from(base.width())
+                && sprite_bottom <= i64::from(base.height()),
+            "unsafe Han sprite for node {}: sprite exceeds image",
+            block.node_id
+        );
+
+        let source_transform = input.transform;
+        let source_values = [
+            source_transform.x,
+            source_transform.y,
+            source_transform.width,
+            source_transform.height,
+            source_transform.rotation_deg,
+        ];
+        anyhow::ensure!(
+            source_values.iter().all(|value| value.is_finite()),
+            "unsafe Han sprite for node {}: non-finite source geometry",
+            block.node_id
+        );
+        anyhow::ensure!(
+            source_transform.rotation_deg == 0.0,
+            "unsafe Han sprite for node {}: rotated source geometry",
+            block.node_id
+        );
+        anyhow::ensure!(
+            source_transform.width > 0.0 && source_transform.height > 0.0,
+            "unsafe Han sprite for node {}: zero-size source geometry",
+            block.node_id
+        );
+        let source_left = source_transform.x.floor() as i64;
+        let source_top = source_transform.y.floor() as i64;
+        let source_right = (source_transform.x + source_transform.width).ceil() as i64;
+        let source_bottom = (source_transform.y + source_transform.height).ceil() as i64;
+
+        transform.x = origin_x as f32;
+        transform.y = origin_y as f32;
+        transform.width = sprite.width() as f32;
+        transform.height = sprite.height() as f32;
+        transform.rotation_deg = 0.0;
+        for (x, y, pixel) in sprite.enumerate_pixels() {
+            if pixel.0[3] == 0 {
+                continue;
+            }
             let page_x = origin_x + i64::from(x);
             let page_y = origin_y + i64::from(y);
-            let inside = page_x >= 0
-                && page_y >= 0
-                && page_x < i64::from(allowed.width())
-                && page_y < i64::from(allowed.height())
-                && allowed.get_pixel(page_x as u32, page_y as u32).0[0] != 0;
-            if !inside {
-                pixel.0[3] = 0;
-            }
+            anyhow::ensure!(
+                page_x >= source_left
+                    && page_y >= source_top
+                    && page_x < source_right
+                    && page_y < source_bottom,
+                "unsafe Han sprite for node {}: source bbox overflow",
+                block.node_id
+            );
+            let x = page_x as u32;
+            let y = page_y as u32;
+            anyhow::ensure!(
+                protected_mask.get_pixel(x, y).0[0] == 0,
+                "unsafe Han sprite for node {}: protected source overlap",
+                block.node_id
+            );
+            anyhow::ensure!(
+                other_mask.get_pixel(x, y).0[0] == 0,
+                "unsafe Han sprite for node {}: other node overlap",
+                block.node_id
+            );
+            anyhow::ensure!(
+                occupancy.get_pixel(x, y).0[0] == 0,
+                "unsafe Han sprite for node {}: target overlap",
+                block.node_id
+            );
+            occupancy.put_pixel(x, y, image::Luma([255]));
         }
-        block.sprite = DynamicImage::ImageRgba8(sprite);
+        placements.insert(block.node_id, (origin_x, origin_y));
+        block.expanded_transform = Some(transform);
     }
 
     let mut canvas = base.to_rgba8();
@@ -268,11 +439,12 @@ fn clip_han_render_output(
         imageops::overlay(&mut canvas, &brush.to_rgba8(), 0, 0);
     }
     for block in &output.blocks {
-        let input = inputs
-            .iter()
-            .find(|input| input.node_id == block.node_id)
-            .ok_or_else(|| anyhow::anyhow!("rendered block has no matching input"))?;
-        let (x, y) = render_origin(input, &block.expanded_transform);
+        let (x, y) = placements.get(&block.node_id).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "unsafe Han sprite for node {}: missing validated placement",
+                block.node_id
+            )
+        })?;
         imageops::overlay(&mut canvas, &block.sprite.to_rgba8(), x, y);
     }
     output.final_render = DynamicImage::ImageRgba8(canvas);
@@ -336,10 +508,12 @@ fn build_render_inputs(
                 }
                 Some(RenderBlockInput {
                     node_id,
+                    source_transform: *transform,
                     transform: *transform,
                     translation: translation.to_string(),
                     style: text.style.clone(),
                     font_prediction: text.font_prediction.clone(),
+                    detected_font_size_px: text.detected_font_size_px,
                     source_direction: text.source_direction,
                     rendered_direction: text.rendered_direction,
                     lock_layout_box: text.lock_layout_box,
@@ -361,7 +535,7 @@ fn build_render_inputs(
     let mut mutable_ids = Vec::new();
     let mut cleanup = Vec::new();
     let mut render_lines = Vec::new();
-    for (node_id, _, text) in text_nodes(scene, page) {
+    for (node_id, source_transform, text) in text_nodes(scene, page) {
         let in_scope = allowed_ids.is_none_or(|ids| ids.contains(&node_id));
         let mut lines = lines_by_node.remove(&node_id).unwrap_or_default();
         if lines.is_empty() {
@@ -383,9 +557,7 @@ fn build_render_inputs(
             .map(str::trim)
             .filter(|line| !line.is_empty())
             .collect::<Vec<_>>();
-        let verified_single_region_reflow =
-            text.typography_plan_verified && !translation.trim().is_empty() && lines.len() == 1;
-        if translated_lines.len() != lines.len() && !verified_single_region_reflow {
+        if translated_lines.len() != lines.len() {
             if in_scope {
                 cleanup.push(render_cleanup_op(page, node_id));
             }
@@ -423,6 +595,7 @@ fn build_render_inputs(
             .unwrap_or(0);
         inputs.push(RenderBlockInput {
             node_id,
+            source_transform: *source_transform,
             transform: Transform {
                 x: left,
                 y: top,
@@ -430,13 +603,10 @@ fn build_render_inputs(
                 height: bottom - top,
                 rotation_deg: 0.0,
             },
-            translation: if verified_single_region_reflow {
-                translation.to_string()
-            } else {
-                translated_lines.join("\n")
-            },
+            translation: translated_lines.join("\n"),
             style: text.style.clone(),
             font_prediction: text.font_prediction.clone(),
+            detected_font_size_px: text.detected_font_size_px,
             source_direction: text.source_direction,
             rendered_direction: text.rendered_direction,
             lock_layout_box: text.lock_layout_box
@@ -512,6 +682,7 @@ fn render_target_language_tag(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::path::Path;
 
     use super::*;
     use image::{DynamicImage, Rgba, RgbaImage};
@@ -523,6 +694,16 @@ mod tests {
     use crate::blobs::BlobStore;
     use crate::config::SourceTextPolicy;
     use crate::pipeline::engine::PipelineRunOptions;
+    use crate::renderer::Renderer;
+
+    #[derive(Debug, PartialEq)]
+    struct RenderSignature {
+        node_id: NodeId,
+        dimensions: (u32, u32),
+        rgba: Vec<u8>,
+        transform: Option<(f32, f32, f32, f32, f32)>,
+        direction: TextDirection,
+    }
 
     #[test]
     fn omits_style_patch_when_block_has_no_explicit_style() {
@@ -559,6 +740,317 @@ mod tests {
             render_target_language_tag("not-a-language"),
             "not-a-language"
         );
+    }
+
+    #[test]
+    fn renderer_page_options_scope_source_relative_offset_and_anchor_to_recognized_han_only()
+    -> Result<()> {
+        let cases = [
+            (
+                SourceTextPolicy::HanOnly,
+                Some("en"),
+                true,
+                Some((-5.0, true)),
+            ),
+            (
+                SourceTextPolicy::HanOnly,
+                Some("ja"),
+                true,
+                Some((0.0, false)),
+            ),
+            (
+                SourceTextPolicy::HanOnly,
+                Some("ko"),
+                true,
+                Some((0.0, false)),
+            ),
+            (
+                SourceTextPolicy::HanOnly,
+                Some("fr"),
+                true,
+                Some((-5.0, false)),
+            ),
+            (SourceTextPolicy::HanOnly, Some("invalid"), false, None),
+            (SourceTextPolicy::HanOnly, None, false, None),
+            (SourceTextPolicy::AllText, Some("en"), false, None),
+        ];
+        for (policy, language, expected_lock, expected_policy) in cases {
+            let temp = tempfile::tempdir()?;
+            let blobs = BlobStore::open(temp.path())?;
+            let id = NodeId::new();
+            let node = renderer_node(
+                id,
+                "中文一\n中文二",
+                Some("first\nsecond"),
+                Some(vec![
+                    quad(10.0, 10.0, 90.0, 25.0),
+                    quad(10.0, 35.0, 90.0, 50.0),
+                ]),
+            );
+            let (scene, page) = renderer_scene_with_images(&blobs, node)?;
+            let options = PipelineRunOptions {
+                source_text_policy: policy,
+                target_language: language.map(str::to_string),
+                ..Default::default()
+            };
+            let error = run_renderer_page(
+                &scene,
+                page,
+                &blobs,
+                &options,
+                |_, _, _, _, _, inputs, page_options| {
+                    assert_eq!(inputs[0].lock_layout_box, expected_lock);
+                    assert_eq!(
+                        page_options
+                            .source_relative_font_size_policy
+                            .map(|policy| (policy.offset, policy.prefer_detected)),
+                        expected_policy
+                    );
+                    anyhow::bail!("captured options")
+                },
+            )
+            .expect_err("capture closure must stop before writes");
+            assert_eq!(error.to_string(), "captured options");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pipeline_legacy_language_modes_render_stably_with_han_only_equivalence() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let blobs = BlobStore::open(temp.path())?;
+        let renderer = Renderer::new()?;
+        let auto_id = NodeId::new();
+        let manual_id = NodeId::new();
+        let mut auto = renderer_node(
+            auto_id,
+            "自动",
+            Some("Ink"),
+            Some(vec![quad(10.0, 10.0, 90.0, 31.0)]),
+        );
+        auto.transform = Transform {
+            x: 10.0,
+            y: 10.0,
+            width: 80.0,
+            height: 21.0,
+            rotation_deg: 0.0,
+        };
+        let mut manual = renderer_node(
+            manual_id,
+            "手动",
+            Some("Mark"),
+            Some(vec![quad(10.0, 60.0, 90.0, 85.0)]),
+        );
+        manual.transform = Transform {
+            x: 10.0,
+            y: 60.0,
+            width: 80.0,
+            height: 25.0,
+            rotation_deg: 0.0,
+        };
+        let NodeKind::Text(manual_text) = &mut manual.kind else {
+            unreachable!()
+        };
+        manual_text.style = Some(TextStyle {
+            font_size: Some(18.0),
+            ..Default::default()
+        });
+        let (scene, page) = renderer_scene_with_image_nodes(&blobs, vec![auto, manual])?;
+        let cases = [
+            (
+                "invalid HanOnly",
+                true,
+                PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::HanOnly,
+                    target_language: Some("invalid".to_string()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "missing HanOnly",
+                true,
+                PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::HanOnly,
+                    target_language: None,
+                    ..Default::default()
+                },
+            ),
+            (
+                "AllText",
+                false,
+                PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::AllText,
+                    target_language: Some("en".to_string()),
+                    ..Default::default()
+                },
+            ),
+        ];
+        let mut han_only_baseline = None::<Vec<RenderSignature>>;
+
+        for (name, compare_across_han_only, options) in cases {
+            let mut repeated = None::<Vec<RenderSignature>>;
+            for attempt in 0..2 {
+                let mut captured = None::<Vec<RenderSignature>>;
+                run_renderer_page(
+                    &scene,
+                    page,
+                    &blobs,
+                    &options,
+                    |base, brush, bubble, width, height, inputs, page_options| {
+                        assert_eq!(inputs.len(), 2);
+                        assert!(page_options.source_relative_font_size_policy.is_none());
+                        let auto_input = inputs
+                            .iter()
+                            .find(|input| input.node_id == auto_id)
+                            .expect("automatic node must reach renderer");
+                        let manual_input = inputs
+                            .iter()
+                            .find(|input| input.node_id == manual_id)
+                            .expect("manual node must reach renderer");
+                        assert_eq!(
+                            auto_input.style.as_ref().and_then(|style| style.font_size),
+                            None
+                        );
+                        assert_eq!(
+                            manual_input
+                                .style
+                                .as_ref()
+                                .and_then(|style| style.font_size),
+                            Some(18.0)
+                        );
+                        assert_eq!(
+                            (
+                                auto_input.transform.x,
+                                auto_input.transform.y,
+                                auto_input.transform.width,
+                                auto_input.transform.height,
+                            ),
+                            (10.0, 10.0, 80.0, 21.0)
+                        );
+                        assert_eq!(
+                            (
+                                manual_input.transform.x,
+                                manual_input.transform.y,
+                                manual_input.transform.width,
+                                manual_input.transform.height,
+                            ),
+                            (10.0, 60.0, 80.0, 25.0)
+                        );
+                        let output = renderer.render_page(
+                            base,
+                            brush,
+                            bubble,
+                            width,
+                            height,
+                            inputs,
+                            page_options,
+                        )?;
+                        assert_eq!(
+                            output
+                                .blocks
+                                .iter()
+                                .map(|block| block.node_id)
+                                .collect::<HashSet<_>>(),
+                            HashSet::from([auto_id, manual_id])
+                        );
+                        let mut signature = output
+                            .blocks
+                            .iter()
+                            .map(|block| {
+                                let transform = block
+                                    .expanded_transform
+                                    .expect("legacy render must place its sprite");
+                                assert!(block.sprite.width() > 0 && block.sprite.height() > 0);
+                                assert_eq!(transform.width, block.sprite.width() as f32);
+                                assert_eq!(transform.height, block.sprite.height() as f32);
+                                assert!(
+                                    [
+                                        transform.x,
+                                        transform.y,
+                                        transform.width,
+                                        transform.height,
+                                        transform.rotation_deg,
+                                    ]
+                                    .into_iter()
+                                    .all(f32::is_finite)
+                                );
+                                assert_eq!(block.rendered_direction, TextDirection::Horizontal);
+                                let rgba = block.sprite.to_rgba8().into_raw();
+                                assert_eq!(
+                                    rgba.len(),
+                                    block.sprite.width() as usize
+                                        * block.sprite.height() as usize
+                                        * 4
+                                );
+                                assert!(
+                                    rgba.chunks_exact(4).any(|pixel| pixel[3] > 0),
+                                    "{name}: every legacy sprite must contain visible alpha"
+                                );
+                                RenderSignature {
+                                    node_id: block.node_id,
+                                    dimensions: block.sprite.dimensions(),
+                                    rgba,
+                                    transform: Some((
+                                        transform.x,
+                                        transform.y,
+                                        transform.width,
+                                        transform.height,
+                                        transform.rotation_deg,
+                                    )),
+                                    direction: block.rendered_direction,
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        signature.sort_by_key(|entry| entry.node_id);
+                        captured = Some(signature);
+                        Ok(output)
+                    },
+                )?;
+                let signature = captured.expect("run_renderer_page must execute a real render");
+                if let Some(expected) = repeated.as_ref() {
+                    assert_render_signatures_equal(
+                        &signature,
+                        expected,
+                        &format!("{name} attempt {attempt}"),
+                    );
+                } else {
+                    repeated = Some(signature);
+                }
+            }
+            let signature = repeated.expect("each mode must render twice");
+            if compare_across_han_only {
+                if let Some(expected) = han_only_baseline.as_ref() {
+                    assert_render_signatures_equal(&signature, expected, name);
+                } else {
+                    han_only_baseline = Some(signature);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn assert_render_signatures_equal(
+        actual: &[RenderSignature],
+        expected: &[RenderSignature],
+        context: &str,
+    ) {
+        assert_eq!(actual.len(), expected.len(), "{context}: node count");
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert_eq!(actual.node_id, expected.node_id, "{context}: node id");
+            assert_eq!(
+                actual.dimensions, expected.dimensions,
+                "{context}: sprite dimensions"
+            );
+            assert_eq!(
+                actual.transform, expected.transform,
+                "{context}: expanded transform"
+            );
+            assert_eq!(
+                actual.direction, expected.direction,
+                "{context}: rendered direction"
+            );
+            assert!(actual.rgba == expected.rgba, "{context}: RGBA bytes");
+        }
     }
 
     fn quad(x1: f32, y1: f32, x2: f32, y2: f32) -> [[f32; 2]; 4] {
@@ -622,6 +1114,13 @@ mod tests {
         blobs: &BlobStore,
         text_node: Node,
     ) -> Result<(Scene, koharu_core::PageId)> {
+        renderer_scene_with_image_nodes(blobs, vec![text_node])
+    }
+
+    fn renderer_scene_with_image_nodes(
+        blobs: &BlobStore,
+        text_nodes: Vec<Node>,
+    ) -> Result<(Scene, koharu_core::PageId)> {
         let source =
             DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([10, 20, 30, 255])));
         let inpainted =
@@ -632,7 +1131,12 @@ mod tests {
             ImageRole::Inpainted,
             blobs.put_webp(&inpainted)?,
         );
-        Ok(renderer_scene(vec![source_node, inpainted_node, text_node]))
+        Ok(renderer_scene(
+            [source_node, inpainted_node]
+                .into_iter()
+                .chain(text_nodes)
+                .collect(),
+        ))
     }
 
     fn text(scene: &Scene, page: koharu_core::PageId, id: NodeId) -> &TextData {
@@ -671,6 +1175,16 @@ mod tests {
         assert_eq!(inputs[0].node_id, mixed);
         assert_eq!(inputs[1].node_id, outside);
         assert_eq!(mutable_ids, vec![mixed]);
+        assert_eq!(
+            (
+                inputs[0].source_transform.x,
+                inputs[0].source_transform.y,
+                inputs[0].source_transform.width,
+                inputs[0].source_transform.height,
+                inputs[0].source_transform.rotation_deg,
+            ),
+            (10.0, 10.0, 80.0, 50.0, 0.0)
+        );
         assert_eq!(
             (
                 inputs[0].transform.x,
@@ -911,7 +1425,13 @@ mod tests {
                                 },
                             )),
                             rendered_direction: TextDirection::Horizontal,
-                            expanded_transform: None,
+                            expanded_transform: Some(Transform {
+                                x: (input.transform.x + input.transform.width * 0.5 - 0.5).round(),
+                                y: (input.transform.y + input.transform.height * 0.5 - 0.5).round(),
+                                width: 1.0,
+                                height: 1.0,
+                                rotation_deg: 0.0,
+                            }),
                         })
                         .collect(),
                 })
@@ -920,11 +1440,11 @@ mod tests {
 
         assert_eq!(calls.get(), 1);
         assert_eq!(
-            output.final_render.to_rgba8().get_pixel(10, 10).0,
+            output.final_render.to_rgba8().get_pixel(50, 35).0,
             [255, 0, 0, 255]
         );
         assert_eq!(
-            output.final_render.to_rgba8().get_pixel(60, 60).0,
+            output.final_render.to_rgba8().get_pixel(80, 80).0,
             [0, 0, 255, 255]
         );
         let mut blocks = output.blocks;
@@ -992,20 +1512,28 @@ mod tests {
     }
 
     #[test]
-    fn han_only_renderer_clips_word_box_inline_mixed_to_han_mask() -> Result<()> {
+    fn han_only_expanded_sprite_transform_preserves_all_glyph_pixels() -> Result<()> {
         let node_id = NodeId::new();
         let input = RenderBlockInput {
             node_id,
-            transform: Transform {
-                x: 55.0,
+            source_transform: Transform {
+                x: 10.0,
                 y: 10.0,
-                width: 35.0,
+                width: 80.0,
+                height: 20.0,
+                rotation_deg: 0.0,
+            },
+            transform: Transform {
+                x: 10.0,
+                y: 10.0,
+                width: 80.0,
                 height: 20.0,
                 rotation_deg: 0.0,
             },
             translation: "Translated".to_string(),
             style: None,
             font_prediction: None,
+            detected_font_size_px: None,
             source_direction: Some(TextDirection::Horizontal),
             rendered_direction: None,
             lock_layout_box: true,
@@ -1023,11 +1551,11 @@ mod tests {
                 line_index: 1,
                 text: "蜜桃臀".to_string(),
                 region: koharu_ml::types::TextRegion {
-                    x: 55.0,
+                    x: 10.0,
                     y: 10.0,
-                    width: 35.0,
+                    width: 80.0,
                     height: 20.0,
-                    line_polygons: Some(vec![quad(55.0, 10.0, 90.0, 30.0)]),
+                    line_polygons: Some(vec![quad(10.0, 10.0, 90.0, 30.0)]),
                     ..Default::default()
                 },
             },
@@ -1072,14 +1600,14 @@ mod tests {
 
         assert_eq!(
             output.final_render.to_rgba8().get_pixel(20, 15).0,
-            [30, 200, 40, 255]
+            [250, 0, 0, 255]
         );
         assert_eq!(
             output.final_render.to_rgba8().get_pixel(60, 15).0,
             [250, 0, 0, 255]
         );
         let sprite = output.blocks[0].sprite.to_rgba8();
-        assert_eq!(sprite.get_pixel(10, 5).0[3], 0);
+        assert_eq!(sprite.get_pixel(10, 5).0[3], 255);
         assert_eq!(sprite.get_pixel(50, 5).0[3], 255);
 
         let all_text = dispatch_render_page(
@@ -1109,6 +1637,13 @@ mod tests {
         let node_id = NodeId::new();
         let input = RenderBlockInput {
             node_id,
+            source_transform: Transform {
+                x: 50.0,
+                y: 0.0,
+                width: 50.0,
+                height: 20.0,
+                rotation_deg: 0.0,
+            },
             transform: Transform {
                 x: 50.0,
                 y: 0.0,
@@ -1119,6 +1654,7 @@ mod tests {
             translation: "Translated".to_string(),
             style: None,
             font_prediction: None,
+            detected_font_size_px: None,
             source_direction: Some(TextDirection::Horizontal),
             rendered_direction: None,
             lock_layout_box: true,
@@ -1278,11 +1814,18 @@ mod tests {
     }
 
     #[test]
-    fn han_only_renderer_does_not_allow_one_node_sprite_into_another_node_mask() -> Result<()> {
+    fn han_only_expanded_sprite_rejects_other_node_overlap_before_ops() -> Result<()> {
         let first_id = NodeId::new();
         let second_id = NodeId::new();
         let input = |node_id, x| RenderBlockInput {
             node_id,
+            source_transform: Transform {
+                x,
+                y: 5.0,
+                width: 20.0,
+                height: 20.0,
+                rotation_deg: 0.0,
+            },
             transform: Transform {
                 x,
                 y: 5.0,
@@ -1293,13 +1836,16 @@ mod tests {
             translation: "Translated".to_string(),
             style: None,
             font_prediction: None,
+            detected_font_size_px: None,
             source_direction: Some(TextDirection::Horizontal),
             rendered_direction: None,
             lock_layout_box: true,
             preserve_explicit_lines: true,
             typography_plan_verified: false,
         };
-        let inputs = vec![input(first_id, 10.0), input(second_id, 80.0)];
+        let mut first_input = input(first_id, 10.0);
+        first_input.transform.width = 90.0;
+        let inputs = vec![first_input];
         let line = |x| EligibleTextLine {
             line_index: 0,
             text: "中文".to_string(),
@@ -1316,7 +1862,7 @@ mod tests {
         let base =
             DynamicImage::ImageRgba8(RgbaImage::from_pixel(120, 30, Rgba([10, 20, 30, 255])));
 
-        let output = dispatch_render_page(
+        let error = dispatch_render_page(
             SourceTextPolicy::HanOnly,
             true,
             &base,
@@ -1346,13 +1892,10 @@ mod tests {
                     }],
                 })
             },
-        )?;
-
-        assert_eq!(output.blocks[0].sprite.to_rgba8().get_pixel(75, 10).0[3], 0);
-        assert_eq!(
-            output.final_render.to_rgba8().get_pixel(85, 15).0,
-            [10, 20, 30, 255]
-        );
+        )
+        .err()
+        .expect("overlap must fail");
+        assert!(error.to_string().contains("other node overlap"));
         Ok(())
     }
 
@@ -1361,6 +1904,13 @@ mod tests {
         let node_id = NodeId::new();
         let input = RenderBlockInput {
             node_id,
+            source_transform: Transform {
+                x: 10.6,
+                y: 5.0,
+                width: 1.0,
+                height: 1.0,
+                rotation_deg: 0.0,
+            },
             transform: Transform {
                 x: 10.6,
                 y: 5.0,
@@ -1371,6 +1921,7 @@ mod tests {
             translation: "Translated".to_string(),
             style: None,
             font_prediction: None,
+            detected_font_size_px: None,
             source_direction: Some(TextDirection::Horizontal),
             rendered_direction: None,
             lock_layout_box: true,
@@ -1422,8 +1973,557 @@ mod tests {
 
         assert_eq!(
             output.final_render.to_rgba8().get_pixel(10, 5).0,
-            [10, 20, 30, 255]
+            [250, 0, 0, 255]
         );
+        Ok(())
+    }
+
+    fn placement_test_input(node_id: NodeId, x: f32, y: f32) -> RenderBlockInput {
+        RenderBlockInput {
+            node_id,
+            source_transform: Transform {
+                x,
+                y,
+                width: 10.0,
+                height: 10.0,
+                rotation_deg: 0.0,
+            },
+            transform: Transform {
+                x,
+                y,
+                width: 10.0,
+                height: 10.0,
+                rotation_deg: 0.0,
+            },
+            translation: "translation-secret".to_string(),
+            style: None,
+            font_prediction: None,
+            detected_font_size_px: None,
+            source_direction: Some(TextDirection::Horizontal),
+            rendered_direction: None,
+            lock_layout_box: true,
+            preserve_explicit_lines: true,
+            typography_plan_verified: false,
+        }
+    }
+
+    fn placement_test_line(node_id: NodeId, x: f32, y: f32) -> NodeEligibleLine {
+        (
+            node_id,
+            EligibleTextLine {
+                line_index: 0,
+                text: "ocr-secret".to_string(),
+                region: koharu_ml::types::TextRegion {
+                    x,
+                    y,
+                    width: 10.0,
+                    height: 10.0,
+                    line_polygons: Some(vec![quad(x, y, x + 10.0, y + 10.0)]),
+                    ..Default::default()
+                },
+            },
+        )
+    }
+
+    fn placement_test_block(node_id: NodeId, transform: Transform) -> RenderedBlock {
+        RenderedBlock {
+            node_id,
+            sprite: DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+                transform.width.max(1.0).round() as u32,
+                transform.height.max(1.0).round() as u32,
+                Rgba([250, 0, 0, 255]),
+            )),
+            rendered_direction: TextDirection::Horizontal,
+            expanded_transform: Some(transform),
+        }
+    }
+
+    #[test]
+    fn han_only_expanded_sprite_rejects_natural_page_overflow() {
+        let id = NodeId::new();
+        let input = placement_test_input(id, 95.0, 95.0);
+        let base = DynamicImage::new_rgba8(100, 100);
+        let error = validate_and_composite_han_render_output(
+            &base,
+            &base,
+            None,
+            &[input],
+            &[placement_test_line(id, 95.0, 95.0)],
+            &[],
+            RenderOutput {
+                final_render: base.clone(),
+                blocks: vec![placement_test_block(
+                    id,
+                    Transform {
+                        x: 95.0,
+                        y: 95.0,
+                        width: 20.0,
+                        height: 20.0,
+                        rotation_deg: 0.0,
+                    },
+                )],
+            },
+        )
+        .err()
+        .expect("natural placement outside the page must not be clamped into success");
+        assert!(error.to_string().contains("image"));
+    }
+
+    #[test]
+    fn han_only_nontransparent_pixels_must_stay_inside_final_source_bbox() {
+        let id = NodeId::new();
+        let input = placement_test_input(id, 20.0, 20.0);
+        let base = DynamicImage::new_rgba8(100, 100);
+        let error = validate_and_composite_han_render_output(
+            &base,
+            &base,
+            None,
+            &[input],
+            &[placement_test_line(id, 20.0, 20.0)],
+            &[],
+            RenderOutput {
+                final_render: base.clone(),
+                blocks: vec![placement_test_block(
+                    id,
+                    Transform {
+                        x: 15.0,
+                        y: 20.0,
+                        width: 20.0,
+                        height: 10.0,
+                        rotation_deg: 0.0,
+                    },
+                )],
+            },
+        )
+        .err()
+        .expect("opaque pixels outside the final Source bbox must fail");
+        assert!(error.to_string().contains("source"));
+    }
+
+    #[test]
+    fn han_only_expanded_sprite_preserves_protected_english_pixels() {
+        let id = NodeId::new();
+        let protected_id = NodeId::new();
+        let mut input = placement_test_input(id, 20.0, 20.0);
+        input.transform.width = 20.0;
+        input.transform.height = 20.0;
+        let base = DynamicImage::new_rgba8(100, 100);
+        let error = validate_and_composite_han_render_output(
+            &base,
+            &base,
+            None,
+            &[input],
+            &[placement_test_line(id, 20.0, 20.0)],
+            &[placement_test_line(protected_id, 25.0, 25.0)],
+            RenderOutput {
+                final_render: base.clone(),
+                blocks: vec![placement_test_block(
+                    id,
+                    Transform {
+                        x: 20.0,
+                        y: 20.0,
+                        width: 20.0,
+                        height: 20.0,
+                        rotation_deg: 0.0,
+                    },
+                )],
+            },
+        )
+        .err()
+        .expect("protected overlap must fail");
+        assert!(error.to_string().contains("protected source overlap"));
+    }
+
+    #[test]
+    fn han_only_expanded_sprite_rejects_target_overlap_outside_source_masks() {
+        let first = NodeId::new();
+        let second = NodeId::new();
+        let inputs = [
+            placement_test_input(first, 40.0, 40.0),
+            placement_test_input(second, 40.0, 40.0),
+        ];
+        let lines = [
+            placement_test_line(first, 0.0, 0.0),
+            placement_test_line(second, 90.0, 90.0),
+        ];
+        let base = DynamicImage::new_rgba8(100, 100);
+        let transform = Transform {
+            x: 40.0,
+            y: 40.0,
+            width: 10.0,
+            height: 10.0,
+            rotation_deg: 0.0,
+        };
+        let error = validate_and_composite_han_render_output(
+            &base,
+            &base,
+            None,
+            &inputs,
+            &lines,
+            &[],
+            RenderOutput {
+                final_render: base.clone(),
+                blocks: vec![
+                    placement_test_block(first, transform),
+                    placement_test_block(second, transform),
+                ],
+            },
+        )
+        .err()
+        .expect("target overlap must fail");
+        assert!(error.to_string().contains("target overlap"));
+    }
+
+    #[test]
+    fn han_only_expanded_sprite_rejects_invalid_geometry_table() {
+        let id = NodeId::new();
+        let input = placement_test_input(id, 10.0, 10.0);
+        let base = DynamicImage::new_rgba8(100, 100);
+        let cases = [
+            Transform {
+                x: f32::NAN,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+                rotation_deg: 0.0,
+            },
+            Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+                rotation_deg: 1.0,
+            },
+            Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 10.0,
+                rotation_deg: 0.0,
+            },
+            Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 101.0,
+                height: 10.0,
+                rotation_deg: 0.0,
+            },
+        ];
+        for transform in cases {
+            assert!(
+                validate_and_composite_han_render_output(
+                    &base,
+                    &base,
+                    None,
+                    std::slice::from_ref(&input),
+                    &[placement_test_line(id, 10.0, 10.0)],
+                    &[],
+                    RenderOutput {
+                        final_render: base.clone(),
+                        blocks: vec![placement_test_block(id, transform)]
+                    },
+                )
+                .is_err()
+            );
+        }
+        let mismatch = RenderedBlock {
+            node_id: id,
+            sprite: DynamicImage::new_rgba8(9, 10),
+            rendered_direction: TextDirection::Horizontal,
+            expanded_transform: Some(Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 10.0,
+                height: 10.0,
+                rotation_deg: 0.0,
+            }),
+        };
+        assert!(
+            validate_and_composite_han_render_output(
+                &base,
+                &base,
+                None,
+                &[input],
+                &[placement_test_line(id, 10.0, 10.0)],
+                &[],
+                RenderOutput {
+                    final_render: base.clone(),
+                    blocks: vec![mismatch]
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn han_only_zero_width_raster_with_positive_fractional_transform_is_rejected_atomically() {
+        let id = NodeId::new();
+        let input = placement_test_input(id, 10.0, 10.0);
+        let base = DynamicImage::new_rgba8(100, 100);
+        let block = RenderedBlock {
+            node_id: id,
+            sprite: DynamicImage::new_rgba8(0, 10),
+            rendered_direction: TextDirection::Horizontal,
+            expanded_transform: Some(Transform {
+                x: 10.0,
+                y: 10.0,
+                width: 0.4,
+                height: 10.0,
+                rotation_deg: 0.0,
+            }),
+        };
+
+        let error = validate_and_composite_han_render_output(
+            &base,
+            &base,
+            None,
+            &[input],
+            &[placement_test_line(id, 10.0, 10.0)],
+            &[],
+            RenderOutput {
+                final_render: base.clone(),
+                blocks: vec![block],
+            },
+        )
+        .err()
+        .expect("zero-width raster must fail before compositing");
+
+        assert!(error.to_string().contains("zero-size raster"));
+        assert_eq!(
+            base.to_rgba8(),
+            DynamicImage::new_rgba8(100, 100).to_rgba8()
+        );
+    }
+
+    #[test]
+    fn han_only_expanded_sprite_error_redacts_translation() {
+        let id = NodeId::new();
+        let input = placement_test_input(id, 10.0, 10.0);
+        let base = DynamicImage::new_rgba8(100, 100);
+        let error = validate_and_composite_han_render_output(
+            &base,
+            &base,
+            None,
+            &[input],
+            &[placement_test_line(id, 10.0, 10.0)],
+            &[],
+            RenderOutput {
+                final_render: base.clone(),
+                blocks: vec![],
+            },
+        )
+        .err()
+        .expect("missing output must fail")
+        .to_string();
+        assert!(error.contains(&id.to_string()));
+        assert!(!error.contains("translation-secret"));
+        assert!(!error.contains("ocr-secret"));
+    }
+
+    #[test]
+    fn han_only_missing_rendered_block_from_swallowed_error_fails_atomically() {
+        han_only_expanded_sprite_error_redacts_translation();
+    }
+
+    #[test]
+    fn han_only_expanded_sprite_rejects_node_id_bijection_violations() {
+        let id = NodeId::new();
+        let unknown = NodeId::new();
+        let input = placement_test_input(id, 10.0, 10.0);
+        let base = DynamicImage::new_rgba8(100, 100);
+        let transform = Transform {
+            x: 10.0,
+            y: 10.0,
+            width: 10.0,
+            height: 10.0,
+            rotation_deg: 0.0,
+        };
+        for blocks in [
+            vec![placement_test_block(unknown, transform)],
+            vec![
+                placement_test_block(id, transform),
+                placement_test_block(id, transform),
+            ],
+        ] {
+            assert!(
+                validate_and_composite_han_render_output(
+                    &base,
+                    &base,
+                    None,
+                    std::slice::from_ref(&input),
+                    &[placement_test_line(id, 10.0, 10.0)],
+                    &[],
+                    RenderOutput {
+                        final_render: base.clone(),
+                        blocks,
+                    },
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn han_only_full_page_composite_uses_every_validated_sprite_pixel() -> Result<()> {
+        let id = NodeId::new();
+        let mut input = placement_test_input(id, 20.0, 20.0);
+        input.transform.width = 30.0;
+        let base = DynamicImage::new_rgba8(100, 100);
+        let output = validate_and_composite_han_render_output(
+            &base,
+            &base,
+            None,
+            &[input],
+            &[placement_test_line(id, 20.0, 20.0)],
+            &[],
+            RenderOutput {
+                final_render: base.clone(),
+                blocks: vec![placement_test_block(
+                    id,
+                    Transform {
+                        x: 20.0,
+                        y: 20.0,
+                        width: 30.0,
+                        height: 10.0,
+                        rotation_deg: 0.0,
+                    },
+                )],
+            },
+        )?;
+        assert_eq!(
+            output.final_render.to_rgba8().get_pixel(39, 29).0,
+            [250, 0, 0, 255]
+        );
+        Ok(())
+    }
+
+    fn file_count(path: &Path) -> Result<usize> {
+        let mut count = 0;
+        for entry in std::fs::read_dir(path)? {
+            let path = entry?.path();
+            count += if path.is_dir() { file_count(&path)? } else { 1 };
+        }
+        Ok(count)
+    }
+
+    #[test]
+    fn han_only_expanded_sprite_rejects_impossible_placement_before_blob_write() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let blobs = BlobStore::open(temp.path())?;
+        let id = NodeId::new();
+        let node = renderer_node(id, "中文", Some("translated"), None);
+        let (scene, page) = renderer_scene_with_images(&blobs, node)?;
+        let before = file_count(temp.path())?;
+        let options = PipelineRunOptions {
+            source_text_policy: SourceTextPolicy::HanOnly,
+            target_language: Some("en".to_string()),
+            ..Default::default()
+        };
+        let error = run_renderer_page(
+            &scene,
+            page,
+            &blobs,
+            &options,
+            |base, _, _, _, _, inputs, _| {
+                Ok(RenderOutput {
+                    final_render: base.clone(),
+                    blocks: vec![placement_test_block(
+                        inputs[0].node_id,
+                        Transform {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 101.0,
+                            height: 10.0,
+                            rotation_deg: 0.0,
+                        },
+                    )],
+                })
+            },
+        )
+        .expect_err("image-larger sprite must fail");
+        assert!(error.to_string().contains("sprite exceeds image"));
+        assert_eq!(file_count(temp.path())?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_source_bbox_overflow_fails_before_blob_or_scene_ops() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let blobs = BlobStore::open(temp.path())?;
+        let id = NodeId::new();
+        let node = renderer_node(id, "中文", Some("translated"), None);
+        let (scene, page) = renderer_scene_with_images(&blobs, node)?;
+        let before = file_count(temp.path())?;
+        let options = PipelineRunOptions {
+            source_text_policy: SourceTextPolicy::HanOnly,
+            target_language: Some("en".to_string()),
+            ..Default::default()
+        };
+        let error = run_renderer_page(
+            &scene,
+            page,
+            &blobs,
+            &options,
+            |base, _, _, _, _, inputs, _| {
+                Ok(RenderOutput {
+                    final_render: base.clone(),
+                    blocks: vec![placement_test_block(
+                        inputs[0].node_id,
+                        Transform {
+                            x: 5.0,
+                            y: 10.0,
+                            width: 90.0,
+                            height: 50.0,
+                            rotation_deg: 0.0,
+                        },
+                    )],
+                })
+            },
+        )
+        .expect_err("Source-bbox overflow must fail before persistence");
+        assert!(error.to_string().contains("source"));
+        assert_eq!(file_count(temp.path())?, before);
+        assert!(scene.node(page, id).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_automatic_no_fit_is_direct_and_precedes_persistence() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let blobs = BlobStore::open(temp.path())?;
+        let id = NodeId::new();
+        let mut node = renderer_node(id, "中文", Some("translated"), None);
+        node.transform.width = 4.0;
+        node.transform.height = 4.0;
+        let NodeKind::Text(text) = &mut node.kind else {
+            unreachable!()
+        };
+        text.detected_font_size_px = Some(5.0);
+        let (scene, page) = renderer_scene_with_images(&blobs, node)?;
+        let before = file_count(temp.path())?;
+        let options = PipelineRunOptions {
+            source_text_policy: SourceTextPolicy::HanOnly,
+            target_language: Some("en".to_string()),
+            ..Default::default()
+        };
+        let renderer = crate::renderer::Renderer::new()?;
+        let error = run_renderer_page(
+            &scene,
+            page,
+            &blobs,
+            &options,
+            |base, brush, bubble, width, height, inputs, page_options| {
+                renderer.render_page(base, brush, bubble, width, height, inputs, page_options)
+            },
+        )
+        .expect_err("automatic no-fit must propagate directly");
+        let message = error.to_string();
+        assert!(message.contains("fit"), "unexpected error: {message}");
+        assert!(
+            !message.contains("missing output"),
+            "indirect error: {message}"
+        );
+        assert_eq!(file_count(temp.path())?, before);
         Ok(())
     }
 
@@ -1491,7 +2591,13 @@ mod tests {
                         node_id: id,
                         sprite: DynamicImage::new_rgba8(2, 2),
                         rendered_direction: TextDirection::Horizontal,
-                        expanded_transform: None,
+                        expanded_transform: Some(Transform {
+                            x: inputs[0].transform.x,
+                            y: inputs[0].transform.y,
+                            width: 2.0,
+                            height: 2.0,
+                            rotation_deg: 0.0,
+                        }),
                     }],
                 })
             },
@@ -1533,7 +2639,13 @@ mod tests {
                         node_id: id,
                         sprite: DynamicImage::new_rgba8(2, 2),
                         rendered_direction: TextDirection::Horizontal,
-                        expanded_transform: None,
+                        expanded_transform: Some(Transform {
+                            x: inputs[0].transform.x,
+                            y: inputs[0].transform.y,
+                            width: 2.0,
+                            height: 2.0,
+                            rotation_deg: 0.0,
+                        }),
                     }],
                 })
             },
@@ -1552,7 +2664,85 @@ mod tests {
     }
 
     #[test]
-    fn typography_han_only_single_line_can_render_two_explicit_lines() -> Result<()> {
+    fn han_only_planner_then_manual_style_patch_renders_exact_manual_size() -> Result<()> {
+        let id = NodeId::new();
+        let node = renderer_node(id, "中文", Some("translated"), None);
+        let (mut scene, page) = renderer_scene(vec![node]);
+        let planned_style = TextStyle {
+            font_size: None,
+            ..Default::default()
+        };
+        let mut planner_op = Op::UpdateNode {
+            page,
+            id,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    style: Some(Some(planned_style.clone())),
+                    typography_plan_verified: Some(true),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        };
+        planner_op.apply(&mut scene)?;
+        let mut manual_style = planned_style;
+        manual_style.font_size = Some(72.0);
+        let mut manual_op = Op::UpdateNode {
+            page,
+            id,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(TextDataPatch {
+                    style: Some(Some(manual_style)),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        };
+        manual_op.apply(&mut scene)?;
+
+        let (inputs, _, _, _) = build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        assert!(!inputs[0].typography_plan_verified);
+        assert_eq!(
+            inputs[0].style.as_ref().and_then(|style| style.font_size),
+            Some(72.0)
+        );
+        let renderer = crate::renderer::Renderer::new()?;
+        let base = DynamicImage::new_rgba8(200, 200);
+        let automatic = renderer.render_page(
+            &base,
+            None,
+            None,
+            200,
+            200,
+            &inputs,
+            &PageRenderOptions {
+                source_relative_font_size_policy: Some(SourceRelativeFontSizePolicy {
+                    offset: -5.0,
+                    prefer_detected: false,
+                }),
+                ..Default::default()
+            },
+        )?;
+        let manual = renderer.render_page(
+            &base,
+            None,
+            None,
+            200,
+            200,
+            &inputs,
+            &PageRenderOptions::default(),
+        )?;
+        assert_eq!(
+            automatic.blocks[0].sprite.dimensions(),
+            manual.blocks[0].sprite.dimensions()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn han_only_renderer_rejects_legacy_verified_line_mismatch() -> Result<()> {
         let id = NodeId::new();
         let mut node = renderer_node(id, "中文", Some("first\nsecond"), None);
         let NodeKind::Text(text) = &mut node.kind else {
@@ -1563,14 +2753,12 @@ mod tests {
 
         let (inputs, _, _, _) = build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
 
-        assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].translation, "first\nsecond");
-        assert!(inputs[0].preserve_explicit_lines);
+        assert!(inputs.is_empty());
         Ok(())
     }
 
     #[test]
-    fn typography_reflow_does_not_restore_source_han_pixels() -> Result<()> {
+    fn han_only_legacy_verified_line_mismatch_restores_source_pixels() -> Result<()> {
         let id = NodeId::new();
         let mut node = renderer_node(id, "中文", Some("first\nsecond"), None);
         let NodeKind::Text(text) = &mut node.kind else {
@@ -1582,7 +2770,8 @@ mod tests {
         let (inputs, _, _, eligible) =
             build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, None)?;
         let protected = protected_source_lines_for_page(&scene, page);
-        assert!(protected.is_empty());
+        assert!(inputs.is_empty());
+        assert_eq!(protected.len(), 1);
         let source =
             DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([10, 20, 30, 255])));
         let base =
@@ -1596,25 +2785,11 @@ mod tests {
             &inputs,
             &eligible,
             &protected,
-            || {
-                Ok(RenderOutput {
-                    final_render: base.clone(),
-                    blocks: vec![RenderedBlock {
-                        node_id: id,
-                        sprite: DynamicImage::ImageRgba8(RgbaImage::from_pixel(
-                            80,
-                            50,
-                            Rgba([250, 0, 0, 255]),
-                        )),
-                        rendered_direction: TextDirection::Horizontal,
-                        expanded_transform: None,
-                    }],
-                })
-            },
+            || unreachable!("legacy mismatch must skip rendering"),
         )?;
         assert_eq!(
             output.final_render.to_rgba8().get_pixel(20, 30).0,
-            [250, 0, 0, 255]
+            [10, 20, 30, 255]
         );
         Ok(())
     }

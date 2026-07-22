@@ -140,7 +140,8 @@ async function runAutoRender(pageId: string): Promise<void> {
   const renderer = cfg.pipeline?.renderer
   if (!renderer) return
   const defaultFont = usePreferencesStore.getState().defaultFont
-  await startPipeline({ steps: [renderer], pages: [pageId], defaultFont })
+  const targetLanguage = useEditorUiStore.getState().selectedLanguage
+  await startPipeline({ steps: [renderer], pages: [pageId], defaultFont, targetLanguage })
 }
 
 /** Select every text node on the active page. No-op if no project/page open. */
