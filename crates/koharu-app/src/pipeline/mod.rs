@@ -499,6 +499,13 @@ pub fn catalog() -> EngineCatalog {
 #[cfg(test)]
 mod d0_revision_46_contract;
 
+#[cfg(all(
+    test,
+    target_pointer_width = "64",
+    any(target_os = "linux", target_os = "macos")
+))]
+mod d0_held_input;
+
 #[cfg(test)]
 mod tests {
     use super::*;
