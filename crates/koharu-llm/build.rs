@@ -1,12 +1,13 @@
 use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use quote::{format_ident, quote};
 use reqwest::blocking::Client;
+use sha2::{Digest, Sha256};
 use syn::{FnArg, ImplItem, Item, Pat, Signature};
 use tar::Archive;
 
@@ -41,6 +42,7 @@ const MTMD_FUNCTIONS: &[&str] = &["mtmd_.*", "mtmd_helper_.*"];
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_TAG");
+    println!("cargo:rerun-if-env-changed=LLAMA_CPP_ARCHIVE_SHA256");
 
     if let Err(err) = run() {
         panic!("{err:#}");
@@ -51,10 +53,13 @@ fn run() -> Result<()> {
     validate_target()?;
 
     let llama_cpp_tag = env::var("LLAMA_CPP_TAG").context("missing LLAMA_CPP_TAG")?;
+    let archive_sha256 =
+        env::var("LLAMA_CPP_ARCHIVE_SHA256").context("missing LLAMA_CPP_ARCHIVE_SHA256")?;
+    validate_expected_digest(&archive_sha256)?;
     let out_dir = PathBuf::from(env::var("OUT_DIR").context("missing OUT_DIR")?);
-    let source_root = ensure_source_tree(&out_dir, &llama_cpp_tag)?;
+    let source_tree = prepare_source_tree(&out_dir, &llama_cpp_tag, &archive_sha256)?;
     let header_path = write_wrapper_header(&out_dir)?;
-    let include_dirs = include_dirs(&source_root);
+    let include_dirs = include_dirs(source_tree.root());
 
     generate_types(&out_dir, &header_path, &include_dirs)?;
     generate_loader(
@@ -124,38 +129,184 @@ fn validate_target() -> Result<()> {
     Ok(())
 }
 
-fn ensure_source_tree(out_dir: &Path, llama_cpp_tag: &str) -> Result<PathBuf> {
-    let cache_dir = out_dir.join("llama.cpp-source");
-    let tarball_path = cache_dir.join(format!("llama.cpp-{llama_cpp_tag}.tar.gz"));
-    let source_root = cache_dir.join(format!("llama.cpp-{llama_cpp_tag}"));
-    let source_url =
-        format!("https://github.com/ggml-org/llama.cpp/archive/refs/tags/{llama_cpp_tag}.tar.gz");
-
-    if source_root.join("include/llama.h").exists() {
-        return Ok(source_root);
+fn validate_expected_digest(expected: &str) -> Result<()> {
+    if expected.len() != 64
+        || !expected
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("LLAMA_CPP_ARCHIVE_SHA256 must be exactly 64 lowercase hexadecimal characters");
     }
+    Ok(())
+}
 
-    fs::create_dir_all(&cache_dir).context("failed to create source cache dir")?;
+fn verify_archive(file: &mut fs::File, path: &Path, expected: &str) -> Result<()> {
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("failed to seek source tarball `{}`", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read source tarball `{}`", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected {
+        bail!(
+            "llama.cpp source tarball digest mismatch: expected {expected}, got {actual} for `{}`",
+            path.display()
+        );
+    }
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("failed to rewind source tarball `{}`", path.display()))?;
+    Ok(())
+}
 
-    if !tarball_path.exists() {
+fn open_verified_archive(path: &Path, expected: &str) -> Result<fs::File> {
+    let mut file = fs::File::open(path)
+        .with_context(|| format!("failed to open source tarball `{}`", path.display()))?;
+    verify_archive(&mut file, path, expected)?;
+    Ok(file)
+}
+
+fn create_download_temp(cache_dir: &Path, llama_cpp_tag: &str) -> Result<(PathBuf, fs::File)> {
+    for attempt in 0..1000 {
+        let path = cache_dir.join(format!(
+            ".llama.cpp-{llama_cpp_tag}.tar.gz.{}.{}.tmp",
+            std::process::id(),
+            attempt
+        ));
+        match fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err).context("failed to create temporary source tarball file"),
+        }
+    }
+    bail!("failed to create a unique temporary source tarball file");
+}
+
+fn download_archive(
+    cache_dir: &Path,
+    tarball_path: &Path,
+    source_url: &str,
+    llama_cpp_tag: &str,
+    archive_sha256: &str,
+) -> Result<fs::File> {
+    let (temp_path, mut temp_file) = create_download_temp(cache_dir, llama_cpp_tag)?;
+    let download_result = (|| -> Result<()> {
         let client = Client::builder()
             .user_agent("koharu-llm-build")
             .build()
             .context("failed to build reqwest client")?;
         let mut response = client
-            .get(&source_url)
+            .get(source_url)
             .send()
             .context("failed to download llama.cpp source tarball")?
             .error_for_status()
             .context("source tarball request failed")?;
-        let mut file =
-            fs::File::create(&tarball_path).context("failed to create source tarball file")?;
-        io::copy(&mut response, &mut file).context("failed to write source tarball")?;
-        file.flush().context("failed to flush source tarball")?;
+        io::copy(&mut response, &mut temp_file).context("failed to write source tarball")?;
+        temp_file
+            .flush()
+            .context("failed to flush source tarball")?;
+        temp_file
+            .sync_all()
+            .context("failed to sync source tarball")?;
+        verify_archive(&mut temp_file, &temp_path, archive_sha256)
+    })();
+    if let Err(err) = download_result {
+        drop(temp_file);
+        let _ = fs::remove_file(&temp_path);
+        return Err(err);
+    }
+    drop(temp_file);
+
+    let publish_result = fs::hard_link(&temp_path, tarball_path);
+    let _ = fs::remove_file(&temp_path);
+    match publish_result {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err).context("failed to publish verified source tarball"),
     }
 
-    let tarball =
-        fs::File::open(&tarball_path).context("failed to reopen downloaded source tarball")?;
+    open_verified_archive(tarball_path, archive_sha256)
+}
+
+struct ScratchDir(PathBuf);
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+struct SourceTree {
+    root: PathBuf,
+    _scratch: ScratchDir,
+}
+
+impl SourceTree {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+}
+
+fn create_extraction_scratch(
+    cache_dir: &Path,
+    llama_cpp_tag: &str,
+    archive_sha256: &str,
+) -> Result<ScratchDir> {
+    for attempt in 0..1000 {
+        let path = cache_dir.join(format!(
+            ".llama.cpp-{llama_cpp_tag}-{archive_sha256}.{}.{}.extracting",
+            std::process::id(),
+            attempt
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(ScratchDir(path)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err).context("failed to create source extraction directory"),
+        }
+    }
+    bail!("failed to create a unique source extraction directory");
+}
+
+fn prepare_source_tree(
+    out_dir: &Path,
+    llama_cpp_tag: &str,
+    archive_sha256: &str,
+) -> Result<SourceTree> {
+    let cache_dir = out_dir.join("llama.cpp-source");
+    let tarball_path = cache_dir.join(format!("llama.cpp-{llama_cpp_tag}.tar.gz"));
+    let source_url =
+        format!("https://github.com/ggml-org/llama.cpp/archive/refs/tags/{llama_cpp_tag}.tar.gz");
+
+    fs::create_dir_all(&cache_dir).context("failed to create source cache dir")?;
+
+    let tarball = match fs::File::open(&tarball_path) {
+        Ok(mut file) => {
+            verify_archive(&mut file, &tarball_path, archive_sha256)?;
+            file
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => download_archive(
+            &cache_dir,
+            &tarball_path,
+            &source_url,
+            llama_cpp_tag,
+            archive_sha256,
+        )?,
+        Err(err) => return Err(err).context("failed to open source tarball"),
+    };
+
+    let scratch = create_extraction_scratch(&cache_dir, llama_cpp_tag, archive_sha256)?;
     let decoder = GzDecoder::new(tarball);
     let mut archive = Archive::new(decoder);
     // Extract selectively: skip benchmarks and other non-essential paths that
@@ -174,10 +325,11 @@ fn ensure_source_tree(out_dir: &Path, llama_cpp_tag: &str) -> Result<PathBuf> {
             continue;
         }
         entry
-            .unpack_in(&cache_dir)
+            .unpack_in(&scratch.0)
             .with_context(|| format!("failed to unpack `{path_str}`"))?;
     }
 
+    let source_root = scratch.0.join(format!("llama.cpp-{llama_cpp_tag}"));
     if !source_root.join("include/llama.h").exists() {
         bail!(
             "expected extracted source tree at `{}` but llama.h was not found",
@@ -185,7 +337,10 @@ fn ensure_source_tree(out_dir: &Path, llama_cpp_tag: &str) -> Result<PathBuf> {
         );
     }
 
-    Ok(source_root)
+    Ok(SourceTree {
+        root: source_root,
+        _scratch: scratch,
+    })
 }
 
 fn write_if_changed(path: &Path, content: &[u8]) -> Result<()> {

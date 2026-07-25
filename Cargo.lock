@@ -4303,6 +4303,7 @@ dependencies = [
  "reqwest-middleware",
  "serde",
  "serde_json",
+ "sha2",
  "strum",
  "syn 2.0.118",
  "tar",
