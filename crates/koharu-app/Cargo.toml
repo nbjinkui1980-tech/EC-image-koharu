@@ -56,6 +56,10 @@ uuid = { workspace = true }
 walkdir = { workspace = true }
 zip = { workspace = true }
 
+[dev-dependencies]
+rustix = { version = "=1.1.4", features = ["fs"] }
+sha2 = "=0.10.9"
+
 [features]
 cuda = ["koharu-ml/cuda"]
 metal = ["koharu-ml/metal"]

@@ -497,6 +497,9 @@ pub fn catalog() -> EngineCatalog {
 }
 
 #[cfg(test)]
+mod d0_revision_46_contract;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, HashMap, HashSet};
