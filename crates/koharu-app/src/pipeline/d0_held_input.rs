@@ -118,6 +118,31 @@ impl HeldInput {
     pub(super) fn sha256(&self) -> [u8; 32] {
         self.sha256
     }
+    pub(super) fn require_file_and_parent_security(
+        &self,
+        expected_owner: u64,
+        file_mode: u64,
+        parent_mode: u64,
+    ) -> io::Result<()> {
+        let held_metadata = metadata(&fs(fstat(&self.descriptor))?);
+        let parent_metadata = self
+            .ancestors
+            .last()
+            .ok_or_else(|| invalid_input("input parent metadata is missing"))?;
+        require(
+            held_metadata == self.metadata
+                && held_metadata.file_type.is_file()
+                && held_metadata.owner == expected_owner
+                && held_metadata.mode & 0o7777 == file_mode,
+            "input file security metadata is invalid",
+        )?;
+        require(
+            parent_metadata.file_type.is_dir()
+                && parent_metadata.owner == expected_owner
+                && parent_metadata.mode & 0o7777 == parent_mode,
+            "input parent security metadata is invalid",
+        )
+    }
     pub(super) fn with_revalidated_path<T>(
         &self,
         action: impl FnOnce(&PathValidation<'_>) -> io::Result<T>,

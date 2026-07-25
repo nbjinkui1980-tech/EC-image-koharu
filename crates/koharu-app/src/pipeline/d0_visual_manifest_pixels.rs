@@ -97,6 +97,13 @@ struct DecodedEntry {
     clean_hash: String,
 }
 
+pub(super) fn canonical_decoded_rgba_blake3(bytes: &[u8]) -> D0PixelResult<String> {
+    let mut budget = SharedBudget::new(BYTE_CEILING);
+    let probe = probe_asset(bytes, &mut budget)?;
+    let rgba = decode_retained_rgba(bytes, probe, &mut budget)?;
+    Ok(blake3_hex(&rgba))
+}
+
 pub(super) fn validate_dimensions_and_masks(
     held_schema: HeldVisualManifestSchema,
 ) -> D0PixelResult<DimensionAndMaskValidatedManifest> {
@@ -692,6 +699,7 @@ mod tests {
             load_schema_and_hold_assets(
                 &self.manifest_path,
                 &sha256(&bytes),
+                Path::new(regression["path"].as_str().unwrap()),
                 regression["decoded_rgba_blake3"].as_str().unwrap(),
                 regression["sha256"].as_str().unwrap(),
             )
@@ -805,8 +813,27 @@ mod tests {
     fn d0_visual_manifest_pixels_accepts_webp_sniffed_from_mismatched_name() {
         let mut fixture = Fixture::new();
         let source = source_image(1);
-        fixture.replace_source(1, &encoded(&source, ImageFormat::WebP), Some(&source));
+        let bytes = encoded(&source, ImageFormat::WebP);
+        fixture.replace_source(1, &bytes, Some(&source));
+        assert_eq!(
+            canonical_decoded_rgba_blake3(&bytes).unwrap(),
+            blake3_hex(&source)
+        );
         fixture.validate().unwrap();
+    }
+
+    #[test]
+    fn d0_visual_manifest_pixels_fingerprints_png_jpeg_and_webp_canonical_rgba() {
+        let source = source_image(2);
+        for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
+            let bytes = encoded(&source, format);
+            let decoded = image::load_from_memory(&bytes).unwrap().into_rgba8();
+            assert_eq!(
+                canonical_decoded_rgba_blake3(&bytes).unwrap(),
+                blake3_hex(&decoded),
+                "{format:?}"
+            );
+        }
     }
 
     #[test]
@@ -954,6 +981,10 @@ mod tests {
 
             let actual = decode_retained_rgba(&bytes, probe, &mut budget).unwrap();
             assert_eq!(actual, expected);
+            assert_eq!(
+                canonical_decoded_rgba_blake3(&bytes).unwrap(),
+                blake3_hex(&expected)
+            );
             assert_eq!(
                 actual.dimensions(),
                 oriented_dimensions((3, 2), orientation)

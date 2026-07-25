@@ -192,15 +192,64 @@ pub(super) struct HeldVisualManifestTarget {
     pub(super) residual_source_ink_mask: HeldInput,
 }
 
+impl HeldVisualManifestSchema {
+    pub(super) fn with_revalidated_paths<T>(
+        &self,
+        success: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.manifest.with_revalidated_path(|manifest| {
+            manifest.with_current_namespace(|| revalidate_entries(&self.entries, success))
+        })
+    }
+}
+
+fn revalidate_entries<T>(
+    entries: &[HeldVisualManifestEntry],
+    success: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let Some((entry, remaining)) = entries.split_first() else {
+        return success();
+    };
+    entry.source.with_revalidated_path(|source| {
+        source.with_current_namespace(|| {
+            entry.clean_reference.with_revalidated_path(|clean| {
+                clean.with_current_namespace(|| {
+                    revalidate_targets(&entry.targets, || revalidate_entries(remaining, success))
+                })
+            })
+        })
+    })
+}
+
+fn revalidate_targets<T>(
+    targets: &[HeldVisualManifestTarget],
+    success: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
+    let Some((target, remaining)) = targets.split_first() else {
+        return success();
+    };
+    target.erase_source_ink_mask.with_revalidated_path(|erase| {
+        erase.with_current_namespace(|| {
+            target
+                .residual_source_ink_mask
+                .with_revalidated_path(|residual| {
+                    residual.with_current_namespace(|| revalidate_targets(remaining, success))
+                })
+        })
+    })
+}
+
 pub(super) fn load_schema_and_hold_assets(
     manifest_path: &Path,
     expected_manifest_sha256: &str,
+    selected_regression_path: &Path,
     approved_regression_decoded_rgba_blake3: &str,
     selected_regression_raw_sha256: &str,
 ) -> D0Result<HeldVisualManifestSchema> {
     load_schema_and_hold_assets_with_limit(
         manifest_path,
         expected_manifest_sha256,
+        selected_regression_path,
         approved_regression_decoded_rgba_blake3,
         selected_regression_raw_sha256,
         BYTE_CEILING,
@@ -210,6 +259,7 @@ pub(super) fn load_schema_and_hold_assets(
 fn load_schema_and_hold_assets_with_limit(
     manifest_path: &Path,
     expected_manifest_sha256: &str,
+    selected_regression_path: &Path,
     approved_regression_decoded_rgba_blake3: &str,
     selected_regression_raw_sha256: &str,
     held_input_limit: u64,
@@ -241,6 +291,7 @@ fn load_schema_and_hold_assets_with_limit(
         .map_err(|source| context(MANIFEST_SCHEMA_ERROR, source))?;
     schema
         .validate(
+            selected_regression_path,
             approved_regression_decoded_rgba_blake3,
             selected_regression_raw_sha256,
         )
@@ -286,6 +337,7 @@ fn load_schema_and_hold_assets_with_limit(
 impl VisualManifestSchema {
     fn validate(
         &self,
+        selected_regression_path: &Path,
         approved_regression_decoded_rgba_blake3: &str,
         selected_regression_raw_sha256: &str,
     ) -> io::Result<()> {
@@ -415,6 +467,13 @@ impl VisualManifestSchema {
             "duplicate clean decoded rgba blake3",
         )?;
         let regression = regression.ok_or_else(|| invalid_data("regression entry is missing"))?;
+        let selected_regression_path = selected_regression_path
+            .to_str()
+            .ok_or_else(|| invalid_data("selected regression path is not UTF-8"))?;
+        require(
+            regression.path == selected_regression_path,
+            "selected regression path mismatch",
+        )?;
         require(
             regression.decoded_rgba_blake3 == approved_regression_decoded_rgba_blake3,
             "regression decoded rgba blake3 mismatch",
@@ -512,6 +571,7 @@ fn invalid_data(message: &'static str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::fs;
     use std::os::unix::fs::symlink;
     use std::path::PathBuf;
@@ -600,12 +660,25 @@ mod tests {
         }
 
         fn load(&self, expected_manifest_sha256: &str) -> D0Result<HeldVisualManifestSchema> {
+            self.load_with_selected_path(expected_manifest_sha256, &self.selected_regression_path())
+        }
+
+        fn load_with_selected_path(
+            &self,
+            expected_manifest_sha256: &str,
+            selected_regression_path: &Path,
+        ) -> D0Result<HeldVisualManifestSchema> {
             load_schema_and_hold_assets(
                 &self.manifest_path,
                 expected_manifest_sha256,
+                selected_regression_path,
                 &self.approved_regression_decoded,
                 &self.selected_regression_raw,
             )
+        }
+
+        fn selected_regression_path(&self) -> PathBuf {
+            PathBuf::from(self.value["entries"][0]["path"].as_str().unwrap())
         }
 
         fn load_with_limit(
@@ -616,6 +689,7 @@ mod tests {
             load_schema_and_hold_assets_with_limit(
                 &self.manifest_path,
                 expected_manifest_sha256,
+                &self.selected_regression_path(),
                 &self.approved_regression_decoded,
                 &self.selected_regression_raw,
                 limit,
@@ -730,6 +804,13 @@ mod tests {
             held.entries[0].targets[0].residual_source_ink_mask.bytes(),
             b"residual-0"
         );
+        let success_calls = Cell::new(0);
+        held.with_revalidated_paths(|| {
+            success_calls.set(success_calls.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(success_calls.get(), 1);
     }
 
     #[test]
@@ -803,6 +884,7 @@ mod tests {
             load_schema_and_hold_assets(
                 Path::new("relative-manifest"),
                 &expected,
+                &fixture.selected_regression_path(),
                 &fixture.approved_regression_decoded,
                 &fixture.selected_regression_raw,
             ),
@@ -925,10 +1007,12 @@ mod tests {
     fn d0_visual_manifest_schema_rejects_regression_identity_mismatch() {
         let fixture = Fixture::new();
         let expected = fixture.store();
+        let selected_regression_path = fixture.selected_regression_path();
         assert_error(
             load_schema_and_hold_assets(
                 &fixture.manifest_path,
                 &expected,
+                &selected_regression_path,
                 &"0".repeat(64),
                 &fixture.selected_regression_raw,
             ),
@@ -939,11 +1023,31 @@ mod tests {
             load_schema_and_hold_assets(
                 &fixture.manifest_path,
                 &expected,
+                &selected_regression_path,
                 &fixture.approved_regression_decoded,
                 &"0".repeat(64),
             ),
             MANIFEST_VALIDATION_ERROR,
             "selected regression raw sha256 mismatch",
+        );
+    }
+
+    #[test]
+    fn d0_visual_manifest_schema_binds_exact_selected_regression_path() {
+        let fixture = Fixture::new();
+        let expected = fixture.store();
+        let selected = fixture.selected_regression_path();
+        fixture
+            .load_with_selected_path(&expected, &selected)
+            .unwrap();
+
+        let alternate = fixture.root.join("byte-identical-selected-source");
+        fs::copy(&selected, &alternate).unwrap();
+        assert_eq!(fs::read(&selected).unwrap(), fs::read(&alternate).unwrap());
+        assert_error(
+            fixture.load_with_selected_path(&expected, &alternate),
+            MANIFEST_VALIDATION_ERROR,
+            "selected regression path mismatch",
         );
     }
 

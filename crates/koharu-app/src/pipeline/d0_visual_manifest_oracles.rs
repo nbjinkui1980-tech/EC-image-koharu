@@ -611,6 +611,7 @@ mod tests {
             let held = load_schema_and_hold_assets(
                 &self.manifest_path,
                 &sha256(&bytes),
+                Path::new(regression["path"].as_str().unwrap()),
                 regression["decoded_rgba_blake3"].as_str().unwrap(),
                 regression["sha256"].as_str().unwrap(),
             )
