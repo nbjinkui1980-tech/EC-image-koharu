@@ -515,16 +515,22 @@ pub fn build_typography_ops(request: &TypographyPageRequest, response: &str) -> 
         let node = planned
             .remove(&target.node_id)
             .ok_or_else(|| anyhow::anyhow!("missing Typography response node"))?;
-        validate_lines(target, &node.lines)?;
-        anyhow::ensure!(
-            !target.preserve_lines || node.style.font_size.is_none(),
-            "Typography font size is not allowed for fixed lines"
-        );
+        let translation = if target.preserve_lines {
+            target.translation.clone()
+        } else {
+            validate_lines(target, &node.lines)?;
+            node.lines.join("\n")
+        };
         let font_family = font_lookup
             .get(&node.style.font_family.trim().to_lowercase())
             .ok_or_else(|| anyhow::anyhow!("unknown Typography font"))?
             .to_string();
-        if let Some(font_size) = node.style.font_size {
+        let planned_font_size = if target.preserve_lines {
+            None
+        } else {
+            node.style.font_size
+        };
+        if let Some(font_size) = planned_font_size {
             anyhow::ensure!(
                 font_size.is_finite()
                     && font_size >= min_font_size
@@ -545,7 +551,7 @@ pub fn build_typography_ops(request: &TypographyPageRequest, response: &str) -> 
         }
         let style = TextStyle {
             font_families: vec![font_family],
-            font_size: target.manual_font_size.or(node.style.font_size),
+            font_size: target.manual_font_size.or(planned_font_size),
             color: node.style.color,
             stroke: node.style.stroke.map(|stroke| TextStrokeStyle {
                 enabled: stroke.enabled,
@@ -560,7 +566,7 @@ pub fn build_typography_ops(request: &TypographyPageRequest, response: &str) -> 
         };
         validated.push((
             target.node_id,
-            node.lines.join("\n"),
+            translation,
             style,
             target.manual_font_size.is_none(),
         ));
@@ -598,7 +604,7 @@ fn validate_lines(target: &TypographyTarget, lines: &[String]) -> Result<()> {
                 .all(|line| !line.is_empty() && !line.contains(['\n', '\r'])),
         "Typography response contains an empty or embedded line"
     );
-    if target.preserve_lines || target.safe_regions.len() != 1 {
+    if target.safe_regions.len() != 1 {
         anyhow::ensure!(
             lines
                 == target
@@ -866,9 +872,9 @@ mod tests {
     }
 
     #[test]
-    fn typography_plan_rejects_changed_text_and_empty_lines_atomically() -> Result<()> {
+    fn all_text_typography_rejects_changed_text_and_empty_lines_atomically() -> Result<()> {
         let (scene, page) = scene(vec![text_node("中文", Some("keep this"))]);
-        let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        let request = request(&scene, page, SourceTextPolicy::AllText, None)?;
         for lines in [vec!["changed"], vec![""]] {
             let response = serde_json::to_string(&json!({
                 "nodes": [response_node(
@@ -882,19 +888,37 @@ mod tests {
     }
 
     #[test]
-    fn han_only_typography_rejects_inserted_line_break_atomically() -> Result<()> {
+    fn han_only_typography_ignores_planner_lines_and_preserves_translation() -> Result<()> {
         let (scene, page) = scene(vec![text_node("中文", Some("中文"))]);
         let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
-        let response = serde_json::to_string(&json!({
-            "nodes": [response_node(&request.targets[0], vec!["中".into(), "文".into()])]
-        }))?;
-
-        assert!(build_typography_ops(&request, &response).is_err());
+        for lines in [
+            vec!["中".into(), "文".into()],
+            Vec::new(),
+            vec![String::new()],
+            vec!["changed".into()],
+        ] {
+            let response = serde_json::to_string(&json!({
+                "nodes": [response_node(&request.targets[0], lines)]
+            }))?;
+            let ops = build_typography_ops(&request, &response)?;
+            let koharu_core::Op::UpdateNode { patch, .. } = &ops[0] else {
+                panic!("expected update")
+            };
+            let Some(NodeDataPatch::Text(patch)) = &patch.data else {
+                panic!("expected text patch")
+            };
+            assert_eq!(patch.translation.as_ref().unwrap().as_deref(), Some("中文"));
+            assert_eq!(
+                patch.style.as_ref().unwrap().as_ref().unwrap().font_size,
+                None
+            );
+        }
         Ok(())
     }
 
     #[test]
-    fn typography_plan_rejects_collapsed_spaces_tabs_and_trimmed_edges_atomically() -> Result<()> {
+    fn all_text_typography_rejects_collapsed_spaces_tabs_and_trimmed_edges_atomically() -> Result<()>
+    {
         for (translation, lines) in [
             ("a  b", vec!["a", "b"]),
             ("a\tb", vec!["a", "b"]),
@@ -903,7 +927,7 @@ mod tests {
             ("a\u{3000}b", vec!["a", "b"]),
         ] {
             let (scene, page) = scene(vec![text_node("中文", Some(translation))]);
-            let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
+            let request = request(&scene, page, SourceTextPolicy::AllText, None)?;
             let response = serde_json::to_string(&json!({
                 "nodes": [response_node(
                     &request.targets[0],
@@ -916,15 +940,25 @@ mod tests {
     }
 
     #[test]
-    fn typography_plan_rejects_reflow_across_multiple_safe_regions() -> Result<()> {
-        let (scene, page) = scene(vec![text_node("第一行\n第二行", Some("first second"))]);
+    fn han_only_typography_ignores_planner_reflow_across_multiple_safe_regions() -> Result<()> {
+        let (scene, page) = scene(vec![text_node("第一行\n第二行", Some("first\nsecond"))]);
         let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
         assert_eq!(request.targets[0].safe_regions.len(), 2);
         let response = serde_json::to_string(&json!({
-            "nodes": [response_node(&request.targets[0], vec!["first".into(), "second".into()])]
+            "nodes": [response_node(&request.targets[0], vec!["second first".into()])]
         }))?;
 
-        assert!(build_typography_ops(&request, &response).is_err());
+        let ops = build_typography_ops(&request, &response)?;
+        let koharu_core::Op::UpdateNode { patch, .. } = &ops[0] else {
+            panic!("expected update")
+        };
+        let Some(NodeDataPatch::Text(patch)) = &patch.data else {
+            panic!("expected text patch")
+        };
+        assert_eq!(
+            patch.translation.as_ref().unwrap().as_deref(),
+            Some("first\nsecond")
+        );
         Ok(())
     }
 
@@ -957,33 +991,45 @@ mod tests {
     #[test]
     fn typography_plan_rejects_unknown_font_and_invalid_numbers_atomically() -> Result<()> {
         let (scene, page) = scene(vec![text_node("中文", Some("valid"))]);
-        let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        let all_text_request = request(&scene, page, SourceTextPolicy::AllText, None)?;
         for (field, value) in [
             ("fontFamily", json!("Unknown")),
             ("fontSize", json!(-1.0)),
             ("widthPx", json!(-1.0)),
         ] {
-            let mut node = response_node(&request.targets[0], vec!["valid".into()]);
+            let mut node = response_node(&all_text_request.targets[0], vec!["valid".into()]);
             if field == "widthPx" {
                 node["style"]["stroke"][field] = value;
             } else {
                 node["style"][field] = value;
             }
             let response = serde_json::to_string(&json!({ "nodes": [node] }))?;
-            assert!(build_typography_ops(&request, &response).is_err());
+            assert!(build_typography_ops(&all_text_request, &response).is_err());
         }
-        let non_finite = format!(
-            r#"{{"nodes":[{{"nodeId":"{}","lines":["valid"],"style":{{"fontFamily":"ArialMT","fontSize":1e400,"color":[1,2,3,255],"stroke":null,"effect":null,"textAlign":null}}}}]}}"#,
-            request.targets[0].node_id
-        );
-        assert!(build_typography_ops(&request, &non_finite).is_err());
+        for policy in [SourceTextPolicy::HanOnly, SourceTextPolicy::AllText] {
+            let request = request(&scene, page, policy, None)?;
+            let non_finite = format!(
+                r#"{{"nodes":[{{"nodeId":"{}","lines":["valid"],"style":{{"fontFamily":"ArialMT","fontSize":1e400,"color":[1,2,3,255],"stroke":null,"effect":null,"textAlign":null}}}}]}}"#,
+                request.targets[0].node_id
+            );
+            assert!(build_typography_ops(&request, &non_finite).is_err());
+            let mut wrong_type = response_node(&request.targets[0], vec!["valid".into()]);
+            wrong_type["style"]["fontSize"] = json!("large");
+            assert!(
+                build_typography_ops(
+                    &request,
+                    &serde_json::to_string(&json!({ "nodes": [wrong_type] }))?
+                )
+                .is_err()
+            );
+        }
         Ok(())
     }
 
     #[test]
     fn typography_plan_rejects_oversized_finite_font_and_stroke() -> Result<()> {
         let (scene, page) = scene(vec![text_node("中文", Some("valid"))]);
-        let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        let request = request(&scene, page, SourceTextPolicy::AllText, None)?;
         for (field, value) in [("fontSize", 301.0), ("widthPx", 25.0)] {
             let mut node = response_node(&request.targets[0], vec!["valid".into()]);
             if field == "widthPx" {
@@ -1003,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn han_only_typography_rejects_space_reflow_atomically() -> Result<()> {
+    fn han_only_typography_ignores_space_reflow_without_changing_scope() -> Result<()> {
         let selected = text_node("中文", Some("a b"));
         let outside = text_node("汉字", Some("outside"));
         let selected_id = selected.id;
@@ -1018,19 +1064,41 @@ mod tests {
             "nodes": [response_node(&request.targets[0], vec!["a".into(), "b".into()])]
         }))?;
 
-        assert!(build_typography_ops(&request, &response).is_err());
+        let ops = build_typography_ops(&request, &response)?;
+        assert_eq!(ops.len(), 1);
+        let koharu_core::Op::UpdateNode { id, patch, .. } = &ops[0] else {
+            panic!("expected update")
+        };
+        assert_eq!(*id, selected_id);
+        let Some(NodeDataPatch::Text(patch)) = &patch.data else {
+            panic!("expected text patch")
+        };
+        assert_eq!(patch.translation.as_ref().unwrap().as_deref(), Some("a b"));
         Ok(())
     }
 
     #[test]
-    fn han_only_typography_rejects_font_size_override_atomically() -> Result<()> {
+    fn han_only_typography_ignores_planner_font_size_suggestions() -> Result<()> {
         let (scene, page) = scene(vec![text_node("中文", Some("中文"))]);
         let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
-        let mut node = response_node(&request.targets[0], vec!["中文".into()]);
-        node["style"]["fontSize"] = json!(18.0);
-        let response = serde_json::to_string(&json!({ "nodes": [node] }))?;
-
-        assert!(build_typography_ops(&request, &response).is_err());
+        for font_size in [-1.0, 11.0, 18.0, 301.0] {
+            let mut node = response_node(&request.targets[0], vec!["changed".into()]);
+            node["style"]["fontSize"] = json!(font_size);
+            let response = serde_json::to_string(&json!({ "nodes": [node] }))?;
+            let ops = build_typography_ops(&request, &response)?;
+            let koharu_core::Op::UpdateNode { patch, .. } = &ops[0] else {
+                panic!("expected update")
+            };
+            let Some(NodeDataPatch::Text(patch)) = &patch.data else {
+                panic!("expected text patch")
+            };
+            assert_eq!(patch.translation.as_ref().unwrap().as_deref(), Some("中文"));
+            assert_eq!(
+                patch.style.as_ref().unwrap().as_ref().unwrap().font_size,
+                None
+            );
+            assert_eq!(patch.typography_plan_verified, Some(true));
+        }
         Ok(())
     }
 
@@ -1047,9 +1115,9 @@ mod tests {
         text.typography_plan_verified = false;
         let (scene, page) = scene(vec![node]);
         let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
-        let response = serde_json::to_string(&json!({
-            "nodes": [response_node(&request.targets[0], vec!["translated".into()])]
-        }))?;
+        let mut planned = response_node(&request.targets[0], vec!["changed".into()]);
+        planned["style"]["fontSize"] = json!(18.0);
+        let response = serde_json::to_string(&json!({ "nodes": [planned] }))?;
         let ops = build_typography_ops(&request, &response)?;
         let koharu_core::Op::UpdateNode { patch, .. } = &ops[0] else {
             panic!("expected update")
@@ -1142,7 +1210,7 @@ mod tests {
     #[test]
     fn typography_plan_rejects_font_size_below_page_readability_floor_atomically() -> Result<()> {
         let (scene, page) = scene(vec![text_node("中文", Some("valid"))]);
-        let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        let request = request(&scene, page, SourceTextPolicy::AllText, None)?;
         let mut node = response_node(&request.targets[0], vec!["valid".into()]);
         node["style"]["fontSize"] = json!(11.0);
         let response = serde_json::to_string(&json!({ "nodes": [node] }))?;
