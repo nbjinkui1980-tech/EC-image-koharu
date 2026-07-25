@@ -1,7 +1,7 @@
 use super::d0_held_input::HeldInput;
 use rustix::fs::{
-    AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, fstat, fsync, open, openat, renameat_with,
-    statat, unlinkat,
+    AtFlags, Dir, FileType, Mode, OFlags, RenameFlags, fstat, fsync, mkdirat, open, openat,
+    renameat_with, statat, unlinkat,
 };
 use sha2::{Digest, Sha256};
 use std::ffi::{OsStr, OsString};
@@ -9,9 +9,16 @@ use std::fs::File;
 use std::io::{self, Read, Seek, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::UnixStream;
 use std::path::Path;
+
+const MANIFEST_PREFLIGHT_DIRECTORY: &str = "d0-manifest-preflight";
+const MANIFEST_PREFLIGHT_REPORT: &str = "report.json";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FaultPoint {
+    ChildDirectoryCreate,
+    ParentDirectoryFsync,
     Write,
     TempFsync,
     Rename,
@@ -36,6 +43,12 @@ struct OutputDirectory {
     metadata: Metadata,
     ancestors: Vec<Metadata>,
 }
+
+struct ChildOutputDirectory {
+    descriptor: OwnedFd,
+    metadata: Metadata,
+}
+
 pub(super) struct PublishedOutput {
     pub(super) descriptor: File,
     pub(super) bytes: Box<[u8]>,
@@ -56,7 +69,14 @@ pub(super) fn publish<T>(
     let mut success = Some(success);
     input.with_revalidated_path(|validation| {
         validation.with_current_namespace(|| {
-            let published = transact(&directory, final_name, &temp_name, output, fault)?;
+            let published = transact(
+                directory.descriptor.as_fd(),
+                directory.metadata.owner,
+                final_name,
+                &temp_name,
+                output,
+                fault,
+            )?;
             input.with_revalidated_path(|validation| {
                 validation.with_current_namespace(|| {
                     directory.revalidate(final_name, &published)?;
@@ -66,6 +86,29 @@ pub(super) fn publish<T>(
         })
     })
 }
+
+pub(super) fn publish_manifest_preflight_report<T>(
+    evidence_root: &Path,
+    output: &[u8],
+    fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+    success: impl FnOnce(&PublishedOutput) -> io::Result<T>,
+) -> io::Result<T> {
+    let parent = OutputDirectory::open(evidence_root)?;
+    let directory = ChildOutputDirectory::open_or_create(&parent, fault)?;
+    let output = output.to_vec().into_boxed_slice();
+    let temp_name = OsString::from(format!(".output.{}.tmp", hex(&hash(&output))));
+    let mut published = transact(
+        directory.descriptor.as_fd(),
+        directory.metadata.owner,
+        OsStr::new(MANIFEST_PREFLIGHT_REPORT),
+        &temp_name,
+        output,
+        fault,
+    )?;
+    directory.revalidate(&parent, &mut published)?;
+    success(&published)
+}
+
 impl OutputDirectory {
     fn open(path: &Path) -> io::Result<Self> {
         let components = canonical_components(path)?;
@@ -94,11 +137,7 @@ impl OutputDirectory {
         })
     }
     fn revalidate(&self, final_name: &OsStr, published: &PublishedOutput) -> io::Result<()> {
-        let (fresh, metadata, ancestors) = walk(self.root.as_fd(), &self.components)?;
-        require(
-            metadata == self.metadata && ancestors == self.ancestors,
-            "output directory namespace changed",
-        )?;
+        let fresh = self.reopen()?;
         let held = metadata_of(&fs(fstat(&published.descriptor))?);
         let named = metadata_of(&fs(statat(
             fresh.as_fd(),
@@ -114,23 +153,126 @@ impl OutputDirectory {
             "final output namespace or metadata changed",
         )
     }
+
+    fn reopen(&self) -> io::Result<OwnedFd> {
+        let (fresh, metadata, ancestors) = walk(self.root.as_fd(), &self.components)?;
+        require(
+            metadata == self.metadata && ancestors == self.ancestors,
+            "output directory namespace changed",
+        )?;
+        Ok(fresh)
+    }
 }
+
+impl ChildOutputDirectory {
+    fn open_or_create(
+        parent: &OutputDirectory,
+        fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        let name = OsStr::new(MANIFEST_PREFLIGHT_DIRECTORY);
+        validate_child(name)?;
+        let descriptor = match open_directory_at(parent.descriptor.as_fd(), name) {
+            Ok(descriptor) => descriptor,
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => {
+                fault(F::ChildDirectoryCreate)?;
+                fs(mkdirat(
+                    parent.descriptor.as_fd(),
+                    name,
+                    Mode::from_raw_mode(0o700),
+                ))?;
+                open_directory_at(parent.descriptor.as_fd(), name)?
+            }
+            Err(error) => return Err(error),
+        };
+        let metadata = metadata_of(&fs(fstat(&descriptor))?);
+        require(
+            valid_directory(metadata, parent.metadata.owner),
+            "invalid child output directory",
+        )?;
+        fault(F::ParentDirectoryFsync)?;
+        fs(fsync(&parent.descriptor))?;
+        Ok(Self {
+            descriptor,
+            metadata,
+        })
+    }
+
+    fn revalidate(
+        &self,
+        parent: &OutputDirectory,
+        published: &mut PublishedOutput,
+    ) -> io::Result<()> {
+        let fresh_parent = parent.reopen()?;
+        let fresh = open_directory_at(
+            fresh_parent.as_fd(),
+            OsStr::new(MANIFEST_PREFLIGHT_DIRECTORY),
+        )?;
+        let fresh_metadata = metadata_of(&fs(fstat(&fresh))?);
+        require(
+            fresh_metadata == self.metadata
+                && valid_directory(fresh_metadata, parent.metadata.owner),
+            "child output directory namespace changed",
+        )?;
+        let final_name = OsStr::new(MANIFEST_PREFLIGHT_REPORT);
+        let temp_name = OsString::from(format!(".output.{}.tmp", hex(&hash(&published.bytes))));
+        require(
+            state(fresh.as_fd(), final_name, &temp_name)? == State::Final,
+            "published output state changed",
+        )?;
+        let held = metadata_of(&fs(fstat(&published.descriptor))?);
+        let named = metadata_of(&fs(statat(
+            fresh.as_fd(),
+            final_name,
+            AtFlags::SYMLINK_NOFOLLOW,
+        ))?);
+        require(
+            held == named
+                && held.file_type.is_file()
+                && held.owner == self.metadata.owner
+                && held.mode & 0o7777 == 0o600
+                && hash(&published.bytes) == published.sha256,
+            "published report namespace or metadata changed",
+        )?;
+        let reread = read_exact(&mut published.descriptor, &published.bytes)?;
+        require(
+            reread.as_ref() == published.bytes.as_ref(),
+            "published report bytes changed",
+        )
+    }
+}
+
+fn open_directory_at(parent: BorrowedFd<'_>, name: &OsStr) -> io::Result<OwnedFd> {
+    let descriptor = fs(openat(
+        parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ))?;
+    let metadata = metadata_of(&fs(fstat(&descriptor))?);
+    require(
+        metadata.file_type.is_dir(),
+        "output child is not a directory",
+    )?;
+    Ok(descriptor)
+}
+
 fn transact(
-    directory: &OutputDirectory,
+    directory: BorrowedFd<'_>,
+    owner: u64,
     final_name: &OsStr,
     temp_name: &OsStr,
     output: Box<[u8]>,
     fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
 ) -> io::Result<PublishedOutput> {
-    let temp = match state(directory.descriptor.as_fd(), final_name, temp_name)? {
+    let temp = match state(directory, final_name, temp_name)? {
         State::Empty => {
             let descriptor = fs(openat(
-                directory.descriptor.as_fd(),
+                directory,
                 temp_name,
                 OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o600),
             ))?;
-            require_file(&descriptor, directory.metadata.owner)?;
+            require_file(&descriptor, owner)?;
             let mut temp = File::from(descriptor);
             let split = output.len().min(1);
             let write = temp
@@ -139,31 +281,21 @@ fn transact(
                 .and_then(|()| temp.write_all(&output[split..]));
             if let Err(error) = write {
                 drop(temp);
-                return match cleanup_created(directory.descriptor.as_fd(), temp_name, fault) {
+                return match cleanup_created(directory, temp_name, fault) {
                     Ok(()) => Err(error),
                     Err(cleanup) => Err(io::Error::other(format!("{error}; {cleanup}"))),
                 };
             }
             temp
         }
-        State::Temp => open_exact(
-            directory.descriptor.as_fd(),
-            temp_name,
-            directory.metadata.owner,
-            &output,
-        )?,
+        State::Temp => open_exact(directory, temp_name, owner, &output)?,
         State::Final => {
-            let final_file = open_regular(
-                directory.descriptor.as_fd(),
-                final_name,
-                directory.metadata.owner,
-                OFlags::RDONLY,
-            )?;
+            let final_file = open_regular(directory, final_name, owner, OFlags::RDONLY)?;
             let published = read_published(final_file, output)?;
             fault(F::FinalFsync)?;
             fs(fsync(&published.descriptor))?;
             fault(F::DirectoryFsync)?;
-            fs(fsync(&directory.descriptor))?;
+            fs(fsync(directory))?;
             return Ok(published);
         }
     };
@@ -171,18 +303,19 @@ fn transact(
     fs(fsync(&temp))?;
     fault(F::Rename)?;
     fs(renameat_with(
-        directory.descriptor.as_fd(),
+        directory,
         temp_name,
-        directory.descriptor.as_fd(),
+        directory,
         final_name,
         RenameFlags::NOREPLACE,
     ))?;
     fault(F::FinalFsync)?;
     fs(fsync(&temp))?;
     fault(F::DirectoryFsync)?;
-    fs(fsync(&directory.descriptor))?;
+    fs(fsync(directory))?;
     read_published(temp, output)
 }
+#[derive(PartialEq, Eq)]
 enum State {
     Empty,
     Temp,
@@ -251,8 +384,8 @@ fn require_file(descriptor: impl AsFd, owner: u64) -> io::Result<()> {
     require(valid, "invalid output file")
 }
 fn effective_owner() -> io::Result<u64> {
-    let descriptor = tempfile::tempfile()?;
-    let owner = metadata_of(&fs(fstat(&descriptor))?).owner;
+    let (socket, _peer) = UnixStream::pair()?;
+    let owner = metadata_of(&fs(fstat(&socket))?).owner;
     Ok(owner)
 }
 fn cleanup_created(
@@ -396,6 +529,29 @@ mod tests {
     fn temp_name() -> String {
         format!(".output.{}.tmp", hex(&hash(b"durable")))
     }
+    fn report_child(fixture: &Fixture) -> std::path::PathBuf {
+        fixture.output.join(MANIFEST_PREFLIGHT_DIRECTORY)
+    }
+    fn report_temp_name() -> String {
+        format!(".output.{}.tmp", hex(&hash(b"{\"ok\":true}\n")))
+    }
+    fn prepare_report_child(fixture: &Fixture) -> std::path::PathBuf {
+        let child = report_child(fixture);
+        s::create_dir(&child).unwrap();
+        mode(&child, 0o700);
+        child
+    }
+    fn run_report(
+        fixture: &Fixture,
+        fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+        calls: &Cell<usize>,
+    ) -> io::Result<()> {
+        publish_manifest_preflight_report(&fixture.output, b"{\"ok\":true}\n", fault, |published| {
+            calls.set(calls.get() + 1);
+            assert_eq!(&*published.bytes, b"{\"ok\":true}\n");
+            Ok(())
+        })
+    }
     fn snapshot(fixture: &Fixture) -> Vec<String> {
         let mut entries = s::read_dir(&fixture.output)
             .unwrap()
@@ -500,6 +656,179 @@ mod tests {
         for suffix in ["/", "/.", "/..", "//nested"] {
             let path = std::path::PathBuf::from(format!("{}{suffix}", fixture.output.display()));
             assert!(canonical_components(&path).is_err());
+        }
+    }
+    #[test]
+    fn d0_output_transaction_anonymous_socket_owner_matches_current_user_artifact() {
+        let fixture = Fixture::new();
+        assert_eq!(
+            effective_owner().unwrap(),
+            u64::from(s::metadata(&fixture.input).unwrap().uid())
+        );
+    }
+    #[test]
+    fn d0_output_transaction_report_recovers_and_is_idempotent() {
+        for initial in ["absent", "empty", "temp", "final"] {
+            let fixture = Fixture::new();
+            if initial != "absent" {
+                let child = prepare_report_child(&fixture);
+                match initial {
+                    "temp" => file(&child.join(report_temp_name()), b"{\"ok\":true}\n", 0o600),
+                    "final" => file(
+                        &child.join(MANIFEST_PREFLIGHT_REPORT),
+                        b"{\"ok\":true}\n",
+                        0o600,
+                    ),
+                    "empty" => {}
+                    _ => unreachable!(),
+                }
+            }
+            let calls = Cell::new(0);
+            run_report(&fixture, &mut no_fault, &calls).unwrap();
+            run_report(&fixture, &mut no_fault, &calls).unwrap();
+            assert_eq!(calls.get(), 2, "{initial}");
+            let child = report_child(&fixture);
+            assert_eq!(
+                s::metadata(&child).unwrap().permissions().mode() & 0o7777,
+                0o700
+            );
+            assert_eq!(
+                s::metadata(child.join(MANIFEST_PREFLIGHT_REPORT))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                0o600
+            );
+        }
+    }
+    #[test]
+    fn d0_output_transaction_report_rejects_closed_states() {
+        for state_name in [
+            "child-symlink",
+            "child-file",
+            "child-mode",
+            "unknown",
+            "final-mismatch",
+            "final-symlink",
+            "final-mode",
+            "temp-mismatch",
+            "temp-symlink",
+            "temp-mode",
+            "both",
+        ] {
+            let fixture = Fixture::new();
+            let child = report_child(&fixture);
+            match state_name {
+                "child-symlink" => symlink(&fixture.input, &child).unwrap(),
+                "child-file" => file(&child, b"x", 0o600),
+                _ => {
+                    let child = prepare_report_child(&fixture);
+                    match state_name {
+                        "child-mode" => mode(&child, 0o755),
+                        "unknown" => file(&child.join("unknown"), b"x", 0o600),
+                        "final-mismatch" => {
+                            file(&child.join(MANIFEST_PREFLIGHT_REPORT), b"wrong", 0o600)
+                        }
+                        "final-symlink" => {
+                            symlink(&fixture.input, child.join(MANIFEST_PREFLIGHT_REPORT)).unwrap()
+                        }
+                        "final-mode" => file(
+                            &child.join(MANIFEST_PREFLIGHT_REPORT),
+                            b"{\"ok\":true}\n",
+                            0o644,
+                        ),
+                        "temp-mismatch" => file(&child.join(report_temp_name()), b"wrong", 0o600),
+                        "temp-symlink" => {
+                            symlink(&fixture.input, child.join(report_temp_name())).unwrap()
+                        }
+                        "temp-mode" => {
+                            file(&child.join(report_temp_name()), b"{\"ok\":true}\n", 0o644)
+                        }
+                        "both" => {
+                            file(&child.join(report_temp_name()), b"{\"ok\":true}\n", 0o600);
+                            file(
+                                &child.join(MANIFEST_PREFLIGHT_REPORT),
+                                b"{\"ok\":true}\n",
+                                0o600,
+                            );
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            let calls = Cell::new(0);
+            assert!(
+                run_report(&fixture, &mut no_fault, &calls).is_err(),
+                "{state_name}"
+            );
+            assert_eq!(calls.get(), 0, "{state_name}");
+        }
+    }
+    #[test]
+    fn d0_output_transaction_report_directory_faults_retry_to_success() {
+        for injected in [F::ChildDirectoryCreate, F::ParentDirectoryFsync] {
+            let fixture = Fixture::new();
+            let calls = Cell::new(0);
+            let mut fault = |point| {
+                if point == injected {
+                    Err(io::Error::other("directory boundary injected"))
+                } else {
+                    Ok(())
+                }
+            };
+            assert!(run_report(&fixture, &mut fault, &calls).is_err());
+            assert_eq!(calls.get(), 0);
+            assert_eq!(
+                report_child(&fixture).exists(),
+                injected == F::ParentDirectoryFsync
+            );
+            run_report(&fixture, &mut no_fault, &calls).unwrap();
+            assert_eq!(calls.get(), 1);
+        }
+    }
+    #[test]
+    fn d0_output_transaction_report_namespace_replacement_blocks_success() {
+        for replacement in ["root", "child", "final"] {
+            let fixture = Fixture::new();
+            let calls = Cell::new(0);
+            let mut fault = |point| {
+                if point != F::DirectoryFsync {
+                    return Ok(());
+                }
+                let child = report_child(&fixture);
+                match replacement {
+                    "root" => {
+                        s::rename(&fixture.output, fixture.output.with_file_name("old-root"))?;
+                        s::create_dir(&fixture.output)?;
+                        mode(&fixture.output, 0o700);
+                        let child = prepare_report_child(&fixture);
+                        file(
+                            &child.join(MANIFEST_PREFLIGHT_REPORT),
+                            b"{\"ok\":true}\n",
+                            0o600,
+                        );
+                    }
+                    "child" => {
+                        s::rename(&child, fixture.output.join("old-child"))?;
+                        let child = prepare_report_child(&fixture);
+                        file(
+                            &child.join(MANIFEST_PREFLIGHT_REPORT),
+                            b"{\"ok\":true}\n",
+                            0o600,
+                        );
+                    }
+                    "final" => {
+                        let final_path = child.join(MANIFEST_PREFLIGHT_REPORT);
+                        s::rename(&final_path, child.join("old-report"))?;
+                        file(&final_path, b"{\"ok\":true}\n", 0o600);
+                    }
+                    _ => unreachable!(),
+                }
+                Ok(())
+            };
+            assert!(run_report(&fixture, &mut fault, &calls).is_err());
+            assert_eq!(calls.get(), 0, "{replacement}");
         }
     }
     #[test]
