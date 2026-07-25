@@ -518,6 +518,13 @@ mod d0_visual_manifest_schema;
     target_pointer_width = "64",
     any(target_os = "linux", target_os = "macos")
 ))]
+mod d0_visual_manifest_pixels;
+
+#[cfg(all(
+    test,
+    target_pointer_width = "64",
+    any(target_os = "linux", target_os = "macos")
+))]
 mod d0_output_transaction;
 
 #[cfg(test)]

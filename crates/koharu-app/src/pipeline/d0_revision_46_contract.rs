@@ -3,7 +3,7 @@
 use serde::Deserialize;
 
 const LEDGER_SCHEMA_VERSION: u8 = 1;
-const BYTE_CEILING: u64 = 512 * 1024 * 1024;
+pub(super) const BYTE_CEILING: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -92,13 +92,16 @@ impl PathValidation<'_> {
 
 impl HeldInput {
     pub(super) fn open(path: &Path) -> io::Result<Self> {
+        Self::open_bounded(path, u64::MAX)
+    }
+    pub(super) fn open_bounded(path: &Path, max_bytes: u64) -> io::Result<Self> {
         let components = canonical_components(path)?;
         let root = fs(open(
             "/",
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         ))?;
-        let opened = open_input(root.as_fd(), &components)?;
+        let opened = open_input(root.as_fd(), &components, max_bytes)?;
         Ok(Self {
             root,
             descriptor: opened.descriptor,
@@ -126,7 +129,7 @@ impl HeldInput {
         )?;
         let held_hash = hash(&self.bytes);
         require(held_hash == self.sha256, "held bytes changed")?;
-        let fresh = open_input(self.root.as_fd(), &self.components)?;
+        let fresh = open_input(self.root.as_fd(), &self.components, self.bytes.len() as u64)?;
         require(
             fresh.metadata == held_metadata
                 && fresh.metadata.file_type.is_file()
@@ -161,7 +164,7 @@ fn canonical_components(path: &Path) -> io::Result<Vec<OsString>> {
         .collect()
 }
 
-fn open_input(root: impl AsFd, components: &[OsString]) -> io::Result<OpenedInput> {
+fn open_input(root: impl AsFd, components: &[OsString], max_bytes: u64) -> io::Result<OpenedInput> {
     let (final_name, directories) = components
         .split_last()
         .ok_or_else(|| invalid_input("path has no final component"))?;
@@ -177,7 +180,26 @@ fn open_input(root: impl AsFd, components: &[OsString]) -> io::Result<OpenedInpu
     require(metadata.file_type.is_file(), "input is not a regular file")?;
     let mut descriptor = File::from(descriptor);
     let mut bytes = Vec::new();
-    descriptor.read_to_end(&mut bytes)?;
+    let mut chunk = [0_u8; 64 * 1024];
+    loop {
+        let read = descriptor.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        let next_len = u64::try_from(bytes.len())
+            .ok()
+            .and_then(|length| length.checked_add(read as u64))
+            .filter(|length| *length <= max_bytes)
+            .ok_or_else(|| invalid_data("held input exceeds byte limit"))?;
+        let additional = usize::try_from(next_len)
+            .ok()
+            .and_then(|length| length.checked_sub(bytes.len()))
+            .ok_or_else(|| invalid_data("held input length does not fit memory"))?;
+        bytes
+            .try_reserve_exact(additional)
+            .map_err(io::Error::other)?;
+        bytes.extend_from_slice(&chunk[..read]);
+    }
     let sha256 = hash(&bytes);
     Ok(OpenedInput {
         descriptor,
@@ -237,6 +259,10 @@ fn invalid_input(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
+fn invalid_data(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
 fn fs<T>(result: rustix::io::Result<T>) -> io::Result<T> {
     result.map_err(Into::into)
 }
@@ -281,6 +307,21 @@ mod tests {
         );
         assert_eq!(held.bytes(), b"immutable");
         drop(held);
+    }
+
+    #[test]
+    fn d0_held_input_bounded_read_accepts_exact_limit_and_rejects_next_byte() {
+        let (_temp, path) = fixture(b"bounded");
+        assert_eq!(
+            HeldInput::open_bounded(&path, 7).unwrap().bytes(),
+            b"bounded"
+        );
+        let error = match HeldInput::open_bounded(&path, 6) {
+            Ok(_) => panic!("expected bounded read rejection"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "held input exceeds byte limit");
     }
 
     #[test]

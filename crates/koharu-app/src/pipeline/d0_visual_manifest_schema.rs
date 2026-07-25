@@ -12,6 +12,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::d0_held_input::HeldInput;
+use super::d0_revision_46_contract::BYTE_CEILING;
 
 const VISUAL_MANIFEST_VERSION: u8 = 1;
 const VISUAL_MANIFEST_ENTRY_COUNT: usize = 9;
@@ -197,6 +198,22 @@ pub(super) fn load_schema_and_hold_assets(
     approved_regression_decoded_rgba_blake3: &str,
     selected_regression_raw_sha256: &str,
 ) -> D0Result<HeldVisualManifestSchema> {
+    load_schema_and_hold_assets_with_limit(
+        manifest_path,
+        expected_manifest_sha256,
+        approved_regression_decoded_rgba_blake3,
+        selected_regression_raw_sha256,
+        BYTE_CEILING,
+    )
+}
+
+fn load_schema_and_hold_assets_with_limit(
+    manifest_path: &Path,
+    expected_manifest_sha256: &str,
+    approved_regression_decoded_rgba_blake3: &str,
+    selected_regression_raw_sha256: &str,
+    held_input_limit: u64,
+) -> D0Result<HeldVisualManifestSchema> {
     let expected_manifest_sha256 = parse_hash(
         expected_manifest_sha256,
         "expected manifest sha256 is invalid",
@@ -213,8 +230,8 @@ pub(super) fn load_schema_and_hold_assets(
     )
     .map_err(|source| context(MANIFEST_VALIDATION_ERROR, source))?;
 
-    let manifest =
-        HeldInput::open(manifest_path).map_err(|source| context(MANIFEST_PATH_ERROR, source))?;
+    let mut held_budget = HeldInputBudget::new(held_input_limit);
+    let manifest = held_budget.open(manifest_path, MANIFEST_PATH_ERROR)?;
     require(
         manifest.sha256() == expected_manifest_sha256,
         "visual manifest sha256 mismatch",
@@ -231,19 +248,24 @@ pub(super) fn load_schema_and_hold_assets(
 
     let mut entries = Vec::with_capacity(schema.entries.len());
     for entry in &schema.entries {
-        let source = open_asset(&entry.path, &entry.sha256)?;
-        let clean_reference =
-            open_asset(&entry.clean_reference_path, &entry.clean_reference_sha256)?;
+        let source = open_asset(&entry.path, &entry.sha256, &mut held_budget)?;
+        let clean_reference = open_asset(
+            &entry.clean_reference_path,
+            &entry.clean_reference_sha256,
+            &mut held_budget,
+        )?;
         let mut targets = Vec::with_capacity(entry.targets.len());
         for target in &entry.targets {
             targets.push(HeldVisualManifestTarget {
                 erase_source_ink_mask: open_asset(
                     &target.erase_source_ink_mask_path,
                     &target.erase_source_ink_mask_sha256,
+                    &mut held_budget,
                 )?,
                 residual_source_ink_mask: open_asset(
                     &target.residual_source_ink_mask_path,
                     &target.residual_source_ink_mask_sha256,
+                    &mut held_budget,
                 )?,
             });
         }
@@ -408,11 +430,34 @@ impl VisualManifestSchema {
     }
 }
 
-fn open_asset(path: &str, declared_sha256: &str) -> D0Result<HeldInput> {
+struct HeldInputBudget {
+    remaining: u64,
+}
+
+impl HeldInputBudget {
+    fn new(limit: u64) -> Self {
+        Self { remaining: limit }
+    }
+
+    fn open(&mut self, path: &Path, category: &'static str) -> D0Result<HeldInput> {
+        let held = HeldInput::open_bounded(path, self.remaining)
+            .map_err(|source| context(category, source))?;
+        self.remaining = self
+            .remaining
+            .checked_sub(held.bytes().len() as u64)
+            .ok_or_else(|| context(category, io::Error::other("held input budget underflow")))?;
+        Ok(held)
+    }
+}
+
+fn open_asset(
+    path: &str,
+    declared_sha256: &str,
+    held_budget: &mut HeldInputBudget,
+) -> D0Result<HeldInput> {
     let expected = parse_hash(declared_sha256, "visual manifest hash is invalid")
         .map_err(|source| context(MANIFEST_VALIDATION_ERROR, source))?;
-    let held =
-        HeldInput::open(Path::new(path)).map_err(|source| context(ASSET_PATH_ERROR, source))?;
+    let held = held_budget.open(Path::new(path), ASSET_PATH_ERROR)?;
     require(held.sha256() == expected, "asset raw sha256 mismatch")
         .map_err(|source| context(ASSET_HASH_ERROR, source))?;
     Ok(held)
@@ -562,6 +607,20 @@ mod tests {
                 &self.selected_regression_raw,
             )
         }
+
+        fn load_with_limit(
+            &self,
+            expected_manifest_sha256: &str,
+            limit: u64,
+        ) -> D0Result<HeldVisualManifestSchema> {
+            load_schema_and_hold_assets_with_limit(
+                &self.manifest_path,
+                expected_manifest_sha256,
+                &self.approved_regression_decoded,
+                &self.selected_regression_raw,
+                limit,
+            )
+        }
     }
 
     fn write_asset(root: &Path, name: &str, index: usize, kind: &str) -> (String, String) {
@@ -671,6 +730,25 @@ mod tests {
             held.entries[0].targets[0].residual_source_ink_mask.bytes(),
             b"residual-0"
         );
+    }
+
+    #[test]
+    fn d0_visual_manifest_schema_bounds_cumulative_held_inputs_before_append() {
+        let fixture = Fixture::new();
+        let expected = fixture.store();
+        let manifest_bytes = fs::metadata(&fixture.manifest_path).unwrap().len();
+        let first_source = fs::metadata(fixture.value["entries"][0]["path"].as_str().unwrap())
+            .unwrap()
+            .len();
+
+        for limit in [manifest_bytes, manifest_bytes + first_source] {
+            let error = expect_error(fixture.load_with_limit(&expected, limit), ASSET_PATH_ERROR);
+            assert_io_source(&error, io::ErrorKind::InvalidData);
+            assert_eq!(
+                error.source().unwrap().to_string(),
+                "held input exceeds byte limit"
+            );
+        }
     }
 
     #[test]
