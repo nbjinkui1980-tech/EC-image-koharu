@@ -525,6 +525,13 @@ mod d0_visual_manifest_pixels;
     target_pointer_width = "64",
     any(target_os = "linux", target_os = "macos")
 ))]
+mod d0_visual_manifest_oracles;
+
+#[cfg(all(
+    test,
+    target_pointer_width = "64",
+    any(target_os = "linux", target_os = "macos")
+))]
 mod d0_output_transaction;
 
 #[cfg(test)]
