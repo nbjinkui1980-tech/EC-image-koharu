@@ -50,6 +50,12 @@ export interface FrozenInterpreterRecord {
   object: string
 }
 
+export interface GeneratedRustFile {
+  label: string
+  path: string
+  text: string
+}
+
 export interface SecureStatLike {
   mode: number
   uid: number
@@ -245,6 +251,21 @@ const frozenInterpreterPaths = [
   'package.json',
   'ui/package.json',
   'bun.lock',
+] as const
+const generatedRustFiles = [
+  'types.rs',
+  'llama_loader.rs',
+  'ggml_loader.rs',
+  'ggml_base_loader.rs',
+  'mtmd_loader.rs',
+  'wrappers.rs',
+] as const
+const generatedRustForbiddenNeedles = [
+  'hanonly',
+  'HANONLY',
+  'typographyPlanVerified',
+  'crop-policy-selection',
+  'test.jpeg',
 ] as const
 
 export function validateSnapshotMetadata(value: unknown): SnapshotMetadata {
@@ -914,6 +935,123 @@ export function runFrozenInterpreterCheck(root: string, b0Sha: string, implSha: 
   )
 }
 
+function parseCargoJsonLines(text: string, label: string): JsonObject[] {
+  return text
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => object(parseJson(Buffer.from(line)), 'generated-rust', `${label} cargo line`))
+}
+
+function generatedOutDirFromCargoJson(text: string, label: string): string {
+  const matches = parseCargoJsonLines(text, label).filter(
+    (record) =>
+      record.reason === 'build-script-executed' &&
+      typeof record.package_id === 'string' &&
+      record.package_id.includes('koharu-llm') &&
+      typeof record.out_dir === 'string',
+  )
+  if (matches.length !== 1) {
+    fail('generated-rust', `${label} must contain exactly one koharu-llm build-script output`)
+  }
+  return matches[0].out_dir as string
+}
+
+function validateGeneratedSysIncludes(sysSource: string): void {
+  const includes = [
+    ...sysSource.matchAll(/include!\(concat!\(env!\("OUT_DIR"\), "\/([^"]+)"\)\);/g),
+  ]
+    .map((match) => match[1])
+    .sort()
+  if (!deepEqual(includes, [...generatedRustFiles].sort())) {
+    fail('generated-rust', 'production OUT_DIR include set drift')
+  }
+}
+
+function validateGeneratedRustFiles(files: readonly GeneratedRustFile[]): void {
+  const expected = new Set(generatedRustFiles)
+  const labels = new Set(files.map((file) => file.label))
+  for (const label of labels) {
+    const names = files
+      .filter((file) => file.label === label)
+      .map((file) => path.basename(file.path))
+      .sort()
+    if (!deepEqual(names, [...expected].sort())) {
+      fail('generated-rust', `${label} generated file set drift`)
+    }
+  }
+  for (const file of files) {
+    if (!expected.has(path.basename(file.path) as (typeof generatedRustFiles)[number])) {
+      fail('generated-rust', 'unexpected generated Rust file')
+    }
+    if (file.text.length === 0) fail('generated-rust', `${file.label} generated file is empty`)
+    for (const needle of generatedRustForbiddenNeedles) {
+      if (file.text.includes(needle)) {
+        fail('generated-rust', `${file.label} generated file contains forbidden corpus literal`)
+      }
+    }
+  }
+}
+
+export function validateGeneratedRustAudit(
+  sysSource: string,
+  defaultCargoJson: string,
+  evidenceCargoJson: string,
+  generatedFiles: readonly GeneratedRustFile[],
+): void {
+  validateGeneratedSysIncludes(sysSource)
+  const expectedDirs = new Set([
+    generatedOutDirFromCargoJson(defaultCargoJson, 'default'),
+    generatedOutDirFromCargoJson(evidenceCargoJson, 'evidence'),
+  ])
+  for (const file of generatedFiles) {
+    if (!expectedDirs.has(path.dirname(file.path))) {
+      fail('generated-rust', 'generated file path is not bound to Cargo out_dir')
+    }
+  }
+  validateGeneratedRustFiles(generatedFiles)
+}
+
+async function readGeneratedRustFromOutDir(
+  label: string,
+  outDir: string,
+): Promise<GeneratedRustFile[]> {
+  if (!path.isAbsolute(outDir) || (await realpath(outDir)) !== outDir) {
+    fail('generated-rust', `${label} out_dir must be absolute and canonical`)
+  }
+  return Promise.all(
+    generatedRustFiles.map(async (fileName) => {
+      const filePath = path.join(outDir, fileName)
+      return { label, path: filePath, text: await readFile(filePath, 'utf8') }
+    }),
+  )
+}
+
+export async function runGeneratedRustAudit(
+  root: string,
+  defaultCargoJsonPath: string,
+  evidenceCargoJsonPath: string,
+): Promise<void> {
+  const [sysSource, defaultCargoJson, evidenceCargoJson] = await Promise.all([
+    readRepoText(root, 'crates/koharu-llm/src/sys/mod.rs', 'llm sys module'),
+    readFile(defaultCargoJsonPath, 'utf8'),
+    readFile(evidenceCargoJsonPath, 'utf8'),
+  ])
+  const [defaultFiles, evidenceFiles] = await Promise.all([
+    readGeneratedRustFromOutDir(
+      'default',
+      generatedOutDirFromCargoJson(defaultCargoJson, 'default'),
+    ),
+    readGeneratedRustFromOutDir(
+      'evidence',
+      generatedOutDirFromCargoJson(evidenceCargoJson, 'evidence'),
+    ),
+  ])
+  validateGeneratedRustAudit(sysSource, defaultCargoJson, evidenceCargoJson, [
+    ...defaultFiles,
+    ...evidenceFiles,
+  ])
+}
+
 function cargoMetadata(root: string): unknown {
   const result = Bun.spawnSync({
     cmd: [
@@ -1064,6 +1202,15 @@ async function main(): Promise<void> {
       requiredArg(args, '--impl-sha'),
     )
     process.stdout.write('PASS: hanonly frozen interpreter\n')
+    return
+  }
+  if (args.includes('--verify-generated-rust')) {
+    await runGeneratedRustAudit(
+      repoRoot,
+      requiredArg(args, '--default-cargo-json'),
+      requiredArg(args, '--evidence-cargo-json'),
+    )
+    process.stdout.write('PASS: hanonly generated Rust audit\n')
     return
   }
   if (args.includes('--validate-b0-authorization')) {

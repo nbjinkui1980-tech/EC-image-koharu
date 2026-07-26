@@ -28,11 +28,13 @@ import {
   validateB0Authorization,
   validateDependencyInventory,
   validateFrozenInterpreterRecords,
+  validateGeneratedRustAudit,
   validateRedTestState,
   validateReleaseFeatureInventory,
   validateSecureRegularStat,
   type DependencyInventoryInput,
   type FrozenInterpreterRecord,
+  type GeneratedRustFile,
   type JsonObject,
   type RustSourceFile,
   type SnapshotMetadata,
@@ -922,6 +924,124 @@ describe('frozen interpreter policy', () => {
   })
 })
 
+function generatedRustFixture(): {
+  sysSource: string
+  defaultCargoJson: string
+  evidenceCargoJson: string
+  files: GeneratedRustFile[]
+} {
+  const names = [
+    'types.rs',
+    'llama_loader.rs',
+    'ggml_loader.rs',
+    'ggml_base_loader.rs',
+    'mtmd_loader.rs',
+    'wrappers.rs',
+  ]
+  const defaultOut = '/tmp/koharu-default-out'
+  const evidenceOut = '/tmp/koharu-evidence-out'
+  const cargoLine = (outDir: string) =>
+    JSON.stringify({
+      reason: 'build-script-executed',
+      package_id: 'path+file:///repo/crates/koharu-llm#0.61.2',
+      out_dir: outDir,
+    })
+  return {
+    sysSource: names.map((name) => `include!(concat!(env!("OUT_DIR"), "/${name}"));`).join('\n'),
+    defaultCargoJson: `${cargoLine(defaultOut)}\n`,
+    evidenceCargoJson: `${cargoLine(evidenceOut)}\n`,
+    files: [
+      ...names.map((name) => ({
+        label: 'default',
+        path: path.join(defaultOut, name),
+        text: `pub const ${name.replaceAll(/[._-]/g, '_').toUpperCase()}: usize = 1;`,
+      })),
+      ...names.map((name) => ({
+        label: 'evidence',
+        path: path.join(evidenceOut, name),
+        text: `pub const ${name.replaceAll(/[._-]/g, '_').toUpperCase()}: usize = 1;`,
+      })),
+    ],
+  }
+}
+
+async function writeGeneratedRustCliFixture(root: string): Promise<{
+  defaultLog: string
+  evidenceLog: string
+}> {
+  const names = [
+    'types.rs',
+    'llama_loader.rs',
+    'ggml_loader.rs',
+    'ggml_base_loader.rs',
+    'mtmd_loader.rs',
+    'wrappers.rs',
+  ]
+  const defaultOut = path.join(root, 'default-out')
+  const evidenceOut = path.join(root, 'evidence-out')
+  await Promise.all([mkdir(defaultOut), mkdir(evidenceOut)])
+  for (const outDir of [defaultOut, evidenceOut]) {
+    await Promise.all(
+      names.map((name) => writeFile(path.join(outDir, name), `pub const OK: &str = "${name}";`)),
+    )
+  }
+  const cargoLine = (outDir: string) =>
+    `${JSON.stringify({
+      reason: 'build-script-executed',
+      package_id: 'path+file:///repo/crates/koharu-llm#0.61.2',
+      out_dir: outDir,
+    })}\n`
+  const defaultLog = path.join(root, 'default.jsonl')
+  const evidenceLog = path.join(root, 'evidence.jsonl')
+  await Promise.all([
+    writeFile(defaultLog, cargoLine(defaultOut)),
+    writeFile(evidenceLog, cargoLine(evidenceOut)),
+  ])
+  return { defaultLog, evidenceLog }
+}
+
+describe('generated Rust policy', () => {
+  test('accepts Cargo-bound generated Rust outputs', () => {
+    const fixture = generatedRustFixture()
+    expect(() =>
+      validateGeneratedRustAudit(
+        fixture.sysSource,
+        fixture.defaultCargoJson,
+        fixture.evidenceCargoJson,
+        fixture.files,
+      ),
+    ).not.toThrow()
+  })
+
+  test('rejects a missing generated file', () => {
+    const fixture = generatedRustFixture()
+    fixture.files = fixture.files.filter((file) => file.path !== '/tmp/koharu-default-out/types.rs')
+
+    expect(() =>
+      validateGeneratedRustAudit(
+        fixture.sysSource,
+        fixture.defaultCargoJson,
+        fixture.evidenceCargoJson,
+        fixture.files,
+      ),
+    ).toThrow(PolicyError)
+  })
+
+  test('rejects generated corpus literals', () => {
+    const fixture = generatedRustFixture()
+    fixture.files[0].text += ' hanonly-test-evidence'
+
+    expect(() =>
+      validateGeneratedRustAudit(
+        fixture.sysSource,
+        fixture.defaultCargoJson,
+        fixture.evidenceCargoJson,
+        fixture.files,
+      ),
+    ).toThrow(PolicyError)
+  })
+})
+
 describe('CLI contract', () => {
   test('imports without running the CLI', async () => {
     const moduleUrl = pathToFileURL(checkerPath).href
@@ -993,6 +1113,26 @@ process.exit(result.exitCode)
     expect(result.stderr).toStartWith('FAIL [snapshot-env]:')
     expect(result.stderr).not.toContain(repoRoot)
     expect(result.stderr).not.toContain(insideRepo)
+  })
+
+  test('validates generated Rust from Cargo JSON logs', async () => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-gen-')))
+    temporaryRoots.push(temporaryRoot)
+    const fixture = await writeGeneratedRustCliFixture(temporaryRoot)
+
+    const result = await runCli([
+      '--verify-generated-rust',
+      '--default-cargo-json',
+      fixture.defaultLog,
+      '--evidence-cargo-json',
+      fixture.evidenceLog,
+    ])
+
+    expect(result).toEqual({
+      exitCode: 0,
+      stdout: 'PASS: hanonly generated Rust audit\n',
+      stderr: '',
+    })
   })
 
   test('validates B0 authorization and emits the artifact sha256', async () => {
