@@ -30,6 +30,7 @@ const VISUAL_MANIFEST_SHA256_ENV: &str = "HANONLY_VISUAL_MANIFEST_SHA256";
 const VISUAL_EVIDENCE_ROOT_ENV: &str = "HANONLY_VISUAL_EVIDENCE_ROOT";
 const SOURCE_GATE_FIXTURE_SHA256_ENV: &str = "HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256";
 const LEDGER_NAME: &str = "evidence-ledger.json";
+const B0_DEFAULT_GPU_LAYERS: u32 = 1000;
 const FIXTURE_RELATIVE_PATH: &str =
     "crates/koharu-app/tests/fixtures/source-gate-deterministic-recall/fixture-manifest.json";
 
@@ -1040,7 +1041,7 @@ mod source_gate_selection {
         } else {
             require(
                 !load.cpu_forced
-                    && load.n_gpu_layers > 0
+                    && load.n_gpu_layers == B0_DEFAULT_GPU_LAYERS
                     && load.mtmd_use_gpu
                     && execution.context_offload_kqv
                     && execution.context_op_offload
@@ -1245,7 +1246,7 @@ mod source_gate_selection {
             load_evidence: LoadEvidence {
                 cpu_forced: !metal,
                 gpu_offload_supported: metal,
-                n_gpu_layers: if metal { 32 } else { 0 },
+                n_gpu_layers: if metal { B0_DEFAULT_GPU_LAYERS } else { 0 },
                 mtmd_use_gpu: metal,
                 word_boxes_backend: "rten_cpu".into(),
                 raw_load_log_relpath: format!("source-gate/{phase}/{device}/load.log"),
@@ -1546,6 +1547,11 @@ mod source_gate_selection {
                 evidence.results[0].execution_evidence.paddle_instance_id = "9".repeat(32);
                 evidence
             },
+            {
+                let mut evidence = calibration_evidence();
+                evidence.process_evidence[1].load_evidence.n_gpu_layers = 32;
+                evidence
+            },
         ] {
             let temp = tempfile::tempdir().unwrap();
             let root = fs::canonicalize(temp.path()).unwrap();
@@ -1581,10 +1587,12 @@ mod source_gate_selection {
         let bytes = fs::read(root.join("selection.json")).unwrap();
         let mut artifact: FrozenArtifact = serde_json::from_slice(&bytes).unwrap();
         artifact.selected_candidate_id = "R10".into();
-        assert!(validate_artifact(&artifact, Phase::CalibrationFreeze, &{
-            SelectionEnvironment::parse(|name| values.get(name).cloned()).unwrap()
-        })
-        .is_err());
+        assert!(
+            validate_artifact(&artifact, Phase::CalibrationFreeze, &{
+                SelectionEnvironment::parse(|name| values.get(name).cloned()).unwrap()
+            })
+            .is_err()
+        );
     }
 
     #[test]

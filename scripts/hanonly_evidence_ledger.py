@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import datetime
 import errno
 import hashlib
 import json
@@ -33,7 +34,9 @@ LEDGER_KEYS = {
 RUN_ID_RE = re.compile(r"\A\d{8}T\d{6}Z-[0-9a-f]{12}-[1-9]\d*\Z")
 SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 B0_SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")
+B0_UTC_SECONDS_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 B0_VERSION = 1
+B0_DEFAULT_GPU_LAYERS = 1000
 B0_CANDIDATES = [
     {"id": "R0", "numerator": 0, "denominator": 1},
     {"id": "R025", "numerator": 1, "denominator": 40},
@@ -201,6 +204,18 @@ def _validate_text(value, label):
     if "\x00" in value or "\r" in value or "\n" in value:
         raise LedgerError(f"{label} contains forbidden control data")
     return value
+
+
+def _validate_utc_seconds(value, label):
+    value = _validate_text(value, label)
+    if not B0_UTC_SECONDS_RE.fullmatch(value):
+        raise LedgerError(f"{label} must be UTC RFC3339 seconds")
+    try:
+        return datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc
+        )
+    except ValueError as error:
+        raise LedgerError(f"{label} must be a valid UTC timestamp") from error
 
 
 def _canonical_existing_path(value, label):
@@ -423,8 +438,7 @@ def _validate_result(result, processes, entry_ids, candidate_ids, phase):
     else:
         if (
             load["cpu_forced"] is not False
-            or type(load["n_gpu_layers"]) is not int
-            or load["n_gpu_layers"] <= 0
+            or load["n_gpu_layers"] != B0_DEFAULT_GPU_LAYERS
             or load["mtmd_use_gpu"] is not True
             or execution["context_offload_kqv"] is not True
             or execution["context_op_offload"] is not True
@@ -545,12 +559,17 @@ def _validate_b0_artifact(arguments):
         raise LedgerError("calibration and holdout entry ids are invalid")
     if value["retuned_after_freeze"] is not False:
         raise LedgerError("artifact was retuned after freeze")
-    _validate_text(value["frozen_at_utc"], "frozen timestamp")
-    _validate_text(value["holdout_completed_at_utc"], "holdout completion timestamp")
+    frozen_at = _validate_utc_seconds(value["frozen_at_utc"], "frozen timestamp")
+    holdout_completed_at = _validate_utc_seconds(
+        value["holdout_completed_at_utc"], "holdout completion timestamp"
+    )
+    if holdout_completed_at <= frozen_at:
+        raise LedgerError("holdout completion timestamp must be after freeze")
     process_evidence = value["process_evidence"]
     if not isinstance(process_evidence, list) or len(process_evidence) != 4:
         raise LedgerError("process evidence matrix must contain four records")
     processes = {}
+    process_fingerprints = set()
     for process in process_evidence:
         _require_keys(process, B0_PROCESS_KEYS, "process evidence")
         process_id = _validate_text(process["id"], "process evidence id")
@@ -572,6 +591,13 @@ def _validate_b0_artifact(arguments):
         for path, digest in libraries.items():
             _validate_text(path, "runtime library path")
             _validate_hash(digest, "runtime library sha256")
+        process_fingerprints.add(
+            (
+                process["executable_sha256"],
+                canonical_json(process["model_artifact_sha256"]),
+                canonical_json(libraries),
+            )
+        )
         load = process["load_evidence"]
         _require_keys(load, B0_LOAD_KEYS, "load evidence")
         _validate_text(load["word_boxes_backend"], "word boxes backend")
@@ -608,6 +634,8 @@ def _validate_b0_artifact(arguments):
             ):
                 raise LedgerError("loaded model device is invalid")
         processes[process_id] = process
+    if len(process_fingerprints) != 1:
+        raise LedgerError("process executable/model/runtime fingerprints drift")
     if {
         (process["phase"], process["requested_device"]) for process in processes.values()
     } != {

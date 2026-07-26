@@ -96,7 +96,7 @@ def b0_artifact():
             "load_evidence": {
                 "cpu_forced": not metal,
                 "gpu_offload_supported": metal,
-                "n_gpu_layers": 32 if metal else 0,
+                "n_gpu_layers": 1000 if metal else 0,
                 "mtmd_use_gpu": metal,
                 "word_boxes_backend": "rten_cpu",
                 "raw_load_log_relpath": f"source-gate/{phase}/{device}/load.log",
@@ -1316,8 +1316,23 @@ class B0ArtifactTests(unittest.TestCase):
         self.value["retuned_after_freeze"] = True
         self.assert_rejected()
 
+    def test_rejects_invalid_b0_timestamps(self):
+        self.value["holdout_completed_at_utc"] = "2026-07-26T00:01:00+00:00"
+        self.assert_rejected()
+        self.value = b0_artifact()
+        self.value["holdout_completed_at_utc"] = self.value["frozen_at_utc"]
+        self.assert_rejected()
+
     def test_rejects_frozen_projection_hash_drift(self):
         self.value["selected_candidate_id"] = "R05"
+        self.assert_rejected()
+
+    def test_rejects_metal_default_gpu_layer_drift(self):
+        self.value["process_evidence"][3]["load_evidence"]["n_gpu_layers"] = 32
+        self.assert_rejected()
+
+    def test_rejects_holdout_process_fingerprint_drift(self):
+        self.value["process_evidence"][3]["executable_sha256"] = "3" * 64
         self.assert_rejected()
 
     def test_rejects_vacuous_cpu_and_instance_mismatch(self):
