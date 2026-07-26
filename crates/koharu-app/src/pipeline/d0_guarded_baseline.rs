@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::Read;
+use std::io::{self, Read};
+use std::path::Path;
 
 use image::{GenericImageView, ImageFormat};
 use koharu_core::NodeId;
@@ -13,6 +14,9 @@ use sha2::{Digest, Sha256};
 use crate::renderer::RendererDiagnosticEvent;
 use crate::typography::TypographyTargetDiagnostic;
 
+use super::d0_output_transaction::{
+    FaultPoint, PublishedOutput, load_or_publish_d0_target_correlation_map,
+};
 use super::d0_visual_manifest_schema::{EntryRole, Expected, HeldVisualManifestSchema};
 use super::engines::support::{EraseDiagnosticEvent, EraseDiagnosticStage};
 
@@ -329,6 +333,32 @@ pub(super) fn generate_target_correlation_map(
     generate_target_correlation_map_with(held, |bytes| {
         source.read_exact(bytes).map_err(|error| error.to_string())
     })
+}
+
+pub(super) fn load_or_publish_target_correlation_map<T>(
+    evidence_root: &Path,
+    held: &HeldVisualManifestSchema,
+    fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+    success: impl FnOnce(&TargetCorrelationMap, &PublishedOutput) -> io::Result<T>,
+) -> io::Result<T> {
+    load_or_publish_d0_target_correlation_map(
+        evidence_root,
+        fault,
+        || {
+            let map = generate_target_correlation_map(held).map_err(io::Error::other)?;
+            canonical_target_correlation_map_bytes(&map).map_err(io::Error::other)
+        },
+        |bytes| {
+            parse_target_correlation_map(held, bytes)
+                .map(|_| ())
+                .map_err(io::Error::other)
+        },
+        |published| {
+            let map =
+                parse_target_correlation_map(held, &published.bytes).map_err(io::Error::other)?;
+            success(&map, published)
+        },
+    )
 }
 
 fn generate_target_correlation_map_with(
@@ -1127,6 +1157,7 @@ impl From<Expected> for ReportExpected {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     use image::{DynamicImage, GrayImage, ImageFormat, Luma, Rgba, RgbaImage};
@@ -1890,6 +1921,61 @@ mod tests {
                 .collect::<HashSet<_>>()
                 .len(),
             9
+        );
+    }
+
+    #[test]
+    fn d0_guarded_baseline_persists_and_reuses_manifest_bound_correlation_map() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let evidence_root = std::fs::canonicalize(root.path()).unwrap();
+        let (_temp, held) = held();
+        let mut no_fault = |_| Ok(());
+        let first = load_or_publish_target_correlation_map(
+            &evidence_root,
+            &held,
+            &mut no_fault,
+            |map, published| {
+                assert_eq!(
+                    canonical_target_correlation_map_bytes(map).unwrap(),
+                    published.bytes.as_ref()
+                );
+                Ok(map.clone())
+            },
+        )
+        .unwrap();
+        let second = load_or_publish_target_correlation_map(
+            &evidence_root,
+            &held,
+            &mut no_fault,
+            |map, _| Ok(map.clone()),
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        let directory = evidence_root.join("d0-target-correlation-map");
+        let map_path = directory.join("map.json");
+        assert_eq!(
+            std::fs::metadata(&directory).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&map_path).unwrap().permissions().mode() & 0o7777,
+            0o600
+        );
+
+        let (_other_temp, other_held) = held_with_manifest(b"other-manifest");
+        assert!(
+            load_or_publish_target_correlation_map(
+                &evidence_root,
+                &other_held,
+                &mut no_fault,
+                |_, _| Ok(()),
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read(map_path).unwrap(),
+            canonical_target_correlation_map_bytes(&first).unwrap()
         );
     }
 }

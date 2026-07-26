@@ -14,6 +14,10 @@ use std::path::Path;
 
 const MANIFEST_PREFLIGHT_DIRECTORY: &str = "d0-manifest-preflight";
 const MANIFEST_PREFLIGHT_REPORT: &str = "report.json";
+const D0_CORRELATION_MAP_DIRECTORY: &str = "d0-target-correlation-map";
+const D0_CORRELATION_MAP: &str = "map.json";
+const D0_CORRELATION_MAP_TEMP: &str = ".map.json.tmp";
+const D0_CORRELATION_MAP_MAX_BYTES: usize = 1024 * 1024;
 const D0_RUNTIME_DIRECTORY: &str = "d0-baseline-runtime";
 const D0_RUNTIME_TEMP_DIRECTORY: &str = ".d0-baseline-runtime.tmp";
 const D0_RUNTIME_REPORT: &str = "report.json";
@@ -59,6 +63,7 @@ struct OutputDirectory {
 }
 
 struct ChildOutputDirectory {
+    name: OsString,
     descriptor: OwnedFd,
     metadata: Metadata,
 }
@@ -181,7 +186,11 @@ pub(super) fn publish_manifest_preflight_report<T>(
     success: impl FnOnce(&PublishedOutput) -> io::Result<T>,
 ) -> io::Result<T> {
     let parent = OutputDirectory::open(evidence_root)?;
-    let directory = ChildOutputDirectory::open_or_create(&parent, fault)?;
+    let directory = ChildOutputDirectory::open_or_create(
+        &parent,
+        OsStr::new(MANIFEST_PREFLIGHT_DIRECTORY),
+        fault,
+    )?;
     let output = output.to_vec().into_boxed_slice();
     let temp_name = OsString::from(format!(".output.{}.tmp", hex(&hash(&output))));
     let mut published = transact(
@@ -192,7 +201,63 @@ pub(super) fn publish_manifest_preflight_report<T>(
         output,
         fault,
     )?;
-    directory.revalidate(&parent, &mut published)?;
+    directory.revalidate(
+        &parent,
+        OsStr::new(MANIFEST_PREFLIGHT_REPORT),
+        &temp_name,
+        &mut published,
+    )?;
+    success(&published)
+}
+
+pub(super) fn load_or_publish_d0_target_correlation_map<T>(
+    evidence_root: &Path,
+    fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+    generate: impl FnOnce() -> io::Result<Vec<u8>>,
+    validate: impl Fn(&[u8]) -> io::Result<()>,
+    success: impl FnOnce(&PublishedOutput) -> io::Result<T>,
+) -> io::Result<T> {
+    let parent = OutputDirectory::open(evidence_root)?;
+    let directory = ChildOutputDirectory::open_or_create(
+        &parent,
+        OsStr::new(D0_CORRELATION_MAP_DIRECTORY),
+        fault,
+    )?;
+    let final_name = OsStr::new(D0_CORRELATION_MAP);
+    let temp_name = OsStr::new(D0_CORRELATION_MAP_TEMP);
+    let bytes = match state(directory.descriptor.as_fd(), final_name, temp_name)? {
+        State::Empty => generate()?,
+        State::Temp => read_bounded_regular(
+            directory.descriptor.as_fd(),
+            temp_name,
+            directory.metadata.owner,
+            D0_CORRELATION_MAP_MAX_BYTES,
+        )?
+        .into_vec(),
+        State::Final => read_bounded_regular(
+            directory.descriptor.as_fd(),
+            final_name,
+            directory.metadata.owner,
+            D0_CORRELATION_MAP_MAX_BYTES,
+        )?
+        .into_vec(),
+    };
+    require(
+        !bytes.is_empty() && bytes.len() <= D0_CORRELATION_MAP_MAX_BYTES,
+        "correlation map byte size is invalid",
+    )?;
+    validate(&bytes)?;
+    let mut published = transact(
+        directory.descriptor.as_fd(),
+        directory.metadata.owner,
+        final_name,
+        temp_name,
+        bytes.into_boxed_slice(),
+        fault,
+    )?;
+    fault(F::ParentDirectoryFsync)?;
+    fs(fsync(&parent.descriptor))?;
+    directory.revalidate(&parent, final_name, temp_name, &mut published)?;
     success(&published)
 }
 
@@ -254,9 +319,9 @@ impl OutputDirectory {
 impl ChildOutputDirectory {
     fn open_or_create(
         parent: &OutputDirectory,
+        name: &OsStr,
         fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
     ) -> io::Result<Self> {
-        let name = OsStr::new(MANIFEST_PREFLIGHT_DIRECTORY);
         validate_child(name)?;
         let descriptor = match open_directory_at(parent.descriptor.as_fd(), name) {
             Ok(descriptor) => descriptor,
@@ -279,6 +344,7 @@ impl ChildOutputDirectory {
         fault(F::ParentDirectoryFsync)?;
         fs(fsync(&parent.descriptor))?;
         Ok(Self {
+            name: name.to_owned(),
             descriptor,
             metadata,
         })
@@ -287,23 +353,20 @@ impl ChildOutputDirectory {
     fn revalidate(
         &self,
         parent: &OutputDirectory,
+        final_name: &OsStr,
+        temp_name: &OsStr,
         published: &mut PublishedOutput,
     ) -> io::Result<()> {
         let fresh_parent = parent.reopen()?;
-        let fresh = open_directory_at(
-            fresh_parent.as_fd(),
-            OsStr::new(MANIFEST_PREFLIGHT_DIRECTORY),
-        )?;
+        let fresh = open_directory_at(fresh_parent.as_fd(), &self.name)?;
         let fresh_metadata = metadata_of(&fs(fstat(&fresh))?);
         require(
             fresh_metadata == self.metadata
                 && valid_directory(fresh_metadata, parent.metadata.owner),
             "child output directory namespace changed",
         )?;
-        let final_name = OsStr::new(MANIFEST_PREFLIGHT_REPORT);
-        let temp_name = OsString::from(format!(".output.{}.tmp", hex(&hash(&published.bytes))));
         require(
-            state(fresh.as_fd(), final_name, &temp_name)? == State::Final,
+            state(fresh.as_fd(), final_name, temp_name)? == State::Final,
             "published output state changed",
         )?;
         let held = metadata_of(&fs(fstat(&published.descriptor))?);
@@ -856,8 +919,12 @@ fn open_exact(
 }
 fn read_exact(descriptor: &mut File, expected: &[u8]) -> io::Result<Box<[u8]>> {
     descriptor.rewind()?;
-    let mut bytes = Vec::new();
-    descriptor.read_to_end(&mut bytes)?;
+    let limit = u64::try_from(expected.len())
+        .map_err(|_| invalid("expected output size overflow"))?
+        .checked_add(1)
+        .ok_or_else(|| invalid("expected output size overflow"))?;
+    let mut bytes = Vec::with_capacity(expected.len().min(64 * 1024));
+    descriptor.take(limit).read_to_end(&mut bytes)?;
     require(bytes == expected, "output bytes do not match")?;
     Ok(bytes.into_boxed_slice())
 }
@@ -1906,5 +1973,165 @@ mod tests {
             assert!(run_bundle(&fixture, &mut fault, &calls).is_err(), "{race}");
             assert_eq!(calls.get(), 0, "{race}");
         }
+    }
+
+    fn run_correlation_map(
+        fixture: &Fixture,
+        fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+        generated: &Cell<usize>,
+    ) -> io::Result<[u8; 32]> {
+        load_or_publish_d0_target_correlation_map(
+            &fixture.output,
+            fault,
+            || {
+                generated.set(generated.get() + 1);
+                Ok(b"{\"schema\":\"map\"}\n".to_vec())
+            },
+            |bytes| require(bytes == b"{\"schema\":\"map\"}\n", "invalid map"),
+            |published| Ok(published.sha256),
+        )
+    }
+
+    #[test]
+    fn d0_output_transaction_correlation_map_generates_once_and_recovers_exact_temp() {
+        let fixture = Fixture::new();
+        let generated = Cell::new(0);
+        let first = run_correlation_map(&fixture, &mut no_fault, &generated).unwrap();
+        let second = run_correlation_map(&fixture, &mut no_fault, &generated).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(generated.get(), 1);
+
+        let recovered = Fixture::new();
+        let child = recovered.output.join(D0_CORRELATION_MAP_DIRECTORY);
+        s::create_dir(&child).unwrap();
+        mode(&child, 0o700);
+        file(
+            &child.join(D0_CORRELATION_MAP_TEMP),
+            b"{\"schema\":\"map\"}\n",
+            0o600,
+        );
+        let recovered_generated = Cell::new(0);
+        run_correlation_map(&recovered, &mut no_fault, &recovered_generated).unwrap();
+        assert_eq!(recovered_generated.get(), 0);
+        assert!(child.join(D0_CORRELATION_MAP).is_file());
+        assert!(!child.join(D0_CORRELATION_MAP_TEMP).exists());
+    }
+
+    #[test]
+    fn d0_output_transaction_correlation_map_rejects_closed_states_without_regeneration() {
+        for state_name in [
+            "malformed-temp",
+            "unknown",
+            "both",
+            "child-mode",
+            "final-mode",
+            "final-symlink",
+        ] {
+            let fixture = Fixture::new();
+            let child = fixture.output.join(D0_CORRELATION_MAP_DIRECTORY);
+            s::create_dir(&child).unwrap();
+            mode(
+                &child,
+                if state_name == "child-mode" {
+                    0o755
+                } else {
+                    0o700
+                },
+            );
+            match state_name {
+                "malformed-temp" => file(&child.join(D0_CORRELATION_MAP_TEMP), b"partial", 0o600),
+                "unknown" => file(&child.join("unknown"), b"x", 0o600),
+                "both" => {
+                    file(
+                        &child.join(D0_CORRELATION_MAP_TEMP),
+                        b"{\"schema\":\"map\"}\n",
+                        0o600,
+                    );
+                    file(
+                        &child.join(D0_CORRELATION_MAP),
+                        b"{\"schema\":\"map\"}\n",
+                        0o600,
+                    );
+                }
+                "final-mode" => file(
+                    &child.join(D0_CORRELATION_MAP),
+                    b"{\"schema\":\"map\"}\n",
+                    0o644,
+                ),
+                "final-symlink" => symlink(&fixture.input, child.join(D0_CORRELATION_MAP)).unwrap(),
+                "child-mode" => {}
+                _ => unreachable!(),
+            }
+            let generated = Cell::new(0);
+            assert!(
+                run_correlation_map(&fixture, &mut no_fault, &generated).is_err(),
+                "{state_name}"
+            );
+            assert_eq!(generated.get(), 0, "{state_name}");
+        }
+    }
+
+    #[test]
+    fn d0_output_transaction_correlation_map_faults_retry_to_one_valid_final() {
+        for injected in [
+            F::ChildDirectoryCreate,
+            F::ParentDirectoryFsync,
+            F::Write,
+            F::TempFsync,
+            F::Rename,
+            F::FinalFsync,
+            F::DirectoryFsync,
+        ] {
+            let fixture = Fixture::new();
+            let generated = Cell::new(0);
+            let mut fired = false;
+            let mut fault = |point| {
+                if point == injected && !fired {
+                    fired = true;
+                    Err(io::Error::other("correlation map injected"))
+                } else {
+                    Ok(())
+                }
+            };
+            assert!(run_correlation_map(&fixture, &mut fault, &generated).is_err());
+            assert!(fired, "{injected:?}");
+            run_correlation_map(&fixture, &mut no_fault, &generated).unwrap();
+            assert_eq!(
+                generated.get(),
+                if injected == F::Write { 2 } else { 1 },
+                "{injected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn d0_output_transaction_correlation_map_bounds_final_reread_after_growth() {
+        let fixture = Fixture::new();
+        let generated = Cell::new(0);
+        run_correlation_map(&fixture, &mut no_fault, &generated).unwrap();
+        let final_path = fixture
+            .output
+            .join(D0_CORRELATION_MAP_DIRECTORY)
+            .join(D0_CORRELATION_MAP);
+        let success_calls = Cell::new(0);
+        let result = load_or_publish_d0_target_correlation_map(
+            &fixture.output,
+            &mut no_fault,
+            || panic!("final state must not regenerate"),
+            |bytes| {
+                require(bytes == b"{\"schema\":\"map\"}\n", "invalid map")?;
+                s::write(&final_path, vec![b'x'; D0_CORRELATION_MAP_MAX_BYTES * 2])
+            },
+            |_| {
+                success_calls.set(success_calls.get() + 1);
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(success_calls.get(), 0);
+        assert_eq!(
+            s::metadata(final_path).unwrap().len(),
+            (D0_CORRELATION_MAP_MAX_BYTES * 2) as u64
+        );
     }
 }
