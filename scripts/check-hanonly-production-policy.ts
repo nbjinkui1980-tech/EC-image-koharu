@@ -42,6 +42,14 @@ export interface RustSourceFile {
   text: string
 }
 
+export interface FrozenInterpreterRecord {
+  sha: string
+  path: string
+  mode: string
+  type: string
+  object: string
+}
+
 export interface SecureStatLike {
   mode: number
   uid: number
@@ -228,6 +236,15 @@ const featureManifestPaths = [
   'crates/koharu-app/Cargo.toml',
   'crates/koharu-llm/Cargo.toml',
   'crates/koharu-ml/Cargo.toml',
+] as const
+const frozenInterpreterPaths = [
+  'scripts/check-hanonly-production-policy.ts',
+  'scripts/check-hanonly-production-policy.test.ts',
+  'scripts/hanonly_evidence_ledger.py',
+  'scripts/hanonly_evidence_ledger_test.py',
+  'package.json',
+  'ui/package.json',
+  'bun.lock',
 ] as const
 
 export function validateSnapshotMetadata(value: unknown): SnapshotMetadata {
@@ -816,6 +833,87 @@ export async function runReleaseFeatureInventory(root: string): Promise<void> {
   validateReleaseFeatureInventory(files)
 }
 
+function parseLsTreeLine(sha: string, line: string): FrozenInterpreterRecord {
+  const match = /^([0-7]{6}) (blob|tree|commit) ([0-9a-f]{40})\t(.+)$/.exec(line)
+  if (!match) fail('frozen-interpreter', 'git ls-tree output drift')
+  return {
+    sha,
+    mode: match[1],
+    type: match[2],
+    object: match[3],
+    path: match[4],
+  }
+}
+
+function lsTreeFrozenInterpreter(root: string, sha: string): FrozenInterpreterRecord[] {
+  const result = Bun.spawnSync({
+    cmd: ['git', 'ls-tree', sha, '--', ...frozenInterpreterPaths],
+    cwd: root,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  if (result.exitCode !== 0) {
+    fail('frozen-interpreter', `git ls-tree exited with code ${result.exitCode}`)
+  }
+  return result.stdout
+    .toString()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => parseLsTreeLine(sha, line))
+}
+
+function recordsByPath(
+  records: readonly FrozenInterpreterRecord[],
+  sha: string,
+): Map<string, FrozenInterpreterRecord> {
+  const result = new Map<string, FrozenInterpreterRecord>()
+  for (const record of records.filter((item) => item.sha === sha)) {
+    if (result.has(record.path)) fail('frozen-interpreter', `${sha} duplicate frozen path`)
+    result.set(record.path, record)
+  }
+  return result
+}
+
+export function validateFrozenInterpreterRecords(
+  records: readonly FrozenInterpreterRecord[],
+  b0Sha: string,
+  implSha: string,
+): void {
+  if (!hex40.test(b0Sha) || !hex40.test(implSha)) {
+    fail('frozen-interpreter', 'endpoint sha must be 40 lowercase hexadecimal characters')
+  }
+  const b0 = recordsByPath(records, b0Sha)
+  const impl = recordsByPath(records, implSha)
+  for (const relativePath of frozenInterpreterPaths) {
+    const left = b0.get(relativePath)
+    const right = impl.get(relativePath)
+    if (!left || !right) fail('frozen-interpreter', `${relativePath} missing at endpoint`)
+    if (left.mode !== '100644' || right.mode !== '100644') {
+      fail('frozen-interpreter', `${relativePath} mode drift`)
+    }
+    if (left.type !== 'blob' || right.type !== 'blob') {
+      fail('frozen-interpreter', `${relativePath} type drift`)
+    }
+    if (left.object !== right.object) {
+      fail('frozen-interpreter', `${relativePath} blob drift`)
+    }
+  }
+  for (const record of records) {
+    if (!(frozenInterpreterPaths as readonly string[]).includes(record.path)) {
+      fail('frozen-interpreter', 'unexpected frozen interpreter path')
+    }
+  }
+}
+
+export function runFrozenInterpreterCheck(root: string, b0Sha: string, implSha: string): void {
+  const b0Records = lsTreeFrozenInterpreter(root, b0Sha)
+  validateFrozenInterpreterRecords(
+    b0Sha === implSha ? b0Records : [...b0Records, ...lsTreeFrozenInterpreter(root, implSha)],
+    b0Sha,
+    implSha,
+  )
+}
+
 function cargoMetadata(root: string): unknown {
   const result = Bun.spawnSync({
     cmd: [
@@ -957,6 +1055,15 @@ async function main(): Promise<void> {
   if (deepEqual(args, ['--release-feature-inventory'])) {
     await runReleaseFeatureInventory(repoRoot)
     process.stdout.write('PASS: hanonly release feature inventory\n')
+    return
+  }
+  if (args.includes('--verify-frozen-interpreter')) {
+    runFrozenInterpreterCheck(
+      repoRoot,
+      requiredArg(args, '--b0-sha'),
+      requiredArg(args, '--impl-sha'),
+    )
+    process.stdout.write('PASS: hanonly frozen interpreter\n')
     return
   }
   if (args.includes('--validate-b0-authorization')) {

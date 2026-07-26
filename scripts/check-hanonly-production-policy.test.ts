@@ -27,10 +27,12 @@ import {
   repoRoot,
   validateB0Authorization,
   validateDependencyInventory,
+  validateFrozenInterpreterRecords,
   validateRedTestState,
   validateReleaseFeatureInventory,
   validateSecureRegularStat,
   type DependencyInventoryInput,
+  type FrozenInterpreterRecord,
   type JsonObject,
   type RustSourceFile,
   type SnapshotMetadata,
@@ -873,6 +875,50 @@ describe('release feature inventory policy', () => {
     )
 
     expect(() => validateReleaseFeatureInventory(files)).toThrow(PolicyError)
+  })
+})
+
+function frozenInterpreterRecords(): {
+  records: FrozenInterpreterRecord[]
+  b0Sha: string
+  implSha: string
+} {
+  const b0Sha = '1'.repeat(40)
+  const implSha = '2'.repeat(40)
+  const paths = [
+    'scripts/check-hanonly-production-policy.ts',
+    'scripts/check-hanonly-production-policy.test.ts',
+    'scripts/hanonly_evidence_ledger.py',
+    'scripts/hanonly_evidence_ledger_test.py',
+    'package.json',
+    'ui/package.json',
+    'bun.lock',
+  ]
+  const records = paths.flatMap((relativePath, index) => {
+    const object = `${index}`.repeat(40)
+    return [
+      { sha: b0Sha, path: relativePath, mode: '100644', type: 'blob', object },
+      { sha: implSha, path: relativePath, mode: '100644', type: 'blob', object },
+    ]
+  })
+  return { records, b0Sha, implSha }
+}
+
+describe('frozen interpreter policy', () => {
+  test('accepts unchanged endpoint blobs for the exact frozen path set', () => {
+    const fixture = frozenInterpreterRecords()
+    expect(() =>
+      validateFrozenInterpreterRecords(fixture.records, fixture.b0Sha, fixture.implSha),
+    ).not.toThrow()
+  })
+
+  test('rejects endpoint blob drift', () => {
+    const fixture = frozenInterpreterRecords()
+    fixture.records[1].object = 'f'.repeat(40)
+
+    expect(() =>
+      validateFrozenInterpreterRecords(fixture.records, fixture.b0Sha, fixture.implSha),
+    ).toThrow(PolicyError)
   })
 })
 
