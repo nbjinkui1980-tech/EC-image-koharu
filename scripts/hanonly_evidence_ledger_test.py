@@ -11,7 +11,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts import hanonly_evidence_ledger as ledger
+try:
+    from scripts import hanonly_evidence_ledger as ledger
+except ModuleNotFoundError:
+    import hanonly_evidence_ledger as ledger
 
 
 WIDTH = 790
@@ -81,6 +84,15 @@ def b0_artifact():
         },
         "runtime": {"os": "macos", "device": "mps"},
         "device": {"actual_device": "Apple GPU"},
+        "raw_evidence": {
+            "load_device": "mps:0",
+            "model_backend": "paddleocr-vl/metal",
+            "layer_or_buffer": "encoder.layers=24",
+            "context_or_offload": "context=mps;offload=none",
+            "runtime_node_count": 24,
+            "device_load_confirmed": True,
+            "diagnostic_sha256": HEX64,
+        },
         "output_hashes": {
             "source": HEX64,
             "segment_mask": HEX64,
@@ -1228,6 +1240,23 @@ class B0ArtifactTests(unittest.TestCase):
                     del self.value["entries"][1][container][field]
                 else:
                     self.value["entries"][1][container][field] = replacement
+                self.assert_rejected()
+
+    def test_rejects_missing_raw_evidence(self):
+        del self.value["entries"][1]["raw_evidence"]
+        self.assert_rejected()
+
+    def test_rejects_invalid_raw_evidence(self):
+        cases = (
+            ("load_device", ""),
+            ("diagnostic_sha256", "not-a-sha256"),
+            ("runtime_node_count", True),
+            ("device_load_confirmed", 1),
+        )
+        for field, replacement in cases:
+            with self.subTest(field=field):
+                self.value = b0_artifact()
+                self.value["entries"][1]["raw_evidence"][field] = replacement
                 self.assert_rejected()
 
     def test_rejects_b0_and_manifest_hash_drift(self):

@@ -522,6 +522,18 @@ mod source_gate_selection {
 
     #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
     #[serde(deny_unknown_fields)]
+    struct RawEvidence {
+        load_device: String,
+        model_backend: String,
+        layer_or_buffer: String,
+        context_or_offload: String,
+        runtime_node_count: u32,
+        device_load_confirmed: bool,
+        diagnostic_sha256: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[serde(deny_unknown_fields)]
     struct OutputHashes {
         source: String,
         segment_mask: String,
@@ -554,6 +566,8 @@ mod source_gate_selection {
         runtime: Option<RuntimeEvidence>,
         #[serde(skip_serializing_if = "Option::is_none")]
         device: Option<DeviceEvidence>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        raw_evidence: Option<RawEvidence>,
         #[serde(skip_serializing_if = "Option::is_none")]
         output_hashes: Option<OutputHashes>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -748,6 +762,7 @@ mod source_gate_selection {
                             && entry.model.is_none()
                             && entry.runtime.is_none()
                             && entry.device.is_none()
+                            && entry.raw_evidence.is_none()
                             && entry.output_hashes.is_none()
                             && entry.assertions.is_none(),
                         "regression entry must contain only identity fields",
@@ -783,6 +798,10 @@ mod source_gate_selection {
             .device
             .as_ref()
             .ok_or_else(|| invalid_data("missing device evidence"))?;
+        let raw_evidence = entry
+            .raw_evidence
+            .as_ref()
+            .ok_or_else(|| invalid_data("missing raw evidence"))?;
         let output_hashes = entry
             .output_hashes
             .as_ref()
@@ -797,11 +816,16 @@ mod source_gate_selection {
             &runtime.os,
             &runtime.device,
             &device.actual_device,
+            &raw_evidence.load_device,
+            &raw_evidence.model_backend,
+            &raw_evidence.layer_or_buffer,
+            &raw_evidence.context_or_offload,
         ] {
             validate_text(value)?;
         }
         for hash in [
             &model.identifier_sha256,
+            &raw_evidence.diagnostic_sha256,
             &output_hashes.source,
             &output_hashes.segment_mask,
             &output_hashes.inpainted,
@@ -809,6 +833,10 @@ mod source_gate_selection {
         ] {
             decode_sha256(hash)?;
         }
+        require(
+            raw_evidence.runtime_node_count > 0 && raw_evidence.device_load_confirmed,
+            "raw selection evidence is invalid",
+        )?;
         require(
             assertions.source_text_removed
                 && assertions.target_rendered
@@ -994,6 +1022,15 @@ mod source_gate_selection {
                 device: Some(DeviceEvidence {
                     actual_device: "synthetic-test-device".into(),
                 }),
+                raw_evidence: Some(RawEvidence {
+                    load_device: "synthetic-test-load-device".into(),
+                    model_backend: "synthetic-test-model-backend".into(),
+                    layer_or_buffer: "synthetic-test-layer-or-buffer".into(),
+                    context_or_offload: "synthetic-test-context-or-offload".into(),
+                    runtime_node_count: 24,
+                    device_load_confirmed: true,
+                    diagnostic_sha256: synthetic_hash(15),
+                }),
                 output_hashes: Some(OutputHashes {
                     source: synthetic_hash(11),
                     segment_mask: synthetic_hash(12),
@@ -1020,6 +1057,7 @@ mod source_gate_selection {
             model: None,
             runtime: None,
             device: None,
+            raw_evidence: None,
             output_hashes: None,
             assertions: None,
         }];
@@ -1209,6 +1247,7 @@ mod source_gate_selection {
                 "model".into(),
                 "runtime".into(),
                 "device".into(),
+                "raw_evidence".into(),
                 "output_hashes".into(),
                 "assertions".into(),
             ])
@@ -1220,6 +1259,18 @@ mod source_gate_selection {
             ),
             ("runtime", HashSet::from_iter(["os", "device"])),
             ("device", HashSet::from_iter(["actual_device"])),
+            (
+                "raw_evidence",
+                HashSet::from_iter([
+                    "load_device",
+                    "model_backend",
+                    "layer_or_buffer",
+                    "context_or_offload",
+                    "runtime_node_count",
+                    "device_load_confirmed",
+                    "diagnostic_sha256",
+                ]),
+            ),
             (
                 "output_hashes",
                 HashSet::from_iter(["source", "segment_mask", "inpainted", "rendered"]),
@@ -1280,6 +1331,11 @@ mod source_gate_selection {
             {
                 let mut evidence = calibration_evidence();
                 evidence.entries.pop();
+                evidence
+            },
+            {
+                let mut evidence = calibration_evidence();
+                evidence.entries[1].raw_evidence = None;
                 evidence
             },
         ] {

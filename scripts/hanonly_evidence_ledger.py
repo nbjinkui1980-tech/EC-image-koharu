@@ -54,6 +54,7 @@ B0_EVIDENCE_KEYS = {
     "model",
     "runtime",
     "device",
+    "raw_evidence",
     "output_hashes",
     "assertions",
 }
@@ -302,6 +303,18 @@ def _validate_b0_artifact(arguments):
             ("model", {"provider", "backend", "identifier_sha256"}),
             ("runtime", {"os", "device"}),
             ("device", {"actual_device"}),
+            (
+                "raw_evidence",
+                {
+                    "load_device",
+                    "model_backend",
+                    "layer_or_buffer",
+                    "context_or_offload",
+                    "runtime_node_count",
+                    "device_load_confirmed",
+                    "diagnostic_sha256",
+                },
+            ),
             ("output_hashes", {"source", "segment_mask", "inpainted", "rendered"}),
             (
                 "assertions",
@@ -320,6 +333,25 @@ def _validate_b0_artifact(arguments):
         _validate_text(entry["runtime"]["os"], "runtime os")
         _validate_text(entry["runtime"]["device"], "runtime device")
         _validate_text(entry["device"]["actual_device"], "actual device")
+        raw_evidence = entry["raw_evidence"]
+        for field in (
+            "load_device",
+            "model_backend",
+            "layer_or_buffer",
+            "context_or_offload",
+        ):
+            _validate_text(raw_evidence[field], f"raw evidence {field}")
+        if (
+            type(raw_evidence["runtime_node_count"]) is not int
+            or raw_evidence["runtime_node_count"] <= 0
+        ):
+            raise LedgerError(f"{role} raw evidence runtime node count is invalid")
+        if raw_evidence["device_load_confirmed"] is not True:
+            raise LedgerError(f"{role} raw evidence device load is not confirmed")
+        _validate_hash(
+            raw_evidence["diagnostic_sha256"],
+            "raw evidence diagnostic sha256",
+        )
         for label, digest in entry["output_hashes"].items():
             _validate_hash(digest, f"{label} output hash")
         if any(assertion is not True for assertion in entry["assertions"].values()):
