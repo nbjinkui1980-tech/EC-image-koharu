@@ -1523,7 +1523,7 @@ mod source_gate_selection {
 
     fn canonical_device_backend(backend: &str) -> Option<&'static str> {
         let lower = backend.to_ascii_lowercase();
-        if lower.contains("metal") {
+        if lower.contains("metal") || lower.contains("mtl") {
             Some("Metal")
         } else if lower.contains("cpu") {
             Some("CPU")
@@ -2069,9 +2069,9 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             },
             EnumeratedDevice {
                 index: 1,
-                name: "Metal0".into(),
+                name: "MTL0".into(),
                 description: "Apple GPU".into(),
-                backend: "Metal".into(),
+                backend: "MTL".into(),
                 device_type: "integrated_gpu".into(),
             },
         ];
