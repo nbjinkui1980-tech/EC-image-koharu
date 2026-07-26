@@ -793,9 +793,12 @@ mod source_gate_selection {
         let value = line
             .split_once('=')
             .and_then(|(_, suffix)| suffix.split_whitespace().next())
-            .ok_or_else(|| invalid_data("native buffer log omitted size"))?
-            .parse::<f64>()
+            .map(str::parse::<f64>)
+            .transpose()
             .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        let Some(value) = value else {
+            return Ok(());
+        };
         require(
             value.is_finite() && value >= 0.0,
             "native buffer size is invalid",
@@ -2020,6 +2023,7 @@ clip_ctx: CLIP using MTL0 backend
 
         let inference = br#"
 llama_context: CPU output buffer size = 0.39 MiB
+llama_context: CPU output buffer size pending allocation
 llama_kv_cache: MTL0 KV buffer size = 9.00 MiB
 sched_reserve: MTL0 compute buffer size = 63.75 MiB
 sched_reserve: CPU compute buffer size = 1.57 MiB
