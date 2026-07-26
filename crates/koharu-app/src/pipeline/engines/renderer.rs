@@ -816,6 +816,46 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "hanonly-pre-b1-red"]
+    fn hanonly_pre_b1_red_t2_pipeline_layout_handoff_contract() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let blobs = BlobStore::open(temp.path())?;
+        let node = renderer_node(
+            NodeId::new(),
+            "中文",
+            Some("translated"),
+            Some(vec![quad(10.0, 10.0, 90.0, 40.0)]),
+        );
+        let (scene, page) = renderer_scene_with_images(&blobs, node)?;
+        let options = PipelineRunOptions {
+            source_text_policy: SourceTextPolicy::HanOnly,
+            target_language: Some("en".to_string()),
+            ..Default::default()
+        };
+
+        let error = run_renderer_page(
+            &scene,
+            page,
+            &blobs,
+            &options,
+            |_, _, _, _, _, inputs, page_options| {
+                assert_eq!(inputs.len(), 1);
+                assert_eq!(
+                    page_options
+                        .source_relative_font_size_policy
+                        .map(|policy| policy.offset),
+                    Some(0.0),
+                    "pipeline handoff must not retain the legacy blanket -5px cap"
+                );
+                anyhow::bail!("captured dynamic layout handoff")
+            },
+        )
+        .expect_err("capture closure must stop before writes");
+        assert_eq!(error.to_string(), "captured dynamic layout handoff");
+        Ok(())
+    }
+
+    #[test]
     fn pipeline_legacy_language_modes_render_stably_with_han_only_equivalence() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let blobs = BlobStore::open(temp.path())?;

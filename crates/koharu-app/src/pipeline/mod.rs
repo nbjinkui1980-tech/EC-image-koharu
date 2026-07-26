@@ -1085,6 +1085,96 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "hanonly-pre-b1-red"]
+    async fn hanonly_pre_b1_red_t2_rotation_status_contract() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("中文", "translation")?;
+        let transform = fixture
+            .session
+            .scene_snapshot()
+            .node(fixture.page, fixture.text)
+            .expect("fixture text")
+            .transform;
+        fixture.session.apply(Op::UpdateNode {
+            page: fixture.page,
+            id: fixture.text,
+            patch: NodePatch {
+                transform: Some(Transform {
+                    rotation_deg: 15.0,
+                    ..transform
+                }),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        })?;
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let warning_log = warnings.clone();
+        let warning_sink: WarningSink = Arc::new(move |warning| {
+            warning_log.lock().unwrap().push(warning);
+        });
+
+        let outcome = run(
+            fixture.session.clone(),
+            fixture.registry.clone(),
+            fixture.runtime.clone(),
+            true,
+            fixture.llm.clone(),
+            fixture.renderer.clone(),
+            Arc::new(TypographyPlanner::default()),
+            PipelineSpec {
+                scope: Scope::Pages(vec![fixture.page]),
+                steps: Vec::new(),
+                options: PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::HanOnly,
+                    ..Default::default()
+                },
+            },
+            Arc::new(AtomicBool::new(false)),
+            None,
+            Some(warning_sink),
+        )
+        .await?;
+
+        assert_eq!(outcome.warning_count, 1);
+        let warnings = warnings.lock().unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0]
+                .message
+                .starts_with("han_only.unsupported_rotation:")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "hanonly-pre-greenc-red"]
+    async fn hanonly_pre_greenc_red_t3_run_state_lifetime_contract() -> anyhow::Result<()> {
+        let fixture = PipelineFixture::new("中文", "translation")?;
+
+        let error = run_fixture_steps_with_options(
+            &fixture,
+            &["hanonly-missing-engine"],
+            PipelineRunOptions {
+                source_text_policy: SourceTextPolicy::HanOnly,
+                region: Some(koharu_core::Region {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("region-bearing pipeline::run must reject before registry access");
+
+        assert!(
+            error.to_string().contains("region"),
+            "region rejection must be the first executable validation: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn han_only_downstream_only_existing_english_runs_gate_and_skips_renderer()
     -> anyhow::Result<()> {
         let fixture = PipelineFixture::new("English", "English")?;

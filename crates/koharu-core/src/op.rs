@@ -1144,4 +1144,87 @@ mod tests {
             vec![first.id, second.id]
         );
     }
+
+    #[test]
+    #[ignore = "hanonly-pre-greenc-red"]
+    fn hanonly_pre_greenc_red_t3_marker_batch_atomicity_contract() {
+        let update = |page, id, patch| Op::UpdateNode {
+            page,
+            id,
+            patch: NodePatch {
+                data: Some(NodeDataPatch::Text(patch)),
+                ..Default::default()
+            },
+            prev: NodePatch::default(),
+        };
+
+        let (mut mixed_scene, page, node) = verified_text_scene();
+        let mixed_before = serde_json::to_vec(&mixed_scene).unwrap();
+        let mut mixed = Op::Batch {
+            ops: vec![
+                update(
+                    page,
+                    node,
+                    TextDataPatch {
+                        style: Some(Some(TextStyle::default())),
+                        ..Default::default()
+                    },
+                ),
+                update(
+                    page,
+                    node,
+                    TextDataPatch {
+                        typography_plan_verified: Some(true),
+                        ..Default::default()
+                    },
+                ),
+            ],
+            label: "mixed marker guard".into(),
+        };
+        let mixed_op_before = serde_json::to_vec(&mixed).unwrap();
+        let mixed_result = mixed.apply(&mut mixed_scene);
+
+        let (mut nested_scene, page, node) = verified_text_scene();
+        let nested_before = serde_json::to_vec(&nested_scene).unwrap();
+        let added_page = blank_page();
+        let mut nested = Op::Batch {
+            ops: vec![
+                update(
+                    page,
+                    node,
+                    TextDataPatch {
+                        translation: Some(Some("edited".into())),
+                        ..Default::default()
+                    },
+                ),
+                Op::Batch {
+                    ops: vec![
+                        Op::AddPage {
+                            page: added_page,
+                            at: 1,
+                        },
+                        Op::AddNode {
+                            page: PageId::new(),
+                            node: custom_image_node(),
+                            at: 0,
+                        },
+                    ],
+                    label: "late structural failure".into(),
+                },
+            ],
+            label: "nested atomicity".into(),
+        };
+        let nested_op_before = serde_json::to_vec(&nested).unwrap();
+        let nested_result = nested.apply(&mut nested_scene);
+
+        assert!(
+            mixed_result.is_err(),
+            "persisted planner marker must be rejected"
+        );
+        assert_eq!(serde_json::to_vec(&mixed_scene).unwrap(), mixed_before);
+        assert_eq!(serde_json::to_vec(&mixed).unwrap(), mixed_op_before);
+        assert!(nested_result.is_err(), "late nested invariant must fail");
+        assert_eq!(serde_json::to_vec(&nested_scene).unwrap(), nested_before);
+        assert_eq!(serde_json::to_vec(&nested).unwrap(), nested_op_before);
+    }
 }

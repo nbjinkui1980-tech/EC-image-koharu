@@ -232,6 +232,40 @@ fn render_rgba_text() -> Result<()> {
     Ok(())
 }
 
+mod hanonly_contracts {
+    use super::*;
+
+    #[test]
+    #[ignore = "hanonly-pre-greenc-red"]
+    fn hanonly_pre_greenc_red_t3_source_color_probe_contract() -> Result<()> {
+        let mut book = FontBook::new();
+        let font =
+            book.load_from_bytes(include_bytes!("fixtures/roboto-mono-stripped.ttf").to_vec())?;
+        let mut layout = TextLayout::new(&font, Some(24.0)).run("A")?;
+        let options = RenderOptions {
+            color: [17, 83, 149, 255],
+            ..Default::default()
+        };
+        tiny_skia_renderer()?.render(&layout, WritingMode::Horizontal, &options)?;
+
+        let glyph = layout
+            .lines
+            .iter_mut()
+            .flat_map(|line| &mut line.glyphs)
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("source color probe fixture shaped no glyphs"))?;
+        glyph.glyph_id = u32::from(u16::MAX) + 1;
+
+        let result = tiny_skia_renderer()?.render(&layout, WritingMode::Horizontal, &options);
+
+        assert!(
+            result.is_err(),
+            "source color probe must reject a nonzero shaped glyph ID outside u16"
+        );
+        Ok(())
+    }
+}
+
 #[test]
 #[ignore]
 fn render_with_fallback_fonts() -> Result<()> {

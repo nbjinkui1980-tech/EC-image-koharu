@@ -3035,6 +3035,96 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "hanonly-pre-greenc-red"]
+    fn hanonly_pre_greenc_red_t3_planner_font_outcome_contract() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let mut planned = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 20.0,
+                y: 20.0,
+                width: 300.0,
+                height: 200.0,
+                rotation_deg: 0.0,
+            },
+            "planned text",
+            40.0,
+            36.0,
+            TextDirection::Horizontal,
+        );
+        planned.style.as_mut().context("test style")?.font_size = Some(18.0);
+        planned.typography_plan_verified = true;
+        let han_only_options = PageRenderOptions {
+            source_relative_font_size_policy: Some(SourceRelativeFontSizePolicy {
+                offset: 0.0,
+                prefer_detected: true,
+            }),
+            ..Default::default()
+        };
+
+        clear_raster_trace();
+        let (_, events) = render_with_diagnostics(
+            &renderer,
+            std::slice::from_ref(&planned),
+            None,
+            340,
+            240,
+            &han_only_options,
+        )?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].node_id, planned.node_id);
+        assert_eq!(events[0].cap, events[0].auto_max);
+        assert!(events[0].final_size > 18.0);
+        assert!(raster_trace().iter().all(|entry| {
+            entry.node_id == planned.node_id && entry.path == RasterPath::SourceRelative
+        }));
+
+        clear_raster_trace();
+        renderer.render_page(
+            &DynamicImage::new_rgba8(340, 240),
+            None,
+            None,
+            340,
+            240,
+            std::slice::from_ref(&planned),
+            &PageRenderOptions::default(),
+        )?;
+        assert_eq!(
+            raster_trace(),
+            vec![RasterTrace {
+                node_id: planned.node_id,
+                path: RasterPath::Legacy,
+                font_size: 18.0,
+            }],
+            "AllText must keep the existing verified Planner font cap"
+        );
+
+        let mut manual = planned.clone();
+        manual.node_id = NodeId::new();
+        manual.typography_plan_verified = false;
+        clear_raster_trace();
+        renderer.render_page(
+            &DynamicImage::new_rgba8(340, 240),
+            None,
+            None,
+            340,
+            240,
+            std::slice::from_ref(&manual),
+            &han_only_options,
+        )?;
+        assert_eq!(
+            raster_trace(),
+            vec![RasterTrace {
+                node_id: manual.node_id,
+                path: RasterPath::Legacy,
+                font_size: 18.0,
+            }],
+            "manual font size must remain authoritative and outside HanOnly automatic layout"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn typography_planner_font_cap_never_exceeds_auto_fit_normal_and_bubble() -> Result<()> {
         let font = any_system_font();
         let builder = TextLayout::new(&font, None);
@@ -4576,6 +4666,53 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "hanonly-pre-greenc-red"]
+    fn hanonly_pre_greenc_red_t3_source_color_contract() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let mut block = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 20.0,
+                y: 20.0,
+                width: 220.0,
+                height: 80.0,
+                rotation_deg: 0.0,
+            },
+            "Source color",
+            30.0,
+            28.0,
+            TextDirection::Horizontal,
+        );
+        block.typography_plan_verified = true;
+        block.style.as_mut().expect("test style").color = [1, 2, 3, 255];
+        block
+            .font_prediction
+            .as_mut()
+            .expect("test prediction")
+            .text_color = [240, 241, 242];
+        let options = PageRenderOptions {
+            source_relative_font_size_policy: Some(SourceRelativeFontSizePolicy {
+                offset: 0.0,
+                prefer_detected: true,
+            }),
+            ..Default::default()
+        };
+
+        let (_, events) = render_with_diagnostics(&renderer, &[block], None, 280, 120, &options)?;
+
+        assert!(
+            !matches!(
+                events[0].fill_branch,
+                RendererFillBranch::Explicit
+                    | RendererFillBranch::Predicted
+                    | RendererFillBranch::DefaultBlack
+            ),
+            "HanOnly automatic fill must come from SourceColorContract, not persisted Planner style, prediction, or a default"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn mask_collision_fit_renders_min_size_when_no_safe_size_exists() -> Result<()> {
         let font = any_system_font();
         let layout_builder = TextLayout::new(&font, None);
@@ -4646,6 +4783,64 @@ mod tests {
             layout_boxes[1].diagnostic_branch,
             RendererLayoutBoxBranch::SharedBubble
         );
+    }
+
+    #[test]
+    #[ignore = "hanonly-pre-b1-red"]
+    fn hanonly_pre_b1_red_t2_dynamic_layout_contract() {
+        let mut mask = GrayImage::from_pixel(200, 120, Luma([0u8]));
+        paint_rect(&mut mask, 10, 10, 190, 110, 1);
+        let index = BubbleIndex::new(mask);
+        let blocks = vec![
+            block(30.0, 40.0, 30.0, 30.0, "left"),
+            block(140.0, 40.0, 30.0, 30.0, "right"),
+        ];
+
+        let resolved = resolve_layout_boxes(&blocks, Some(&index));
+
+        let contains = |region: LayoutBox, anchor: LayoutBox| {
+            region.x <= anchor.x
+                && region.y <= anchor.y
+                && region.x + region.width >= anchor.x + anchor.width
+                && region.y + region.height >= anchor.y + anchor.height
+        };
+        let overlaps = |left: LayoutBox, right: LayoutBox| {
+            left.x < right.x + right.width
+                && right.x < left.x + left.width
+                && left.y < right.y + right.height
+                && right.y < left.y + left.height
+        };
+        let resolved_by_id = |ordered_blocks: &[RenderBlockInput]| {
+            ordered_blocks
+                .iter()
+                .zip(resolve_layout_boxes(ordered_blocks, Some(&index)))
+                .map(|(block, resolved)| (block.node_id, resolved))
+                .collect::<HashMap<_, _>>()
+        };
+
+        for (block, region) in blocks.iter().zip(&resolved) {
+            let anchor = seed_layout_box(block);
+            assert_eq!(region.bubble_id, Some(1));
+            assert!(
+                region.layout_box.width > anchor.width,
+                "each target in a shared bubble must receive an expanded, independently owned dynamic region"
+            );
+            assert!(
+                contains(region.layout_box, anchor),
+                "owner region must contain its complete source anchor"
+            );
+        }
+        assert!(
+            !overlaps(resolved[0].layout_box, resolved[1].layout_box),
+            "independent owner regions must not overlap"
+        );
+
+        let expected = resolved_by_id(&blocks);
+        let reversed = blocks.iter().cloned().rev().collect::<Vec<_>>();
+        assert_eq!(resolved_by_id(&reversed), expected);
+        for _ in 0..10 {
+            assert_eq!(resolved_by_id(&blocks), expected);
+        }
     }
 
     #[test]

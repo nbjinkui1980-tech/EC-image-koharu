@@ -161,4 +161,38 @@ mod tests {
         };
         assert!(validate_external_op(&allowed).is_ok());
     }
+
+    #[test]
+    #[ignore = "hanonly-pre-greenc-red"]
+    fn hanonly_pre_greenc_red_t3_http_marker_rejection_contract() {
+        for marker in [false, true] {
+            let op = Op::Batch {
+                ops: vec![Op::Batch {
+                    ops: vec![Op::UpdateNode {
+                        page: PageId::new(),
+                        id: NodeId::new(),
+                        patch: NodePatch {
+                            data: Some(NodeDataPatch::Text(TextDataPatch {
+                                typography_plan_verified: Some(marker),
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        },
+                        prev: NodePatch::default(),
+                    }],
+                    label: "inner".into(),
+                }],
+                label: "outer".into(),
+            };
+            let raw = serde_json::to_value(op).expect("serialize representative external Op");
+            let typed: Op =
+                serde_json::from_value(raw).expect("deserialize representative HTTP body");
+
+            assert_eq!(
+                validate_external_op(&typed),
+                Err("typographyPlanVerified is internal and cannot be set by external operations"),
+                "HTTP apply must reject an explicitly present {marker} marker through nested Batch"
+            );
+        }
+    }
 }

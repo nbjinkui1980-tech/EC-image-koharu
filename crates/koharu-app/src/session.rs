@@ -550,6 +550,37 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "hanonly-pre-greenc-red"]
+    fn hanonly_pre_greenc_red_t3_untrusted_marker_lifecycle_contract() {
+        let (_tmp, path) = tmp_dir();
+        let (page, node) = project_with_verified_text(&path);
+        let untrusted = ProjectSession::open_untrusted(&path).unwrap();
+        let epoch = untrusted.epoch();
+
+        let result = untrusted.apply(Op::UpdateNode {
+            page,
+            id: node,
+            patch: koharu_core::NodePatch {
+                data: Some(koharu_core::NodeDataPatch::Text(
+                    koharu_core::TextDataPatch {
+                        typography_plan_verified: Some(true),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            prev: koharu_core::NodePatch::default(),
+        });
+
+        assert!(
+            result.is_err(),
+            "an untrusted session must reject public marker reintroduction"
+        );
+        assert_eq!(untrusted.epoch(), epoch);
+        assert!(!only_text(&untrusted.scene_snapshot()).typography_plan_verified);
+    }
+
+    #[test]
     fn create_apply_close_reopen_preserves_scene() {
         let (_tmp, path) = tmp_dir();
         let page_id: PageId;

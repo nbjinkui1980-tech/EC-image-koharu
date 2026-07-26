@@ -604,7 +604,18 @@ async fn reorder_text_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koharu_app::{AppConfig, config::SourceTextPolicy};
+    use camino::Utf8PathBuf;
+    use koharu_app::{App, AppConfig, ProjectSession, config::SourceTextPolicy};
+    use koharu_runtime::{ComputePolicy, RuntimeManager};
+    use uuid::Uuid;
+
+    struct TestDir(std::path::PathBuf);
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[test]
     fn repair_options_inherits_source_text_policy() {
@@ -641,5 +652,77 @@ mod tests {
         assert_eq!(options.region.unwrap().width, 6);
         assert!(pipeline::Registry::find("lama-manga").is_ok());
         assert!(pipeline::Registry::find("cloud-typography-planner").is_ok());
+    }
+
+    #[tokio::test]
+    #[ignore = "hanonly-pre-b1-red"]
+    async fn hanonly_pre_b1_red_t2_replace_import_atomicity_contract() {
+        let root = TestDir(
+            std::env::temp_dir().join(format!("koharu-replace-atomicity-{}", Uuid::new_v4())),
+        );
+        std::fs::create_dir_all(&root.0).expect("create test root");
+        let project_dir =
+            Utf8PathBuf::from_path_buf(root.0.join("project.khrproj")).expect("UTF-8 project path");
+        let session = ProjectSession::create(&project_dir, "atomicity").expect("create session");
+        let old_page = Page::new("old.png", 4, 4);
+        let old_page_id = old_page.id;
+        session
+            .apply(Op::AddPage {
+                page: old_page,
+                at: 0,
+            })
+            .expect("seed old page");
+
+        let runtime = RuntimeManager::new(root.0.join("runtime"), ComputePolicy::CpuOnly)
+            .expect("create runtime");
+        runtime.prepare().await.expect("prepare runtime");
+        let runtime = Arc::new(runtime);
+        let app = Arc::new(
+            App::new(AppConfig::default(), runtime.clone(), true, "test").expect("create app"),
+        );
+        app.session.store(Some(session.clone()));
+        let state = crate::BootstrapManager::new(runtime);
+        assert!(state.set_app(app).is_ok(), "set test app");
+
+        let bad_image = root.0.join("broken.png");
+        std::fs::write(&bad_image, b"not an image").expect("write invalid image");
+        let scene_before = postcard::to_allocvec(&*session.scene.read()).expect("encode scene");
+        let epoch_before = session.epoch();
+        let history_before =
+            std::fs::read(project_dir.join("history.log")).expect("read history log");
+
+        let result = create_pages_from_paths(
+            State(state),
+            Json(CreatePagesFromPathsRequest {
+                paths: vec![bad_image.to_string_lossy().into_owned()],
+                replace: true,
+            }),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "invalid replacement image must be rejected"
+        );
+        assert_eq!(
+            postcard::to_allocvec(&*session.scene.read()).expect("encode scene after rejection"),
+            scene_before,
+            "failed replacement must preserve the complete Scene"
+        );
+        assert_eq!(
+            session.epoch(),
+            epoch_before,
+            "failed replacement must preserve the History epoch"
+        );
+        assert_eq!(
+            std::fs::read(project_dir.join("history.log"))
+                .expect("read history log after rejection"),
+            history_before,
+            "failed replacement must preserve canonical History bytes"
+        );
+        assert!(
+            session.scene.read().pages.contains_key(&old_page_id),
+            "failed replacement must preserve the original page"
+        );
     }
 }

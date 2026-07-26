@@ -387,6 +387,50 @@ mod tests {
         assert!(crate::routes::history::validate_external_op(&op).is_err());
     }
 
+    #[tokio::test]
+    #[ignore = "hanonly-pre-greenc-red"]
+    async fn hanonly_pre_greenc_red_t3_mcp_marker_rejection_contract() {
+        let app = in_memory_app();
+        let state = crate::BootstrapManager::new(app.runtime.clone());
+        assert!(state.set_app(app).is_ok(), "set app");
+        let server = KoharuServer::new(state);
+
+        for marker in [false, true] {
+            let op = Op::Batch {
+                ops: vec![Op::Batch {
+                    ops: vec![Op::UpdateNode {
+                        page: PageId::new(),
+                        id: NodeId::new(),
+                        patch: NodePatch {
+                            data: Some(NodeDataPatch::Text(TextDataPatch {
+                                typography_plan_verified: Some(marker),
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        },
+                        prev: NodePatch::default(),
+                    }],
+                    label: "inner".into(),
+                }],
+                label: "outer".into(),
+            };
+            let result = server
+                .apply(Parameters(ApplyInput {
+                    op: serde_json::to_value(op).expect("serialize representative MCP input"),
+                }))
+                .await;
+            let error = result
+                .err()
+                .expect("MCP apply must reject an explicitly present marker");
+
+            assert_eq!(
+                error.message,
+                "typographyPlanVerified is internal and cannot be set by external operations",
+                "MCP apply must reject an explicitly present {marker} marker before mutation"
+            );
+        }
+    }
+
     #[test]
     fn mcp_existing_path_open_clears_forged_typography_marker_before_activation() {
         let root = std::env::temp_dir().join(format!("koharu-mcp-open-{}", Uuid::new_v4()));

@@ -2053,6 +2053,43 @@ mod tests {
         (scene, page_id)
     }
 
+    #[test]
+    #[ignore = "hanonly-pre-b1-red"]
+    fn hanonly_pre_b1_red_t2_source_gate_ratio_contract() {
+        let expected = [
+            ("R0", [100, 120, 300, 220]),
+            ("R025", [97, 117, 303, 223]),
+            ("R05", [95, 115, 305, 225]),
+            ("R10", [90, 110, 310, 230]),
+        ];
+        let node_id = NodeId::new();
+        let (scene, page) = scene_with_nodes(vec![candidate(
+            node_id,
+            [100.0, 120.0, 300.0, 220.0],
+            false,
+            "detector",
+        )]);
+        let image = DynamicImage::ImageRgb8(RgbImage::new(400, 400));
+        let (actual, invalid) = source_gate_candidates(&image, &scene, page).unwrap();
+
+        assert!(invalid.is_empty());
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "production must emit one ordered candidate for each ratio"
+        );
+        for (index, (id, expected_bounds)) in expected.into_iter().enumerate() {
+            assert_eq!(
+                actual[index].node_id, node_id,
+                "{id} candidate at index {index} must retain source identity and order"
+            );
+            assert_eq!(
+                actual[index].crop_bounds, expected_bounds,
+                "{id} candidate at index {index} must use exact outward-quantized bounds"
+            );
+        }
+    }
+
     fn apply_ops(mut scene: Scene, ops: Vec<koharu_core::Op>) -> Scene {
         for mut op in ops {
             op.apply(&mut scene).unwrap();

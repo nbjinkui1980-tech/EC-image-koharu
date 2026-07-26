@@ -204,4 +204,14 @@ mod tests {
             [29.0, 20.0, 237.0, 58.0]
         );
     }
+
+    #[test]
+    #[ignore = "hanonly-pre-b1-red"]
+    fn hanonly_pre_b1_red_t2_crop_local_ppocr_contract() {
+        assert_eq!(
+            word_box_source_bbox([59.0, 41.0, 473.0, 115.0], 2),
+            [29.0, 20.0, 237.0, 58.0],
+            "PP-OCR boxes must remain crop-local integer half-open bounds after inference scaling"
+        );
+    }
 }

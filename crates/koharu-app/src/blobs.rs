@@ -11,6 +11,9 @@ use std::io::Cursor;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use anyhow::{Context, Result};
 use image::{DynamicImage, RgbaImage};
 use koharu_core::BlobRef;
@@ -19,6 +22,11 @@ use parking_lot::Mutex;
 
 const IMAGE_CACHE_CAPACITY: usize = 64;
 const RAW_MAGIC: &[u8; 4] = b"RGBA";
+
+#[cfg(test)]
+thread_local! {
+    static RAW_PIXEL_CONSTRUCTION_STARTED: Cell<bool> = const { Cell::new(false) };
+}
 
 /// Content-addressed blob store + decoded-image LRU.
 pub struct BlobStore {
@@ -128,6 +136,8 @@ fn decode_blob(bytes: &[u8]) -> Result<DynamicImage> {
     if bytes.len() >= 12 && &bytes[..4] == RAW_MAGIC {
         let w = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
         let h = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        #[cfg(test)]
+        RAW_PIXEL_CONSTRUCTION_STARTED.set(true);
         let pixels = bytes[12..].to_vec();
         let img = RgbaImage::from_raw(w, h, pixels).context("invalid raw RGBA blob dimensions")?;
         return Ok(DynamicImage::ImageRgba8(img));
@@ -158,5 +168,31 @@ mod tests {
         let a = store.put_bytes(b"x").unwrap();
         let b = store.put_bytes(b"x").unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    #[ignore = "hanonly-pre-b1-red"]
+    fn hanonly_pre_b1_red_t2_blob_decode_budget_contract() {
+        const DECODED_RGBA_LIMIT: u64 = 512 * 1024 * 1024;
+
+        let mut at_limit = image::Limits::default();
+        assert_eq!(at_limit.max_alloc, Some(DECODED_RGBA_LIMIT));
+        assert!(at_limit.reserve(DECODED_RGBA_LIMIT).is_ok());
+
+        let mut over_limit = image::Limits::default();
+        assert!(over_limit.reserve(DECODED_RGBA_LIMIT + 1).is_err());
+
+        let mut raw = Vec::from(RAW_MAGIC);
+        raw.extend_from_slice(&u32::MAX.to_le_bytes());
+        raw.extend_from_slice(&u32::MAX.to_le_bytes());
+        RAW_PIXEL_CONSTRUCTION_STARTED.set(false);
+
+        let result = decode_blob(&raw);
+        let pixel_construction_started = RAW_PIXEL_CONSTRUCTION_STARTED.get();
+
+        assert!(
+            result.is_err() && !pixel_construction_started,
+            "decoded RGBA above {DECODED_RGBA_LIMIT} bytes must be rejected before pixel construction"
+        );
     }
 }
