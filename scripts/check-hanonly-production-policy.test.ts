@@ -25,6 +25,7 @@ import {
   readRepoText,
   readStableFile,
   repoRoot,
+  validateB0Authorization,
   validateDependencyInventory,
   validateSecureRegularStat,
   type DependencyInventoryInput,
@@ -703,7 +704,7 @@ async function writeSnapshot(snapshot: string, lockBytes: Buffer): Promise<void>
 
 async function runCli(
   args: string[],
-  env: Record<string, string | undefined>,
+  env: Record<string, string | undefined> = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const childEnv = { ...process.env, ...env }
   for (const [key, value] of Object.entries(childEnv)) {
@@ -721,6 +722,48 @@ async function runCli(
     new Response(child.stderr).text(),
   ])
   return { exitCode, stdout, stderr }
+}
+
+async function writeB0ArtifactFixture(root: string): Promise<{
+  artifact: string
+  b0Sha: string
+  manifestSha256: string
+  fixtureManifestSha256: string
+  artifactSha256: string
+}> {
+  const artifact = path.join(root, 'crop-policy-selection.json')
+  const child = Bun.spawn(['python3', '-', artifact], {
+    cwd: repoRoot,
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  child.stdin.write(`
+import json
+import sys
+from pathlib import Path
+from scripts import hanonly_evidence_ledger as ledger
+from scripts.hanonly_evidence_ledger_test import b0_artifact
+
+artifact = Path(sys.argv[1])
+value = b0_artifact()
+data = ledger.canonical_json(value)
+artifact.write_bytes(data)
+print(json.dumps({
+    "b0Sha": value["b0_sha"],
+    "manifestSha256": value["manifest_sha256"],
+    "fixtureManifestSha256": value["source_gate_fixture_manifest_sha256"],
+    "artifactSha256": ledger._sha256(data),
+}))
+`)
+  child.stdin.end()
+  const [exitCode, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ])
+  expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: '' })
+  return { artifact, ...JSON.parse(stdout) }
 }
 
 describe('CLI contract', () => {
@@ -794,5 +837,64 @@ process.exit(result.exitCode)
     expect(result.stderr).toStartWith('FAIL [snapshot-env]:')
     expect(result.stderr).not.toContain(repoRoot)
     expect(result.stderr).not.toContain(insideRepo)
+  })
+
+  test('validates B0 authorization and emits the artifact sha256', async () => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-b0-')))
+    temporaryRoots.push(temporaryRoot)
+    const fixture = await writeB0ArtifactFixture(temporaryRoot)
+
+    const result = await runCli(
+      [
+        '--validate-b0-authorization',
+        '--artifact',
+        fixture.artifact,
+        '--expected-b0-sha',
+        fixture.b0Sha,
+        '--emit-artifact-sha256',
+      ],
+      {
+        HANONLY_VISUAL_MANIFEST_SHA256: fixture.manifestSha256,
+        HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256: fixture.fixtureManifestSha256,
+      },
+    )
+
+    expect(result).toEqual({ exitCode: 0, stdout: `${fixture.artifactSha256}\n`, stderr: '' })
+  })
+
+  test('rejects B0 authorization without frozen manifest environment', async () => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-b0-')))
+    temporaryRoots.push(temporaryRoot)
+    const fixture = await writeB0ArtifactFixture(temporaryRoot)
+
+    const result = await runCli([
+      '--validate-b0-authorization',
+      '--artifact',
+      fixture.artifact,
+      '--expected-b0-sha',
+      fixture.b0Sha,
+    ])
+
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stdout).toBe('')
+    expect(result.stderr).toStartWith('FAIL [b0-authorization]:')
+  })
+
+  test('rejects B0 authorization artifact sha drift', async () => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-b0-')))
+    temporaryRoots.push(temporaryRoot)
+    const fixture = await writeB0ArtifactFixture(temporaryRoot)
+
+    await expect(
+      validateB0Authorization(repoRoot, [
+        '--validate-b0-authorization',
+        '--artifact',
+        fixture.artifact,
+        '--expected-b0-sha',
+        fixture.b0Sha,
+        '--expected-artifact-sha256',
+        'e'.repeat(64),
+      ]),
+    ).rejects.toMatchObject({ category: 'b0-authorization' })
   })
 })

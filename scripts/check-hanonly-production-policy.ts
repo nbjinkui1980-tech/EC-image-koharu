@@ -12,6 +12,8 @@ const metadataName = 'pre-edit-Cargo.lock.metadata.json'
 const lockName = 'pre-edit-Cargo.lock'
 const metadataKeys = ['mode', 'owner_uid', 'path', 'sha256', 'st_dev', 'st_ino', 'type', 'version']
 const registrySource = 'registry+https://github.com/rust-lang/crates.io-index'
+const hex40 = /^[0-9a-f]{40}$/
+const hex64 = /^[0-9a-f]{64}$/
 
 export type JsonObject = Record<string, unknown>
 
@@ -137,6 +139,38 @@ function parseJson(bytes: Buffer): unknown {
   } catch {
     fail('snapshot-metadata', 'metadata JSON is invalid')
   }
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value as JsonObject)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson((value as JsonObject)[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function requiredArg(args: readonly string[], name: string): string {
+  const index = args.indexOf(name)
+  if (index === -1 || index + 1 >= args.length || args[index + 1].startsWith('--')) {
+    fail('argv', `${name} is required`)
+  }
+  return args[index + 1]
+}
+
+function optionalArg(args: readonly string[], name: string): string | undefined {
+  const index = args.indexOf(name)
+  if (index === -1) return undefined
+  if (index + 1 >= args.length || args[index + 1].startsWith('--')) {
+    fail('argv', `${name} requires a value`)
+  }
+  return args[index + 1]
+}
+
+function flag(args: readonly string[], name: string): boolean {
+  return args.includes(name)
 }
 
 export function validateSnapshotMetadata(value: unknown): SnapshotMetadata {
@@ -597,14 +631,96 @@ export async function runDependencyInventory(root: string, snapshotDir: string):
   })
 }
 
-async function main(): Promise<void> {
-  if (!deepEqual(process.argv.slice(2), ['--test-dependency-inventory'])) {
-    fail('argv', 'expected exactly --test-dependency-inventory')
+export async function validateB0Authorization(
+  root: string,
+  args: readonly string[],
+): Promise<string | undefined> {
+  const artifact = requiredArg(args, '--artifact')
+  const expectedB0Sha = requiredArg(args, '--expected-b0-sha')
+  const expectedArtifactSha256 = optionalArg(args, '--expected-artifact-sha256')
+  if (!path.isAbsolute(artifact) || (await realpath(artifact)) !== artifact) {
+    fail('b0-authorization', 'artifact path must be absolute and canonical')
   }
-  const snapshotDir = process.env.HANONLY_ORIGINAL_SNAPSHOT_DIR
-  if (!snapshotDir) fail('snapshot-env', 'HANONLY_ORIGINAL_SNAPSHOT_DIR is required')
-  await runDependencyInventory(repoRoot, snapshotDir)
-  process.stdout.write('PASS: hanonly production dependency inventory policy\n')
+  if (!hex40.test(expectedB0Sha)) {
+    fail('b0-authorization', 'expected B0 sha must be 40 lowercase hexadecimal characters')
+  }
+  if (expectedArtifactSha256 !== undefined && !hex64.test(expectedArtifactSha256)) {
+    fail('b0-authorization', 'expected artifact sha256 must be lowercase hexadecimal')
+  }
+  const visualManifestSha256 = process.env.HANONLY_VISUAL_MANIFEST_SHA256
+  const fixtureManifestSha256 = process.env.HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256
+  if (!visualManifestSha256 || !hex64.test(visualManifestSha256)) {
+    fail('b0-authorization', 'HANONLY_VISUAL_MANIFEST_SHA256 is required')
+  }
+  if (!fixtureManifestSha256 || !hex64.test(fixtureManifestSha256)) {
+    fail('b0-authorization', 'HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256 is required')
+  }
+
+  const bytes = await readFile(artifact)
+  const artifactSha256 = createHash('sha256').update(bytes).digest('hex')
+  if (expectedArtifactSha256 !== undefined && artifactSha256 !== expectedArtifactSha256) {
+    fail('b0-authorization', 'artifact sha256 drift')
+  }
+
+  const parsed = object(parseJson(bytes), 'b0-authorization', 'B0 artifact')
+  const selected = parsed.selected_candidate_id
+  if (!['R0', 'R025', 'R05', 'R10'].includes(String(selected))) {
+    fail('b0-authorization', 'selected candidate is invalid')
+  }
+  if (flag(args, '--verify-selected-ratio-in-production')) {
+    const candidates = array(parsed.candidates, 'b0-authorization', 'candidates')
+    const selectedCandidate = candidates.find(
+      (candidate) =>
+        object(candidate, 'b0-authorization', 'candidate').id === parsed.selected_candidate_id,
+    )
+    if (!selectedCandidate) fail('b0-authorization', 'selected candidate is missing')
+    createHash('sha256').update(canonicalJson(selectedCandidate)).digest('hex')
+  }
+
+  const result = Bun.spawnSync({
+    cmd: [
+      'python3',
+      'scripts/hanonly_evidence_ledger.py',
+      'validate-b0-artifact',
+      '--repo-root',
+      await realpath(root),
+      '--artifact',
+      artifact,
+      '--b0-sha',
+      expectedB0Sha,
+      '--visual-manifest-sha256',
+      visualManifestSha256,
+      '--source-gate-fixture-manifest-sha256',
+      fixtureManifestSha256,
+    ],
+    cwd: root,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  if (result.exitCode !== 0) {
+    fail('b0-authorization', 'ledger B0 artifact validator failed')
+  }
+  if (result.stdout.toString() !== 'PASS B0 frozen artifact\n') {
+    fail('b0-authorization', 'ledger B0 artifact validator output drift')
+  }
+  return flag(args, '--emit-artifact-sha256') ? artifactSha256 : undefined
+}
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2)
+  if (deepEqual(args, ['--test-dependency-inventory'])) {
+    const snapshotDir = process.env.HANONLY_ORIGINAL_SNAPSHOT_DIR
+    if (!snapshotDir) fail('snapshot-env', 'HANONLY_ORIGINAL_SNAPSHOT_DIR is required')
+    await runDependencyInventory(repoRoot, snapshotDir)
+    process.stdout.write('PASS: hanonly production dependency inventory policy\n')
+    return
+  }
+  if (args.includes('--validate-b0-authorization')) {
+    const digest = await validateB0Authorization(repoRoot, args)
+    if (digest) process.stdout.write(`${digest}\n`)
+    return
+  }
+  fail('argv', 'expected a known HanOnly production policy mode')
 }
 
 export function formatCliFailure(error: unknown): string {
