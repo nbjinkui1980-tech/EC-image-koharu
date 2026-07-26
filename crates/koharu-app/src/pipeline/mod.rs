@@ -3468,7 +3468,13 @@ mod tests {
             Some("C2") => SourceGateCropPolicy::C2,
             Some("C4") => SourceGateCropPolicy::C4,
             Some("Q2") => SourceGateCropPolicy::Q2,
-            Some(_) => anyhow::bail!("SOURCE_GATE_MATRIX_POLICY must be C0, C1, C2, C4, or Q2"),
+            Some("R0") => SourceGateCropPolicy::R0,
+            Some("R025") => SourceGateCropPolicy::R025,
+            Some("R05") => SourceGateCropPolicy::R05,
+            Some("R10") => SourceGateCropPolicy::R10,
+            Some(_) => anyhow::bail!(
+                "SOURCE_GATE_MATRIX_POLICY must be C0, C1, C2, C4, Q2, R0, R025, R05, or R10"
+            ),
             None => SourceGateCropPolicy::production(),
         };
 
@@ -3513,13 +3519,24 @@ mod tests {
         let run_policy_probes =
             std::env::var("SOURCE_GATE_MATRIX_RUN_POLICY_PROBES").as_deref() == Ok("1");
         if run_policy_probes {
-            for policy in [
-                SourceGateCropPolicy::C0,
-                SourceGateCropPolicy::C1,
-                SourceGateCropPolicy::C2,
-                SourceGateCropPolicy::C4,
-                SourceGateCropPolicy::Q2,
-            ] {
+            let policies =
+                if std::env::var("SOURCE_GATE_MATRIX_RUN_RATIO_PROBES").as_deref() == Ok("1") {
+                    vec![
+                        SourceGateCropPolicy::R0,
+                        SourceGateCropPolicy::R025,
+                        SourceGateCropPolicy::R05,
+                        SourceGateCropPolicy::R10,
+                    ]
+                } else {
+                    vec![
+                        SourceGateCropPolicy::C0,
+                        SourceGateCropPolicy::C1,
+                        SourceGateCropPolicy::C2,
+                        SourceGateCropPolicy::C4,
+                        SourceGateCropPolicy::Q2,
+                    ]
+                };
+            for policy in policies {
                 let probe = if policy == primary_policy {
                     reference_run.clone()
                 } else {

@@ -190,6 +190,10 @@ pub(in crate::pipeline) enum SourceGateCropPolicy {
     C2,
     C4,
     Q2,
+    R0,
+    R025,
+    R05,
+    R10,
 }
 
 const PRIMARY_CROP_POLICY: SourceGateCropPolicy = SourceGateCropPolicy::C2;
@@ -821,17 +825,22 @@ fn safe_crop_bounds(
         transform,
         image_width,
         image_height,
-        crop_policy_parameters(policy),
+        crop_policy_parameters(policy, transform),
     )
 }
 
-fn crop_policy_parameters(policy: SourceGateCropPolicy) -> (f32, bool) {
+fn crop_policy_parameters(policy: SourceGateCropPolicy, transform: &Transform) -> (f32, bool) {
+    let short_side = transform.width.min(transform.height).max(0.0);
     match policy {
         SourceGateCropPolicy::C0 => (0.0, false),
         SourceGateCropPolicy::C1 => (1.0, false),
         SourceGateCropPolicy::C2 => (2.0, false),
         SourceGateCropPolicy::C4 => (4.0, false),
         SourceGateCropPolicy::Q2 => (2.0, true),
+        SourceGateCropPolicy::R0 => (0.0, false),
+        SourceGateCropPolicy::R025 => (short_side / 40.0, false),
+        SourceGateCropPolicy::R05 => (short_side / 20.0, false),
+        SourceGateCropPolicy::R10 => (short_side / 10.0, false),
     }
 }
 
@@ -842,7 +851,7 @@ fn safe_crop_bounds_with_policy(
     image_height: u32,
     policy: SourceGateCropPolicy,
 ) -> Option<[u32; 4]> {
-    let policy = crop_policy_parameters(policy);
+    let policy = crop_policy_parameters(policy, transform);
     compute_safe_crop_bounds(transform, image_width, image_height, policy)
 }
 
@@ -1815,6 +1824,10 @@ mod tests {
             (SourceGateCropPolicy::C2, [329, 816, 460, 899]),
             (SourceGateCropPolicy::C4, [327, 814, 462, 901]),
             (SourceGateCropPolicy::Q2, [328, 816, 460, 900]),
+            (SourceGateCropPolicy::R0, [331, 818, 458, 897]),
+            (SourceGateCropPolicy::R025, [329, 816, 460, 899]),
+            (SourceGateCropPolicy::R05, [327, 814, 462, 900]),
+            (SourceGateCropPolicy::R10, [324, 811, 466, 904]),
         ] {
             assert_eq!(
                 safe_crop_bounds_with_policy(&observed, 790, 1023, policy),
@@ -1872,6 +1885,32 @@ mod tests {
                 SourceGateCropPolicy::C2,
             ),
             Some([0, 0, 6, 6])
+        );
+    }
+
+    #[test]
+    fn ratio_crop_bounds_scale_with_target_short_side() {
+        let small = Transform {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 20.0,
+            rotation_deg: 0.0,
+        };
+        let large = Transform {
+            x: 20.0,
+            y: 40.0,
+            width: 200.0,
+            height: 40.0,
+            rotation_deg: 0.0,
+        };
+        assert_eq!(
+            safe_crop_bounds_with_policy(&small, 400, 400, SourceGateCropPolicy::R10),
+            Some([8, 18, 112, 42])
+        );
+        assert_eq!(
+            safe_crop_bounds_with_policy(&large, 400, 400, SourceGateCropPolicy::R10),
+            Some([16, 36, 224, 84])
         );
     }
 
