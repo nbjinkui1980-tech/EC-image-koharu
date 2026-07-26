@@ -61,5 +61,6 @@ rustix = { version = "=1.1.4", features = ["fs"] }
 sha2 = "=0.10.9"
 
 [features]
+hanonly-test-evidence = ["koharu-llm/hanonly-test-evidence", "koharu-ml/hanonly-test-evidence"]
 cuda = ["koharu-ml/cuda"]
 metal = ["koharu-ml/metal"]

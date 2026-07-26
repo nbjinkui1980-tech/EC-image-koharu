@@ -127,6 +127,38 @@ enum PromptContent {
     Text { text: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DevicePolicy {
+    requested_cpu: bool,
+    model_n_gpu_layers: u32,
+    mtmd_use_gpu: bool,
+    context_offload_kqv: bool,
+    context_op_offload: bool,
+}
+
+impl DevicePolicy {
+    fn new(requested_cpu: bool, supports_gpu_offload: bool) -> Self {
+        let use_gpu = !requested_cpu && supports_gpu_offload;
+        Self {
+            requested_cpu,
+            model_n_gpu_layers: if use_gpu { DEFAULT_GPU_LAYERS } else { 0 },
+            mtmd_use_gpu: use_gpu,
+            context_offload_kqv: use_gpu,
+            context_op_offload: use_gpu,
+        }
+    }
+}
+
+#[cfg(feature = "hanonly-test-evidence")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PaddleOcrVlDeviceEvidence {
+    pub requested_cpu: bool,
+    pub model_n_gpu_layers: u32,
+    pub mtmd_use_gpu: bool,
+    pub context_offload_kqv: bool,
+    pub context_op_offload: bool,
+}
+
 pub struct PaddleOcrVl {
     backend: Arc<LlamaBackend>,
     model: LlamaModel,
@@ -135,6 +167,7 @@ pub struct PaddleOcrVl {
     eos_token_text: String,
     mtmd: MtmdContext,
     eos_token: LlamaToken,
+    device_policy: DevicePolicy,
 }
 
 impl PaddleOcrVl {
@@ -169,7 +202,8 @@ impl PaddleOcrVl {
         crate::sys::initialize(runtime)
             .context("failed to initialize llama.cpp runtime bindings")?;
 
-        let model_params = model_params(cpu, backend.as_ref());
+        let device_policy = DevicePolicy::new(cpu, backend.supports_gpu_offload());
+        let model_params = model_params(device_policy);
         let model = LlamaModel::load_from_file(backend.as_ref(), &files.model, &model_params)
             .with_context(|| format!("unable to load model from `{}`", files.model.display()))?;
         let eos_token = model.token_eos();
@@ -187,7 +221,7 @@ impl PaddleOcrVl {
             mmproj_path,
             &model,
             &MtmdContextParams {
-                use_gpu: !cpu && backend.as_ref().supports_gpu_offload(),
+                use_gpu: device_policy.mtmd_use_gpu,
                 print_timings: false,
                 n_threads: koharu_runtime::host_parallelism()
                     .try_into()
@@ -217,7 +251,19 @@ impl PaddleOcrVl {
             eos_token_text,
             mtmd,
             eos_token,
+            device_policy,
         })
+    }
+
+    #[cfg(feature = "hanonly-test-evidence")]
+    pub fn device_evidence(&self) -> PaddleOcrVlDeviceEvidence {
+        PaddleOcrVlDeviceEvidence {
+            requested_cpu: self.device_policy.requested_cpu,
+            model_n_gpu_layers: self.device_policy.model_n_gpu_layers,
+            mtmd_use_gpu: self.device_policy.mtmd_use_gpu,
+            context_offload_kqv: self.device_policy.context_offload_kqv,
+            context_op_offload: self.device_policy.context_op_offload,
+        }
     }
 
     pub fn inference(
@@ -279,6 +325,7 @@ impl PaddleOcrVl {
         let num_image_tokens = image_chunk_tokens(&chunks);
         let ctx_params = context_params(
             &self.mtmd,
+            self.device_policy,
             prompt_positions,
             prompt_total_tokens,
             batch_tokens,
@@ -521,13 +568,9 @@ fn resolve_local_model_files(dir: &Path) -> Result<ModelFiles> {
     })
 }
 
-fn model_params(cpu: bool, backend: &LlamaBackend) -> LlamaModelParams {
-    if !cpu && backend.supports_gpu_offload() {
-        LlamaModelParams::default().with_n_gpu_layers(DEFAULT_GPU_LAYERS)
-    } else {
-        // Issue #309: default n_gpu_layers is -1 (auto), which may still offload to GPU.
-        LlamaModelParams::default().with_n_gpu_layers(0)
-    }
+fn model_params(policy: DevicePolicy) -> LlamaModelParams {
+    // Issue #309: default n_gpu_layers is -1 (auto), which may still offload to GPU.
+    LlamaModelParams::default().with_n_gpu_layers(policy.model_n_gpu_layers)
 }
 
 fn validate_generate_options(options: &PaddleOcrVlGenerateOptions) -> Result<()> {
@@ -556,6 +599,7 @@ fn build_sampler(options: &PaddleOcrVlGenerateOptions) -> LlamaSampler {
 
 fn context_params(
     mtmd: &MtmdContext,
+    policy: DevicePolicy,
     prompt_positions: usize,
     prompt_total_tokens: usize,
     batch_tokens: usize,
@@ -582,7 +626,9 @@ fn context_params(
     let mut params = LlamaContextParams::default()
         .with_n_ctx(Some(n_ctx))
         .with_n_batch(n_batch)
-        .with_n_ubatch(n_ubatch);
+        .with_n_ubatch(n_ubatch)
+        .with_offload_kqv(policy.context_offload_kqv)
+        .with_op_offload(policy.context_op_offload);
     if mtmd.decode_use_non_causal() {
         params = params.with_attention_type(LlamaAttentionType::NonCausal);
     }
@@ -706,10 +752,31 @@ fn repeated_ocr_suffix_start(text: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DEFAULT_MAX_NEW_TOKENS, DEFAULT_REPETITION_PENALTY, PADDLEOCR_IMAGE_MARKER,
-        PaddleOcrVlGenerateOptions, PaddleOcrVlTask, PromptContent, build_user_message_content,
-        render_chat_prompt, repeated_ocr_suffix_start, validate_generate_options,
+        DEFAULT_GPU_LAYERS, DEFAULT_MAX_NEW_TOKENS, DEFAULT_REPETITION_PENALTY, DevicePolicy,
+        PADDLEOCR_IMAGE_MARKER, PaddleOcrVlGenerateOptions, PaddleOcrVlTask, PromptContent,
+        build_user_message_content, render_chat_prompt, repeated_ocr_suffix_start,
+        validate_generate_options,
     };
+
+    #[test]
+    fn cpu_device_policy_disables_all_gpu_offload() {
+        let policy = DevicePolicy::new(true, true);
+
+        assert_eq!(policy.model_n_gpu_layers, 0);
+        assert!(!policy.mtmd_use_gpu);
+        assert!(!policy.context_offload_kqv);
+        assert!(!policy.context_op_offload);
+    }
+
+    #[test]
+    fn gpu_device_policy_enables_all_supported_gpu_offload() {
+        let policy = DevicePolicy::new(false, true);
+
+        assert_eq!(policy.model_n_gpu_layers, DEFAULT_GPU_LAYERS);
+        assert!(policy.mtmd_use_gpu);
+        assert!(policy.context_offload_kqv);
+        assert!(policy.context_op_offload);
+    }
 
     #[test]
     fn user_message_places_image_before_task() {
