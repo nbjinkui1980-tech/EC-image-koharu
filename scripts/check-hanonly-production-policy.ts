@@ -203,6 +203,32 @@ const expectedRedByMarker = new Map<string, readonly string[]>([
   ['hanonly-pre-b1-red', expectedB1RedIds],
   ['hanonly-pre-greenc-red', expectedGreenCRedIds],
 ])
+const releaseFeatureForbiddenNeedles = [
+  'hanonly-test-evidence',
+  '--all-features',
+  'CARGO_FEATURE_HANONLY_TEST_EVIDENCE',
+] as const
+const releaseFeatureSurfacePaths = [
+  'package.json',
+  'ui/package.json',
+  '.cargo/config.toml',
+  '.github/workflows/build.yml',
+  '.github/workflows/docs.yml',
+  '.github/workflows/lint.yml',
+  '.github/workflows/pr.yml',
+  '.github/workflows/publish.yml',
+  '.github/workflows/release.yml',
+  '.github/workflows/test.yml',
+  'crates/koharu/tauri.conf.json',
+  'scripts/dev.ts',
+  'scripts/release.ts',
+] as const
+const featureManifestPaths = [
+  'Cargo.toml',
+  'crates/koharu-app/Cargo.toml',
+  'crates/koharu-llm/Cargo.toml',
+  'crates/koharu-ml/Cargo.toml',
+] as const
 
 export function validateSnapshotMetadata(value: unknown): SnapshotMetadata {
   const record = object(value, 'snapshot-metadata', 'metadata')
@@ -708,6 +734,88 @@ export async function runRedTestState(root: string, state: 'b0' | 'final'): Prom
   validateRedTestState(await readTrackedRustSources(root), state)
 }
 
+function fileByPath(files: readonly RustSourceFile[], relativePath: string): RustSourceFile {
+  const file = files.find((item) => item.path === relativePath)
+  if (!file) fail('release-feature-inventory', `${relativePath} is missing`)
+  return file
+}
+
+function featureList(value: unknown, label: string): unknown[] {
+  if (value === undefined) return []
+  return array(value, 'release-feature-inventory', label)
+}
+
+function validateDefaultFeatureAbsence(manifest: JsonObject, label: string): void {
+  const features = manifest.features
+  if (features === undefined) return
+  const featureRecord = object(features, 'release-feature-inventory', `${label} features`)
+  if (
+    featureList(featureRecord.default, `${label} default feature`).includes('hanonly-test-evidence')
+  ) {
+    fail('release-feature-inventory', `${label} default enables hanonly-test-evidence`)
+  }
+}
+
+export function validateReleaseFeatureInventory(files: readonly RustSourceFile[]): void {
+  for (const relativePath of releaseFeatureSurfacePaths) {
+    const file = fileByPath(files, relativePath)
+    for (const needle of releaseFeatureForbiddenNeedles) {
+      if (file.text.includes(needle)) {
+        fail('release-feature-inventory', `${relativePath} contains forbidden feature activation`)
+      }
+    }
+  }
+
+  const root = object(
+    parseToml(fileByPath(files, 'Cargo.toml').text, 'root manifest'),
+    'release-feature-inventory',
+    'root manifest',
+  )
+  validateDefaultFeatureAbsence(root, 'root manifest')
+
+  const app = object(
+    parseToml(fileByPath(files, 'crates/koharu-app/Cargo.toml').text, 'app manifest'),
+    'release-feature-inventory',
+    'app manifest',
+  )
+  const appFeatures = object(app.features, 'release-feature-inventory', 'app features')
+  if (
+    !deepEqual(appFeatures['hanonly-test-evidence'], [
+      'koharu-llm/hanonly-test-evidence',
+      'koharu-ml/hanonly-test-evidence',
+    ])
+  ) {
+    fail('release-feature-inventory', 'app evidence feature propagation drift')
+  }
+  validateDefaultFeatureAbsence(app, 'app manifest')
+
+  for (const [relativePath, label] of [
+    ['crates/koharu-llm/Cargo.toml', 'llm manifest'],
+    ['crates/koharu-ml/Cargo.toml', 'ml manifest'],
+  ] as const) {
+    const manifest = object(
+      parseToml(fileByPath(files, relativePath).text, label),
+      'release-feature-inventory',
+      label,
+    )
+    const features = object(manifest.features, 'release-feature-inventory', `${label} features`)
+    if (!deepEqual(features['hanonly-test-evidence'], [])) {
+      fail('release-feature-inventory', `${label} evidence feature declaration drift`)
+    }
+    validateDefaultFeatureAbsence(manifest, label)
+  }
+}
+
+export async function runReleaseFeatureInventory(root: string): Promise<void> {
+  const files = await Promise.all(
+    [...releaseFeatureSurfacePaths, ...featureManifestPaths].map(async (relativePath) => ({
+      path: relativePath,
+      text: await readRepoText(root, relativePath, relativePath),
+    })),
+  )
+  validateReleaseFeatureInventory(files)
+}
+
 function cargoMetadata(root: string): unknown {
   const result = Bun.spawnSync({
     cmd: [
@@ -844,6 +952,11 @@ async function main(): Promise<void> {
     }
     await runRedTestState(repoRoot, state)
     process.stdout.write(`PASS: hanonly ${state} red test state\n`)
+    return
+  }
+  if (deepEqual(args, ['--release-feature-inventory'])) {
+    await runReleaseFeatureInventory(repoRoot)
+    process.stdout.write('PASS: hanonly release feature inventory\n')
     return
   }
   if (args.includes('--validate-b0-authorization')) {

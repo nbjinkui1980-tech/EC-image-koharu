@@ -28,6 +28,7 @@ import {
   validateB0Authorization,
   validateDependencyInventory,
   validateRedTestState,
+  validateReleaseFeatureInventory,
   validateSecureRegularStat,
   type DependencyInventoryInput,
   type JsonObject,
@@ -819,6 +820,59 @@ describe('RED test state policy', () => {
 
   test('rejects final staged RED marker residue', () => {
     expect(() => validateRedTestState(b0RedSources(), 'final')).toThrow(PolicyError)
+  })
+})
+
+async function releaseFeatureSources(): Promise<RustSourceFile[]> {
+  const paths = [
+    'package.json',
+    'ui/package.json',
+    '.cargo/config.toml',
+    '.github/workflows/build.yml',
+    '.github/workflows/docs.yml',
+    '.github/workflows/lint.yml',
+    '.github/workflows/pr.yml',
+    '.github/workflows/publish.yml',
+    '.github/workflows/release.yml',
+    '.github/workflows/test.yml',
+    'crates/koharu/tauri.conf.json',
+    'scripts/dev.ts',
+    'scripts/release.ts',
+    'Cargo.toml',
+    'crates/koharu-app/Cargo.toml',
+    'crates/koharu-llm/Cargo.toml',
+    'crates/koharu-ml/Cargo.toml',
+  ]
+  return Promise.all(
+    paths.map(async (relativePath) => ({
+      path: relativePath,
+      text: await readFile(path.join(repoRoot, relativePath), 'utf8'),
+    })),
+  )
+}
+
+describe('release feature inventory policy', () => {
+  test('accepts the current default-off evidence feature inventory', async () => {
+    const files = await releaseFeatureSources()
+    expect(() => validateReleaseFeatureInventory(files)).not.toThrow()
+  })
+
+  test('rejects release surface evidence feature activation', async () => {
+    const files = await releaseFeatureSources()
+    files.find((file) => file.path === 'package.json')!.text += '\nhanonly-test-evidence\n'
+
+    expect(() => validateReleaseFeatureInventory(files)).toThrow(PolicyError)
+  })
+
+  test('rejects evidence feature in a default feature list', async () => {
+    const files = await releaseFeatureSources()
+    const app = files.find((file) => file.path === 'crates/koharu-app/Cargo.toml')!
+    app.text = app.text.replace(
+      '[features]\nhanonly-test-evidence',
+      '[features]\ndefault = ["hanonly-test-evidence"]\nhanonly-test-evidence',
+    )
+
+    expect(() => validateReleaseFeatureInventory(files)).toThrow(PolicyError)
   })
 })
 
