@@ -142,6 +142,11 @@ impl AotInpainting {
         )
     }
 
+    #[cfg(feature = "hanonly-test-evidence")]
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+
     #[instrument(level = "debug", skip_all)]
     pub fn inference(
         &self,

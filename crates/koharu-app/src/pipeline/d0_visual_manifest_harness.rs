@@ -1607,6 +1607,14 @@ mod source_gate_selection {
     }
 
     #[test]
+    fn hanonly_test_evidence_bridge_reachable() {
+        let accessor: for<'a> fn(
+            &'a koharu_ml::aot_inpainting::AotInpainting,
+        ) -> &'a koharu_ml::Device = koharu_ml::aot_inpainting::AotInpainting::device;
+        let _ = accessor;
+    }
+
+    #[test]
     #[ignore = "requires frozen B0 selection environment and installed Source Gate models"]
     fn han_only_source_gate_crop_selection_matrix() {
         let repository = repository_root().expect("repository root");
