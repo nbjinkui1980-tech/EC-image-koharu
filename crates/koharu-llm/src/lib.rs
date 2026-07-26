@@ -35,6 +35,116 @@ pub fn suppress_native_logs() {
     }
 }
 
+#[cfg(feature = "hanonly-test-evidence")]
+static NATIVE_LOG_CAPTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(feature = "hanonly-test-evidence")]
+static NATIVE_LOG_CAPTURE_BYTES: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(feature = "hanonly-test-evidence")]
+unsafe extern "C" fn capture_native_log(
+    _: sys::ggml_log_level,
+    text: *const std::os::raw::c_char,
+    _: *mut std::os::raw::c_void,
+) {
+    let _ = std::panic::catch_unwind(|| {
+        if text.is_null() {
+            return;
+        }
+        let bytes = unsafe { std::ffi::CStr::from_ptr(text) }.to_bytes();
+        NATIVE_LOG_CAPTURE_BYTES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+    });
+}
+
+/// Process-global raw native log capture for single-threaded evidence tests.
+///
+/// Must be started after `LlamaBackend::init()`. Dropping the guard restores
+/// the normal Koharu behavior of suppressing native logs.
+#[cfg(feature = "hanonly-test-evidence")]
+pub struct NativeLogCaptureGuard {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(feature = "hanonly-test-evidence")]
+impl NativeLogCaptureGuard {
+    pub fn start() -> Self {
+        let guard = NATIVE_LOG_CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::clear_bytes();
+        unsafe {
+            sys::llama_log_set(Some(capture_native_log), std::ptr::null_mut());
+            sys::ggml_log_set(Some(capture_native_log), std::ptr::null_mut());
+            sys::mtmd_log_set(Some(capture_native_log), std::ptr::null_mut());
+            sys::mtmd_helper_log_set(Some(capture_native_log), std::ptr::null_mut());
+        }
+        Self { _guard: guard }
+    }
+
+    pub fn clear(&mut self) {
+        Self::clear_bytes();
+    }
+
+    pub fn take(&mut self) -> Vec<u8> {
+        std::mem::take(
+            &mut *NATIVE_LOG_CAPTURE_BYTES
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn clear_bytes() {
+        NATIVE_LOG_CAPTURE_BYTES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+}
+
+#[cfg(feature = "hanonly-test-evidence")]
+impl Drop for NativeLogCaptureGuard {
+    fn drop(&mut self) {
+        suppress_native_logs();
+    }
+}
+
+#[cfg(all(test, feature = "hanonly-test-evidence"))]
+mod native_log_capture_tests {
+    use super::{NATIVE_LOG_CAPTURE_BYTES, capture_native_log};
+    use crate::sys;
+
+    #[test]
+    fn raw_log_callback_captures_and_takes_exact_bytes() {
+        let message = std::ffi::CString::new("native raw log\n").unwrap();
+        NATIVE_LOG_CAPTURE_BYTES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+
+        unsafe {
+            capture_native_log(
+                sys::GGML_LOG_LEVEL_INFO,
+                message.as_ptr(),
+                std::ptr::null_mut(),
+            );
+            capture_native_log(
+                sys::GGML_LOG_LEVEL_INFO,
+                std::ptr::null(),
+                std::ptr::null_mut(),
+            );
+        }
+
+        let captured = std::mem::take(
+            &mut *NATIVE_LOG_CAPTURE_BYTES
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        assert_eq!(captured, b"native raw log\n");
+    }
+}
+
 #[derive(
     Debug,
     Clone,

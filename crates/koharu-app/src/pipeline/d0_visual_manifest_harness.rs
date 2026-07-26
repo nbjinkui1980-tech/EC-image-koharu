@@ -423,7 +423,9 @@ fn han_only_visual_manifest_matrix() {
 
 #[cfg(all(test, feature = "hanonly-test-evidence"))]
 mod source_gate_selection {
+    use super::super::d0_visual_manifest_schema::EntryRole;
     use super::*;
+    use chrono::{SecondsFormat, Utc};
     use sha2::{Digest, Sha256};
     use std::collections::{BTreeMap, HashMap, HashSet};
     use std::fs::OpenOptions;
@@ -436,11 +438,26 @@ mod source_gate_selection {
     const ARTIFACT_VERSION: u32 = 1;
     const PLAN_REVISION: u32 = 46;
     const B0_DEFAULT_GPU_LAYERS: u32 = 1000;
+    const SOURCE_COLOR_CONTRACT_SHA256: &str =
+        "13d2256fed7b8189e67db7222ce6ce7964f2745c977c42e7693679ffb2a341f8";
+    const COLOR_CONSTANT_SET_SHA256: &str =
+        "ea277ff2674aae711b62a39b6a0b930e7d9c863bd518521c59ff44be56c4c6e9";
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Phase {
         CalibrationFreeze,
         Holdout,
+    }
+
+    #[derive(Deserialize)]
+    struct SelectionManifest {
+        entries: Vec<SelectionManifestEntry>,
+    }
+
+    #[derive(Deserialize)]
+    struct SelectionManifestEntry {
+        id: String,
+        role: EntryRole,
     }
 
     struct SelectionEnvironment {
@@ -449,6 +466,8 @@ mod source_gate_selection {
         visual_manifest_sha256: String,
         source_gate_fixture_manifest_sha256: String,
         artifact: PathBuf,
+        calibration_entry_ids: Vec<String>,
+        holdout_entry_ids: Vec<String>,
     }
 
     impl SelectionEnvironment {
@@ -468,6 +487,35 @@ mod source_gate_selection {
             )?;
             let visual_manifest_sha256 = required(&mut get, VISUAL_MANIFEST_SHA256_ENV)?;
             decode_sha256(&visual_manifest_sha256)?;
+            let visual_manifest = PathBuf::from(required(&mut get, VISUAL_MANIFEST_ENV)?);
+            require_absolute_canonical(&visual_manifest)?;
+            let manifest_bytes = fs::read(&visual_manifest)?;
+            require(
+                sha256_hex(&manifest_bytes) == visual_manifest_sha256,
+                "visual manifest sha256 drift",
+            )?;
+            let manifest: SelectionManifest = serde_json::from_slice(&manifest_bytes)
+                .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+            let calibration_entry_ids = manifest
+                .entries
+                .iter()
+                .filter(|entry| entry.role == EntryRole::Calibration)
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>();
+            let holdout_entry_ids = manifest
+                .entries
+                .iter()
+                .filter(|entry| entry.role == EntryRole::Holdout)
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>();
+            require(
+                calibration_entry_ids.len() == 4
+                    && holdout_entry_ids.len() == 4
+                    && calibration_entry_ids
+                        .iter()
+                        .all(|id| !holdout_entry_ids.contains(id)),
+                "visual manifest calibration/holdout partition drift",
+            )?;
             let source_gate_fixture_manifest_sha256 =
                 required(&mut get, SOURCE_GATE_FIXTURE_SHA256_ENV)?;
             decode_sha256(&source_gate_fixture_manifest_sha256)?;
@@ -489,6 +537,8 @@ mod source_gate_selection {
                 visual_manifest_sha256,
                 source_gate_fixture_manifest_sha256,
                 artifact,
+                calibration_entry_ids,
+                holdout_entry_ids,
             })
         }
     }
@@ -617,6 +667,113 @@ mod source_gate_selection {
         results: Vec<SelectionResult>,
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct ParsedLoadLog {
+        offloaded_layers: u32,
+        offloadable_layers: u32,
+        model_buffer_bytes_by_backend: BTreeMap<String, u64>,
+        mtmd_backend: String,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ParsedInferenceLog {
+        context_buffer_bytes_by_backend: BTreeMap<String, u64>,
+        compute_buffer_bytes_by_backend: BTreeMap<String, u64>,
+    }
+
+    fn parse_native_load_log(bytes: &[u8]) -> io::Result<ParsedLoadLog> {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        let mut offloaded = None;
+        let mut model_buffers = BTreeMap::new();
+        let mut mtmd_backend = None;
+        for line in text.lines() {
+            if let Some((loaded, total)) = parse_offloaded_layers(line) {
+                offloaded = Some((loaded, total));
+            }
+            accumulate_buffer_line(line, "model buffer size", &mut model_buffers)?;
+            if line.contains("CLIP using") && line.contains("backend") {
+                mtmd_backend = canonical_backend(line).map(str::to_owned);
+            }
+        }
+        let (offloaded_layers, offloadable_layers) =
+            offloaded.ok_or_else(|| invalid_data("native load log omitted offloaded layers"))?;
+        require(
+            !model_buffers.is_empty(),
+            "native load log omitted model buffers",
+        )?;
+        Ok(ParsedLoadLog {
+            offloaded_layers,
+            offloadable_layers,
+            model_buffer_bytes_by_backend: model_buffers,
+            mtmd_backend: mtmd_backend
+                .ok_or_else(|| invalid_data("native load log omitted MTMD backend"))?,
+        })
+    }
+
+    fn parse_native_inference_log(bytes: &[u8]) -> io::Result<ParsedInferenceLog> {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        let mut context_buffers = BTreeMap::new();
+        let mut compute_buffers = BTreeMap::new();
+        for line in text.lines() {
+            accumulate_buffer_line(line, "output buffer size", &mut context_buffers)?;
+            accumulate_buffer_line(line, "KV buffer size", &mut context_buffers)?;
+            accumulate_buffer_line(line, "compute buffer size", &mut compute_buffers)?;
+        }
+        require(
+            !context_buffers.is_empty() && !compute_buffers.is_empty(),
+            "native inference log omitted context or compute buffers",
+        )?;
+        Ok(ParsedInferenceLog {
+            context_buffer_bytes_by_backend: context_buffers,
+            compute_buffer_bytes_by_backend: compute_buffers,
+        })
+    }
+
+    fn parse_offloaded_layers(line: &str) -> Option<(u32, u32)> {
+        let suffix = line.split_once("offloaded ")?.1;
+        let ratio = suffix.split_whitespace().next()?;
+        let (loaded, total) = ratio.split_once('/')?;
+        Some((loaded.parse().ok()?, total.parse().ok()?))
+    }
+
+    fn accumulate_buffer_line(
+        line: &str,
+        marker: &str,
+        buffers: &mut BTreeMap<String, u64>,
+    ) -> io::Result<()> {
+        if !line.contains(marker) {
+            return Ok(());
+        }
+        let Some(backend) = canonical_backend(line) else {
+            return Err(invalid_data("native buffer log used an unknown backend"));
+        };
+        let value = line
+            .split_once('=')
+            .and_then(|(_, suffix)| suffix.split_whitespace().next())
+            .ok_or_else(|| invalid_data("native buffer log omitted size"))?
+            .parse::<f64>()
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            value.is_finite() && value >= 0.0,
+            "native buffer size is invalid",
+        )?;
+        let bytes = (value * 1024.0 * 1024.0).round() as u64;
+        *buffers.entry(backend.into()).or_default() += bytes;
+        Ok(())
+    }
+
+    fn canonical_backend(line: &str) -> Option<&'static str> {
+        if line.contains("MTL") || line.contains("Metal") {
+            Some("Metal")
+        } else if line.contains("CPU") {
+            Some("CPU")
+        } else {
+            None
+        }
+    }
+
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]
     struct FrozenArtifact {
@@ -722,6 +879,14 @@ mod source_gate_selection {
         match environment.phase {
             Phase::CalibrationFreeze => {
                 let evidence = model_runner(&environment)?;
+                let selected_candidate_id = select_smallest_all_pass(
+                    &evidence.results,
+                    &environment.calibration_entry_ids,
+                )?;
+                require(
+                    evidence.selected_candidate_id == selected_candidate_id,
+                    "runner selected candidate does not match independent selection",
+                )?;
                 let mut artifact = FrozenArtifact {
                     version: ARTIFACT_VERSION,
                     plan_revision: PLAN_REVISION,
@@ -730,20 +895,21 @@ mod source_gate_selection {
                     source_gate_fixture_manifest_sha256: environment
                         .source_gate_fixture_manifest_sha256
                         .clone(),
-                    image_input_contract_sha256: synthetic_hash(21),
-                    source_color_contract_sha256: synthetic_hash(22),
-                    color_constant_set_sha256: synthetic_hash(23),
+                    image_input_contract_sha256:
+                        super::super::d0_revision_46_contract::image_input_contract_sha256(),
+                    source_color_contract_sha256: SOURCE_COLOR_CONTRACT_SHA256.into(),
+                    color_constant_set_sha256: COLOR_CONSTANT_SET_SHA256.into(),
                     requested_devices: vec!["cpu".into(), "metal".into()],
                     enabled_cargo_features: vec!["hanonly-test-evidence".into(), "metal".into()],
                     backend_evidence_parser_version: 1,
                     candidates: candidates_schema(),
-                    calibration_entry_ids: entry_ids("calibration"),
-                    holdout_entry_ids: entry_ids("holdout"),
+                    calibration_entry_ids: environment.calibration_entry_ids.clone(),
+                    holdout_entry_ids: environment.holdout_entry_ids.clone(),
                     process_evidence: evidence.process_evidence,
                     calibration_results: evidence.results,
-                    selected_candidate_id: evidence.selected_candidate_id,
-                    frozen_at_utc: "2026-07-26T00:00:00Z".into(),
-                    frozen_payload_sha256: synthetic_hash(24),
+                    selected_candidate_id,
+                    frozen_at_utc: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+                    frozen_payload_sha256: String::new(),
                     holdout_results: Vec::new(),
                     holdout_completed_at_utc: None,
                     retuned_after_freeze: false,
@@ -766,9 +932,18 @@ mod source_gate_selection {
                     evidence.selected_candidate_id == artifact.selected_candidate_id,
                     "holdout selected candidate drift",
                 )?;
+                require(
+                    evidence.results.iter().all(|result| result.derived.passed),
+                    "holdout result failed",
+                )?;
                 artifact.process_evidence.extend(evidence.process_evidence);
                 artifact.holdout_results = evidence.results;
-                artifact.holdout_completed_at_utc = Some("2026-07-26T00:01:00Z".into());
+                let frozen_at = chrono::DateTime::parse_from_rfc3339(&artifact.frozen_at_utc)
+                    .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?
+                    .with_timezone(&Utc);
+                let completed_at = Utc::now().max(frozen_at + chrono::Duration::seconds(1));
+                artifact.holdout_completed_at_utc =
+                    Some(completed_at.to_rfc3339_opts(SecondsFormat::Secs, true));
                 validate_artifact(&artifact, Phase::Holdout, &environment)?;
                 write_artifact(&environment.artifact, &canonical_json(&artifact)?, true)
             }
@@ -791,8 +966,48 @@ mod source_gate_selection {
         .collect()
     }
 
-    fn entry_ids(phase: &str) -> Vec<String> {
-        (0..4).map(|index| format!("{phase}-{index}")).collect()
+    fn select_smallest_all_pass(
+        results: &[SelectionResult],
+        entry_ids: &[String],
+    ) -> io::Result<String> {
+        for candidate in candidates_schema() {
+            let cells = results
+                .iter()
+                .filter(|result| result.candidate_id == candidate.id)
+                .collect::<Vec<_>>();
+            let expected_cells = entry_ids.len() * 2;
+            if cells.len() != expected_cells || !cells.iter().all(|result| result.derived.passed) {
+                continue;
+            }
+            let observed = cells
+                .iter()
+                .map(|result| {
+                    (
+                        result.entry_id.as_str(),
+                        result.process_evidence_id.rsplit('-').next().unwrap_or(""),
+                    )
+                })
+                .collect::<HashSet<_>>();
+            if observed.len() == expected_cells
+                && entry_ids.iter().all(|entry_id| {
+                    ["cpu", "metal"]
+                        .iter()
+                        .all(|device| observed.contains(&(entry_id.as_str(), *device)))
+                })
+            {
+                return Ok(candidate.id);
+            }
+        }
+        Err(invalid_data("no all-pass Source Gate crop candidate"))
+    }
+
+    fn synthetic_entry_ids(phase: &str) -> Vec<String> {
+        let prefix = match phase {
+            "calibration" => "c",
+            "holdout" => "h",
+            _ => unreachable!("synthetic phase is closed"),
+        };
+        (1..=4).map(|index| format!("{prefix}{index:02}")).collect()
     }
 
     fn validate_artifact(
@@ -823,8 +1038,8 @@ mod source_gate_selection {
                 && artifact.requested_devices == ["cpu", "metal"]
                 && artifact.enabled_cargo_features == ["hanonly-test-evidence", "metal"]
                 && artifact.backend_evidence_parser_version == 1
-                && artifact.calibration_entry_ids == entry_ids("calibration")
-                && artifact.holdout_entry_ids == entry_ids("holdout")
+                && artifact.calibration_entry_ids == environment.calibration_entry_ids
+                && artifact.holdout_entry_ids == environment.holdout_entry_ids
                 && !artifact.retuned_after_freeze,
             "candidate ratios drift",
         )?;
@@ -1195,7 +1410,77 @@ mod source_gate_selection {
         );
     }
 
+    #[test]
+    fn source_gate_native_log_parser_derives_cpu_and_metal_buffers() {
+        let cpu_load = br#"
+load_tensors: offloaded 0/19 layers to GPU
+load_tensors: CPU_Mapped model buffer size = 890.14 MiB
+clip_ctx: CLIP using CPU backend
+"#;
+        assert_eq!(
+            parse_native_load_log(cpu_load).unwrap(),
+            ParsedLoadLog {
+                offloaded_layers: 0,
+                offloadable_layers: 19,
+                model_buffer_bytes_by_backend: BTreeMap::from([(
+                    "CPU".into(),
+                    (890.14_f64 * 1024.0 * 1024.0).round() as u64,
+                )]),
+                mtmd_backend: "CPU".into(),
+            }
+        );
+
+        let metal_load = br#"
+load_tensors: offloaded 18/19 layers to GPU
+load_tensors: MTL0 model buffer size = 840.00 MiB
+load_tensors: CPU_Mapped model buffer size = 50.14 MiB
+clip_ctx: CLIP using MTL0 backend
+"#;
+        let parsed = parse_native_load_log(metal_load).unwrap();
+        assert_eq!(
+            (parsed.offloaded_layers, parsed.offloadable_layers),
+            (18, 19)
+        );
+        assert!(parsed.model_buffer_bytes_by_backend["Metal"] > 0);
+        assert!(parsed.model_buffer_bytes_by_backend["CPU"] > 0);
+        assert_eq!(parsed.mtmd_backend, "Metal");
+
+        let inference = br#"
+llama_context: CPU output buffer size = 0.39 MiB
+llama_kv_cache: MTL0 KV buffer size = 9.00 MiB
+sched_reserve: MTL0 compute buffer size = 63.75 MiB
+sched_reserve: CPU compute buffer size = 1.57 MiB
+"#;
+        let parsed = parse_native_inference_log(inference).unwrap();
+        assert!(parsed.context_buffer_bytes_by_backend["CPU"] > 0);
+        assert!(parsed.context_buffer_bytes_by_backend["Metal"] > 0);
+        assert!(parsed.compute_buffer_bytes_by_backend["CPU"] > 0);
+        assert!(parsed.compute_buffer_bytes_by_backend["Metal"] > 0);
+    }
+
+    #[test]
+    fn source_gate_native_log_parser_fails_closed_on_missing_actual_evidence() {
+        assert!(parse_native_load_log(b"requested metal").is_err());
+        assert!(parse_native_inference_log(b"inference completed").is_err());
+        assert!(parse_native_inference_log(b"Vulkan compute buffer size = 1.00 MiB").is_err());
+    }
+
     fn valid_environment(root: &Path) -> HashMap<&'static str, String> {
+        let manifest = root.join("visual-manifest.json");
+        let manifest_bytes = serde_json::to_vec(&serde_json::json!({
+            "entries": [
+                {"id": "c01", "role": "calibration"},
+                {"id": "c02", "role": "calibration"},
+                {"id": "c03", "role": "calibration"},
+                {"id": "c04", "role": "calibration"},
+                {"id": "h01", "role": "holdout"},
+                {"id": "h02", "role": "holdout"},
+                {"id": "h03", "role": "holdout"},
+                {"id": "h04", "role": "holdout"}
+            ]
+        }))
+        .unwrap();
+        fs::write(&manifest, &manifest_bytes).unwrap();
         HashMap::from([
             (PHASE_ENV, "calibration-freeze".into()),
             (B0_SHA_ENV, "a".repeat(40)),
@@ -1203,7 +1488,8 @@ mod source_gate_selection {
                 VISUAL_EVIDENCE_ROOT_ENV,
                 root.to_string_lossy().into_owned(),
             ),
-            (VISUAL_MANIFEST_SHA256_ENV, "1".repeat(64)),
+            (VISUAL_MANIFEST_ENV, manifest.to_string_lossy().into_owned()),
+            (VISUAL_MANIFEST_SHA256_ENV, sha256_hex(&manifest_bytes)),
             (SOURCE_GATE_FIXTURE_SHA256_ENV, "2".repeat(64)),
             (
                 ARTIFACT_ENV,
@@ -1218,6 +1504,13 @@ mod source_gate_selection {
 
     fn synthetic_hash(value: u8) -> String {
         format!("{value:064x}")
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     fn synthetic_process(phase: &str, device: &str) -> ProcessEvidence {
@@ -1326,11 +1619,11 @@ mod source_gate_selection {
 
     fn calibration_evidence() -> RunnerEvidence {
         RunnerEvidence {
-            selected_candidate_id: "R05".into(),
+            selected_candidate_id: "R0".into(),
             process_evidence: ["cpu", "metal"]
                 .map(|device| synthetic_process("calibration", device))
                 .into(),
-            results: entry_ids("calibration")
+            results: synthetic_entry_ids("calibration")
                 .iter()
                 .flat_map(|entry_id| {
                     ["cpu", "metal"].into_iter().flat_map(move |device| {
@@ -1345,16 +1638,16 @@ mod source_gate_selection {
 
     fn holdout_evidence() -> RunnerEvidence {
         RunnerEvidence {
-            selected_candidate_id: "R05".into(),
+            selected_candidate_id: "R0".into(),
             process_evidence: ["cpu", "metal"]
                 .map(|device| synthetic_process("holdout", device))
                 .into(),
-            results: entry_ids("holdout")
+            results: synthetic_entry_ids("holdout")
                 .iter()
                 .flat_map(|entry_id| {
                     ["cpu", "metal"]
                         .into_iter()
-                        .map(move |device| synthetic_result("holdout", entry_id, device, "R05"))
+                        .map(move |device| synthetic_result("holdout", entry_id, device, "R0"))
                 })
                 .collect(),
         }

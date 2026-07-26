@@ -2,6 +2,8 @@ use std::ffi::CString;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "hanonly-test-evidence")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -34,6 +36,8 @@ const MAX_UBATCH: u32 = 512;
 const OCR_REPEAT_MAX_UNIT_CHARS: usize = 12;
 const OCR_REPEAT_MIN_REPETITIONS: usize = 4;
 const OCR_REPEAT_MIN_TOTAL_CHARS: usize = 12;
+#[cfg(feature = "hanonly-test-evidence")]
+static INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 koharu_runtime::declare_hf_model_package!(
     id: "model:paddleocr-vl-1.6:weights",
@@ -150,8 +154,11 @@ impl DevicePolicy {
 }
 
 #[cfg(feature = "hanonly-test-evidence")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaddleOcrVlDeviceEvidence {
+    pub instance_id: String,
+    pub model_path: PathBuf,
+    pub mmproj_path: PathBuf,
     pub requested_cpu: bool,
     pub model_n_gpu_layers: u32,
     pub mtmd_use_gpu: bool,
@@ -168,6 +175,12 @@ pub struct PaddleOcrVl {
     mtmd: MtmdContext,
     eos_token: LlamaToken,
     device_policy: DevicePolicy,
+    #[cfg(feature = "hanonly-test-evidence")]
+    instance_id: String,
+    #[cfg(feature = "hanonly-test-evidence")]
+    model_path: PathBuf,
+    #[cfg(feature = "hanonly-test-evidence")]
+    mmproj_path: PathBuf,
 }
 
 impl PaddleOcrVl {
@@ -202,6 +215,12 @@ impl PaddleOcrVl {
         crate::sys::initialize(runtime)
             .context("failed to initialize llama.cpp runtime bindings")?;
 
+        #[cfg(feature = "hanonly-test-evidence")]
+        let instance_id = next_instance_id();
+        #[cfg(feature = "hanonly-test-evidence")]
+        let model_path = files.model.clone();
+        #[cfg(feature = "hanonly-test-evidence")]
+        let mmproj_path = files.mmproj.clone();
         let device_policy = DevicePolicy::new(cpu, backend.supports_gpu_offload());
         let model_params = model_params(device_policy);
         let model = LlamaModel::load_from_file(backend.as_ref(), &files.model, &model_params)
@@ -213,12 +232,12 @@ impl PaddleOcrVl {
             .context("missing embedded PaddleOCR-VL chat template")?;
         let bos_token = token_text(&model, model.token_bos());
         let eos_token_text = token_text(&model, eos_token);
-        let mmproj_path = files
+        let mmproj_path_str = files
             .mmproj
             .to_str()
             .with_context(|| format!("invalid mmproj path `{}`", files.mmproj.display()))?;
         let mtmd = MtmdContext::init_from_file(
-            mmproj_path,
+            mmproj_path_str,
             &model,
             &MtmdContextParams {
                 use_gpu: device_policy.mtmd_use_gpu,
@@ -252,12 +271,21 @@ impl PaddleOcrVl {
             mtmd,
             eos_token,
             device_policy,
+            #[cfg(feature = "hanonly-test-evidence")]
+            instance_id,
+            #[cfg(feature = "hanonly-test-evidence")]
+            model_path,
+            #[cfg(feature = "hanonly-test-evidence")]
+            mmproj_path,
         })
     }
 
     #[cfg(feature = "hanonly-test-evidence")]
     pub fn device_evidence(&self) -> PaddleOcrVlDeviceEvidence {
         PaddleOcrVlDeviceEvidence {
+            instance_id: self.instance_id.clone(),
+            model_path: self.model_path.clone(),
+            mmproj_path: self.mmproj_path.clone(),
             requested_cpu: self.device_policy.requested_cpu,
             model_n_gpu_layers: self.device_policy.model_n_gpu_layers,
             mtmd_use_gpu: self.device_policy.mtmd_use_gpu,
@@ -497,6 +525,14 @@ impl PaddleOcrVl {
             Some(self.model.token_bos())
         }
     }
+}
+
+#[cfg(feature = "hanonly-test-evidence")]
+fn next_instance_id() -> String {
+    let sequence = INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let process_identity =
+        u64::from(std::process::id()).rotate_left(32) ^ (&INSTANCE_SEQUENCE as *const _ as u64);
+    format!("{process_identity:016x}{sequence:016x}")
 }
 
 pub async fn prefetch(runtime: &RuntimeManager) -> Result<()> {
@@ -751,6 +787,8 @@ fn repeated_ocr_suffix_start(text: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "hanonly-test-evidence")]
+    use super::next_instance_id;
     use super::{
         DEFAULT_GPU_LAYERS, DEFAULT_MAX_NEW_TOKENS, DEFAULT_REPETITION_PENALTY, DevicePolicy,
         PADDLEOCR_IMAGE_MARKER, PaddleOcrVlGenerateOptions, PaddleOcrVlTask, PromptContent,
@@ -776,6 +814,27 @@ mod tests {
         assert!(policy.mtmd_use_gpu);
         assert!(policy.context_offload_kqv);
         assert!(policy.context_op_offload);
+    }
+
+    #[cfg(feature = "hanonly-test-evidence")]
+    #[test]
+    fn instance_ids_are_non_empty_lowercase_hex_and_unique() {
+        let first = next_instance_id();
+        let second = next_instance_id();
+
+        assert_eq!(first.len(), 32);
+        assert_eq!(second.len(), 32);
+        assert!(
+            first
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+        assert!(
+            second
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+        assert_ne!(first, second);
     }
 
     #[test]

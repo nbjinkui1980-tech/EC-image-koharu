@@ -1,6 +1,7 @@
 //! Compile-first, test-only schema scaffold for the Revision 46 D0 contracts.
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const LEDGER_SCHEMA_VERSION: u8 = 1;
 pub(super) const BYTE_CEILING: u64 = 512 * 1024 * 1024;
@@ -167,7 +168,7 @@ const LEDGER_JSON: &str = r#"{
     "evidence_root": "/external/evidence/run"
 }"#;
 
-const IMAGE_INPUT_CONTRACT_JSON: &str = r#"{
+pub(super) const IMAGE_INPUT_CONTRACT_JSON: &str = r#"{
     "contract": "image-input-contract-v1",
     "formats": ["png", "jpeg", "webp"],
     "format_detection": "byte-sniffed",
@@ -182,6 +183,16 @@ const IMAGE_INPUT_CONTRACT_JSON: &str = r#"{
         "sizing": "checked-page-pixels-times-peak-live-one-byte-masks"
     }
 }"#;
+
+pub(super) fn image_input_contract_sha256() -> String {
+    let value: serde_json::Value =
+        serde_json::from_str(IMAGE_INPUT_CONTRACT_JSON).expect("frozen image contract JSON");
+    let canonical = serde_json::to_vec(&value).expect("canonical image contract JSON");
+    Sha256::digest(canonical)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 
 #[test]
 fn d0_revision_46_ledger_schema_is_closed() {
@@ -233,6 +244,10 @@ fn d0_revision_46_ledger_schema_is_closed() {
 fn d0_image_input_contract_v1_schema_is_closed() {
     let contract: ImageInputContract = serde_json::from_str(IMAGE_INPUT_CONTRACT_JSON).unwrap();
     assert_eq!(contract.validate(), Ok(()));
+    assert_eq!(
+        image_input_contract_sha256(),
+        "258ccf1d27cfd23d59eb282e8f270d1136ec663c36ccd3a704d64be930ceaef8"
+    );
 
     let mut value: serde_json::Value = serde_json::from_str(IMAGE_INPUT_CONTRACT_JSON).unwrap();
     value["unexpected"] = true.into();
