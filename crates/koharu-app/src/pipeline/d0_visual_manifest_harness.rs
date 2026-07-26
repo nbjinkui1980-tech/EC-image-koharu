@@ -428,7 +428,8 @@ mod source_gate_selection {
     };
     use super::super::d0_visual_manifest_schema::{EntryRole, Expected, VisualManifestEntry};
     use super::super::engines::source_language_gate::{
-        SourceGateCropPolicy, SourceGateCropPolicyGuard, dispatch_source_gate,
+        SourceGateCropPolicy, SourceGateCropPolicyGuard, SourceGateDiagnosticCapture,
+        dispatch_source_gate,
     };
     use super::super::engines::support::SOURCE_GATE_TARGET_DETECTOR;
     use super::*;
@@ -661,6 +662,8 @@ mod source_gate_selection {
         inference_completed: bool,
         raw_inference_log_relpath: String,
         raw_inference_log_sha256: String,
+        source_gate_diagnostic_relpath: String,
+        source_gate_diagnostic_sha256: String,
         context_buffer_bytes_by_backend: BTreeMap<String, u64>,
         compute_buffer_bytes_by_backend: BTreeMap<String, u64>,
     }
@@ -1151,6 +1154,7 @@ mod source_gate_selection {
                     let page = *scene.pages.keys().next().expect("scene page");
                     let image = DynamicImage::ImageRgba8(decoded_entry.source.clone());
                     let _policy = SourceGateCropPolicyGuard::set(*policy);
+                    let source_gate_diagnostics = SourceGateDiagnosticCapture::start();
                     let ops = dispatch_source_gate(
                         &image,
                         &scene,
@@ -1171,6 +1175,7 @@ mod source_gate_selection {
                     )
                     .await
                     .map_err(io::Error::other)?;
+                    let source_gate_events = source_gate_diagnostics.take();
                     for mut op in ops {
                         op.apply(&mut scene).map_err(io::Error::other)?;
                     }
@@ -1183,6 +1188,14 @@ mod source_gate_selection {
                             schema_entry.id
                         ),
                         &inference_bytes,
+                    )?;
+                    let source_gate_diagnostic = write_raw_log(
+                        environment,
+                        &format!(
+                            "source-gate/{phase}/{}/{device}/{candidate_id}.source-gate.json",
+                            schema_entry.id
+                        ),
+                        &canonical_json(&source_gate_events)?,
                     )?;
                     let (runtime_nodes, derived) =
                         derive_result(device, &scene, page, schema_entry, oracle_entry)?;
@@ -1197,6 +1210,8 @@ mod source_gate_selection {
                             inference_completed: true,
                             raw_inference_log_relpath: inference_log.0,
                             raw_inference_log_sha256: inference_log.1,
+                            source_gate_diagnostic_relpath: source_gate_diagnostic.0,
+                            source_gate_diagnostic_sha256: source_gate_diagnostic.1,
                             context_buffer_bytes_by_backend: parsed_inference
                                 .context_buffer_bytes_by_backend,
                             compute_buffer_bytes_by_backend: parsed_inference
@@ -1886,6 +1901,8 @@ mod source_gate_selection {
             "selection result instance or device mismatch",
         )?;
         decode_sha256(&execution.raw_inference_log_sha256)?;
+        validate_text(&execution.source_gate_diagnostic_relpath)?;
+        decode_sha256(&execution.source_gate_diagnostic_sha256)?;
         let positive = |map: &BTreeMap<String, u64>, backend: &str| {
             map.get(backend).copied().unwrap_or_default() > 0
         };
@@ -2332,6 +2349,10 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                     "source-gate/{phase}/{entry_id}/{device}/{candidate_id}.log"
                 ),
                 raw_inference_log_sha256: synthetic_hash(9),
+                source_gate_diagnostic_relpath: format!(
+                    "source-gate/{phase}/{entry_id}/{device}/{candidate_id}.source-gate.json"
+                ),
+                source_gate_diagnostic_sha256: synthetic_hash(10),
                 context_buffer_bytes_by_backend: BTreeMap::from([
                     ("CPU".into(), 1),
                     ("Metal".into(), u64::from(metal)),
