@@ -34,6 +34,238 @@ use koharu_renderer::{
 
 use crate::google_fonts::GoogleFontService;
 
+#[cfg(test)]
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::{sync::OnceLock, thread::ThreadId};
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RendererSourceSizeBranch {
+    Detected,
+    Predicted,
+    GeometryFallback,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RendererLayoutBoxBranch {
+    Seed,
+    LockedSeed,
+    UniqueBubble,
+    SharedBubble,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RendererFillBranch {
+    Explicit,
+    Predicted,
+    DefaultBlack,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RendererStrokeBranch {
+    BlockDisabled,
+    BlockExplicit,
+    GlobalDisabled,
+    GlobalExplicit,
+    PredictedWidth,
+    PredictedNoStroke,
+    AutomaticDefault,
+}
+
+#[cfg(test)]
+struct SourceSizeResolution {
+    candidate: f32,
+    valid_detected_size: Option<f32>,
+    valid_predicted_size: Option<f32>,
+    branch: RendererSourceSizeBranch,
+}
+
+#[cfg(test)]
+type SourceSizeResolutionOutput = SourceSizeResolution;
+#[cfg(not(test))]
+type SourceSizeResolutionOutput = f32;
+
+#[cfg(test)]
+struct FillResolution {
+    color: [u8; 4],
+    branch: RendererFillBranch,
+}
+
+#[cfg(test)]
+type FillResolutionOutput = FillResolution;
+#[cfg(not(test))]
+type FillResolutionOutput = [u8; 4];
+
+#[cfg(test)]
+struct StrokeResolution {
+    stroke: Option<RenderStrokeOptions>,
+    branch: RendererStrokeBranch,
+}
+
+#[cfg(test)]
+type StrokeResolutionOutput = StrokeResolution;
+#[cfg(not(test))]
+type StrokeResolutionOutput = Option<RenderStrokeOptions>;
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RendererAlphaBbox {
+    pub(crate) x: u32,
+    pub(crate) y: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RendererDiagnosticEvent {
+    pub(crate) source_geometry_estimate: f32,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) valid_detected_size: Option<f32>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) valid_predicted_size: Option<f32>,
+    pub(crate) source_size_branch: RendererSourceSizeBranch,
+    pub(crate) policy_offset: f32,
+    pub(crate) candidate_size: f32,
+    pub(crate) auto_max: f32,
+    pub(crate) cap: f32,
+    pub(crate) resolved_layout_width: f32,
+    pub(crate) resolved_layout_height: f32,
+    pub(crate) layout_box_branch: RendererLayoutBoxBranch,
+    pub(crate) tight_layout_width: f32,
+    pub(crate) tight_layout_height: f32,
+    pub(crate) independent_size: f32,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) group_size: Option<f32>,
+    pub(crate) final_size: f32,
+    pub(crate) rotation_deg: f32,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) predicted_fill_rgb: Option<[u8; 3]>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) predicted_stroke_rgb: Option<[u8; 3]>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) predicted_stroke_width: Option<f32>,
+    pub(crate) resolved_fill_rgba: [u8; 4],
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) resolved_stroke_rgba: Option<[u8; 4]>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) resolved_stroke_width: Option<f32>,
+    pub(crate) fill_branch: RendererFillBranch,
+    pub(crate) stroke_branch: RendererStrokeBranch,
+    pub(crate) sprite_width: u32,
+    pub(crate) sprite_height: u32,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) alpha_bbox: Option<RendererAlphaBbox>,
+    pub(crate) alpha_nonzero_pixels: u64,
+    pub(crate) alpha_blake3: String,
+}
+
+#[cfg(test)]
+fn deserialize_required_option<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
+
+#[cfg(test)]
+type RendererDiagnosticEvents = Arc<Mutex<Vec<RendererDiagnosticEvent>>>;
+
+#[cfg(test)]
+struct ActiveRendererDiagnosticSink {
+    owner: ThreadId,
+    events: RendererDiagnosticEvents,
+}
+
+#[cfg(test)]
+static RENDERER_DIAGNOSTIC_SINK: OnceLock<Mutex<Option<ActiveRendererDiagnosticSink>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RendererDiagnosticCaptureActive;
+
+#[cfg(test)]
+pub(crate) struct RendererDiagnosticCapture {
+    owner: ThreadId,
+    events: RendererDiagnosticEvents,
+}
+
+#[cfg(test)]
+impl RendererDiagnosticCapture {
+    pub(crate) fn start() -> std::result::Result<Self, RendererDiagnosticCaptureActive> {
+        let owner = std::thread::current().id();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut active = RENDERER_DIAGNOSTIC_SINK
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active.is_some() {
+            return Err(RendererDiagnosticCaptureActive);
+        }
+        *active = Some(ActiveRendererDiagnosticSink {
+            owner,
+            events: events.clone(),
+        });
+        Ok(Self { owner, events })
+    }
+
+    pub(crate) fn take(&self) -> Vec<RendererDiagnosticEvent> {
+        std::mem::take(
+            &mut *self
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
+#[cfg(test)]
+impl Drop for RendererDiagnosticCapture {
+    fn drop(&mut self) {
+        let mut active = RENDERER_DIAGNOSTIC_SINK
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .as_ref()
+            .is_some_and(|sink| sink.owner == self.owner && Arc::ptr_eq(&sink.events, &self.events))
+        {
+            *active = None;
+        }
+    }
+}
+
+#[cfg(test)]
+fn record_renderer_diagnostic(event: RendererDiagnosticEvent) {
+    let owner = std::thread::current().id();
+    let sink = RENDERER_DIAGNOSTIC_SINK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|sink| sink.owner == owner)
+        .map(|sink| sink.events.clone());
+    if let Some(sink) = sink {
+        sink.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Inputs / outputs
 // ---------------------------------------------------------------------------
@@ -191,6 +423,11 @@ impl Renderer {
         let mut rendered_blocks = Vec::with_capacity(blocks.len());
         for (block, layout_box) in blocks.iter().zip(layout_boxes.iter().copied()) {
             if let Some(prepared) = automatic.get(&block.node_id) {
+                #[cfg(test)]
+                let grouped_font_size = grouped_font_sizes.get(&block.node_id).copied();
+                #[cfg(test)]
+                let final_size = grouped_font_size.unwrap_or(prepared.independent_font_size);
+                #[cfg(not(test))]
                 let final_size = grouped_font_sizes
                     .get(&block.node_id)
                     .copied()
@@ -199,6 +436,8 @@ impl Renderer {
                     block,
                     prepared,
                     final_size,
+                    #[cfg(test)]
+                    grouped_font_size,
                     opts.target_language.as_deref(),
                     opts.raster,
                 )?);
@@ -266,6 +505,15 @@ impl Renderer {
         }
         apply_default_font_families(&mut style.font_families, translation);
         let font = self.select_font(&style)?;
+        #[cfg(test)]
+        let fill_resolution = resolve_text_color_decision(
+            block.style.as_ref(),
+            &style,
+            block.font_prediction.as_ref(),
+        );
+        #[cfg(test)]
+        let color = fill_resolution.color;
+        #[cfg(not(test))]
         let color =
             resolve_text_color(block.style.as_ref(), &style, block.font_prediction.as_ref());
         let layout_source = layout_source_from_input(block, translation);
@@ -315,6 +563,24 @@ impl Renderer {
             .font_size
         };
 
+        #[cfg(test)]
+        let diagnostic = {
+            let source_geometry_estimate = source_geometry_font_size(block);
+            let source_resolution =
+                resolve_source_size_candidate(block, source_geometry_estimate, policy);
+            PreparedRendererDiagnostic {
+                source_geometry_estimate,
+                valid_detected_size: source_resolution.valid_detected_size,
+                valid_predicted_size: source_resolution.valid_predicted_size,
+                source_size_branch: source_resolution.branch,
+                policy_offset: policy.offset,
+                candidate_size: source_resolution.candidate,
+                auto_max: max_font_size_for_box(layout_box, min_font_size),
+                layout_box_branch: resolved_box.diagnostic_branch,
+                fill_branch: fill_resolution.branch,
+            }
+        };
+
         Ok(Some(PreparedAutomaticBlock {
             font,
             stroke,
@@ -326,6 +592,8 @@ impl Renderer {
             layout_box,
             cap,
             independent_font_size,
+            #[cfg(test)]
+            diagnostic,
         }))
     }
 
@@ -334,6 +602,7 @@ impl Renderer {
         block: &RenderBlockInput,
         prepared: &PreparedAutomaticBlock,
         font_size: f32,
+        #[cfg(test)] grouped_font_size: Option<f32>,
         target_language: Option<&str>,
         raster: RasterOptions,
     ) -> Result<RenderedBlock> {
@@ -356,6 +625,17 @@ impl Renderer {
             font_size,
             block.preserve_explicit_lines,
         )?;
+        #[cfg(test)]
+        let stroke_resolution = resolve_stroke_style_decision(
+            block.font_prediction.as_ref(),
+            prepared.stroke.as_ref(),
+            prepared.global_stroke.as_ref(),
+            font_size,
+            prepared.color,
+        );
+        #[cfg(test)]
+        let resolved_stroke = stroke_resolution.stroke;
+        #[cfg(not(test))]
         let resolved_stroke = resolve_stroke_style(
             block.font_prediction.as_ref(),
             prepared.stroke.as_ref(),
@@ -389,6 +669,46 @@ impl Renderer {
         )?;
         debug_assert_eq!(rendered.width(), predicted_width);
         debug_assert_eq!(rendered.height(), predicted_height);
+        #[cfg(test)]
+        {
+            let prediction = block.font_prediction.as_ref();
+            let (alpha_bbox, alpha_nonzero_pixels, alpha_blake3) =
+                renderer_alpha_summary(&rendered);
+            record_renderer_diagnostic(RendererDiagnosticEvent {
+                source_geometry_estimate: prepared.diagnostic.source_geometry_estimate,
+                valid_detected_size: prepared.diagnostic.valid_detected_size,
+                valid_predicted_size: prepared.diagnostic.valid_predicted_size,
+                source_size_branch: prepared.diagnostic.source_size_branch,
+                policy_offset: prepared.diagnostic.policy_offset,
+                candidate_size: prepared.diagnostic.candidate_size,
+                auto_max: prepared.diagnostic.auto_max,
+                cap: prepared.cap,
+                resolved_layout_width: prepared.layout_box.width,
+                resolved_layout_height: prepared.layout_box.height,
+                layout_box_branch: prepared.diagnostic.layout_box_branch,
+                tight_layout_width: layout.width,
+                tight_layout_height: layout.height,
+                independent_size: prepared.independent_font_size,
+                group_size: grouped_font_size,
+                final_size: font_size,
+                rotation_deg: block.transform.rotation_deg,
+                predicted_fill_rgb: prediction.map(|prediction| prediction.text_color),
+                predicted_stroke_rgb: prediction.map(|prediction| prediction.stroke_color),
+                predicted_stroke_width: prediction
+                    .map(|prediction| prediction.stroke_width_px)
+                    .filter(|width| width.is_finite()),
+                resolved_fill_rgba: prepared.color,
+                resolved_stroke_rgba: resolved_stroke.map(|stroke| stroke.color),
+                resolved_stroke_width: resolved_stroke.map(|stroke| stroke.width_px),
+                fill_branch: prepared.diagnostic.fill_branch,
+                stroke_branch: stroke_resolution.branch,
+                sprite_width: rendered.width(),
+                sprite_height: rendered.height(),
+                alpha_bbox,
+                alpha_nonzero_pixels,
+                alpha_blake3,
+            });
+        }
         tracing::debug!(
             node = %block.node_id,
             cap = prepared.cap,
@@ -768,6 +1088,21 @@ struct PreparedAutomaticBlock {
     layout_box: LayoutBox,
     cap: f32,
     independent_font_size: f32,
+    #[cfg(test)]
+    diagnostic: PreparedRendererDiagnostic,
+}
+
+#[cfg(test)]
+struct PreparedRendererDiagnostic {
+    source_geometry_estimate: f32,
+    valid_detected_size: Option<f32>,
+    valid_predicted_size: Option<f32>,
+    source_size_branch: RendererSourceSizeBranch,
+    policy_offset: f32,
+    candidate_size: f32,
+    auto_max: f32,
+    layout_box_branch: RendererLayoutBoxBranch,
+    fill_branch: RendererFillBranch,
 }
 
 fn automatic_layout_builder<'a>(
@@ -887,21 +1222,114 @@ fn source_relative_font_size_candidate(
     auto_max: f32,
     policy: SourceRelativeFontSizePolicy,
 ) -> f32 {
+    let resolution = resolve_source_size_candidate(block, auto_max, policy);
+    #[cfg(test)]
+    {
+        resolution.candidate
+    }
+    #[cfg(not(test))]
+    {
+        resolution
+    }
+}
+
+fn resolve_source_size_candidate(
+    block: &RenderBlockInput,
+    fallback: f32,
+    policy: SourceRelativeFontSizePolicy,
+) -> SourceSizeResolutionOutput {
+    let detected = block
+        .detected_font_size_px
+        .filter(|size| size.is_finite() && *size > 0.0);
     let prediction = block
         .font_prediction
         .as_ref()
         .map(|prediction| prediction.font_size_px)
         .filter(|size| size.is_finite() && *size > 0.0);
-    let detected = block
-        .detected_font_size_px
-        .filter(|size| size.is_finite() && *size > 0.0);
-    let source_size = if policy.prefer_detected {
-        detected.or(prediction)
+    if policy.prefer_detected {
+        if let Some(source_size) = detected {
+            return source_size_resolution(
+                source_size,
+                policy.offset,
+                #[cfg(test)]
+                detected,
+                #[cfg(test)]
+                prediction,
+                #[cfg(test)]
+                RendererSourceSizeBranch::Detected,
+            );
+        }
+        if let Some(source_size) = prediction {
+            return source_size_resolution(
+                source_size,
+                policy.offset,
+                #[cfg(test)]
+                detected,
+                #[cfg(test)]
+                prediction,
+                #[cfg(test)]
+                RendererSourceSizeBranch::Predicted,
+            );
+        }
     } else {
-        prediction.or(detected)
+        if let Some(source_size) = prediction {
+            return source_size_resolution(
+                source_size,
+                policy.offset,
+                #[cfg(test)]
+                detected,
+                #[cfg(test)]
+                prediction,
+                #[cfg(test)]
+                RendererSourceSizeBranch::Predicted,
+            );
+        }
+        if let Some(source_size) = detected {
+            return source_size_resolution(
+                source_size,
+                policy.offset,
+                #[cfg(test)]
+                detected,
+                #[cfg(test)]
+                prediction,
+                #[cfg(test)]
+                RendererSourceSizeBranch::Detected,
+            );
+        }
     }
-    .unwrap_or(auto_max);
-    (source_size + policy.offset).max(1.0)
+    source_size_resolution(
+        fallback,
+        policy.offset,
+        #[cfg(test)]
+        detected,
+        #[cfg(test)]
+        prediction,
+        #[cfg(test)]
+        RendererSourceSizeBranch::GeometryFallback,
+    )
+}
+
+fn source_size_resolution(
+    source_size: f32,
+    offset: f32,
+    #[cfg(test)] valid_detected_size: Option<f32>,
+    #[cfg(test)] valid_predicted_size: Option<f32>,
+    #[cfg(test)] branch: RendererSourceSizeBranch,
+) -> SourceSizeResolutionOutput {
+    let candidate = (source_size + offset).max(1.0);
+    #[cfg(test)]
+    {
+        SourceSizeResolution {
+            candidate,
+            valid_detected_size,
+            valid_predicted_size,
+            branch,
+        }
+    }
+    #[cfg(not(test))]
+    {
+        candidate
+    }
 }
 
 fn grouped_fitted_source_relative_font_sizes(
@@ -1325,6 +1753,8 @@ struct ResolvedLayoutBox {
     seed_box: LayoutBox,
     layout_box: LayoutBox,
     bubble_id: Option<u8>,
+    #[cfg(test)]
+    diagnostic_branch: RendererLayoutBoxBranch,
 }
 
 fn resolve_layout_boxes(
@@ -1340,6 +1770,12 @@ fn resolve_layout_boxes(
                     seed_box,
                     layout_box: seed_box,
                     bubble_id: None,
+                    #[cfg(test)]
+                    diagnostic_branch: if block.lock_layout_box {
+                        RendererLayoutBoxBranch::LockedSeed
+                    } else {
+                        RendererLayoutBoxBranch::Seed
+                    },
                 }
             })
             .collect();
@@ -1347,6 +1783,8 @@ fn resolve_layout_boxes(
 
     let mut counts: HashMap<u8, usize> = HashMap::new();
     let mut matches = Vec::with_capacity(blocks.len());
+    #[cfg(test)]
+    let mut unmatched_branches = Vec::with_capacity(blocks.len());
 
     for block in blocks {
         let seed_box = seed_layout_box(block);
@@ -1362,32 +1800,50 @@ fn resolve_layout_boxes(
             *counts.entry(matched.id).or_insert(0) += 1;
         }
         matches.push((seed_box, bubble_match));
+        #[cfg(test)]
+        unmatched_branches.push(if block.lock_layout_box {
+            RendererLayoutBoxBranch::LockedSeed
+        } else {
+            RendererLayoutBoxBranch::Seed
+        });
     }
 
+    #[cfg(test)]
+    let mut unmatched_branches = unmatched_branches.into_iter();
     matches
         .into_iter()
-        .map(|(seed_box, bubble_match)| match bubble_match {
-            // Connected bubbles can contain multiple independently detected
-            // text blocks. Expanding all of them to the same safe area makes
-            // their layouts collide, so shared bubbles keep each block's
-            // original detector box.
-            Some(matched) if counts.get(&matched.id).copied().unwrap_or(0) == 1 => {
-                ResolvedLayoutBox {
-                    seed_box,
-                    layout_box: matched.layout_box,
-                    bubble_id: Some(matched.id),
+        .map(|(seed_box, bubble_match)| {
+            #[cfg(test)]
+            let unmatched_branch = unmatched_branches.next().unwrap();
+            match bubble_match {
+                // Connected bubbles can contain multiple independently detected
+                // text blocks. Expanding all of them to the same safe area makes
+                // their layouts collide, so shared bubbles keep each block's
+                // original detector box.
+                Some(matched) if counts.get(&matched.id).copied().unwrap_or(0) == 1 => {
+                    ResolvedLayoutBox {
+                        seed_box,
+                        layout_box: matched.layout_box,
+                        bubble_id: Some(matched.id),
+                        #[cfg(test)]
+                        diagnostic_branch: RendererLayoutBoxBranch::UniqueBubble,
+                    }
                 }
+                Some(matched) => ResolvedLayoutBox {
+                    seed_box,
+                    layout_box: seed_box,
+                    bubble_id: Some(matched.id),
+                    #[cfg(test)]
+                    diagnostic_branch: RendererLayoutBoxBranch::SharedBubble,
+                },
+                None => ResolvedLayoutBox {
+                    seed_box,
+                    layout_box: seed_box,
+                    bubble_id: None,
+                    #[cfg(test)]
+                    diagnostic_branch: unmatched_branch,
+                },
             }
-            Some(matched) => ResolvedLayoutBox {
-                seed_box,
-                layout_box: seed_box,
-                bubble_id: Some(matched.id),
-            },
-            None => ResolvedLayoutBox {
-                seed_box,
-                layout_box: seed_box,
-                bubble_id: None,
-            },
         })
         .collect()
 }
@@ -1492,41 +1948,108 @@ fn resolve_stroke_style(
     font_size: f32,
     text_color: [u8; 4],
 ) -> Option<RenderStrokeOptions> {
+    let resolution = resolve_stroke_style_decision(
+        font_prediction,
+        block_stroke,
+        global_stroke,
+        font_size,
+        text_color,
+    );
+    #[cfg(test)]
+    {
+        resolution.stroke
+    }
+    #[cfg(not(test))]
+    {
+        resolution
+    }
+}
+
+fn resolve_stroke_style_decision(
+    font_prediction: Option<&FontPrediction>,
+    block_stroke: Option<&TextStrokeStyle>,
+    global_stroke: Option<&TextStrokeStyle>,
+    font_size: f32,
+    text_color: [u8; 4],
+) -> StrokeResolutionOutput {
     if let Some(stroke) = block_stroke {
         if !stroke.enabled {
-            return None;
+            return stroke_resolution(
+                None,
+                #[cfg(test)]
+                RendererStrokeBranch::BlockDisabled,
+            );
         }
-        return Some(RenderStrokeOptions {
-            color: stroke.color,
-            width_px: stroke
-                .width_px
-                .unwrap_or_else(|| default_stroke_width(font_size)),
-        });
+        return stroke_resolution(
+            Some(RenderStrokeOptions {
+                color: stroke.color,
+                width_px: stroke
+                    .width_px
+                    .unwrap_or_else(|| default_stroke_width(font_size)),
+            }),
+            #[cfg(test)]
+            RendererStrokeBranch::BlockExplicit,
+        );
     }
     if let Some(stroke) = global_stroke {
         if !stroke.enabled {
-            return None;
+            return stroke_resolution(
+                None,
+                #[cfg(test)]
+                RendererStrokeBranch::GlobalDisabled,
+            );
         }
-        return Some(RenderStrokeOptions {
-            color: stroke.color,
-            width_px: stroke
-                .width_px
-                .unwrap_or_else(|| default_stroke_width(font_size)),
-        });
+        return stroke_resolution(
+            Some(RenderStrokeOptions {
+                color: stroke.color,
+                width_px: stroke
+                    .width_px
+                    .unwrap_or_else(|| default_stroke_width(font_size)),
+            }),
+            #[cfg(test)]
+            RendererStrokeBranch::GlobalExplicit,
+        );
     }
     let auto_stroke_color = contrasting_stroke_color(text_color);
     if let Some(pred) = font_prediction {
-        return (pred.stroke_width_px.is_finite() && pred.stroke_width_px > 0.0).then_some(
-            RenderStrokeOptions {
-                color: auto_stroke_color,
-                width_px: pred.stroke_width_px,
-            },
+        if pred.stroke_width_px.is_finite() && pred.stroke_width_px > 0.0 {
+            return stroke_resolution(
+                Some(RenderStrokeOptions {
+                    color: auto_stroke_color,
+                    width_px: pred.stroke_width_px,
+                }),
+                #[cfg(test)]
+                RendererStrokeBranch::PredictedWidth,
+            );
+        }
+        return stroke_resolution(
+            None,
+            #[cfg(test)]
+            RendererStrokeBranch::PredictedNoStroke,
         );
     }
-    Some(RenderStrokeOptions {
-        color: auto_stroke_color,
-        width_px: default_stroke_width(font_size),
-    })
+    stroke_resolution(
+        Some(RenderStrokeOptions {
+            color: auto_stroke_color,
+            width_px: default_stroke_width(font_size),
+        }),
+        #[cfg(test)]
+        RendererStrokeBranch::AutomaticDefault,
+    )
+}
+
+fn stroke_resolution(
+    stroke: Option<RenderStrokeOptions>,
+    #[cfg(test)] branch: RendererStrokeBranch,
+) -> StrokeResolutionOutput {
+    #[cfg(test)]
+    {
+        StrokeResolution { stroke, branch }
+    }
+    #[cfg(not(test))]
+    {
+        stroke
+    }
 }
 
 fn resolve_text_color(
@@ -1534,18 +2057,89 @@ fn resolve_text_color(
     derived_style: &TextStyle,
     font_prediction: Option<&FontPrediction>,
 ) -> [u8; 4] {
+    let resolution = resolve_text_color_decision(explicit_style, derived_style, font_prediction);
+    #[cfg(test)]
+    {
+        resolution.color
+    }
+    #[cfg(not(test))]
+    {
+        resolution
+    }
+}
+
+fn resolve_text_color_decision(
+    explicit_style: Option<&TextStyle>,
+    derived_style: &TextStyle,
+    font_prediction: Option<&FontPrediction>,
+) -> FillResolutionOutput {
     if explicit_style.is_some() {
-        return derived_style.color;
+        return fill_resolution(
+            derived_style.color,
+            #[cfg(test)]
+            RendererFillBranch::Explicit,
+        );
     }
     if let Some(pred) = font_prediction {
-        return [
-            pred.text_color[0],
-            pred.text_color[1],
-            pred.text_color[2],
-            255,
-        ];
+        return fill_resolution(
+            [
+                pred.text_color[0],
+                pred.text_color[1],
+                pred.text_color[2],
+                255,
+            ],
+            #[cfg(test)]
+            RendererFillBranch::Predicted,
+        );
     }
-    [0, 0, 0, 255]
+    fill_resolution(
+        [0, 0, 0, 255],
+        #[cfg(test)]
+        RendererFillBranch::DefaultBlack,
+    )
+}
+
+fn fill_resolution(
+    color: [u8; 4],
+    #[cfg(test)] branch: RendererFillBranch,
+) -> FillResolutionOutput {
+    #[cfg(test)]
+    {
+        FillResolution { color, branch }
+    }
+    #[cfg(not(test))]
+    {
+        color
+    }
+}
+
+#[cfg(test)]
+fn renderer_alpha_summary(image: &RgbaImage) -> (Option<RendererAlphaBbox>, u64, String) {
+    let mut alpha =
+        Vec::with_capacity((image.width() as usize).saturating_mul(image.height() as usize));
+    let mut min_x = u32::MAX;
+    let mut min_y = u32::MAX;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let mut nonzero = 0_u64;
+    for (x, y, pixel) in image.enumerate_pixels() {
+        let value = pixel.0[3];
+        alpha.push(value);
+        if value != 0 {
+            nonzero += 1;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+    let bbox = (nonzero != 0).then_some(RendererAlphaBbox {
+        x: min_x,
+        y: min_y,
+        width: max_x - min_x + 1,
+        height: max_y - min_y + 1,
+    });
+    (bbox, nonzero, blake3::hash(&alpha).to_hex().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1628,9 +2222,744 @@ pub(crate) fn placement_origin(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Barrier;
+
     use super::*;
     use image::{GenericImageView, GrayImage, Luma, Rgba, RgbaImage};
     use koharu_core::NodeId;
+
+    fn start_renderer_diagnostic_capture() -> RendererDiagnosticCapture {
+        loop {
+            match crate::renderer::RendererDiagnosticCapture::start() {
+                Ok(capture) => return capture,
+                Err(RendererDiagnosticCaptureActive) => std::thread::yield_now(),
+            }
+        }
+    }
+
+    fn assert_render_outputs_equal(left: &RenderOutput, right: &RenderOutput) {
+        assert_eq!(
+            left.final_render.dimensions(),
+            right.final_render.dimensions()
+        );
+        assert_eq!(
+            left.final_render.to_rgba8().as_raw(),
+            right.final_render.to_rgba8().as_raw()
+        );
+        assert_eq!(left.blocks.len(), right.blocks.len());
+        for (left, right) in left.blocks.iter().zip(&right.blocks) {
+            assert_eq!(left.node_id, right.node_id);
+            assert_eq!(
+                left.sprite.to_rgba8().as_raw(),
+                right.sprite.to_rgba8().as_raw()
+            );
+            assert_eq!(left.rendered_direction, right.rendered_direction);
+            match (&left.expanded_transform, &right.expanded_transform) {
+                (Some(left), Some(right)) => {
+                    assert_eq!(left.x, right.x);
+                    assert_eq!(left.y, right.y);
+                    assert_eq!(left.width, right.width);
+                    assert_eq!(left.height, right.height);
+                    assert_eq!(left.rotation_deg, right.rotation_deg);
+                }
+                (None, None) => {}
+                _ => panic!("expanded transform presence changed"),
+            }
+        }
+    }
+
+    type IndependentAlphaSummary = (Option<(u32, u32, u32, u32)>, u64, String);
+
+    fn independent_alpha_summary(image: &RgbaImage) -> IndependentAlphaSummary {
+        let alpha = image.pixels().map(|pixel| pixel.0[3]).collect::<Vec<_>>();
+        let nonzero = alpha.iter().filter(|value| **value != 0).count() as u64;
+        let points = image
+            .enumerate_pixels()
+            .filter(|(_, _, pixel)| pixel.0[3] != 0)
+            .map(|(x, y, _)| (x, y))
+            .collect::<Vec<_>>();
+        let bbox = (!points.is_empty()).then(|| {
+            let min_x = points.iter().map(|(x, _)| *x).min().unwrap();
+            let min_y = points.iter().map(|(_, y)| *y).min().unwrap();
+            let max_x = points.iter().map(|(x, _)| *x).max().unwrap();
+            let max_y = points.iter().map(|(_, y)| *y).max().unwrap();
+            (min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+        });
+        (bbox, nonzero, blake3::hash(&alpha).to_hex().to_string())
+    }
+
+    fn assert_diagnostic_matches_sprite(event: &RendererDiagnosticEvent, sprite: &DynamicImage) {
+        let sprite = sprite.to_rgba8();
+        let (bbox, nonzero, hash) = independent_alpha_summary(&sprite);
+        assert_eq!(
+            (event.sprite_width, event.sprite_height),
+            sprite.dimensions()
+        );
+        assert_eq!(event.alpha_nonzero_pixels, nonzero);
+        assert_eq!(event.alpha_blake3, hash);
+        assert_eq!(
+            event
+                .alpha_bbox
+                .as_ref()
+                .map(|bbox| (bbox.x, bbox.y, bbox.width, bbox.height)),
+            bbox
+        );
+    }
+
+    fn render_with_diagnostics(
+        renderer: &Renderer,
+        blocks: &[RenderBlockInput],
+        bubble_mask: Option<&DynamicImage>,
+        image_width: u32,
+        image_height: u32,
+        options: &PageRenderOptions,
+    ) -> Result<(RenderOutput, Vec<RendererDiagnosticEvent>)> {
+        let inpainted = DynamicImage::new_rgba8(image_width, image_height);
+        let inactive = renderer.render_page(
+            &inpainted,
+            None,
+            bubble_mask,
+            image_width,
+            image_height,
+            blocks,
+            options,
+        )?;
+        let capture = start_renderer_diagnostic_capture();
+        let active = renderer.render_page(
+            &inpainted,
+            None,
+            bubble_mask,
+            image_width,
+            image_height,
+            blocks,
+            options,
+        )?;
+        assert_render_outputs_equal(&inactive, &active);
+        let events = capture.take();
+        assert_eq!(events.len(), active.blocks.len());
+        for (event, block) in events.iter().zip(&active.blocks) {
+            assert_diagnostic_matches_sprite(event, &block.sprite);
+        }
+        Ok((active, events))
+    }
+
+    #[test]
+    fn renderer_diagnostics_capture_source_layout_and_sprite_without_output_drift() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let transform = Transform {
+            x: 20.0,
+            y: 30.0,
+            width: 240.0,
+            height: 96.0,
+            rotation_deg: 7.0,
+        };
+        let block = automatic_test_block(
+            &renderer,
+            transform,
+            "Observed",
+            40.0,
+            28.0,
+            TextDirection::Horizontal,
+        );
+        let options = PageRenderOptions {
+            source_relative_font_size_policy: Some(SourceRelativeFontSizePolicy {
+                offset: -5.0,
+                prefer_detected: true,
+            }),
+            ..Default::default()
+        };
+        let (active, events): (_, Vec<crate::renderer::RendererDiagnosticEvent>) =
+            render_with_diagnostics(
+                &renderer,
+                std::slice::from_ref(&block),
+                None,
+                320,
+                200,
+                &options,
+            )?;
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.source_geometry_estimate, 96.0);
+        assert_eq!(event.valid_detected_size, Some(40.0));
+        assert_eq!(event.valid_predicted_size, Some(28.0));
+        assert_eq!(event.source_size_branch, RendererSourceSizeBranch::Detected);
+        assert_eq!(event.policy_offset, -5.0);
+        assert_eq!(event.candidate_size, 35.0);
+        let expected_auto_max =
+            max_font_size_for_box(seed_layout_box(&block), min_font_size_for_image(320, 200));
+        assert!((event.auto_max - expected_auto_max).abs() <= f32::EPSILON);
+        assert_eq!(event.cap, 35.0);
+        assert_eq!(
+            (event.resolved_layout_width, event.resolved_layout_height),
+            (240.0, 96.0)
+        );
+        assert_eq!(event.layout_box_branch, RendererLayoutBoxBranch::LockedSeed);
+        assert!(event.tight_layout_width <= event.resolved_layout_width);
+        assert!(event.tight_layout_height <= event.resolved_layout_height);
+        assert_eq!(event.group_size, Some(event.independent_size));
+        assert_eq!(event.final_size, event.independent_size);
+        assert_eq!(event.rotation_deg, 7.0);
+
+        assert_diagnostic_matches_sprite(event, &active.blocks[0].sprite);
+
+        let value = serde_json::to_value(event)?;
+        assert_eq!(value.as_object().unwrap().len(), 30);
+        let serialized = serde_json::to_string(&value)?;
+        for forbidden in [
+            "translation",
+            "text",
+            "node",
+            "path",
+            "target",
+            "elapsed",
+            "timestamp",
+        ] {
+            assert!(!serialized.contains(forbidden));
+        }
+        for field in [
+            "valid_detected_size",
+            "valid_predicted_size",
+            "group_size",
+            "predicted_fill_rgb",
+            "predicted_stroke_rgb",
+            "predicted_stroke_width",
+            "resolved_stroke_rgba",
+            "resolved_stroke_width",
+            "alpha_bbox",
+        ] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<RendererDiagnosticEvent>(missing).is_err(),
+                "missing required option field {field}"
+            );
+            let mut explicit_null = value.clone();
+            explicit_null[field] = serde_json::Value::Null;
+            assert!(
+                serde_json::from_value::<RendererDiagnosticEvent>(explicit_null).is_ok(),
+                "explicit null option field {field}"
+            );
+        }
+        let mut unknown_bbox = value.clone();
+        assert!(unknown_bbox["alpha_bbox"].is_object());
+        unknown_bbox["alpha_bbox"]["unexpected"] = true.into();
+        assert!(serde_json::from_value::<RendererDiagnosticEvent>(unknown_bbox).is_err());
+        let mut unknown = value;
+        unknown["unexpected"] = true.into();
+        assert!(serde_json::from_value::<RendererDiagnosticEvent>(unknown).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn renderer_diagnostics_color_and_stroke_branches_match_real_resolution() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let make_transform = |y| Transform {
+            x: 20.0,
+            y,
+            width: 220.0,
+            height: 80.0,
+            rotation_deg: 0.0,
+        };
+        let explicit = automatic_test_block(
+            &renderer,
+            make_transform(0.0),
+            "Explicit",
+            30.0,
+            28.0,
+            TextDirection::Horizontal,
+        );
+        let mut predicted = automatic_test_block(
+            &renderer,
+            make_transform(120.0),
+            "Predicted",
+            30.0,
+            28.0,
+            TextDirection::Horizontal,
+        );
+        predicted.lock_layout_box = false;
+        predicted.style = None;
+        predicted.detected_font_size_px = None;
+        predicted.font_prediction = Some(FontPrediction {
+            text_color: [240, 240, 240],
+            stroke_color: [12, 34, 56],
+            stroke_width_px: 3.0,
+            font_size_px: 28.0,
+            ..Default::default()
+        });
+        let mut defaulted = automatic_test_block(
+            &renderer,
+            make_transform(240.0),
+            "Default",
+            30.0,
+            28.0,
+            TextDirection::Horizontal,
+        );
+        defaulted.lock_layout_box = false;
+        defaulted.style = None;
+        defaulted.detected_font_size_px = None;
+        defaulted.font_prediction = None;
+        let blocks = [explicit, predicted.clone(), defaulted];
+        let options = PageRenderOptions {
+            source_relative_font_size_policy: Some(SourceRelativeFontSizePolicy {
+                offset: 0.0,
+                prefer_detected: true,
+            }),
+            ..Default::default()
+        };
+        let (output, events) =
+            render_with_diagnostics(&renderer, &blocks, None, 320, 360, &options)?;
+        assert_eq!(output.blocks.len(), 3);
+        assert_eq!(events.len(), 3);
+
+        assert_eq!(events[0].fill_branch, RendererFillBranch::Explicit);
+        assert_eq!(events[0].stroke_branch, RendererStrokeBranch::BlockExplicit);
+        assert_eq!(events[0].resolved_fill_rgba, [255, 255, 255, 255]);
+        assert_eq!(events[0].resolved_stroke_rgba, Some([0, 0, 0, 255]));
+
+        assert_eq!(events[1].fill_branch, RendererFillBranch::Predicted);
+        assert_eq!(
+            events[1].stroke_branch,
+            RendererStrokeBranch::PredictedWidth
+        );
+        assert_eq!(
+            events[1].source_size_branch,
+            RendererSourceSizeBranch::Predicted
+        );
+        assert_eq!(events[1].layout_box_branch, RendererLayoutBoxBranch::Seed);
+        assert_eq!(events[1].predicted_fill_rgb, Some([240, 240, 240]));
+        assert_eq!(events[1].predicted_stroke_rgb, Some([12, 34, 56]));
+        assert_eq!(events[1].predicted_stroke_width, Some(3.0));
+        assert_eq!(events[1].resolved_fill_rgba, [240, 240, 240, 255]);
+        assert_eq!(events[1].resolved_stroke_rgba, Some([0, 0, 0, 255]));
+        assert_ne!(
+            events[1].predicted_stroke_rgb.unwrap(),
+            events[1].resolved_stroke_rgba.unwrap()[..3]
+        );
+        assert_eq!(events[1].resolved_stroke_width, Some(3.0));
+
+        assert_eq!(events[2].fill_branch, RendererFillBranch::DefaultBlack);
+        assert_eq!(
+            events[2].stroke_branch,
+            RendererStrokeBranch::AutomaticDefault
+        );
+        assert_eq!(
+            events[2].source_size_branch,
+            RendererSourceSizeBranch::GeometryFallback
+        );
+        assert_eq!(events[2].layout_box_branch, RendererLayoutBoxBranch::Seed);
+        assert_eq!(events[2].resolved_fill_rgba, [0, 0, 0, 255]);
+        assert_eq!(events[2].resolved_stroke_rgba, Some([255, 255, 255, 255]));
+
+        let mut block_disabled = automatic_test_block(
+            &renderer,
+            make_transform(0.0),
+            "Block disabled",
+            30.0,
+            28.0,
+            TextDirection::Horizontal,
+        );
+        block_disabled.style.as_mut().expect("test style").stroke = Some(TextStrokeStyle {
+            enabled: false,
+            color: [1, 2, 3, 255],
+            width_px: Some(4.0),
+        });
+        let (_, events) =
+            render_with_diagnostics(&renderer, &[block_disabled], None, 320, 120, &options)?;
+        assert_eq!(events[0].stroke_branch, RendererStrokeBranch::BlockDisabled);
+        assert_eq!(events[0].resolved_stroke_rgba, None);
+
+        let mut global_block = automatic_test_block(
+            &renderer,
+            make_transform(0.0),
+            "Global",
+            30.0,
+            28.0,
+            TextDirection::Horizontal,
+        );
+        global_block.style.as_mut().expect("test style").stroke = None;
+        let global_disabled = PageRenderOptions {
+            shader_stroke: Some(TextStrokeStyle {
+                enabled: false,
+                color: [9, 8, 7, 255],
+                width_px: Some(5.0),
+            }),
+            ..options.clone()
+        };
+        let (_, events) = render_with_diagnostics(
+            &renderer,
+            std::slice::from_ref(&global_block),
+            None,
+            320,
+            120,
+            &global_disabled,
+        )?;
+        assert_eq!(
+            events[0].stroke_branch,
+            RendererStrokeBranch::GlobalDisabled
+        );
+        assert_eq!(events[0].resolved_stroke_rgba, None);
+
+        let global_explicit = PageRenderOptions {
+            shader_stroke: Some(TextStrokeStyle {
+                enabled: true,
+                color: [9, 8, 7, 255],
+                width_px: Some(5.0),
+            }),
+            ..options.clone()
+        };
+        let (_, events) = render_with_diagnostics(
+            &renderer,
+            std::slice::from_ref(&global_block),
+            None,
+            320,
+            120,
+            &global_explicit,
+        )?;
+        assert_eq!(
+            events[0].stroke_branch,
+            RendererStrokeBranch::GlobalExplicit
+        );
+        assert_eq!(events[0].resolved_stroke_rgba, Some([9, 8, 7, 255]));
+        assert_eq!(events[0].resolved_stroke_width, Some(5.0));
+
+        for invalid_width in [0.0, -1.0, f32::NAN] {
+            let mut no_stroke = predicted.clone();
+            no_stroke
+                .font_prediction
+                .as_mut()
+                .expect("test prediction")
+                .stroke_width_px = invalid_width;
+            let (_, events) =
+                render_with_diagnostics(&renderer, &[no_stroke], None, 320, 120, &options)?;
+            assert_eq!(
+                events[0].stroke_branch,
+                RendererStrokeBranch::PredictedNoStroke
+            );
+            assert_eq!(events[0].resolved_stroke_rgba, None);
+            assert_eq!(events[0].resolved_stroke_width, None);
+            if invalid_width.is_finite() {
+                assert_eq!(events[0].predicted_stroke_width, Some(invalid_width));
+            } else {
+                assert_eq!(events[0].predicted_stroke_width, None);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn renderer_diagnostics_layout_grouping_and_failure_paths_are_factual() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let options = PageRenderOptions {
+            source_relative_font_size_policy: Some(SourceRelativeFontSizePolicy {
+                offset: 0.0,
+                prefer_detected: true,
+            }),
+            ..Default::default()
+        };
+
+        let mut unique = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 70.0,
+                y: 70.0,
+                width: 30.0,
+                height: 40.0,
+                rotation_deg: 1.0,
+            },
+            "Unique",
+            28.0,
+            24.0,
+            TextDirection::Horizontal,
+        );
+        unique.lock_layout_box = false;
+        let mut unique_mask = GrayImage::from_pixel(200, 200, Luma([0u8]));
+        paint_rect(&mut unique_mask, 20, 20, 180, 180, 1);
+        let unique_mask = DynamicImage::ImageLuma8(unique_mask);
+        let (_, unique_events) = render_with_diagnostics(
+            &renderer,
+            std::slice::from_ref(&unique),
+            Some(&unique_mask),
+            200,
+            200,
+            &options,
+        )?;
+        assert_eq!(
+            unique_events[0].layout_box_branch,
+            RendererLayoutBoxBranch::UniqueBubble
+        );
+
+        let mut shared_left = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 30.0,
+                y: 50.0,
+                width: 75.0,
+                height: 80.0,
+                rotation_deg: 2.0,
+            },
+            "Left",
+            28.0,
+            24.0,
+            TextDirection::Horizontal,
+        );
+        shared_left.lock_layout_box = false;
+        let mut shared_right = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 150.0,
+                y: 50.0,
+                width: 85.0,
+                height: 80.0,
+                rotation_deg: 3.0,
+            },
+            "Right",
+            28.0,
+            24.0,
+            TextDirection::Horizontal,
+        );
+        shared_right.lock_layout_box = false;
+        let shared_blocks = [shared_left, shared_right];
+        let mut shared_mask = GrayImage::from_pixel(280, 200, Luma([0u8]));
+        paint_rect(&mut shared_mask, 10, 10, 270, 190, 1);
+        let shared_mask = DynamicImage::ImageLuma8(shared_mask);
+        let (_, shared_events) = render_with_diagnostics(
+            &renderer,
+            &shared_blocks,
+            Some(&shared_mask),
+            280,
+            200,
+            &options,
+        )?;
+        assert_eq!(
+            shared_events
+                .iter()
+                .map(|event| event.layout_box_branch)
+                .collect::<Vec<_>>(),
+            [
+                RendererLayoutBoxBranch::SharedBubble,
+                RendererLayoutBoxBranch::SharedBubble
+            ]
+        );
+        assert_eq!(
+            shared_events
+                .iter()
+                .map(|event| event.resolved_layout_width)
+                .collect::<Vec<_>>(),
+            [75.0, 85.0]
+        );
+        assert_eq!(
+            shared_events
+                .iter()
+                .map(|event| event.rotation_deg)
+                .collect::<Vec<_>>(),
+            [2.0, 3.0]
+        );
+
+        let common_source = Transform {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 80.0,
+            rotation_deg: 0.0,
+        };
+        let mut roomy = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 10.0,
+                y: 10.0,
+                width: 280.0,
+                height: 100.0,
+                rotation_deg: 4.0,
+            },
+            "Wide",
+            40.0,
+            36.0,
+            TextDirection::Horizontal,
+        );
+        roomy.source_transform = common_source;
+        let mut constrained = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 10.0,
+                y: 130.0,
+                width: 120.0,
+                height: 60.0,
+                rotation_deg: 5.0,
+            },
+            "Narrow words",
+            40.0,
+            36.0,
+            TextDirection::Horizontal,
+        );
+        constrained.source_transform = common_source;
+        let grouped_blocks = [roomy, constrained];
+        let (_, grouped_events) =
+            render_with_diagnostics(&renderer, &grouped_blocks, None, 320, 220, &options)?;
+        let group_size = grouped_events[0]
+            .group_size
+            .expect("horizontal source row must be grouped");
+        assert_eq!(grouped_events[1].group_size, Some(group_size));
+        assert!(
+            grouped_events
+                .iter()
+                .any(|event| event.independent_size > event.final_size)
+        );
+        assert!(
+            grouped_events
+                .iter()
+                .all(|event| event.final_size == group_size)
+        );
+        assert_eq!(
+            grouped_events
+                .iter()
+                .map(|event| event.rotation_deg)
+                .collect::<Vec<_>>(),
+            [4.0, 5.0]
+        );
+
+        let vertical = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 20.0,
+                y: 20.0,
+                width: 90.0,
+                height: 180.0,
+                rotation_deg: 6.0,
+            },
+            "縦書き",
+            28.0,
+            24.0,
+            TextDirection::Vertical,
+        );
+        let (_, vertical_events) =
+            render_with_diagnostics(&renderer, &[vertical], None, 160, 240, &options)?;
+        assert_eq!(vertical_events[0].group_size, None);
+
+        let failed = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 180.0,
+                height: 80.0,
+                rotation_deg: 0.0,
+            },
+            "Failure",
+            28.0,
+            24.0,
+            TextDirection::Horizontal,
+        );
+        let resolved = resolve_layout_boxes(std::slice::from_ref(&failed), None)[0];
+        let prepared = renderer
+            .prepare_source_relative_automatic(
+                &failed,
+                resolved,
+                &options,
+                options
+                    .source_relative_font_size_policy
+                    .expect("test policy"),
+                min_font_size_for_image(240, 120),
+            )?
+            .expect("test block must prepare");
+        let capture = start_renderer_diagnostic_capture();
+        let error = renderer.render_prepared_source_relative(
+            &failed,
+            &prepared,
+            prepared.independent_font_size + 1.0,
+            Some(prepared.independent_font_size),
+            None,
+            RasterOptions::default(),
+        );
+        assert!(error.is_err());
+        assert!(capture.take().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn renderer_diagnostics_owner_thread_nested_and_unwind_contract() -> Result<()> {
+        let renderer = Renderer::new()?;
+        let block = automatic_test_block(
+            &renderer,
+            Transform {
+                x: 0.0,
+                y: 0.0,
+                width: 180.0,
+                height: 80.0,
+                rotation_deg: 0.0,
+            },
+            "Owner",
+            28.0,
+            24.0,
+            TextDirection::Horizontal,
+        );
+        let capture = start_renderer_diagnostic_capture();
+        assert!(matches!(
+            RendererDiagnosticCapture::start(),
+            Err(RendererDiagnosticCaptureActive)
+        ));
+        render_automatic_test_blocks(&renderer, std::slice::from_ref(&block), 240, 120, 0.0)?;
+
+        let barrier = Arc::new(Barrier::new(2));
+        let foreign_barrier = barrier.clone();
+        let foreign = std::thread::spawn(move || -> Result<()> {
+            let renderer = Renderer::new()?;
+            let block = automatic_test_block(
+                &renderer,
+                Transform {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 180.0,
+                    height: 80.0,
+                    rotation_deg: 0.0,
+                },
+                "Foreign",
+                28.0,
+                24.0,
+                TextDirection::Horizontal,
+            );
+            foreign_barrier.wait();
+            render_automatic_test_blocks(&renderer, &[block], 240, 120, 0.0)?;
+            foreign_barrier.wait();
+            Ok(())
+        });
+        barrier.wait();
+        barrier.wait();
+        foreign.join().unwrap()?;
+        render_automatic_test_blocks(&renderer, std::slice::from_ref(&block), 240, 120, 0.0)?;
+        assert_eq!(capture.take().len(), 2);
+        drop(capture);
+
+        let unwind = std::panic::catch_unwind(|| {
+            let _capture = start_renderer_diagnostic_capture();
+            panic!("intentional renderer diagnostic unwind");
+        });
+        assert!(unwind.is_err());
+        let restarted = start_renderer_diagnostic_capture();
+        let coordination = RENDERER_DIAGNOSTIC_SINK.get().unwrap();
+        let coordination_poison = std::thread::spawn(move || {
+            let _guard = coordination
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            panic!("intentional renderer diagnostic coordination poison");
+        });
+        assert!(coordination_poison.join().is_err());
+
+        let events = restarted.events.clone();
+        let event_poison = std::thread::spawn(move || {
+            let _guard = events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            panic!("intentional renderer diagnostic event poison");
+        });
+        assert!(event_poison.join().is_err());
+
+        render_automatic_test_blocks(&renderer, std::slice::from_ref(&block), 240, 120, 0.0)?;
+        assert_eq!(restarted.take().len(), 1);
+        drop(restarted);
+        let final_restart = start_renderer_diagnostic_capture();
+        assert!(final_restart.take().is_empty());
+        Ok(())
+    }
 
     #[test]
     fn available_fonts_uses_default_google_face_boundary() -> Result<()> {
@@ -3300,6 +4629,14 @@ mod tests {
         assert_eq!(layout_boxes[0].bubble_id, Some(1));
         assert_eq!(layout_boxes[1].layout_box, seed_layout_box(&blocks[1]));
         assert_eq!(layout_boxes[1].bubble_id, Some(1));
+        assert_eq!(
+            layout_boxes[0].diagnostic_branch,
+            RendererLayoutBoxBranch::SharedBubble
+        );
+        assert_eq!(
+            layout_boxes[1].diagnostic_branch,
+            RendererLayoutBoxBranch::SharedBubble
+        );
     }
 
     #[test]
@@ -3314,6 +4651,10 @@ mod tests {
         assert!(layout_boxes[0].layout_box.width > blocks[0].transform.width);
         assert!(layout_boxes[0].layout_box.height > blocks[0].transform.height);
         assert_eq!(layout_boxes[0].bubble_id, Some(1));
+        assert_eq!(
+            layout_boxes[0].diagnostic_branch,
+            RendererLayoutBoxBranch::UniqueBubble
+        );
     }
 
     #[test]
@@ -3329,6 +4670,21 @@ mod tests {
 
         assert_eq!(layout_boxes[0].layout_box, seed_layout_box(&blocks[0]));
         assert_eq!(layout_boxes[0].bubble_id, None);
+        assert_eq!(
+            layout_boxes[0].diagnostic_branch,
+            RendererLayoutBoxBranch::LockedSeed
+        );
+
+        let unlocked = block(70.0, 70.0, 20.0, 30.0, "hello");
+        let seed = resolve_layout_boxes(std::slice::from_ref(&unlocked), None);
+        assert_eq!(seed[0].diagnostic_branch, RendererLayoutBoxBranch::Seed);
+
+        let empty = block(70.0, 70.0, 20.0, 30.0, "");
+        let empty_seed = resolve_layout_boxes(std::slice::from_ref(&empty), Some(&index));
+        assert_eq!(
+            empty_seed[0].diagnostic_branch,
+            RendererLayoutBoxBranch::Seed
+        );
     }
 
     fn has_synthetic_hyphen(layout: &LayoutRun<'_>) -> bool {
@@ -3677,6 +5033,7 @@ mod tests {
             &block,
             &prepared,
             final_size,
+            None,
             None,
             RasterOptions::default(),
         )?;
