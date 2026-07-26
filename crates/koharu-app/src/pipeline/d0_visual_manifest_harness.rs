@@ -432,7 +432,7 @@ mod source_gate_selection {
     const B0_SHA_ENV: &str = "HANONLY_B0_SHA";
     const ARTIFACT_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT";
     const REPORT_DIR_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR";
-    const ARTIFACT_VERSION: &str = "hanonly-b0-frozen-artifact-v1";
+    const ARTIFACT_VERSION: u32 = 1;
     const PLAN_REVISION: u32 = 46;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,11 +458,11 @@ mod source_gate_selection {
             };
             let b0_sha = required(&mut get, B0_SHA_ENV)?;
             require(
-                matches!(b0_sha.len(), 40 | 64)
+                b0_sha.len() == 40
                     && b0_sha
                         .bytes()
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
-                "B0 sha must be 40 or 64 lowercase hex characters",
+                "B0 sha must be 40 lowercase hex characters",
             )?;
             let visual_manifest_sha256 = required(&mut get, VISUAL_MANIFEST_SHA256_ENV)?;
             decode_sha256(&visual_manifest_sha256)?;
@@ -491,106 +491,155 @@ mod source_gate_selection {
         }
     }
 
-    #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-    #[serde(rename_all = "lowercase")]
-    enum EntryRole {
-        Regression,
-        Calibration,
-        Holdout,
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Candidate {
+        id: String,
+        numerator: u32,
+        denominator: u32,
     }
 
-    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]
-    struct ModelEvidence {
-        provider: String,
+    struct ModelArtifactHashes {
+        pp_detection: String,
+        pp_recognition: String,
+        pp_recognition_config: String,
+        vl_model: String,
+        vl_mmproj: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct EnumeratedDevice {
+        index: u32,
+        name: String,
+        description: String,
         backend: String,
-        identifier_sha256: String,
+        device_type: String,
     }
 
-    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]
-    struct RuntimeEvidence {
-        os: String,
-        device: String,
+    struct LoadedModelDevice {
+        model_device_ordinal: u32,
+        name: String,
+        backend: String,
+        device_type: String,
     }
 
-    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]
-    struct DeviceEvidence {
+    struct LoadEvidence {
+        cpu_forced: bool,
+        gpu_offload_supported: bool,
+        n_gpu_layers: u32,
+        mtmd_use_gpu: bool,
+        word_boxes_backend: String,
+        raw_load_log_relpath: String,
+        raw_load_log_sha256: String,
+        enumerated_devices: Vec<EnumeratedDevice>,
+        loaded_model_devices: Vec<LoadedModelDevice>,
+        offloaded_layers: u32,
+        offloadable_layers: u32,
+        model_buffer_bytes_by_backend: BTreeMap<String, u64>,
+        mtmd_backend: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct ProcessEvidence {
+        id: String,
+        phase: String,
+        requested_device: String,
+        paddle_instance_id: String,
+        executable_sha256: String,
+        model_artifact_sha256: ModelArtifactHashes,
+        runtime_library_sha256: BTreeMap<String, String>,
+        load_evidence: LoadEvidence,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct ExecutionEvidence {
+        paddle_instance_id: String,
+        context_offload_kqv: bool,
+        context_op_offload: bool,
+        inference_completed: bool,
+        raw_inference_log_relpath: String,
+        raw_inference_log_sha256: String,
+        context_buffer_bytes_by_backend: BTreeMap<String, u64>,
+        compute_buffer_bytes_by_backend: BTreeMap<String, u64>,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RuntimeNode {
+        node_id: String,
+        recognition_anchor: [f64; 4],
+        node_rotation: f64,
+        text_rotation: f64,
+        selected_as_han: bool,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct DerivedEvidence {
         actual_device: String,
+        matched_target_ids: Vec<String>,
+        selected_target_ids: Vec<String>,
+        selected_protected_node_ids: Vec<String>,
+        selected_rotation_target_ids: Vec<String>,
+        unmatched_selected_node_ids: Vec<String>,
+        target_recall: f64,
+        protected_false_positive_count: u32,
+        rotation_targets_excluded: bool,
+        passed: bool,
     }
 
-    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]
-    struct RawEvidence {
-        load_device: String,
-        model_backend: String,
-        layer_or_buffer: String,
-        context_or_offload: String,
-        runtime_node_count: u32,
-        device_load_confirmed: bool,
-        diagnostic_sha256: String,
+    struct SelectionResult {
+        entry_id: String,
+        process_evidence_id: String,
+        candidate_id: String,
+        execution_evidence: ExecutionEvidence,
+        runtime_nodes: Vec<RuntimeNode>,
+        derived: DerivedEvidence,
     }
 
-    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-    #[serde(deny_unknown_fields)]
-    struct OutputHashes {
-        source: String,
-        segment_mask: String,
-        inpainted: String,
-        rendered: String,
-    }
-
-    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-    #[serde(deny_unknown_fields)]
-    struct Assertions {
-        source_text_removed: bool,
-        target_rendered: bool,
-        protected_pixels_preserved: bool,
-        english_roi_preserved: bool,
-    }
-
-    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-    #[serde(deny_unknown_fields)]
-    struct SelectionEntry {
-        case_id: String,
-        input_sha256: String,
-        role: EntryRole,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        selected_candidate_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        phase_result: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        model: Option<ModelEvidence>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        runtime: Option<RuntimeEvidence>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        device: Option<DeviceEvidence>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        raw_evidence: Option<RawEvidence>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        output_hashes: Option<OutputHashes>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        assertions: Option<Assertions>,
-    }
-
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq)]
     struct RunnerEvidence {
         selected_candidate_id: String,
-        entries: Vec<SelectionEntry>,
+        process_evidence: Vec<ProcessEvidence>,
+        results: Vec<SelectionResult>,
     }
 
-    #[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[derive(Debug, Deserialize, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]
     struct FrozenArtifact {
-        version: String,
+        version: u32,
         plan_revision: u32,
         b0_sha: String,
-        visual_manifest_sha256: String,
+        manifest_sha256: String,
         source_gate_fixture_manifest_sha256: String,
+        image_input_contract_sha256: String,
+        source_color_contract_sha256: String,
+        color_constant_set_sha256: String,
+        requested_devices: Vec<String>,
+        enabled_cargo_features: Vec<String>,
+        backend_evidence_parser_version: u32,
+        candidates: Vec<Candidate>,
+        calibration_entry_ids: Vec<String>,
+        holdout_entry_ids: Vec<String>,
+        process_evidence: Vec<ProcessEvidence>,
+        calibration_results: Vec<SelectionResult>,
         selected_candidate_id: String,
-        candidate_ratios: BTreeMap<String, String>,
-        entries: Vec<SelectionEntry>,
+        frozen_at_utc: String,
+        frozen_payload_sha256: String,
+        holdout_results: Vec<SelectionResult>,
+        holdout_completed_at_utc: Option<String>,
+        retuned_after_freeze: bool,
     }
 
     fn required(
@@ -672,16 +721,30 @@ mod source_gate_selection {
             Phase::CalibrationFreeze => {
                 let evidence = model_runner(&environment)?;
                 let artifact = FrozenArtifact {
-                    version: ARTIFACT_VERSION.into(),
+                    version: ARTIFACT_VERSION,
                     plan_revision: PLAN_REVISION,
                     b0_sha: environment.b0_sha.clone(),
-                    visual_manifest_sha256: environment.visual_manifest_sha256.clone(),
+                    manifest_sha256: environment.visual_manifest_sha256.clone(),
                     source_gate_fixture_manifest_sha256: environment
                         .source_gate_fixture_manifest_sha256
                         .clone(),
+                    image_input_contract_sha256: synthetic_hash(21),
+                    source_color_contract_sha256: synthetic_hash(22),
+                    color_constant_set_sha256: synthetic_hash(23),
+                    requested_devices: vec!["cpu".into(), "metal".into()],
+                    enabled_cargo_features: vec!["hanonly-test-evidence".into(), "metal".into()],
+                    backend_evidence_parser_version: 1,
+                    candidates: candidates_schema(),
+                    calibration_entry_ids: entry_ids("calibration"),
+                    holdout_entry_ids: entry_ids("holdout"),
+                    process_evidence: evidence.process_evidence,
+                    calibration_results: evidence.results,
                     selected_candidate_id: evidence.selected_candidate_id,
-                    candidate_ratios: candidate_ratios(),
-                    entries: evidence.entries,
+                    frozen_at_utc: "2026-07-26T00:00:00Z".into(),
+                    frozen_payload_sha256: synthetic_hash(24),
+                    holdout_results: Vec::new(),
+                    holdout_completed_at_utc: None,
+                    retuned_after_freeze: false,
                 };
                 validate_artifact(&artifact, Phase::CalibrationFreeze, &environment)?;
                 write_artifact(&environment.artifact, &canonical_json(&artifact)?, false)
@@ -700,20 +763,33 @@ mod source_gate_selection {
                     evidence.selected_candidate_id == artifact.selected_candidate_id,
                     "holdout selected candidate drift",
                 )?;
-                artifact.entries.extend(evidence.entries);
+                artifact.process_evidence.extend(evidence.process_evidence);
+                artifact.holdout_results = evidence.results;
+                artifact.holdout_completed_at_utc = Some("2026-07-26T00:01:00Z".into());
                 validate_artifact(&artifact, Phase::Holdout, &environment)?;
                 write_artifact(&environment.artifact, &canonical_json(&artifact)?, true)
             }
         }
     }
 
-    fn candidate_ratios() -> BTreeMap<String, String> {
-        BTreeMap::from([
-            ("R0".into(), "0".into()),
-            ("R025".into(), "1/40".into()),
-            ("R05".into(), "1/20".into()),
-            ("R10".into(), "1/10".into()),
-        ])
+    fn candidates_schema() -> Vec<Candidate> {
+        [
+            ("R0", 0, 1),
+            ("R025", 1, 40),
+            ("R05", 1, 20),
+            ("R10", 1, 10),
+        ]
+        .into_iter()
+        .map(|(id, numerator, denominator)| Candidate {
+            id: id.into(),
+            numerator,
+            denominator,
+        })
+        .collect()
+    }
+
+    fn entry_ids(phase: &str) -> Vec<String> {
+        (0..4).map(|index| format!("{phase}-{index}")).collect()
     }
 
     fn validate_artifact(
@@ -727,123 +803,217 @@ mod source_gate_selection {
         )?;
         require(
             artifact.b0_sha == environment.b0_sha
-                && artifact.visual_manifest_sha256 == environment.visual_manifest_sha256
+                && artifact.manifest_sha256 == environment.visual_manifest_sha256
                 && artifact.source_gate_fixture_manifest_sha256
                     == environment.source_gate_fixture_manifest_sha256,
             "selection artifact frozen input drift",
         )?;
         require(
-            candidate_ratios().contains_key(&artifact.selected_candidate_id),
+            artifact
+                .candidates
+                .iter()
+                .any(|candidate| candidate.id == artifact.selected_candidate_id),
             "invalid selected candidate",
         )?;
         require(
-            artifact.candidate_ratios == candidate_ratios(),
+            artifact.candidates == candidates_schema()
+                && artifact.requested_devices == ["cpu", "metal"]
+                && artifact.enabled_cargo_features == ["hanonly-test-evidence", "metal"]
+                && artifact.backend_evidence_parser_version == 1
+                && artifact.calibration_entry_ids == entry_ids("calibration")
+                && artifact.holdout_entry_ids == entry_ids("holdout")
+                && !artifact.retuned_after_freeze,
             "candidate ratios drift",
         )?;
-        let expected = match phase {
-            Phase::CalibrationFreeze => (5, 1, 4, 0),
-            Phase::Holdout => (9, 1, 4, 4),
-        };
-        let mut roles = [0_usize; 3];
-        let mut case_ids = HashSet::new();
-        for entry in &artifact.entries {
-            validate_text(&entry.case_id)?;
-            require(
-                case_ids.insert(entry.case_id.as_str()),
-                "duplicate selection case id",
-            )?;
-            decode_sha256(&entry.input_sha256)?;
-            match entry.role {
-                EntryRole::Regression => {
-                    roles[0] += 1;
-                    require(
-                        entry.selected_candidate_id.is_none()
-                            && entry.phase_result.is_none()
-                            && entry.model.is_none()
-                            && entry.runtime.is_none()
-                            && entry.device.is_none()
-                            && entry.raw_evidence.is_none()
-                            && entry.output_hashes.is_none()
-                            && entry.assertions.is_none(),
-                        "regression entry must contain only identity fields",
-                    )?;
-                }
-                EntryRole::Calibration | EntryRole::Holdout => {
-                    roles[usize::from(entry.role == EntryRole::Holdout) + 1] += 1;
-                    validate_model_entry(entry, &artifact.selected_candidate_id)?;
-                }
-            }
-        }
-        require(
-            (artifact.entries.len(), roles[0], roles[1], roles[2]) == expected,
-            "selection artifact entry role counts mismatch",
-        )
-    }
-
-    fn validate_model_entry(entry: &SelectionEntry, selected_candidate_id: &str) -> io::Result<()> {
-        require(
-            entry.selected_candidate_id.as_deref() == Some(selected_candidate_id)
-                && entry.phase_result.as_deref() == Some("pass"),
-            "selection evidence did not pass for the selected candidate",
-        )?;
-        let model = entry
-            .model
-            .as_ref()
-            .ok_or_else(|| invalid_data("missing model evidence"))?;
-        let runtime = entry
-            .runtime
-            .as_ref()
-            .ok_or_else(|| invalid_data("missing runtime evidence"))?;
-        let device = entry
-            .device
-            .as_ref()
-            .ok_or_else(|| invalid_data("missing device evidence"))?;
-        let raw_evidence = entry
-            .raw_evidence
-            .as_ref()
-            .ok_or_else(|| invalid_data("missing raw evidence"))?;
-        let output_hashes = entry
-            .output_hashes
-            .as_ref()
-            .ok_or_else(|| invalid_data("missing output hashes"))?;
-        let assertions = entry
-            .assertions
-            .as_ref()
-            .ok_or_else(|| invalid_data("missing assertions"))?;
-        for value in [
-            &model.provider,
-            &model.backend,
-            &runtime.os,
-            &runtime.device,
-            &device.actual_device,
-            &raw_evidence.load_device,
-            &raw_evidence.model_backend,
-            &raw_evidence.layer_or_buffer,
-            &raw_evidence.context_or_offload,
-        ] {
-            validate_text(value)?;
-        }
         for hash in [
-            &model.identifier_sha256,
-            &raw_evidence.diagnostic_sha256,
-            &output_hashes.source,
-            &output_hashes.segment_mask,
-            &output_hashes.inpainted,
-            &output_hashes.rendered,
+            &artifact.image_input_contract_sha256,
+            &artifact.source_color_contract_sha256,
+            &artifact.color_constant_set_sha256,
+            &artifact.frozen_payload_sha256,
         ] {
             decode_sha256(hash)?;
         }
+        let expected = match phase {
+            Phase::CalibrationFreeze => (2, 32, 0, true),
+            Phase::Holdout => (4, 32, 8, false),
+        };
         require(
-            raw_evidence.runtime_node_count > 0 && raw_evidence.device_load_confirmed,
-            "raw selection evidence is invalid",
+            (
+                artifact.process_evidence.len(),
+                artifact.calibration_results.len(),
+                artifact.holdout_results.len(),
+                artifact.holdout_completed_at_utc.is_none(),
+            ) == expected,
+            "selection artifact matrix counts mismatch",
         )?;
+        validate_result_matrix(artifact)
+    }
+
+    fn validate_result_matrix(artifact: &FrozenArtifact) -> io::Result<()> {
+        let processes = artifact
+            .process_evidence
+            .iter()
+            .map(|process| (process.id.as_str(), process))
+            .collect::<HashMap<_, _>>();
         require(
-            assertions.source_text_removed
-                && assertions.target_rendered
-                && assertions.protected_pixels_preserved
-                && assertions.english_roi_preserved,
-            "selection assertions must all pass",
+            processes.len() == artifact.process_evidence.len()
+                && matches!(artifact.process_evidence.len(), 2 | 4),
+            "duplicate process evidence id",
+        )?;
+        for process in &artifact.process_evidence {
+            validate_text(&process.id)?;
+            require(
+                matches!(process.phase.as_str(), "calibration" | "holdout")
+                    && matches!(process.requested_device.as_str(), "cpu" | "metal")
+                    && process.paddle_instance_id.len() == 32
+                    && process
+                        .paddle_instance_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                    && !process.runtime_library_sha256.is_empty(),
+                "invalid process evidence identity",
+            )?;
+            decode_sha256(&process.executable_sha256)?;
+            for hash in [
+                &process.model_artifact_sha256.pp_detection,
+                &process.model_artifact_sha256.pp_recognition,
+                &process.model_artifact_sha256.pp_recognition_config,
+                &process.model_artifact_sha256.vl_model,
+                &process.model_artifact_sha256.vl_mmproj,
+                &process.load_evidence.raw_load_log_sha256,
+            ] {
+                decode_sha256(hash)?;
+            }
+            for (path, hash) in &process.runtime_library_sha256 {
+                validate_text(path)?;
+                decode_sha256(hash)?;
+            }
+            require(
+                !process.load_evidence.loaded_model_devices.is_empty()
+                    && process
+                        .load_evidence
+                        .loaded_model_devices
+                        .iter()
+                        .enumerate()
+                        .all(|(ordinal, device)| {
+                            device.model_device_ordinal == ordinal as u32
+                                && !device.name.is_empty()
+                                && matches!(device.backend.as_str(), "CPU" | "Metal")
+                        }),
+                "invalid loaded model devices",
+            )?;
+        }
+        let candidate_ids = artifact
+            .candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<HashSet<_>>();
+        let mut calibration_cells = HashSet::new();
+        for result in &artifact.calibration_results {
+            let process = validate_result(result, &processes, "calibration")?;
+            require(
+                artifact.calibration_entry_ids.contains(&result.entry_id)
+                    && candidate_ids.contains(result.candidate_id.as_str())
+                    && calibration_cells.insert((
+                        result.entry_id.as_str(),
+                        process.requested_device.as_str(),
+                        result.candidate_id.as_str(),
+                    )),
+                "invalid or duplicate calibration cell",
+            )?;
+        }
+        let mut holdout_cells = HashSet::new();
+        for result in &artifact.holdout_results {
+            let process = validate_result(result, &processes, "holdout")?;
+            require(
+                artifact.holdout_entry_ids.contains(&result.entry_id)
+                    && result.candidate_id == artifact.selected_candidate_id
+                    && holdout_cells
+                        .insert((result.entry_id.as_str(), process.requested_device.as_str())),
+                "invalid or duplicate holdout cell",
+            )?;
+        }
+        require(
+            calibration_cells.len() == 32
+                && (artifact.holdout_results.is_empty() || holdout_cells.len() == 8),
+            "selection result matrix is incomplete",
         )
+    }
+
+    fn validate_result<'a>(
+        result: &SelectionResult,
+        processes: &HashMap<&str, &'a ProcessEvidence>,
+        phase: &str,
+    ) -> io::Result<&'a ProcessEvidence> {
+        let process = processes
+            .get(result.process_evidence_id.as_str())
+            .copied()
+            .ok_or_else(|| invalid_data("missing process evidence"))?;
+        let load = &process.load_evidence;
+        let execution = &result.execution_evidence;
+        require(
+            process.phase == phase
+                && execution.paddle_instance_id == process.paddle_instance_id
+                && execution.inference_completed
+                && result.derived.actual_device == process.requested_device,
+            "selection result instance or device mismatch",
+        )?;
+        decode_sha256(&execution.raw_inference_log_sha256)?;
+        let positive = |map: &BTreeMap<String, u64>, backend: &str| {
+            map.get(backend).copied().unwrap_or_default() > 0
+        };
+        if process.requested_device == "cpu" {
+            require(
+                load.cpu_forced
+                    && load.n_gpu_layers == 0
+                    && !load.mtmd_use_gpu
+                    && !execution.context_offload_kqv
+                    && !execution.context_op_offload
+                    && load.offloaded_layers == 0
+                    && load.mtmd_backend == "CPU"
+                    && load
+                        .loaded_model_devices
+                        .iter()
+                        .all(|device| device.backend == "CPU" && device.device_type == "cpu")
+                    && positive(&load.model_buffer_bytes_by_backend, "CPU")
+                    && positive(&execution.context_buffer_bytes_by_backend, "CPU")
+                    && positive(&execution.compute_buffer_bytes_by_backend, "CPU")
+                    && [
+                        &load.model_buffer_bytes_by_backend,
+                        &execution.context_buffer_bytes_by_backend,
+                        &execution.compute_buffer_bytes_by_backend,
+                    ]
+                    .into_iter()
+                    .all(|map| {
+                        map.iter()
+                            .all(|(backend, bytes)| backend == "CPU" || *bytes == 0)
+                    }),
+                "invalid CPU derivation",
+            )?;
+        } else {
+            require(
+                !load.cpu_forced
+                    && load.n_gpu_layers > 0
+                    && load.mtmd_use_gpu
+                    && execution.context_offload_kqv
+                    && execution.context_op_offload
+                    && load.offloaded_layers > 0
+                    && load.mtmd_backend == "Metal"
+                    && load
+                        .loaded_model_devices
+                        .iter()
+                        .any(|device| device.backend == "Metal")
+                    && load
+                        .loaded_model_devices
+                        .iter()
+                        .all(|device| matches!(device.backend.as_str(), "CPU" | "Metal"))
+                    && positive(&load.model_buffer_bytes_by_backend, "Metal")
+                    && positive(&execution.context_buffer_bytes_by_backend, "Metal")
+                    && positive(&execution.compute_buffer_bytes_by_backend, "Metal"),
+                "invalid Metal derivation",
+            )?;
+        }
+        Ok(process)
     }
 
     fn validate_text(value: &str) -> io::Result<()> {
@@ -1002,69 +1172,143 @@ mod source_gate_selection {
         format!("{value:064x}")
     }
 
-    fn synthetic_entries(role: EntryRole, count: usize, prefix: &str) -> Vec<SelectionEntry> {
-        (0..count)
-            .map(|index| SelectionEntry {
-                case_id: format!("{prefix}-{index}"),
-                input_sha256: synthetic_hash(index as u8 + 1),
-                role,
-                selected_candidate_id: Some("R05".into()),
-                phase_result: Some("pass".into()),
-                model: Some(ModelEvidence {
-                    provider: "synthetic-test-provider".into(),
-                    backend: "synthetic-test-backend".into(),
-                    identifier_sha256: synthetic_hash(10),
-                }),
-                runtime: Some(RuntimeEvidence {
-                    os: "synthetic-test-os".into(),
-                    device: "synthetic-test-runtime-device".into(),
-                }),
-                device: Some(DeviceEvidence {
-                    actual_device: "synthetic-test-device".into(),
-                }),
-                raw_evidence: Some(RawEvidence {
-                    load_device: "synthetic-test-load-device".into(),
-                    model_backend: "synthetic-test-model-backend".into(),
-                    layer_or_buffer: "synthetic-test-layer-or-buffer".into(),
-                    context_or_offload: "synthetic-test-context-or-offload".into(),
-                    runtime_node_count: 24,
-                    device_load_confirmed: true,
-                    diagnostic_sha256: synthetic_hash(15),
-                }),
-                output_hashes: Some(OutputHashes {
-                    source: synthetic_hash(11),
-                    segment_mask: synthetic_hash(12),
-                    inpainted: synthetic_hash(13),
-                    rendered: synthetic_hash(14),
-                }),
-                assertions: Some(Assertions {
-                    source_text_removed: true,
-                    target_rendered: true,
-                    protected_pixels_preserved: true,
-                    english_roi_preserved: true,
-                }),
-            })
-            .collect()
+    fn synthetic_process(phase: &str, device: &str) -> ProcessEvidence {
+        let metal = device == "metal";
+        ProcessEvidence {
+            id: format!("{phase}-{device}"),
+            phase: phase.into(),
+            requested_device: device.into(),
+            paddle_instance_id: if metal {
+                "2".repeat(32)
+            } else {
+                "1".repeat(32)
+            },
+            executable_sha256: synthetic_hash(1),
+            model_artifact_sha256: ModelArtifactHashes {
+                pp_detection: synthetic_hash(2),
+                pp_recognition: synthetic_hash(3),
+                pp_recognition_config: synthetic_hash(4),
+                vl_model: synthetic_hash(5),
+                vl_mmproj: synthetic_hash(6),
+            },
+            runtime_library_sha256: BTreeMap::from([(
+                "/usr/lib/libsynthetic.dylib".into(),
+                synthetic_hash(7),
+            )]),
+            load_evidence: LoadEvidence {
+                cpu_forced: !metal,
+                gpu_offload_supported: metal,
+                n_gpu_layers: if metal { 32 } else { 0 },
+                mtmd_use_gpu: metal,
+                word_boxes_backend: "rten_cpu".into(),
+                raw_load_log_relpath: format!("source-gate/{phase}/{device}/load.log"),
+                raw_load_log_sha256: synthetic_hash(8),
+                enumerated_devices: Vec::new(),
+                loaded_model_devices: vec![LoadedModelDevice {
+                    model_device_ordinal: 0,
+                    name: if metal { "Apple GPU" } else { "CPU" }.into(),
+                    backend: if metal { "Metal" } else { "CPU" }.into(),
+                    device_type: if metal { "integrated_gpu" } else { "cpu" }.into(),
+                }],
+                offloaded_layers: if metal { 32 } else { 0 },
+                offloadable_layers: 39,
+                model_buffer_bytes_by_backend: BTreeMap::from([
+                    ("CPU".into(), 1),
+                    ("Metal".into(), u64::from(metal)),
+                ]),
+                mtmd_backend: if metal { "Metal" } else { "CPU" }.into(),
+            },
+        }
+    }
+
+    fn synthetic_result(
+        phase: &str,
+        entry_id: &str,
+        device: &str,
+        candidate_id: &str,
+    ) -> SelectionResult {
+        let metal = device == "metal";
+        SelectionResult {
+            entry_id: entry_id.into(),
+            process_evidence_id: format!("{phase}-{device}"),
+            candidate_id: candidate_id.into(),
+            execution_evidence: ExecutionEvidence {
+                paddle_instance_id: if metal {
+                    "2".repeat(32)
+                } else {
+                    "1".repeat(32)
+                },
+                context_offload_kqv: metal,
+                context_op_offload: metal,
+                inference_completed: true,
+                raw_inference_log_relpath: format!(
+                    "source-gate/{phase}/{entry_id}/{device}/{candidate_id}.log"
+                ),
+                raw_inference_log_sha256: synthetic_hash(9),
+                context_buffer_bytes_by_backend: BTreeMap::from([
+                    ("CPU".into(), 1),
+                    ("Metal".into(), u64::from(metal)),
+                ]),
+                compute_buffer_bytes_by_backend: BTreeMap::from([
+                    ("CPU".into(), 1),
+                    ("Metal".into(), u64::from(metal)),
+                ]),
+            },
+            runtime_nodes: vec![RuntimeNode {
+                node_id: format!("{entry_id}-node"),
+                recognition_anchor: [0.0, 0.0, 1.0, 1.0],
+                node_rotation: 0.0,
+                text_rotation: 0.0,
+                selected_as_han: true,
+            }],
+            derived: DerivedEvidence {
+                actual_device: device.into(),
+                matched_target_ids: vec!["target".into()],
+                selected_target_ids: vec!["target".into()],
+                selected_protected_node_ids: Vec::new(),
+                selected_rotation_target_ids: Vec::new(),
+                unmatched_selected_node_ids: Vec::new(),
+                target_recall: 1.0,
+                protected_false_positive_count: 0,
+                rotation_targets_excluded: true,
+                passed: true,
+            },
+        }
     }
 
     fn calibration_evidence() -> RunnerEvidence {
-        let mut entries = vec![SelectionEntry {
-            case_id: "regression-0".into(),
-            input_sha256: synthetic_hash(20),
-            role: EntryRole::Regression,
-            selected_candidate_id: None,
-            phase_result: None,
-            model: None,
-            runtime: None,
-            device: None,
-            raw_evidence: None,
-            output_hashes: None,
-            assertions: None,
-        }];
-        entries.extend(synthetic_entries(EntryRole::Calibration, 4, "calibration"));
         RunnerEvidence {
             selected_candidate_id: "R05".into(),
-            entries,
+            process_evidence: ["cpu", "metal"]
+                .map(|device| synthetic_process("calibration", device))
+                .into(),
+            results: entry_ids("calibration")
+                .iter()
+                .flat_map(|entry_id| {
+                    ["cpu", "metal"].into_iter().flat_map(move |device| {
+                        candidates_schema().into_iter().map(move |candidate| {
+                            synthetic_result("calibration", entry_id, device, &candidate.id)
+                        })
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    fn holdout_evidence() -> RunnerEvidence {
+        RunnerEvidence {
+            selected_candidate_id: "R05".into(),
+            process_evidence: ["cpu", "metal"]
+                .map(|device| synthetic_process("holdout", device))
+                .into(),
+            results: entry_ids("holdout")
+                .iter()
+                .flat_map(|entry_id| {
+                    ["cpu", "metal"]
+                        .into_iter()
+                        .map(move |device| synthetic_result("holdout", entry_id, device, "R05"))
+                })
+                .collect(),
         }
     }
 
@@ -1158,19 +1402,14 @@ mod source_gate_selection {
         let artifact: FrozenArtifact = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(bytes, canonical_json(&artifact).unwrap());
         assert_eq!(bytes.last(), Some(&b'\n'));
-        assert_eq!(artifact.entries.len(), 5);
-        assert_eq!(
-            artifact
-                .entries
-                .iter()
-                .filter(|entry| entry.role == EntryRole::Calibration)
-                .count(),
-            4
-        );
+        assert_eq!(artifact.process_evidence.len(), 2);
+        assert_eq!(artifact.calibration_results.len(), 32);
+        assert!(artifact.holdout_results.is_empty());
+        assert!(artifact.holdout_completed_at_utc.is_none());
     }
 
     #[test]
-    fn source_gate_selection_holdout_builds_closed_nine_entry_final_artifact() {
+    fn source_gate_selection_holdout_builds_closed_final_artifact() {
         let temp = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(temp.path()).unwrap();
         let mut values = valid_environment(&root);
@@ -1189,28 +1428,17 @@ mod source_gate_selection {
             Path::new("/repository"),
             |_| Ok("a".repeat(40)),
             |_| Ok(()),
-            |_| {
-                Ok(RunnerEvidence {
-                    selected_candidate_id: "R05".into(),
-                    entries: synthetic_entries(EntryRole::Holdout, 4, "holdout"),
-                })
-            },
+            |_| Ok(holdout_evidence()),
         )
         .unwrap();
 
         let bytes = fs::read(root.join("selection.json")).unwrap();
         let artifact: FrozenArtifact = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(bytes, canonical_json(&artifact).unwrap());
-        assert_eq!(artifact.entries.len(), 9);
-        assert_eq!(
-            artifact
-                .entries
-                .iter()
-                .map(|entry| entry.case_id.as_str())
-                .collect::<HashSet<_>>()
-                .len(),
-            9
-        );
+        assert_eq!(artifact.process_evidence.len(), 4);
+        assert_eq!(artifact.calibration_results.len(), 32);
+        assert_eq!(artifact.holdout_results.len(), 8);
+        assert!(!artifact.retuned_after_freeze);
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
             value
@@ -1223,119 +1451,52 @@ mod source_gate_selection {
                 "version".into(),
                 "plan_revision".into(),
                 "b0_sha".into(),
-                "visual_manifest_sha256".into(),
+                "manifest_sha256".into(),
                 "source_gate_fixture_manifest_sha256".into(),
+                "image_input_contract_sha256".into(),
+                "source_color_contract_sha256".into(),
+                "color_constant_set_sha256".into(),
+                "requested_devices".into(),
+                "enabled_cargo_features".into(),
+                "backend_evidence_parser_version".into(),
+                "candidates".into(),
+                "calibration_entry_ids".into(),
+                "holdout_entry_ids".into(),
+                "process_evidence".into(),
+                "calibration_results".into(),
                 "selected_candidate_id".into(),
-                "candidate_ratios".into(),
-                "entries".into(),
+                "frozen_at_utc".into(),
+                "frozen_payload_sha256".into(),
+                "holdout_results".into(),
+                "holdout_completed_at_utc".into(),
+                "retuned_after_freeze".into(),
             ])
-        );
-        let evidence = &value["entries"][1];
-        assert_eq!(
-            evidence
-                .as_object()
-                .unwrap()
-                .keys()
-                .cloned()
-                .collect::<HashSet<_>>(),
-            HashSet::from_iter([
-                "case_id".into(),
-                "input_sha256".into(),
-                "role".into(),
-                "selected_candidate_id".into(),
-                "phase_result".into(),
-                "model".into(),
-                "runtime".into(),
-                "device".into(),
-                "raw_evidence".into(),
-                "output_hashes".into(),
-                "assertions".into(),
-            ])
-        );
-        for (field, expected) in [
-            (
-                "model",
-                HashSet::from_iter(["provider", "backend", "identifier_sha256"]),
-            ),
-            ("runtime", HashSet::from_iter(["os", "device"])),
-            ("device", HashSet::from_iter(["actual_device"])),
-            (
-                "raw_evidence",
-                HashSet::from_iter([
-                    "load_device",
-                    "model_backend",
-                    "layer_or_buffer",
-                    "context_or_offload",
-                    "runtime_node_count",
-                    "device_load_confirmed",
-                    "diagnostic_sha256",
-                ]),
-            ),
-            (
-                "output_hashes",
-                HashSet::from_iter(["source", "segment_mask", "inpainted", "rendered"]),
-            ),
-            (
-                "assertions",
-                HashSet::from_iter([
-                    "source_text_removed",
-                    "target_rendered",
-                    "protected_pixels_preserved",
-                    "english_roi_preserved",
-                ]),
-            ),
-        ] {
-            assert_eq!(
-                evidence[field]
-                    .as_object()
-                    .unwrap()
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<HashSet<_>>(),
-                expected
-            );
-        }
-        assert_eq!(
-            artifact
-                .entries
-                .iter()
-                .filter(|entry| entry.role == EntryRole::Regression)
-                .count(),
-            1
-        );
-        assert_eq!(
-            artifact
-                .entries
-                .iter()
-                .filter(|entry| entry.role == EntryRole::Calibration)
-                .count(),
-            4
-        );
-        assert_eq!(
-            artifact
-                .entries
-                .iter()
-                .filter(|entry| entry.role == EntryRole::Holdout)
-                .count(),
-            4
         );
     }
 
     #[test]
-    fn source_gate_selection_rejects_invalid_candidate_and_missing_calibration_entry() {
+    fn source_gate_selection_rejects_invalid_candidate_missing_cell_and_device_evidence() {
         for evidence in [
             RunnerEvidence {
                 selected_candidate_id: "R100".into(),
-                entries: calibration_evidence().entries,
+                ..calibration_evidence()
             },
             {
                 let mut evidence = calibration_evidence();
-                evidence.entries.pop();
+                evidence.results.pop();
                 evidence
             },
             {
                 let mut evidence = calibration_evidence();
-                evidence.entries[1].raw_evidence = None;
+                evidence.process_evidence[0]
+                    .load_evidence
+                    .loaded_model_devices
+                    .clear();
+                evidence
+            },
+            {
+                let mut evidence = calibration_evidence();
+                evidence.results[0].execution_evidence.paddle_instance_id = "9".repeat(32);
                 evidence
             },
         ] {

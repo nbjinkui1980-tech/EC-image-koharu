@@ -74,58 +74,139 @@ def jpeg_with_sof_payload(payload):
 
 
 def b0_artifact():
-    evidence = {
-        "selected_candidate_id": "R025",
-        "phase_result": "pass",
-        "model": {
-            "provider": "provider",
-            "backend": "backend",
-            "identifier_sha256": HEX64,
-        },
-        "runtime": {"os": "macos", "device": "mps"},
-        "device": {"actual_device": "Apple GPU"},
-        "raw_evidence": {
-            "load_device": "mps:0",
-            "model_backend": "paddleocr-vl/metal",
-            "layer_or_buffer": "encoder.layers=24",
-            "context_or_offload": "context=mps;offload=none",
-            "runtime_node_count": 24,
-            "device_load_confirmed": True,
-            "diagnostic_sha256": HEX64,
-        },
-        "output_hashes": {
-            "source": HEX64,
-            "segment_mask": HEX64,
-            "inpainted": HEX64,
-            "rendered": HEX64,
-        },
-        "assertions": {
-            "source_text_removed": True,
-            "target_rendered": True,
-            "protected_pixels_preserved": True,
-            "english_roi_preserved": True,
-        },
-    }
-    entries = [{"case_id": "regression", "input_sha256": HEX64, "role": "regression"}]
-    for role in ("calibration", "holdout"):
-        for index in range(4):
-            entries.append(
+    def process(phase, device):
+        metal = device == "metal"
+        return {
+            "id": f"{phase}-{device}",
+            "phase": phase,
+            "requested_device": device,
+            "paddle_instance_id": ("1" if device == "cpu" else "2") * 32,
+            "executable_sha256": HEX64,
+            "model_artifact_sha256": {
+                name: HEX64
+                for name in (
+                    "pp_detection",
+                    "pp_recognition",
+                    "pp_recognition_config",
+                    "vl_model",
+                    "vl_mmproj",
+                )
+            },
+            "runtime_library_sha256": {"/usr/lib/libsynthetic.dylib": HEX64},
+            "load_evidence": {
+                "cpu_forced": not metal,
+                "gpu_offload_supported": metal,
+                "n_gpu_layers": 32 if metal else 0,
+                "mtmd_use_gpu": metal,
+                "word_boxes_backend": "rten_cpu",
+                "raw_load_log_relpath": f"source-gate/{phase}/{device}/load.log",
+                "raw_load_log_sha256": HEX64,
+                "enumerated_devices": [],
+                "loaded_model_devices": [
+                    {
+                        "model_device_ordinal": 0,
+                        "name": "Apple GPU" if metal else "CPU",
+                        "backend": "Metal" if metal else "CPU",
+                        "device_type": "integrated_gpu" if metal else "cpu",
+                    }
+                ],
+                "offloaded_layers": 32 if metal else 0,
+                "offloadable_layers": 39,
+                "model_buffer_bytes_by_backend": {
+                    "CPU": 1,
+                    **({"Metal": 1} if metal else {}),
+                },
+                "mtmd_backend": "Metal" if metal else "CPU",
+            },
+        }
+
+    processes = [
+        process(phase, device)
+        for phase in ("calibration", "holdout")
+        for device in ("cpu", "metal")
+    ]
+
+    def result(phase, entry_id, device, candidate):
+        metal = device == "metal"
+        return {
+            "entry_id": entry_id,
+            "process_evidence_id": f"{phase}-{device}",
+            "candidate_id": candidate,
+            "execution_evidence": {
+                "paddle_instance_id": ("2" if metal else "1") * 32,
+                "context_offload_kqv": metal,
+                "context_op_offload": metal,
+                "inference_completed": True,
+                "raw_inference_log_relpath": (
+                    f"source-gate/{phase}/{entry_id}/{device}/{candidate}.log"
+                ),
+                "raw_inference_log_sha256": HEX64,
+                "context_buffer_bytes_by_backend": {
+                    "CPU": 1,
+                    **({"Metal": 1} if metal else {}),
+                },
+                "compute_buffer_bytes_by_backend": {
+                    "CPU": 1,
+                    **({"Metal": 1} if metal else {}),
+                },
+            },
+            "runtime_nodes": [
                 {
-                    "case_id": f"{role}-{index}",
-                    "input_sha256": HEX64,
-                    "role": role,
-                    **json.loads(json.dumps(evidence)),
+                    "node_id": f"{entry_id}-node",
+                    "recognition_anchor": [0, 0, 1, 1],
+                    "node_rotation": 0.0,
+                    "text_rotation": 0.0,
+                    "selected_as_han": True,
                 }
-            )
+            ],
+            "derived": {
+                "actual_device": device,
+                "matched_target_ids": ["target"],
+                "selected_target_ids": ["target"],
+                "selected_protected_node_ids": [],
+                "selected_rotation_target_ids": [],
+                "unmatched_selected_node_ids": [],
+                "target_recall": 1.0,
+                "protected_false_positive_count": 0,
+                "rotation_targets_excluded": True,
+                "passed": True,
+            },
+        }
+
+    calibration_ids = [f"calibration-{index}" for index in range(4)]
+    holdout_ids = [f"holdout-{index}" for index in range(4)]
     return {
         "version": ledger.B0_VERSION,
         "plan_revision": 46,
         "b0_sha": "b" * 40,
-        "visual_manifest_sha256": "c" * 64,
+        "manifest_sha256": "c" * 64,
         "source_gate_fixture_manifest_sha256": "d" * 64,
+        "image_input_contract_sha256": "e" * 64,
+        "source_color_contract_sha256": "f" * 64,
+        "color_constant_set_sha256": "1" * 64,
+        "requested_devices": ["cpu", "metal"],
+        "enabled_cargo_features": ["hanonly-test-evidence", "metal"],
+        "backend_evidence_parser_version": 1,
+        "candidates": json.loads(json.dumps(ledger.B0_CANDIDATES)),
+        "calibration_entry_ids": calibration_ids,
+        "holdout_entry_ids": holdout_ids,
+        "process_evidence": processes,
+        "calibration_results": [
+            result("calibration", entry_id, device, candidate["id"])
+            for entry_id in calibration_ids
+            for device in ("cpu", "metal")
+            for candidate in ledger.B0_CANDIDATES
+        ],
         "selected_candidate_id": "R025",
-        "candidate_ratios": dict(ledger.B0_CANDIDATE_RATIOS),
-        "entries": entries,
+        "frozen_at_utc": "2026-07-26T00:00:00Z",
+        "frozen_payload_sha256": "2" * 64,
+        "holdout_results": [
+            result("holdout", entry_id, device, "R025")
+            for entry_id in holdout_ids
+            for device in ("cpu", "metal")
+        ],
+        "holdout_completed_at_utc": "2026-07-26T00:01:00Z",
+        "retuned_after_freeze": False,
     }
 
 
@@ -1174,7 +1255,7 @@ class B0ArtifactTests(unittest.TestCase):
     def args(self, **overrides):
         values = {
             "b0_sha": self.value["b0_sha"],
-            "visual_manifest_sha256": self.value["visual_manifest_sha256"],
+            "visual_manifest_sha256": self.value["manifest_sha256"],
             "source_gate_fixture_manifest_sha256": self.value[
                 "source_gate_fixture_manifest_sha256"
             ],
@@ -1213,64 +1294,62 @@ class B0ArtifactTests(unittest.TestCase):
     def test_rejects_noncanonical_artifact(self):
         self.assert_rejected(json.dumps(self.value).encode())
 
-    def test_rejects_wrong_role_counts(self):
-        self.value["entries"][1]["role"] = "holdout"
-        self.assert_rejected()
-
-    def test_rejects_duplicate_case_id(self):
-        self.value["entries"][1]["case_id"] = self.value["entries"][0]["case_id"]
-        self.assert_rejected()
-
-    def test_rejects_regression_participating_in_selection(self):
-        self.value["entries"][0]["selected_candidate_id"] = "R025"
-        self.assert_rejected()
-
-    def test_rejects_missing_or_empty_evidence(self):
-        cases = (
-            ("model", "provider", ""),
-            ("runtime", "device", ""),
-            ("device", "actual_device", ""),
-            ("output_hashes", "rendered", None),
-            ("assertions", "target_rendered", False),
-        )
-        for container, field, replacement in cases:
-            with self.subTest(container=container, field=field):
+    def test_rejects_wrong_plan_revisions(self):
+        for revision in (29, 45, "46", None):
+            with self.subTest(revision=revision):
                 self.value = b0_artifact()
-                if replacement is None:
-                    del self.value["entries"][1][container][field]
+                self.value["plan_revision"] = revision
+                self.assert_rejected()
+
+    def test_rejects_missing_cell_and_wrong_feature_order(self):
+        self.value["calibration_results"].pop()
+        self.assert_rejected()
+        self.value = b0_artifact()
+        self.value["enabled_cargo_features"].reverse()
+        self.assert_rejected()
+
+    def test_rejects_retuning_after_freeze(self):
+        self.value["retuned_after_freeze"] = True
+        self.assert_rejected()
+
+    def test_rejects_vacuous_cpu_and_instance_mismatch(self):
+        for mutation in ("empty-devices", "zero-buffer", "instance"):
+            with self.subTest(mutation=mutation):
+                self.value = b0_artifact()
+                if mutation == "empty-devices":
+                    self.value["process_evidence"][0]["load_evidence"][
+                        "loaded_model_devices"
+                    ] = []
+                elif mutation == "zero-buffer":
+                    self.value["process_evidence"][0]["load_evidence"][
+                        "model_buffer_bytes_by_backend"
+                    ]["CPU"] = 0
                 else:
-                    self.value["entries"][1][container][field] = replacement
+                    self.value["calibration_results"][0]["execution_evidence"][
+                        "paddle_instance_id"
+                    ] = "9" * 32
                 self.assert_rejected()
 
-    def test_rejects_missing_raw_evidence(self):
-        del self.value["entries"][1]["raw_evidence"]
+    def test_rejects_unknown_or_missing_nested_keys(self):
+        self.value["process_evidence"][0]["load_evidence"]["unknown"] = True
         self.assert_rejected()
-
-    def test_rejects_invalid_raw_evidence(self):
-        cases = (
-            ("load_device", ""),
-            ("diagnostic_sha256", "not-a-sha256"),
-            ("runtime_node_count", True),
-            ("device_load_confirmed", 1),
-        )
-        for field, replacement in cases:
-            with self.subTest(field=field):
-                self.value = b0_artifact()
-                self.value["entries"][1]["raw_evidence"][field] = replacement
-                self.assert_rejected()
+        self.value = b0_artifact()
+        del self.value["holdout_results"][0]["derived"]["passed"]
+        self.assert_rejected()
 
     def test_rejects_b0_and_manifest_hash_drift(self):
         for field in (
             "b0_sha",
-            "visual_manifest_sha256",
+            "manifest_sha256",
             "source_gate_fixture_manifest_sha256",
         ):
             with self.subTest(field=field):
                 self.value = b0_artifact()
-                self.assert_rejected(**{field: "e" * len(self.value[field])})
+                argument = "visual_manifest_sha256" if field == "manifest_sha256" else field
+                self.assert_rejected(**{argument: "e" * len(self.value[field])})
 
     def test_rejects_candidate_ratio_drift(self):
-        self.value["candidate_ratios"]["R025"] = "0.025"
+        self.value["candidates"][1]["denominator"] = 4
         self.assert_rejected()
 
 

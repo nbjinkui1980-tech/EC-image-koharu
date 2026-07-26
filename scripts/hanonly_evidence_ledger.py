@@ -32,31 +32,113 @@ LEDGER_KEYS = {
 }
 RUN_ID_RE = re.compile(r"\A\d{8}T\d{6}Z-[0-9a-f]{12}-[1-9]\d*\Z")
 SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
-B0_SHA_RE = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
-B0_VERSION = "hanonly-b0-frozen-artifact-v1"
-B0_CANDIDATE_RATIOS = {"R0": "0", "R025": "1/40", "R05": "1/20", "R10": "1/10"}
+B0_SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")
+B0_VERSION = 1
+B0_CANDIDATES = [
+    {"id": "R0", "numerator": 0, "denominator": 1},
+    {"id": "R025", "numerator": 1, "denominator": 40},
+    {"id": "R05", "numerator": 1, "denominator": 20},
+    {"id": "R10", "numerator": 1, "denominator": 10},
+]
 B0_ROOT_KEYS = {
     "version",
     "plan_revision",
     "b0_sha",
-    "visual_manifest_sha256",
+    "manifest_sha256",
     "source_gate_fixture_manifest_sha256",
+    "image_input_contract_sha256",
+    "source_color_contract_sha256",
+    "color_constant_set_sha256",
+    "requested_devices",
+    "enabled_cargo_features",
+    "backend_evidence_parser_version",
+    "candidates",
+    "calibration_entry_ids",
+    "holdout_entry_ids",
+    "process_evidence",
+    "calibration_results",
     "selected_candidate_id",
-    "candidate_ratios",
-    "entries",
+    "frozen_at_utc",
+    "frozen_payload_sha256",
+    "holdout_results",
+    "holdout_completed_at_utc",
+    "retuned_after_freeze",
 }
-B0_EVIDENCE_KEYS = {
-    "case_id",
-    "input_sha256",
-    "role",
-    "selected_candidate_id",
-    "phase_result",
-    "model",
-    "runtime",
-    "device",
-    "raw_evidence",
-    "output_hashes",
-    "assertions",
+B0_PROCESS_KEYS = {
+    "id",
+    "phase",
+    "requested_device",
+    "paddle_instance_id",
+    "executable_sha256",
+    "model_artifact_sha256",
+    "runtime_library_sha256",
+    "load_evidence",
+}
+B0_MODEL_HASH_KEYS = {
+    "pp_detection",
+    "pp_recognition",
+    "pp_recognition_config",
+    "vl_model",
+    "vl_mmproj",
+}
+B0_LOAD_KEYS = {
+    "cpu_forced",
+    "gpu_offload_supported",
+    "n_gpu_layers",
+    "mtmd_use_gpu",
+    "word_boxes_backend",
+    "raw_load_log_relpath",
+    "raw_load_log_sha256",
+    "enumerated_devices",
+    "loaded_model_devices",
+    "offloaded_layers",
+    "offloadable_layers",
+    "model_buffer_bytes_by_backend",
+    "mtmd_backend",
+}
+B0_ENUMERATED_DEVICE_KEYS = {"index", "name", "description", "backend", "device_type"}
+B0_LOADED_DEVICE_KEYS = {
+    "model_device_ordinal",
+    "name",
+    "backend",
+    "device_type",
+}
+B0_RESULT_KEYS = {
+    "entry_id",
+    "process_evidence_id",
+    "candidate_id",
+    "execution_evidence",
+    "runtime_nodes",
+    "derived",
+}
+B0_EXECUTION_KEYS = {
+    "paddle_instance_id",
+    "context_offload_kqv",
+    "context_op_offload",
+    "inference_completed",
+    "raw_inference_log_relpath",
+    "raw_inference_log_sha256",
+    "context_buffer_bytes_by_backend",
+    "compute_buffer_bytes_by_backend",
+}
+B0_RUNTIME_NODE_KEYS = {
+    "node_id",
+    "recognition_anchor",
+    "node_rotation",
+    "text_rotation",
+    "selected_as_han",
+}
+B0_DERIVED_KEYS = {
+    "actual_device",
+    "matched_target_ids",
+    "selected_target_ids",
+    "selected_protected_node_ids",
+    "selected_rotation_target_ids",
+    "unmatched_selected_node_ids",
+    "target_recall",
+    "protected_false_positive_count",
+    "rotation_targets_excluded",
+    "passed",
 }
 JPEG_SOF_MARKERS = {
     0xC0,
@@ -244,9 +326,122 @@ def _require_keys(value, keys, label):
         raise LedgerError(f"{label} keys are not closed and complete")
 
 
+def _validate_backend_map(value, label, required_backend):
+    if (
+        not isinstance(value, dict)
+        or not value
+        or any(not isinstance(key, str) or type(size) is not int or size < 0 for key, size in value.items())
+        or value.get(required_backend, 0) <= 0
+    ):
+        raise LedgerError(f"{label} is invalid")
+
+
+def _validate_result(result, processes, entry_ids, candidate_ids, phase):
+    label = f"{phase} result"
+    _require_keys(result, B0_RESULT_KEYS, label)
+    if result["entry_id"] not in entry_ids or result["candidate_id"] not in candidate_ids:
+        raise LedgerError(f"{label} identity is invalid")
+    process = processes.get(result["process_evidence_id"])
+    if process is None or process["phase"] != phase:
+        raise LedgerError(f"{label} process reference is invalid")
+    execution = result["execution_evidence"]
+    _require_keys(execution, B0_EXECUTION_KEYS, f"{label} execution_evidence")
+    if (
+        execution["paddle_instance_id"] != process["paddle_instance_id"]
+        or execution["inference_completed"] is not True
+    ):
+        raise LedgerError(f"{label} instance or completion evidence is invalid")
+    _validate_text(execution["raw_inference_log_relpath"], "raw inference log path")
+    _validate_hash(execution["raw_inference_log_sha256"], "raw inference log sha256")
+    nodes = result["runtime_nodes"]
+    if not isinstance(nodes, list):
+        raise LedgerError(f"{label} runtime_nodes must be an array")
+    for node in nodes:
+        _require_keys(node, B0_RUNTIME_NODE_KEYS, f"{label} runtime node")
+        _validate_text(node["node_id"], "runtime node id")
+        if (
+            not isinstance(node["recognition_anchor"], list)
+            or len(node["recognition_anchor"]) != 4
+            or any(type(value) not in (int, float) for value in node["recognition_anchor"])
+            or type(node["node_rotation"]) not in (int, float)
+            or type(node["text_rotation"]) not in (int, float)
+            or type(node["selected_as_han"]) is not bool
+        ):
+            raise LedgerError(f"{label} runtime node is invalid")
+    derived = result["derived"]
+    _require_keys(derived, B0_DERIVED_KEYS, f"{label} derived")
+    if derived["actual_device"] != process["requested_device"]:
+        raise LedgerError(f"{label} derived device mismatch")
+    for field in (
+        "matched_target_ids",
+        "selected_target_ids",
+        "selected_protected_node_ids",
+        "selected_rotation_target_ids",
+        "unmatched_selected_node_ids",
+    ):
+        if not isinstance(derived[field], list) or any(
+            not isinstance(value, str) for value in derived[field]
+        ):
+            raise LedgerError(f"{label} {field} is invalid")
+    if (
+        type(derived["target_recall"]) not in (int, float)
+        or type(derived["protected_false_positive_count"]) is not int
+        or type(derived["rotation_targets_excluded"]) is not bool
+        or type(derived["passed"]) is not bool
+    ):
+        raise LedgerError(f"{label} derived metrics are invalid")
+    load = process["load_evidence"]
+    requested_device = process["requested_device"]
+    loaded = load["loaded_model_devices"]
+    model_map = load["model_buffer_bytes_by_backend"]
+    context_map = execution["context_buffer_bytes_by_backend"]
+    compute_map = execution["compute_buffer_bytes_by_backend"]
+    if requested_device == "cpu":
+        if (
+            load["cpu_forced"] is not True
+            or load["n_gpu_layers"] != 0
+            or load["mtmd_use_gpu"] is not False
+            or execution["context_offload_kqv"] is not False
+            or execution["context_op_offload"] is not False
+            or not loaded
+            or any(
+                device["backend"] != "CPU" or device["device_type"] != "cpu"
+                for device in loaded
+            )
+            or load["offloaded_layers"] != 0
+            or load["mtmd_backend"] != "CPU"
+        ):
+            raise LedgerError(f"{label} CPU derivation is invalid")
+        for name, backend_map in (
+            ("model buffer map", model_map),
+            ("context buffer map", context_map),
+            ("compute buffer map", compute_map),
+        ):
+            _validate_backend_map(backend_map, name, "CPU")
+            if any(size > 0 for backend, size in backend_map.items() if backend != "CPU"):
+                raise LedgerError(f"{label} CPU map contains non-CPU bytes")
+    else:
+        if (
+            load["cpu_forced"] is not False
+            or type(load["n_gpu_layers"]) is not int
+            or load["n_gpu_layers"] <= 0
+            or load["mtmd_use_gpu"] is not True
+            or execution["context_offload_kqv"] is not True
+            or execution["context_op_offload"] is not True
+            or not any(device["backend"] == "Metal" for device in loaded)
+            or any(device["backend"] not in {"CPU", "Metal"} for device in loaded)
+            or load["offloaded_layers"] <= 0
+            or load["mtmd_backend"] != "Metal"
+        ):
+            raise LedgerError(f"{label} Metal derivation is invalid")
+        _validate_backend_map(model_map, "model buffer map", "Metal")
+        _validate_backend_map(context_map, "context buffer map", "Metal")
+        _validate_backend_map(compute_map, "compute buffer map", "Metal")
+
+
 def _validate_b0_artifact(arguments):
     if not B0_SHA_RE.fullmatch(arguments.b0_sha):
-        raise LedgerError("b0 sha must be 40 or 64 lowercase hexadecimal characters")
+        raise LedgerError("b0 sha must be 40 lowercase hexadecimal characters")
     _validate_hash(arguments.visual_manifest_sha256, "visual manifest sha256")
     _validate_hash(
         arguments.source_gate_fixture_manifest_sha256,
@@ -260,104 +455,151 @@ def _validate_b0_artifact(arguments):
     _require_keys(value, B0_ROOT_KEYS, "B0 frozen artifact")
     if canonical_json(value) != artifact_bytes:
         raise LedgerError("B0 frozen artifact is not canonical JSON")
-    if value["version"] != B0_VERSION or value["plan_revision"] != 46:
+    if (
+        type(value["version"]) is not int
+        or value["version"] != B0_VERSION
+        or type(value["plan_revision"]) is not int
+        or value["plan_revision"] != 46
+    ):
         raise LedgerError("B0 frozen artifact version or plan revision mismatch")
     if value["b0_sha"] != arguments.b0_sha:
         raise LedgerError("B0 sha drift")
-    if value["visual_manifest_sha256"] != arguments.visual_manifest_sha256:
+    if value["manifest_sha256"] != arguments.visual_manifest_sha256:
         raise LedgerError("visual manifest hash drift")
     if (
         value["source_gate_fixture_manifest_sha256"]
         != arguments.source_gate_fixture_manifest_sha256
     ):
         raise LedgerError("source gate fixture manifest hash drift")
-    if value["selected_candidate_id"] not in B0_CANDIDATE_RATIOS:
-        raise LedgerError("invalid selected candidate")
-    if value["candidate_ratios"] != B0_CANDIDATE_RATIOS:
+    for field in (
+        "manifest_sha256",
+        "source_gate_fixture_manifest_sha256",
+        "image_input_contract_sha256",
+        "source_color_contract_sha256",
+        "color_constant_set_sha256",
+        "frozen_payload_sha256",
+    ):
+        _validate_hash(value[field], field)
+    if value["requested_devices"] != ["cpu", "metal"]:
+        raise LedgerError("requested devices drift")
+    if value["enabled_cargo_features"] != ["hanonly-test-evidence", "metal"]:
+        raise LedgerError("enabled cargo features drift")
+    if value["backend_evidence_parser_version"] != 1:
+        raise LedgerError("backend evidence parser version drift")
+    if value["candidates"] != B0_CANDIDATES:
         raise LedgerError("candidate ratios drift")
-    entries = value["entries"]
-    if not isinstance(entries, list) or len(entries) != 9:
-        raise LedgerError("B0 frozen artifact must contain exactly nine entries")
-    roles = {"regression": 0, "calibration": 0, "holdout": 0}
-    case_ids = set()
-    for entry in entries:
-        if not isinstance(entry, dict) or entry.get("role") not in roles:
-            raise LedgerError("invalid B0 entry role")
-        role = entry["role"]
-        roles[role] += 1
-        case_id = _validate_text(entry.get("case_id"), "case id")
-        if case_id in case_ids:
-            raise LedgerError("duplicate B0 case id")
-        case_ids.add(case_id)
-        _validate_hash(entry.get("input_sha256"), "input sha256")
-        if role == "regression":
-            _require_keys(entry, {"case_id", "input_sha256", "role"}, "regression entry")
-            continue
-        _require_keys(entry, B0_EVIDENCE_KEYS, f"{role} entry")
+    candidate_ids = {candidate["id"] for candidate in B0_CANDIDATES}
+    if value["selected_candidate_id"] not in candidate_ids:
+        raise LedgerError("invalid selected candidate")
+    calibration_ids = value["calibration_entry_ids"]
+    holdout_ids = value["holdout_entry_ids"]
+    if (
+        not isinstance(calibration_ids, list)
+        or not isinstance(holdout_ids, list)
+        or len(calibration_ids) != 4
+        or len(holdout_ids) != 4
+        or len(set(calibration_ids)) != 4
+        or len(set(holdout_ids)) != 4
+        or set(calibration_ids) & set(holdout_ids)
+        or any(not isinstance(value, str) or not value for value in calibration_ids + holdout_ids)
+    ):
+        raise LedgerError("calibration and holdout entry ids are invalid")
+    if value["retuned_after_freeze"] is not False:
+        raise LedgerError("artifact was retuned after freeze")
+    _validate_text(value["frozen_at_utc"], "frozen timestamp")
+    _validate_text(value["holdout_completed_at_utc"], "holdout completion timestamp")
+    process_evidence = value["process_evidence"]
+    if not isinstance(process_evidence, list) or len(process_evidence) != 4:
+        raise LedgerError("process evidence matrix must contain four records")
+    processes = {}
+    for process in process_evidence:
+        _require_keys(process, B0_PROCESS_KEYS, "process evidence")
+        process_id = _validate_text(process["id"], "process evidence id")
+        if process_id in processes:
+            raise LedgerError("duplicate process evidence id")
+        if process["phase"] not in {"calibration", "holdout"}:
+            raise LedgerError("invalid process phase")
+        if process["requested_device"] not in {"cpu", "metal"}:
+            raise LedgerError("invalid requested device")
+        if not re.fullmatch(r"[0-9a-f]{32}", process["paddle_instance_id"] or ""):
+            raise LedgerError("invalid paddle instance id")
+        _validate_hash(process["executable_sha256"], "selection executable sha256")
+        _require_keys(process["model_artifact_sha256"], B0_MODEL_HASH_KEYS, "model hashes")
+        for digest in process["model_artifact_sha256"].values():
+            _validate_hash(digest, "model artifact sha256")
+        libraries = process["runtime_library_sha256"]
+        if not isinstance(libraries, dict) or not libraries:
+            raise LedgerError("runtime library hashes must be nonempty")
+        for path, digest in libraries.items():
+            _validate_text(path, "runtime library path")
+            _validate_hash(digest, "runtime library sha256")
+        load = process["load_evidence"]
+        _require_keys(load, B0_LOAD_KEYS, "load evidence")
+        _validate_text(load["word_boxes_backend"], "word boxes backend")
+        _validate_text(load["raw_load_log_relpath"], "raw load log path")
+        _validate_hash(load["raw_load_log_sha256"], "raw load log sha256")
         if (
-            entry["selected_candidate_id"] != value["selected_candidate_id"]
-            or entry["phase_result"] != "pass"
+            type(load["gpu_offload_supported"]) is not bool
+            or type(load["offloaded_layers"]) is not int
+            or type(load["offloadable_layers"]) is not int
+            or type(load["model_buffer_bytes_by_backend"]) is not dict
         ):
-            raise LedgerError(f"{role} entry did not pass for the selected candidate")
-        for field, keys in (
-            ("model", {"provider", "backend", "identifier_sha256"}),
-            ("runtime", {"os", "device"}),
-            ("device", {"actual_device"}),
-            (
-                "raw_evidence",
-                {
-                    "load_device",
-                    "model_backend",
-                    "layer_or_buffer",
-                    "context_or_offload",
-                    "runtime_node_count",
-                    "device_load_confirmed",
-                    "diagnostic_sha256",
-                },
-            ),
-            ("output_hashes", {"source", "segment_mask", "inpainted", "rendered"}),
-            (
-                "assertions",
-                {
-                    "source_text_removed",
-                    "target_rendered",
-                    "protected_pixels_preserved",
-                    "english_roi_preserved",
-                },
-            ),
-        ):
-            _require_keys(entry[field], keys, f"{role} {field}")
-        _validate_text(entry["model"]["provider"], "model provider")
-        _validate_text(entry["model"]["backend"], "model backend")
-        _validate_hash(entry["model"]["identifier_sha256"], "model identifier sha256")
-        _validate_text(entry["runtime"]["os"], "runtime os")
-        _validate_text(entry["runtime"]["device"], "runtime device")
-        _validate_text(entry["device"]["actual_device"], "actual device")
-        raw_evidence = entry["raw_evidence"]
-        for field in (
-            "load_device",
-            "model_backend",
-            "layer_or_buffer",
-            "context_or_offload",
-        ):
-            _validate_text(raw_evidence[field], f"raw evidence {field}")
-        if (
-            type(raw_evidence["runtime_node_count"]) is not int
-            or raw_evidence["runtime_node_count"] <= 0
-        ):
-            raise LedgerError(f"{role} raw evidence runtime node count is invalid")
-        if raw_evidence["device_load_confirmed"] is not True:
-            raise LedgerError(f"{role} raw evidence device load is not confirmed")
-        _validate_hash(
-            raw_evidence["diagnostic_sha256"],
-            "raw evidence diagnostic sha256",
-        )
-        for label, digest in entry["output_hashes"].items():
-            _validate_hash(digest, f"{label} output hash")
-        if any(assertion is not True for assertion in entry["assertions"].values()):
-            raise LedgerError(f"{role} assertions must all be true")
-    if roles != {"regression": 1, "calibration": 4, "holdout": 4}:
-        raise LedgerError("B0 entry role counts mismatch")
+            raise LedgerError("load evidence scalar types are invalid")
+        if not isinstance(load["enumerated_devices"], list):
+            raise LedgerError("enumerated devices must be an array")
+        for device in load["enumerated_devices"]:
+            _require_keys(device, B0_ENUMERATED_DEVICE_KEYS, "enumerated device")
+        loaded = load["loaded_model_devices"]
+        if not isinstance(loaded, list) or not loaded:
+            raise LedgerError("loaded model devices must be nonempty")
+        for ordinal, device in enumerate(loaded):
+            _require_keys(device, B0_LOADED_DEVICE_KEYS, "loaded model device")
+            if (
+                device["model_device_ordinal"] != ordinal
+                or not isinstance(device["name"], str)
+                or not device["name"]
+                or device["backend"] not in {"CPU", "Metal"}
+                or device["device_type"] not in {
+                    "cpu",
+                    "accelerator",
+                    "gpu",
+                    "integrated_gpu",
+                    "unknown",
+                }
+            ):
+                raise LedgerError("loaded model device is invalid")
+        processes[process_id] = process
+    if {
+        (process["phase"], process["requested_device"]) for process in processes.values()
+    } != {
+        ("calibration", "cpu"),
+        ("calibration", "metal"),
+        ("holdout", "cpu"),
+        ("holdout", "metal"),
+    }:
+        raise LedgerError("process evidence matrix is incomplete")
+    calibration = value["calibration_results"]
+    holdout = value["holdout_results"]
+    if not isinstance(calibration, list) or len(calibration) != 32:
+        raise LedgerError("calibration result matrix must contain 32 cells")
+    if not isinstance(holdout, list) or len(holdout) != 8:
+        raise LedgerError("holdout result matrix must contain 8 cells")
+    for result in calibration:
+        _validate_result(result, processes, calibration_ids, candidate_ids, "calibration")
+    for result in holdout:
+        if result.get("candidate_id") != value["selected_candidate_id"]:
+            raise LedgerError("holdout candidate drift")
+        _validate_result(result, processes, holdout_ids, candidate_ids, "holdout")
+    calibration_cells = {
+        (result["entry_id"], processes[result["process_evidence_id"]]["requested_device"], result["candidate_id"])
+        for result in calibration
+    }
+    holdout_cells = {
+        (result["entry_id"], processes[result["process_evidence_id"]]["requested_device"])
+        for result in holdout
+    }
+    if len(calibration_cells) != 32 or len(holdout_cells) != 8:
+        raise LedgerError("selection result matrix contains duplicate or missing cells")
     return b"PASS B0 frozen artifact\n"
 
 
