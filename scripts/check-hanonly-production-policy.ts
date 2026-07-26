@@ -37,6 +37,11 @@ export interface DependencyInventoryInput {
   currentLock: unknown
 }
 
+export interface RustSourceFile {
+  path: string
+  text: string
+}
+
 export interface SecureStatLike {
   mode: number
   uid: number
@@ -172,6 +177,32 @@ function optionalArg(args: readonly string[], name: string): string | undefined 
 function flag(args: readonly string[], name: string): boolean {
   return args.includes(name)
 }
+
+const stagedRedMarkers = ['hanonly-pre-b1-red', 'hanonly-pre-greenc-red'] as const
+const expectedB1RedIds = [
+  'hanonly_pre_b1_red_t2_dynamic_layout_contract',
+  'hanonly_pre_b1_red_t2_pipeline_layout_handoff_contract',
+  'hanonly_pre_b1_red_t2_source_gate_ratio_contract',
+  'hanonly_pre_b1_red_t2_crop_local_ppocr_contract',
+  'hanonly_pre_b1_red_t2_blob_decode_budget_contract',
+  'hanonly_pre_b1_red_t2_replace_import_atomicity_contract',
+  'hanonly_pre_b1_red_t2_rotation_status_contract',
+] as const
+const expectedGreenCRedIds = [
+  'hanonly_pre_greenc_red_t3_transient_planner_hint_contract',
+  'hanonly_pre_greenc_red_t3_run_state_lifetime_contract',
+  'hanonly_pre_greenc_red_t3_planner_font_outcome_contract',
+  'hanonly_pre_greenc_red_t3_source_color_contract',
+  'hanonly_pre_greenc_red_t3_marker_batch_atomicity_contract',
+  'hanonly_pre_greenc_red_t3_untrusted_marker_lifecycle_contract',
+  'hanonly_pre_greenc_red_t3_http_marker_rejection_contract',
+  'hanonly_pre_greenc_red_t3_mcp_marker_rejection_contract',
+  'hanonly_pre_greenc_red_t3_source_color_probe_contract',
+] as const
+const expectedRedByMarker = new Map<string, readonly string[]>([
+  ['hanonly-pre-b1-red', expectedB1RedIds],
+  ['hanonly-pre-greenc-red', expectedGreenCRedIds],
+])
 
 export function validateSnapshotMetadata(value: unknown): SnapshotMetadata {
   const record = object(value, 'snapshot-metadata', 'metadata')
@@ -586,6 +617,97 @@ export async function readRepoText(
   }
 }
 
+function trackedRustPaths(root: string): string[] {
+  const result = Bun.spawnSync({
+    cmd: ['git', 'ls-files', '*.rs'],
+    cwd: root,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  if (result.exitCode !== 0) {
+    fail('red-test-state', `git ls-files exited with code ${result.exitCode}`)
+  }
+  return result.stdout
+    .toString()
+    .split('\n')
+    .filter((line) => line.length > 0)
+}
+
+export async function readTrackedRustSources(root: string): Promise<RustSourceFile[]> {
+  const paths = trackedRustPaths(root)
+  return Promise.all(
+    paths.map(async (relativePath) => ({
+      path: relativePath,
+      text: await readRepoText(root, relativePath, relativePath),
+    })),
+  )
+}
+
+function countOccurrences(text: string, needle: string): number {
+  let count = 0
+  let offset = 0
+  while (true) {
+    const index = text.indexOf(needle, offset)
+    if (index === -1) return count
+    count += 1
+    offset = index + needle.length
+  }
+}
+
+function regexEscape(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function countTestFunctions(text: string, id: string): number {
+  return [
+    ...text.matchAll(new RegExp(`(?:^|\\n)\\s*(?:async\\s+)?fn\\s+${regexEscape(id)}\\s*\\(`, 'g')),
+  ].length
+}
+
+function stagedRedEntries(files: readonly RustSourceFile[]): Map<string, string[]> {
+  const result = new Map<string, string[]>()
+  const markerPattern =
+    /#\[\s*ignore\s*=\s*"([^"]+)"\s*\]\s*(?:\r?\n\s*#\[[^\]]+\]\s*)*\r?\n\s*(?:async\s+)?fn\s+([A-Za-z0-9_]+)\s*\(/g
+  for (const file of files) {
+    for (const match of file.text.matchAll(markerPattern)) {
+      const marker = match[1]
+      if (!stagedRedMarkers.includes(marker as (typeof stagedRedMarkers)[number])) continue
+      const id = match[2]
+      const entries = result.get(marker) ?? []
+      entries.push(id)
+      result.set(marker, entries)
+    }
+  }
+  return result
+}
+
+export function validateRedTestState(
+  files: readonly RustSourceFile[],
+  state: 'b0' | 'final',
+): void {
+  const fullText = files.map((file) => file.text).join('\n')
+  for (const marker of stagedRedMarkers) {
+    const expectedIds = expectedRedByMarker.get(marker)!
+    if (state === 'b0') {
+      const actualIds = [...(stagedRedEntries(files).get(marker) ?? [])].sort()
+      if (!deepEqual(actualIds, [...expectedIds].sort())) {
+        fail('red-test-state', `${marker} inventory drift`)
+      }
+    } else if (countOccurrences(fullText, marker) !== 0) {
+      fail('red-test-state', `${marker} marker remains after final`)
+    }
+    for (const id of expectedIds) {
+      if (countTestFunctions(fullText, id) !== 1) {
+        fail('red-test-state', `${id} must exist exactly once`)
+      }
+    }
+  }
+}
+
+export async function runRedTestState(root: string, state: 'b0' | 'final'): Promise<void> {
+  validateRedTestState(await readTrackedRustSources(root), state)
+}
+
 function cargoMetadata(root: string): unknown {
   const result = Bun.spawnSync({
     cmd: [
@@ -713,6 +835,15 @@ async function main(): Promise<void> {
     if (!snapshotDir) fail('snapshot-env', 'HANONLY_ORIGINAL_SNAPSHOT_DIR is required')
     await runDependencyInventory(repoRoot, snapshotDir)
     process.stdout.write('PASS: hanonly production dependency inventory policy\n')
+    return
+  }
+  if (args.includes('--validate-red-test-state')) {
+    const state = requiredArg(args, '--validate-red-test-state')
+    if (state !== 'b0' && state !== 'final') {
+      fail('red-test-state', '--validate-red-test-state must be b0 or final')
+    }
+    await runRedTestState(repoRoot, state)
+    process.stdout.write(`PASS: hanonly ${state} red test state\n`)
     return
   }
   if (args.includes('--validate-b0-authorization')) {

@@ -27,9 +27,11 @@ import {
   repoRoot,
   validateB0Authorization,
   validateDependencyInventory,
+  validateRedTestState,
   validateSecureRegularStat,
   type DependencyInventoryInput,
   type JsonObject,
+  type RustSourceFile,
   type SnapshotMetadata,
 } from './check-hanonly-production-policy'
 
@@ -765,6 +767,60 @@ print(json.dumps({
   expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: '' })
   return { artifact, ...JSON.parse(stdout) }
 }
+
+function b0RedSources(): RustSourceFile[] {
+  const b1 = [
+    'hanonly_pre_b1_red_t2_dynamic_layout_contract',
+    'hanonly_pre_b1_red_t2_pipeline_layout_handoff_contract',
+    'hanonly_pre_b1_red_t2_source_gate_ratio_contract',
+    'hanonly_pre_b1_red_t2_crop_local_ppocr_contract',
+    'hanonly_pre_b1_red_t2_blob_decode_budget_contract',
+    'hanonly_pre_b1_red_t2_replace_import_atomicity_contract',
+    'hanonly_pre_b1_red_t2_rotation_status_contract',
+  ]
+  const greenC = [
+    'hanonly_pre_greenc_red_t3_transient_planner_hint_contract',
+    'hanonly_pre_greenc_red_t3_run_state_lifetime_contract',
+    'hanonly_pre_greenc_red_t3_planner_font_outcome_contract',
+    'hanonly_pre_greenc_red_t3_source_color_contract',
+    'hanonly_pre_greenc_red_t3_marker_batch_atomicity_contract',
+    'hanonly_pre_greenc_red_t3_untrusted_marker_lifecycle_contract',
+    'hanonly_pre_greenc_red_t3_http_marker_rejection_contract',
+    'hanonly_pre_greenc_red_t3_mcp_marker_rejection_contract',
+    'hanonly_pre_greenc_red_t3_source_color_probe_contract',
+  ]
+  return [
+    {
+      path: 'synthetic.rs',
+      text: [
+        ...b1.map((id) => `#[test]\n#[ignore = "hanonly-pre-b1-red"]\nfn ${id}() {}`),
+        ...greenC.map(
+          (id) => `#[tokio::test]\n#[ignore = "hanonly-pre-greenc-red"]\nasync fn ${id}() {}`,
+        ),
+      ].join('\n'),
+    },
+  ]
+}
+
+describe('RED test state policy', () => {
+  test('accepts the exact B0 staged RED inventory', () => {
+    expect(() => validateRedTestState(b0RedSources(), 'b0')).not.toThrow()
+  })
+
+  test('rejects B0 staged RED inventory drift', () => {
+    const files = b0RedSources()
+    files[0].text = files[0].text.replace(
+      '#[ignore = "hanonly-pre-b1-red"]\nfn hanonly_pre_b1_red_t2_dynamic_layout_contract',
+      'fn hanonly_pre_b1_red_t2_dynamic_layout_contract',
+    )
+
+    expect(() => validateRedTestState(files, 'b0')).toThrow(PolicyError)
+  })
+
+  test('rejects final staged RED marker residue', () => {
+    expect(() => validateRedTestState(b0RedSources(), 'final')).toThrow(PolicyError)
+  })
+})
 
 describe('CLI contract', () => {
   test('imports without running the CLI', async () => {
