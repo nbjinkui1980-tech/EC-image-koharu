@@ -70,6 +70,53 @@ def jpeg_with_sof_payload(payload):
     )
 
 
+def b0_artifact():
+    evidence = {
+        "selected_candidate_id": "R025",
+        "phase_result": "pass",
+        "model": {
+            "provider": "provider",
+            "backend": "backend",
+            "identifier_sha256": HEX64,
+        },
+        "runtime": {"os": "macos", "device": "mps"},
+        "device": {"actual_device": "Apple GPU"},
+        "output_hashes": {
+            "source": HEX64,
+            "segment_mask": HEX64,
+            "inpainted": HEX64,
+            "rendered": HEX64,
+        },
+        "assertions": {
+            "source_text_removed": True,
+            "target_rendered": True,
+            "protected_pixels_preserved": True,
+            "english_roi_preserved": True,
+        },
+    }
+    entries = [{"case_id": "regression", "input_sha256": HEX64, "role": "regression"}]
+    for role in ("calibration", "holdout"):
+        for index in range(4):
+            entries.append(
+                {
+                    "case_id": f"{role}-{index}",
+                    "input_sha256": HEX64,
+                    "role": role,
+                    **json.loads(json.dumps(evidence)),
+                }
+            )
+    return {
+        "version": ledger.B0_VERSION,
+        "plan_revision": 46,
+        "b0_sha": "b" * 40,
+        "visual_manifest_sha256": "c" * 64,
+        "source_gate_fixture_manifest_sha256": "d" * 64,
+        "selected_candidate_id": "R025",
+        "candidate_ratios": dict(ledger.B0_CANDIDATE_RATIOS),
+        "entries": entries,
+    }
+
+
 class Case:
     def __init__(self, name="case"):
         self.temp = tempfile.TemporaryDirectory(prefix=f"hanonly ledger {name} ")
@@ -1098,6 +1145,104 @@ class LedgerContractTests(unittest.TestCase):
         self.assertNotEqual(status, 0)
         self.assertEqual(output, b"")
         self.assertFalse(self.case.evidence_root.exists())
+
+
+class B0ArtifactTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="hanonly b0 artifact ")
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.path = self.root / "artifact.json"
+        self.value = b0_artifact()
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def args(self, **overrides):
+        values = {
+            "b0_sha": self.value["b0_sha"],
+            "visual_manifest_sha256": self.value["visual_manifest_sha256"],
+            "source_gate_fixture_manifest_sha256": self.value[
+                "source_gate_fixture_manifest_sha256"
+            ],
+        }
+        values.update(overrides)
+        return [
+            "validate-b0-artifact",
+            "--repo-root",
+            str(self.repo),
+            "--artifact",
+            str(self.path),
+            "--b0-sha",
+            values["b0_sha"],
+            "--visual-manifest-sha256",
+            values["visual_manifest_sha256"],
+            "--source-gate-fixture-manifest-sha256",
+            values["source_gate_fixture_manifest_sha256"],
+        ]
+
+    def run_artifact(self, raw=None, **overrides):
+        self.path.write_bytes(ledger.canonical_json(self.value) if raw is None else raw)
+        stdout = io.BytesIO()
+        stderr = io.StringIO()
+        status = ledger.main(self.args(**overrides), stdout=stdout, stderr=stderr)
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def assert_rejected(self, raw=None, **overrides):
+        status, output, _ = self.run_artifact(raw, **overrides)
+        self.assertNotEqual(status, 0)
+        self.assertEqual(output, b"")
+
+    def test_accepts_valid_frozen_artifact(self):
+        status, output, error = self.run_artifact()
+        self.assertEqual((status, output, error), (0, b"PASS B0 frozen artifact\n", ""))
+
+    def test_rejects_noncanonical_artifact(self):
+        self.assert_rejected(json.dumps(self.value).encode())
+
+    def test_rejects_wrong_role_counts(self):
+        self.value["entries"][1]["role"] = "holdout"
+        self.assert_rejected()
+
+    def test_rejects_duplicate_case_id(self):
+        self.value["entries"][1]["case_id"] = self.value["entries"][0]["case_id"]
+        self.assert_rejected()
+
+    def test_rejects_regression_participating_in_selection(self):
+        self.value["entries"][0]["selected_candidate_id"] = "R025"
+        self.assert_rejected()
+
+    def test_rejects_missing_or_empty_evidence(self):
+        cases = (
+            ("model", "provider", ""),
+            ("runtime", "device", ""),
+            ("device", "actual_device", ""),
+            ("output_hashes", "rendered", None),
+            ("assertions", "target_rendered", False),
+        )
+        for container, field, replacement in cases:
+            with self.subTest(container=container, field=field):
+                self.value = b0_artifact()
+                if replacement is None:
+                    del self.value["entries"][1][container][field]
+                else:
+                    self.value["entries"][1][container][field] = replacement
+                self.assert_rejected()
+
+    def test_rejects_b0_and_manifest_hash_drift(self):
+        for field in (
+            "b0_sha",
+            "visual_manifest_sha256",
+            "source_gate_fixture_manifest_sha256",
+        ):
+            with self.subTest(field=field):
+                self.value = b0_artifact()
+                self.assert_rejected(**{field: "e" * len(self.value[field])})
+
+    def test_rejects_candidate_ratio_drift(self):
+        self.value["candidate_ratios"]["R025"] = "0.025"
+        self.assert_rejected()
 
 
 if __name__ == "__main__":

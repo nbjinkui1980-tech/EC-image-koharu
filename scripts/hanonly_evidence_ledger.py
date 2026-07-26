@@ -32,6 +32,31 @@ LEDGER_KEYS = {
 }
 RUN_ID_RE = re.compile(r"\A\d{8}T\d{6}Z-[0-9a-f]{12}-[1-9]\d*\Z")
 SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+B0_SHA_RE = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+B0_VERSION = "hanonly-b0-frozen-artifact-v1"
+B0_CANDIDATE_RATIOS = {"R0": "0", "R025": "1/40", "R05": "1/20", "R10": "1/10"}
+B0_ROOT_KEYS = {
+    "version",
+    "plan_revision",
+    "b0_sha",
+    "visual_manifest_sha256",
+    "source_gate_fixture_manifest_sha256",
+    "selected_candidate_id",
+    "candidate_ratios",
+    "entries",
+}
+B0_EVIDENCE_KEYS = {
+    "case_id",
+    "input_sha256",
+    "role",
+    "selected_candidate_id",
+    "phase_result",
+    "model",
+    "runtime",
+    "device",
+    "output_hashes",
+    "assertions",
+}
 JPEG_SOF_MARKERS = {
     0xC0,
     0xC1,
@@ -211,6 +236,97 @@ def canonical_json(value):
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _require_keys(value, keys, label):
+    if not isinstance(value, dict) or set(value) != keys:
+        raise LedgerError(f"{label} keys are not closed and complete")
+
+
+def _validate_b0_artifact(arguments):
+    if not B0_SHA_RE.fullmatch(arguments.b0_sha):
+        raise LedgerError("b0 sha must be 40 or 64 lowercase hexadecimal characters")
+    _validate_hash(arguments.visual_manifest_sha256, "visual manifest sha256")
+    _validate_hash(
+        arguments.source_gate_fixture_manifest_sha256,
+        "source gate fixture manifest sha256",
+    )
+    with contextlib.ExitStack() as stack:
+        _open_absolute(arguments.repo_root, directory=True, stack=stack)
+        artifact = _open_absolute(arguments.artifact, directory=False, stack=stack)
+        artifact_bytes = _read_all(artifact.fd)
+    value = _parse_json(artifact_bytes, "B0 frozen artifact")
+    _require_keys(value, B0_ROOT_KEYS, "B0 frozen artifact")
+    if canonical_json(value) != artifact_bytes:
+        raise LedgerError("B0 frozen artifact is not canonical JSON")
+    if value["version"] != B0_VERSION or value["plan_revision"] != 46:
+        raise LedgerError("B0 frozen artifact version or plan revision mismatch")
+    if value["b0_sha"] != arguments.b0_sha:
+        raise LedgerError("B0 sha drift")
+    if value["visual_manifest_sha256"] != arguments.visual_manifest_sha256:
+        raise LedgerError("visual manifest hash drift")
+    if (
+        value["source_gate_fixture_manifest_sha256"]
+        != arguments.source_gate_fixture_manifest_sha256
+    ):
+        raise LedgerError("source gate fixture manifest hash drift")
+    if value["selected_candidate_id"] not in B0_CANDIDATE_RATIOS:
+        raise LedgerError("invalid selected candidate")
+    if value["candidate_ratios"] != B0_CANDIDATE_RATIOS:
+        raise LedgerError("candidate ratios drift")
+    entries = value["entries"]
+    if not isinstance(entries, list) or len(entries) != 9:
+        raise LedgerError("B0 frozen artifact must contain exactly nine entries")
+    roles = {"regression": 0, "calibration": 0, "holdout": 0}
+    case_ids = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("role") not in roles:
+            raise LedgerError("invalid B0 entry role")
+        role = entry["role"]
+        roles[role] += 1
+        case_id = _validate_text(entry.get("case_id"), "case id")
+        if case_id in case_ids:
+            raise LedgerError("duplicate B0 case id")
+        case_ids.add(case_id)
+        _validate_hash(entry.get("input_sha256"), "input sha256")
+        if role == "regression":
+            _require_keys(entry, {"case_id", "input_sha256", "role"}, "regression entry")
+            continue
+        _require_keys(entry, B0_EVIDENCE_KEYS, f"{role} entry")
+        if (
+            entry["selected_candidate_id"] != value["selected_candidate_id"]
+            or entry["phase_result"] != "pass"
+        ):
+            raise LedgerError(f"{role} entry did not pass for the selected candidate")
+        for field, keys in (
+            ("model", {"provider", "backend", "identifier_sha256"}),
+            ("runtime", {"os", "device"}),
+            ("device", {"actual_device"}),
+            ("output_hashes", {"source", "segment_mask", "inpainted", "rendered"}),
+            (
+                "assertions",
+                {
+                    "source_text_removed",
+                    "target_rendered",
+                    "protected_pixels_preserved",
+                    "english_roi_preserved",
+                },
+            ),
+        ):
+            _require_keys(entry[field], keys, f"{role} {field}")
+        _validate_text(entry["model"]["provider"], "model provider")
+        _validate_text(entry["model"]["backend"], "model backend")
+        _validate_hash(entry["model"]["identifier_sha256"], "model identifier sha256")
+        _validate_text(entry["runtime"]["os"], "runtime os")
+        _validate_text(entry["runtime"]["device"], "runtime device")
+        _validate_text(entry["device"]["actual_device"], "actual device")
+        for label, digest in entry["output_hashes"].items():
+            _validate_hash(digest, f"{label} output hash")
+        if any(assertion is not True for assertion in entry["assertions"].values()):
+            raise LedgerError(f"{role} assertions must all be true")
+    if roles != {"regression": 1, "calibration": 4, "holdout": 4}:
+        raise LedgerError("B0 entry role counts mismatch")
+    return b"PASS B0 frozen artifact\n"
 
 
 def _jpeg_dimensions(data):
@@ -867,6 +983,12 @@ def _parse_arguments(argv):
     rehydrate = subparsers.add_parser("rehydrate")
     rehydrate.add_argument("--repo-root", required=True)
     rehydrate.add_argument("--evidence-root", required=True)
+    validate_b0 = subparsers.add_parser("validate-b0-artifact")
+    validate_b0.add_argument("--repo-root", required=True)
+    validate_b0.add_argument("--artifact", required=True)
+    validate_b0.add_argument("--b0-sha", required=True)
+    validate_b0.add_argument("--visual-manifest-sha256", required=True)
+    validate_b0.add_argument("--source-gate-fixture-manifest-sha256", required=True)
     return parser.parse_args(argv)
 
 
@@ -874,7 +996,9 @@ def execute(argv):
     arguments = _parse_arguments(argv)
     if arguments.command == "create":
         return _create(arguments)
-    return _rehydrate(arguments)
+    if arguments.command == "rehydrate":
+        return _rehydrate(arguments)
+    return _validate_b0_artifact(arguments)
 
 
 def main(argv=None, *, stdout=None, stderr=None):
