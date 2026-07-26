@@ -423,13 +423,28 @@ fn han_only_visual_manifest_matrix() {
 
 #[cfg(all(test, feature = "hanonly-test-evidence"))]
 mod source_gate_selection {
-    use super::super::d0_visual_manifest_schema::EntryRole;
+    use super::super::d0_visual_manifest_oracles::{
+        OracleValidatedEntry, OracleValidatedManifest, ValidatedHalfOpenRect,
+    };
+    use super::super::d0_visual_manifest_schema::{EntryRole, Expected, VisualManifestEntry};
+    use super::super::engines::source_language_gate::{
+        SourceGateCropPolicy, SourceGateCropPolicyGuard, dispatch_source_gate,
+    };
+    use super::super::engines::support::SOURCE_GATE_TARGET_DETECTOR;
     use super::*;
     use chrono::{SecondsFormat, Utc};
+    use image::DynamicImage;
+    use koharu_core::{Node, NodeId, NodeKind, Page, Scene, TextData, Transform};
+    use koharu_llm::NativeLogCaptureGuard;
+    use koharu_llm::paddleocr_vl::{PaddleOcrVl, PaddleOcrVlTask};
+    use koharu_llm::safe::{LlamaBackendDeviceType, list_llama_ggml_backend_devices};
+    use koharu_ml::pp_ocr_v5::PpOcrV5;
+    use koharu_runtime::{ComputePolicy, RuntimeManager, default_app_data_root};
     use sha2::{Digest, Sha256};
     use std::collections::{BTreeMap, HashMap, HashSet};
     use std::fs::OpenOptions;
     use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
     const PHASE_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_PHASE";
     const B0_SHA_ENV: &str = "HANONLY_B0_SHA";
@@ -442,6 +457,11 @@ mod source_gate_selection {
         "13d2256fed7b8189e67db7222ce6ce7964f2745c977c42e7693679ffb2a341f8";
     const COLOR_CONSTANT_SET_SHA256: &str =
         "ea277ff2674aae711b62a39b6a0b930e7d9c863bd518521c59ff44be56c4c6e9";
+    const PP_REPO: &str = "marsena/paddleocr-onnx-models";
+    const PP_DETECTION_MODEL: &str = "PP-OCRv5_server_det_infer.onnx";
+    const PP_RECOGNITION_MODEL: &str = "PP-OCRv5_server_rec_infer.onnx";
+    const PP_RECOGNITION_CONFIG: &str = "PP-OCRv5_server_rec_infer.yml";
+    const VL_MAX_NEW_TOKENS: usize = 256;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Phase {
@@ -463,7 +483,12 @@ mod source_gate_selection {
     struct SelectionEnvironment {
         phase: Phase,
         b0_sha: String,
+        visual_input: PathBuf,
+        visual_input_sha256: String,
+        visual_manifest: PathBuf,
         visual_manifest_sha256: String,
+        evidence_root: PathBuf,
+        report_dir: PathBuf,
         source_gate_fixture_manifest_sha256: String,
         artifact: PathBuf,
         calibration_entry_ids: Vec<String>,
@@ -487,6 +512,10 @@ mod source_gate_selection {
             )?;
             let visual_manifest_sha256 = required(&mut get, VISUAL_MANIFEST_SHA256_ENV)?;
             decode_sha256(&visual_manifest_sha256)?;
+            let visual_input = PathBuf::from(required(&mut get, VISUAL_INPUT_ENV)?);
+            require_absolute_syntax(&visual_input)?;
+            let visual_input_sha256 = required(&mut get, VISUAL_INPUT_SHA256_ENV)?;
+            decode_sha256(&visual_input_sha256)?;
             let visual_manifest = PathBuf::from(required(&mut get, VISUAL_MANIFEST_ENV)?);
             require_absolute_canonical(&visual_manifest)?;
             let manifest_bytes = fs::read(&visual_manifest)?;
@@ -525,6 +554,13 @@ mod source_gate_selection {
             let report_dir = PathBuf::from(required(&mut get, REPORT_DIR_ENV)?);
             require_future_path_below(&evidence_root, &artifact)?;
             require_future_path_below(&evidence_root, &report_dir)?;
+            let artifact_parent = artifact
+                .parent()
+                .ok_or_else(|| invalid_data("selection artifact has no parent"))?;
+            require(
+                report_dir.starts_with(artifact_parent),
+                "selection report directory must be below the artifact parent",
+            )?;
             if report_dir.exists() {
                 require(
                     report_dir.is_dir(),
@@ -534,7 +570,12 @@ mod source_gate_selection {
             Ok(Self {
                 phase,
                 b0_sha,
+                visual_input,
+                visual_input_sha256,
+                visual_manifest,
                 visual_manifest_sha256,
+                evidence_root,
+                report_dir,
                 source_gate_fixture_manifest_sha256,
                 artifact,
                 calibration_entry_ids,
@@ -964,6 +1005,544 @@ mod source_gate_selection {
             denominator,
         })
         .collect()
+    }
+
+    fn run_real_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
+        let selected_input = HeldInput::open_bounded(&environment.visual_input, BYTE_CEILING)?;
+        require(
+            selected_input.sha256() == decode_sha256(&environment.visual_input_sha256)?,
+            "selected regression input sha256 mismatch",
+        )?;
+        let decoded_fingerprint =
+            canonical_decoded_rgba_blake3(selected_input.bytes()).map_err(io::Error::other)?;
+        let held = load_schema_and_hold_assets(
+            &environment.visual_manifest,
+            &environment.visual_manifest_sha256,
+            &environment.visual_input,
+            &decoded_fingerprint,
+            &environment.visual_input_sha256,
+        )
+        .map_err(io::Error::other)?;
+        let validated =
+            validate_visual_oracles(validate_dimensions_and_masks(held).map_err(io::Error::other)?)
+                .map_err(io::Error::other)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        validated.upstream.held_schema.with_revalidated_paths(|| {
+            runtime.block_on(run_real_model_async(environment, &validated))
+        })
+    }
+
+    async fn run_real_model_async(
+        environment: &SelectionEnvironment,
+        manifest: &OracleValidatedManifest,
+    ) -> io::Result<RunnerEvidence> {
+        create_secure_report_dir(&environment.report_dir)?;
+        let runtime = RuntimeManager::new(
+            default_app_data_root().as_std_path(),
+            ComputePolicy::PreferGpu,
+        )
+        .map_err(io::Error::other)?;
+        runtime.prepare().await.map_err(io::Error::other)?;
+        let backend = crate::app::shared_llama_backend(&runtime).map_err(io::Error::other)?;
+
+        let downloads = runtime.downloads();
+        let (pp_detection, pp_recognition, pp_recognition_config) = tokio::try_join!(
+            downloads.huggingface_model(PP_REPO, PP_DETECTION_MODEL),
+            downloads.huggingface_model(PP_REPO, PP_RECOGNITION_MODEL),
+            downloads.huggingface_model(PP_REPO, PP_RECOGNITION_CONFIG),
+        )
+        .map_err(io::Error::other)?;
+        let pp = PpOcrV5::load(&runtime).await.map_err(io::Error::other)?;
+        let executable_sha256 = sha256_file(&std::env::current_exe()?)?;
+        let runtime_library_sha256 = runtime_library_hashes(&runtime)?;
+        let phase = phase_name(environment.phase);
+        let selected = selected_candidates(environment)?;
+        let mut process_evidence = Vec::with_capacity(2);
+        let mut results = Vec::new();
+
+        for (device, cpu) in [("cpu", true), ("metal", false)] {
+            let mut logs = NativeLogCaptureGuard::start();
+            let mut vl = PaddleOcrVl::load(&runtime, cpu, backend.clone())
+                .await
+                .map_err(io::Error::other)?;
+            let vl_evidence = vl.device_evidence();
+            let load_bytes = logs.take();
+            let parsed_load = parse_native_load_log(&load_bytes)?;
+            let load_log = write_raw_log(
+                environment,
+                &format!("source-gate/{phase}/{device}/load.log"),
+                &load_bytes,
+            )?;
+            let enumerated_devices = enumerated_devices()?;
+            let loaded_model_devices = loaded_model_devices(
+                &enumerated_devices,
+                &parsed_load.model_buffer_bytes_by_backend,
+            )?;
+            let process_id = format!("{phase}-{device}");
+            let process = ProcessEvidence {
+                id: process_id.clone(),
+                phase: phase.into(),
+                requested_device: device.into(),
+                paddle_instance_id: vl_evidence.instance_id.clone(),
+                executable_sha256: executable_sha256.clone(),
+                model_artifact_sha256: ModelArtifactHashes {
+                    pp_detection: sha256_file(&pp_detection)?,
+                    pp_recognition: sha256_file(&pp_recognition)?,
+                    pp_recognition_config: sha256_file(&pp_recognition_config)?,
+                    vl_model: sha256_file(&vl_evidence.model_path)?,
+                    vl_mmproj: sha256_file(&vl_evidence.mmproj_path)?,
+                },
+                runtime_library_sha256: runtime_library_sha256.clone(),
+                load_evidence: LoadEvidence {
+                    cpu_forced: vl_evidence.requested_cpu,
+                    gpu_offload_supported: backend.supports_gpu_offload(),
+                    n_gpu_layers: vl_evidence.model_n_gpu_layers,
+                    mtmd_use_gpu: vl_evidence.mtmd_use_gpu,
+                    word_boxes_backend: "rten_cpu".into(),
+                    raw_load_log_relpath: load_log.0,
+                    raw_load_log_sha256: load_log.1,
+                    enumerated_devices,
+                    loaded_model_devices,
+                    offloaded_layers: parsed_load.offloaded_layers,
+                    offloadable_layers: parsed_load.offloadable_layers,
+                    model_buffer_bytes_by_backend: parsed_load.model_buffer_bytes_by_backend,
+                    mtmd_backend: parsed_load.mtmd_backend,
+                },
+            };
+
+            for (schema_entry, decoded_entry, oracle_entry) in manifest
+                .upstream
+                .held_schema
+                .schema
+                .entries
+                .iter()
+                .zip(&manifest.upstream.entries)
+                .zip(&manifest.entries)
+                .map(|((schema, decoded), oracle)| (schema, decoded, oracle))
+                .filter(|(entry, _, _)| entry.role == phase_role(environment.phase))
+            {
+                for (candidate_id, policy) in &selected {
+                    logs.clear();
+                    let mut scene = scene_for_entry(schema_entry, oracle_entry);
+                    let page = *scene.pages.keys().next().expect("scene page");
+                    let image = DynamicImage::ImageRgba8(decoded_entry.source.clone());
+                    let _policy = SourceGateCropPolicyGuard::set(*policy);
+                    let ops = dispatch_source_gate(
+                        &image,
+                        &scene,
+                        page,
+                        |_, crop| pp.word_boxes(crop),
+                        |crops| {
+                            std::future::ready(
+                                vl.inference_images(
+                                    &crops,
+                                    PaddleOcrVlTask::Ocr,
+                                    VL_MAX_NEW_TOKENS,
+                                )
+                                .map(|outputs| {
+                                    outputs.into_iter().map(|output| output.text).collect()
+                                }),
+                            )
+                        },
+                    )
+                    .await
+                    .map_err(io::Error::other)?;
+                    for mut op in ops {
+                        op.apply(&mut scene).map_err(io::Error::other)?;
+                    }
+                    let inference_bytes = logs.take();
+                    let parsed_inference = parse_native_inference_log(&inference_bytes)?;
+                    let inference_log = write_raw_log(
+                        environment,
+                        &format!(
+                            "source-gate/{phase}/{}/{device}/{candidate_id}.log",
+                            schema_entry.id
+                        ),
+                        &inference_bytes,
+                    )?;
+                    let (runtime_nodes, derived) =
+                        derive_result(device, &scene, page, schema_entry, oracle_entry)?;
+                    results.push(SelectionResult {
+                        entry_id: schema_entry.id.clone(),
+                        process_evidence_id: process_id.clone(),
+                        candidate_id: candidate_id.clone(),
+                        execution_evidence: ExecutionEvidence {
+                            paddle_instance_id: vl_evidence.instance_id.clone(),
+                            context_offload_kqv: vl_evidence.context_offload_kqv,
+                            context_op_offload: vl_evidence.context_op_offload,
+                            inference_completed: true,
+                            raw_inference_log_relpath: inference_log.0,
+                            raw_inference_log_sha256: inference_log.1,
+                            context_buffer_bytes_by_backend: parsed_inference
+                                .context_buffer_bytes_by_backend,
+                            compute_buffer_bytes_by_backend: parsed_inference
+                                .compute_buffer_bytes_by_backend,
+                        },
+                        runtime_nodes,
+                        derived,
+                    });
+                }
+            }
+            process_evidence.push(process);
+        }
+        let entry_ids = match environment.phase {
+            Phase::CalibrationFreeze => &environment.calibration_entry_ids,
+            Phase::Holdout => &environment.holdout_entry_ids,
+        };
+        let selected_candidate_id = if environment.phase == Phase::CalibrationFreeze {
+            select_smallest_all_pass(&results, entry_ids)?
+        } else {
+            selected[0].0.clone()
+        };
+        Ok(RunnerEvidence {
+            selected_candidate_id,
+            process_evidence,
+            results,
+        })
+    }
+
+    fn phase_name(phase: Phase) -> &'static str {
+        match phase {
+            Phase::CalibrationFreeze => "calibration",
+            Phase::Holdout => "holdout",
+        }
+    }
+
+    fn phase_role(phase: Phase) -> EntryRole {
+        match phase {
+            Phase::CalibrationFreeze => EntryRole::Calibration,
+            Phase::Holdout => EntryRole::Holdout,
+        }
+    }
+
+    fn selected_candidates(
+        environment: &SelectionEnvironment,
+    ) -> io::Result<Vec<(String, SourceGateCropPolicy)>> {
+        let all = [
+            ("R0", SourceGateCropPolicy::R0),
+            ("R025", SourceGateCropPolicy::R025),
+            ("R05", SourceGateCropPolicy::R05),
+            ("R10", SourceGateCropPolicy::R10),
+        ];
+        if environment.phase == Phase::CalibrationFreeze {
+            return Ok(all
+                .into_iter()
+                .map(|(id, policy)| (id.into(), policy))
+                .collect());
+        }
+        let artifact: FrozenArtifact = serde_json::from_slice(&fs::read(&environment.artifact)?)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        all.into_iter()
+            .find(|(id, _)| *id == artifact.selected_candidate_id)
+            .map(|(id, policy)| vec![(id.into(), policy)])
+            .ok_or_else(|| invalid_data("frozen candidate is unknown"))
+    }
+
+    fn scene_for_entry(schema: &VisualManifestEntry, oracle: &OracleValidatedEntry) -> Scene {
+        let width = oracle
+            .targets
+            .iter()
+            .map(|target| target.source_roi.right)
+            .chain(oracle.protected_rois.iter().map(|roi| roi.right))
+            .max()
+            .unwrap_or(1);
+        let height = oracle
+            .targets
+            .iter()
+            .map(|target| target.source_roi.bottom)
+            .chain(oracle.protected_rois.iter().map(|roi| roi.bottom))
+            .max()
+            .unwrap_or(1);
+        let mut page = Page::new(&schema.id, width, height);
+        for (target, geometry) in schema.targets.iter().zip(&oracle.targets) {
+            let roi = geometry.source_roi;
+            let rotation = if target.expected == Expected::UnsupportedRotation {
+                1.0
+            } else {
+                0.0
+            };
+            let id = NodeId::new();
+            page.nodes.insert(
+                id,
+                Node {
+                    id,
+                    transform: Transform {
+                        x: roi.left as f32,
+                        y: roi.top as f32,
+                        width: (roi.right - roi.left) as f32,
+                        height: (roi.bottom - roi.top) as f32,
+                        rotation_deg: rotation,
+                    },
+                    visible: true,
+                    kind: NodeKind::Text(TextData {
+                        confidence: 1.0,
+                        rotation_deg: Some(rotation),
+                        detector: Some("d0_visual_manifest".into()),
+                        ..Default::default()
+                    }),
+                },
+            );
+        }
+        let page_id = page.id;
+        let mut scene = Scene::default();
+        scene.pages.insert(page_id, page);
+        scene
+    }
+
+    fn derive_result(
+        device: &str,
+        scene: &Scene,
+        page: koharu_core::PageId,
+        schema: &VisualManifestEntry,
+        oracle: &OracleValidatedEntry,
+    ) -> io::Result<(Vec<RuntimeNode>, DerivedEvidence)> {
+        let mut runtime_nodes = Vec::new();
+        let mut matched = HashSet::new();
+        let mut selected = HashSet::new();
+        let mut selected_protected = Vec::new();
+        let mut unmatched_selected = Vec::new();
+        let page = scene
+            .page(page)
+            .ok_or_else(|| invalid_data("runtime scene page is missing"))?;
+        for (node_id, node) in &page.nodes {
+            let NodeKind::Text(text) = &node.kind else {
+                continue;
+            };
+            let selected_as_han =
+                node.visible && text.detector.as_deref() == Some(SOURCE_GATE_TARGET_DETECTOR);
+            let anchor = [
+                f64::from(node.transform.x),
+                f64::from(node.transform.y),
+                f64::from(node.transform.x + node.transform.width),
+                f64::from(node.transform.y + node.transform.height),
+            ];
+            let center = ((anchor[0] + anchor[2]) / 2.0, (anchor[1] + anchor[3]) / 2.0);
+            let target = schema
+                .targets
+                .iter()
+                .zip(&oracle.targets)
+                .find(|(_, target)| rect_contains(target.source_roi, center))
+                .map(|(schema, _)| schema);
+            if let Some(target) = target {
+                matched.insert(target.id.clone());
+                if selected_as_han {
+                    selected.insert(target.id.clone());
+                }
+            } else if selected_as_han {
+                unmatched_selected.push(node_id.to_string());
+            }
+            if selected_as_han
+                && oracle
+                    .protected_rois
+                    .iter()
+                    .any(|protected| rect_intersects(*protected, anchor))
+            {
+                selected_protected.push(node_id.to_string());
+            }
+            runtime_nodes.push(RuntimeNode {
+                node_id: node_id.to_string(),
+                recognition_anchor: anchor,
+                node_rotation: f64::from(node.transform.rotation_deg),
+                text_rotation: f64::from(text.rotation_deg.unwrap_or_default()),
+                selected_as_han,
+            });
+        }
+        let mut rotation = schema
+            .targets
+            .iter()
+            .filter(|target| {
+                target.expected == Expected::UnsupportedRotation && selected.contains(&target.id)
+            })
+            .map(|target| target.id.clone())
+            .collect::<Vec<_>>();
+        let expected = schema
+            .targets
+            .iter()
+            .filter(|target| target.expected != Expected::UnsupportedRotation)
+            .map(|target| target.id.as_str())
+            .collect::<HashSet<_>>();
+        let selected_expected = selected
+            .iter()
+            .filter(|id| expected.contains(id.as_str()))
+            .count();
+        let recall = if expected.is_empty() {
+            1.0
+        } else {
+            selected_expected as f64 / expected.len() as f64
+        };
+        let mut matched = matched.into_iter().collect::<Vec<_>>();
+        let mut selected = selected.into_iter().collect::<Vec<_>>();
+        matched.sort();
+        selected.sort();
+        rotation.sort();
+        selected_protected.sort();
+        unmatched_selected.sort();
+        let rotation_targets_excluded = rotation.is_empty();
+        let passed = recall == 1.0
+            && selected_protected.is_empty()
+            && unmatched_selected.is_empty()
+            && rotation_targets_excluded;
+        Ok((
+            runtime_nodes,
+            DerivedEvidence {
+                actual_device: device.into(),
+                matched_target_ids: matched,
+                selected_target_ids: selected,
+                selected_protected_node_ids: selected_protected.clone(),
+                selected_rotation_target_ids: rotation,
+                unmatched_selected_node_ids: unmatched_selected,
+                target_recall: recall,
+                protected_false_positive_count: selected_protected.len() as u32,
+                rotation_targets_excluded,
+                passed,
+            },
+        ))
+    }
+
+    fn rect_contains(rect: ValidatedHalfOpenRect, point: (f64, f64)) -> bool {
+        f64::from(rect.left) <= point.0
+            && point.0 < f64::from(rect.right)
+            && f64::from(rect.top) <= point.1
+            && point.1 < f64::from(rect.bottom)
+    }
+
+    fn rect_intersects(rect: ValidatedHalfOpenRect, anchor: [f64; 4]) -> bool {
+        f64::from(rect.left) < anchor[2]
+            && anchor[0] < f64::from(rect.right)
+            && f64::from(rect.top) < anchor[3]
+            && anchor[1] < f64::from(rect.bottom)
+    }
+
+    fn create_secure_report_dir(path: &Path) -> io::Result<()> {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+    }
+
+    fn write_raw_log(
+        environment: &SelectionEnvironment,
+        suffix: &str,
+        bytes: &[u8],
+    ) -> io::Result<(String, String)> {
+        require(!bytes.is_empty(), "native log capture is empty")?;
+        let path = environment.report_dir.join(suffix);
+        require(
+            path.starts_with(&environment.evidence_root),
+            "raw log escaped evidence root",
+        )?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| invalid_data("raw log has no parent"))?;
+        create_secure_report_dir(parent)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        OpenOptions::new().read(true).open(parent)?.sync_all()?;
+        let artifact_parent = environment
+            .artifact
+            .parent()
+            .ok_or_else(|| invalid_data("selection artifact has no parent"))?;
+        let relative = path
+            .strip_prefix(artifact_parent)
+            .map_err(|_| invalid_data("raw log is outside artifact parent"))?
+            .to_str()
+            .ok_or_else(|| invalid_data("raw log path is not utf-8"))?
+            .to_owned();
+        Ok((relative, sha256_hex(bytes)))
+    }
+
+    fn sha256_file(path: &Path) -> io::Result<String> {
+        Ok(sha256_hex(&fs::read(path)?))
+    }
+
+    fn runtime_library_hashes(runtime: &RuntimeManager) -> io::Result<BTreeMap<String, String>> {
+        let mut hashes = BTreeMap::new();
+        for entry in fs::read_dir(runtime.llama_directory().map_err(io::Error::other)?)? {
+            let path = entry?.path();
+            if path.is_file() {
+                let canonical = fs::canonicalize(&path)?;
+                hashes.insert(
+                    canonical.to_string_lossy().into_owned(),
+                    sha256_file(&canonical)?,
+                );
+            }
+        }
+        require(!hashes.is_empty(), "llama runtime library set is empty")?;
+        Ok(hashes)
+    }
+
+    fn enumerated_devices() -> io::Result<Vec<EnumeratedDevice>> {
+        list_llama_ggml_backend_devices()
+            .into_iter()
+            .map(|device| {
+                let backend = canonical_device_backend(&device.backend)
+                    .ok_or_else(|| invalid_data("unsupported enumerated backend"))?;
+                Ok(EnumeratedDevice {
+                    index: u32::try_from(device.index)
+                        .map_err(|_| invalid_data("device index overflow"))?,
+                    name: device.name,
+                    description: device.description,
+                    backend: backend.into(),
+                    device_type: device_type(device.device_type).into(),
+                })
+            })
+            .collect()
+    }
+
+    fn loaded_model_devices(
+        enumerated: &[EnumeratedDevice],
+        buffers: &BTreeMap<String, u64>,
+    ) -> io::Result<Vec<LoadedModelDevice>> {
+        buffers
+            .iter()
+            .filter(|(_, bytes)| **bytes > 0)
+            .enumerate()
+            .map(|(ordinal, (backend, _))| {
+                let device = enumerated
+                    .iter()
+                    .find(|device| device.backend == *backend)
+                    .ok_or_else(|| invalid_data("loaded backend was not enumerated"))?;
+                Ok(LoadedModelDevice {
+                    model_device_ordinal: ordinal as u32,
+                    name: if device.name.is_empty() {
+                        device.description.clone()
+                    } else {
+                        device.name.clone()
+                    },
+                    backend: backend.clone(),
+                    device_type: device.device_type.clone(),
+                })
+            })
+            .collect()
+    }
+
+    fn canonical_device_backend(backend: &str) -> Option<&'static str> {
+        let lower = backend.to_ascii_lowercase();
+        if lower.contains("metal") {
+            Some("Metal")
+        } else if lower.contains("cpu") {
+            Some("CPU")
+        } else {
+            None
+        }
+    }
+
+    fn device_type(device_type: LlamaBackendDeviceType) -> &'static str {
+        match device_type {
+            LlamaBackendDeviceType::Cpu => "cpu",
+            LlamaBackendDeviceType::Accelerator => "accelerator",
+            LlamaBackendDeviceType::Gpu => "gpu",
+            LlamaBackendDeviceType::IntegratedGpu => "integrated_gpu",
+            LlamaBackendDeviceType::Unknown => "unknown",
+        }
     }
 
     fn select_smallest_all_pass(
@@ -1465,6 +2044,54 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         assert!(parse_native_inference_log(b"Vulkan compute buffer size = 1.00 MiB").is_err());
     }
 
+    #[test]
+    fn source_gate_manifest_roi_matching_is_half_open_and_overlap_is_strict() {
+        let roi = ValidatedHalfOpenRect {
+            left: 10,
+            top: 20,
+            right: 30,
+            bottom: 40,
+        };
+        assert!(rect_contains(roi, (10.0, 20.0)));
+        assert!(rect_contains(roi, (29.999, 39.999)));
+        assert!(!rect_contains(roi, (30.0, 40.0)));
+        assert!(rect_intersects(roi, [29.0, 39.0, 31.0, 41.0]));
+        assert!(!rect_intersects(roi, [30.0, 40.0, 31.0, 41.0]));
+    }
+
+    #[test]
+    fn source_gate_loaded_devices_come_from_enumerated_buffer_backends() {
+        let enumerated = vec![
+            EnumeratedDevice {
+                index: 0,
+                name: "CPU".into(),
+                description: "Host CPU".into(),
+                backend: "CPU".into(),
+                device_type: "cpu".into(),
+            },
+            EnumeratedDevice {
+                index: 1,
+                name: "Metal0".into(),
+                description: "Apple GPU".into(),
+                backend: "Metal".into(),
+                device_type: "integrated_gpu".into(),
+            },
+        ];
+        let loaded = loaded_model_devices(
+            &enumerated,
+            &BTreeMap::from([("CPU".into(), 1), ("Metal".into(), 2)]),
+        )
+        .unwrap();
+        assert_eq!(
+            loaded
+                .iter()
+                .map(|device| device.backend.as_str())
+                .collect::<Vec<_>>(),
+            ["CPU", "Metal"]
+        );
+        assert!(loaded_model_devices(&enumerated, &BTreeMap::from([("CUDA".into(), 1)])).is_err());
+    }
+
     fn valid_environment(root: &Path) -> HashMap<&'static str, String> {
         let manifest = root.join("visual-manifest.json");
         let manifest_bytes = serde_json::to_vec(&serde_json::json!({
@@ -1484,6 +2111,11 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         HashMap::from([
             (PHASE_ENV, "calibration-freeze".into()),
             (B0_SHA_ENV, "a".repeat(40)),
+            (
+                VISUAL_INPUT_ENV,
+                root.join("regression.png").to_string_lossy().into_owned(),
+            ),
+            (VISUAL_INPUT_SHA256_ENV, "0".repeat(64)),
             (
                 VISUAL_EVIDENCE_ROOT_ENV,
                 root.to_string_lossy().into_owned(),
@@ -1916,11 +2548,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             &repository,
             git_head,
             require_fixture_clean,
-            |_| {
-                Err(io::Error::other(
-                    "Source Gate model runner is not implemented",
-                ))
-            },
+            run_real_model,
         )
         .expect("Source Gate selection harness failed");
     }
