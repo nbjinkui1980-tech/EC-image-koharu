@@ -9,7 +9,7 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use image::DynamicImage;
-use koharu_core::{ImageRole, MaskRole, Op, Region};
+use koharu_core::{ImageRole, MaskRole, NodeId, Op, Region};
 use koharu_ml::aot_inpainting::AotInpainting;
 use koharu_ml::inpainting::expand_mask_for_inpainting;
 use koharu_ml::types::TextRegion;
@@ -18,9 +18,9 @@ use crate::config::SourceTextPolicy;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    EligibleTextLine, clip_mask_to_region, eligible_lines_for_page, find_image_node,
-    find_mask_node, image_dimensions, load_source_image, prepare_inpaint_mask, text_node_to_region,
-    text_nodes, upsert_image_blob,
+    EligibleTextLine, PreparedInpaintMask, clip_mask_to_region, eligible_lines_for_page,
+    find_image_node, find_mask_node, image_dimensions, load_source_image, prepare_inpaint_mask,
+    protected_source_lines_for_page, text_node_to_region, text_nodes, upsert_image_blob,
 };
 
 pub struct Model(AotInpainting);
@@ -46,17 +46,15 @@ impl Engine for Model {
             .into_iter()
             .map(|(_, transform, text)| text_node_to_region(transform, text))
             .collect();
-        let eligible_lines = eligible_lines_for_page(ctx.scene, ctx.page)
-            .0
-            .into_iter()
-            .map(|(_, line)| line)
-            .collect::<Vec<_>>();
+        let eligible_lines = eligible_lines_for_page(ctx.scene, ctx.page).0;
+        let protected_lines = protected_source_lines_for_page(ctx.scene, ctx.page);
         let result = dispatch_aot_inpaint(
             &image,
             &mask,
             &bubble_mask,
             &text_blocks,
             &eligible_lines,
+            &protected_lines,
             ctx.options.source_text_policy,
             ctx.options.region,
             |image, mask, bubble_mask| self.0.inference(image, mask, bubble_mask),
@@ -80,7 +78,8 @@ fn dispatch_aot_inpaint<Inference>(
     mask: &DynamicImage,
     bubble_mask: &DynamicImage,
     all_blocks: &[TextRegion],
-    eligible_lines: &[EligibleTextLine],
+    eligible_lines: &[(NodeId, EligibleTextLine)],
+    protected_lines: &[(NodeId, EligibleTextLine)],
     policy: SourceTextPolicy,
     region: Option<Region>,
     inference: Inference,
@@ -91,18 +90,22 @@ where
     let inference_bubble = region
         .map(|region| clip_mask_to_region(bubble_mask, &region))
         .unwrap_or_else(|| bubble_mask.clone());
-    let Some((final_mask, _)) = prepare_inpaint_mask(
+    let prepared = prepare_inpaint_mask(
         mask,
         bubble_mask,
         all_blocks,
         eligible_lines,
+        protected_lines,
         policy,
         region,
         expand_mask_for_inpainting,
-    ) else {
-        return Ok(image.clone());
-    };
-    inference(image, &final_mask, &inference_bubble)
+    )?;
+    match prepared {
+        PreparedInpaintMask::Prepared { mask, .. } => inference(image, &mask, &inference_bubble),
+        PreparedInpaintMask::NoEligibleHanTargets | PreparedInpaintMask::EmptyMask => {
+            Ok(image.clone())
+        }
+    }
 }
 
 inventory::submit! {
@@ -178,6 +181,7 @@ mod tests {
                 ..Default::default()
             }],
             &[],
+            &[],
             SourceTextPolicy::HanOnly,
             Some(region),
             |frame, final_mask, final_bubble| {
@@ -220,6 +224,7 @@ mod tests {
             &bubble,
             &[],
             &[],
+            &[],
             SourceTextPolicy::HanOnly,
             None,
             |frame, _, _| {
@@ -231,5 +236,49 @@ mod tests {
 
         assert_eq!(calls.get(), 0);
         assert_eq!(output.to_rgb8(), image.to_rgb8());
+    }
+
+    #[test]
+    fn aot_han_final_mask_is_a_full_pixel_subset_of_canonical_support() {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(24, 12, Rgb([1, 2, 3])));
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(24, 12, |x, y| {
+            Luma([if (5..=9).contains(&x) && y == 6 {
+                255
+            } else {
+                0
+            }])
+        }));
+        let bubble = DynamicImage::ImageLuma8(GrayImage::from_pixel(24, 12, Luma([255])));
+        let eligible = EligibleTextLine {
+            line_index: 0,
+            text: "中文".into(),
+            region: TextRegion {
+                x: 6.0,
+                y: 4.0,
+                width: 4.0,
+                height: 5.0,
+                line_polygons: Some(vec![[[6.0, 4.0], [10.0, 4.0], [10.0, 9.0], [6.0, 9.0]]]),
+                ..Default::default()
+            },
+        };
+
+        dispatch_aot_inpaint(
+            &image,
+            &mask,
+            &bubble,
+            &[],
+            &[(NodeId::new(), eligible)],
+            &[],
+            SourceTextPolicy::HanOnly,
+            None,
+            |frame, final_mask, _| {
+                let final_mask = final_mask.to_luma8();
+                assert!(final_mask.enumerate_pixels().all(|(x, y, pixel)| {
+                    pixel.0[0] == 0 || ((5..10).contains(&x) && (4..9).contains(&y))
+                }));
+                Ok(frame.clone())
+            },
+        )
+        .unwrap();
     }
 }
