@@ -424,12 +424,16 @@ fn han_only_visual_manifest_matrix() {
 #[cfg(all(test, feature = "hanonly-test-evidence"))]
 mod source_gate_selection {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::fs::OpenOptions;
+    use std::io::Write;
 
     const PHASE_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_PHASE";
     const B0_SHA_ENV: &str = "HANONLY_B0_SHA";
     const ARTIFACT_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT";
     const REPORT_DIR_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR";
+    const ARTIFACT_VERSION: &str = "hanonly-b0-frozen-artifact-v1";
+    const PLAN_REVISION: u32 = 46;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Phase {
@@ -440,6 +444,8 @@ mod source_gate_selection {
     struct SelectionEnvironment {
         phase: Phase,
         b0_sha: String,
+        visual_manifest_sha256: String,
+        source_gate_fixture_manifest_sha256: String,
         artifact: PathBuf,
     }
 
@@ -458,6 +464,11 @@ mod source_gate_selection {
                         .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
                 "B0 sha must be 40 or 64 lowercase hex characters",
             )?;
+            let visual_manifest_sha256 = required(&mut get, VISUAL_MANIFEST_SHA256_ENV)?;
+            decode_sha256(&visual_manifest_sha256)?;
+            let source_gate_fixture_manifest_sha256 =
+                required(&mut get, SOURCE_GATE_FIXTURE_SHA256_ENV)?;
+            decode_sha256(&source_gate_fixture_manifest_sha256)?;
             let evidence_root = PathBuf::from(required(&mut get, VISUAL_EVIDENCE_ROOT_ENV)?);
             require_absolute_canonical(&evidence_root)?;
             let artifact = PathBuf::from(required(&mut get, ARTIFACT_ENV)?);
@@ -473,9 +484,99 @@ mod source_gate_selection {
             Ok(Self {
                 phase,
                 b0_sha,
+                visual_manifest_sha256,
+                source_gate_fixture_manifest_sha256,
                 artifact,
             })
         }
+    }
+
+    #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    enum EntryRole {
+        Regression,
+        Calibration,
+        Holdout,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct ModelEvidence {
+        provider: String,
+        backend: String,
+        identifier_sha256: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RuntimeEvidence {
+        os: String,
+        device: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct DeviceEvidence {
+        actual_device: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct OutputHashes {
+        source: String,
+        segment_mask: String,
+        inpainted: String,
+        rendered: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Assertions {
+        source_text_removed: bool,
+        target_rendered: bool,
+        protected_pixels_preserved: bool,
+        english_roi_preserved: bool,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct SelectionEntry {
+        case_id: String,
+        input_sha256: String,
+        role: EntryRole,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        selected_candidate_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase_result: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<ModelEvidence>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        runtime: Option<RuntimeEvidence>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        device: Option<DeviceEvidence>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output_hashes: Option<OutputHashes>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        assertions: Option<Assertions>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RunnerEvidence {
+        selected_candidate_id: String,
+        entries: Vec<SelectionEntry>,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Eq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct FrozenArtifact {
+        version: String,
+        plan_revision: u32,
+        b0_sha: String,
+        visual_manifest_sha256: String,
+        source_gate_fixture_manifest_sha256: String,
+        selected_candidate_id: String,
+        candidate_ratios: BTreeMap<String, String>,
+        entries: Vec<SelectionEntry>,
     }
 
     fn required(
@@ -535,7 +636,7 @@ mod source_gate_selection {
         repository: &Path,
         read_head: impl FnOnce(&Path) -> io::Result<String>,
         check_fixture: impl FnOnce(&Path) -> io::Result<()>,
-        model_runner: impl FnOnce(&SelectionEnvironment) -> io::Result<()>,
+        model_runner: impl FnOnce(&SelectionEnvironment) -> io::Result<RunnerEvidence>,
     ) -> io::Result<()> {
         let environment = SelectionEnvironment::parse(get)?;
         require(
@@ -553,7 +654,249 @@ mod source_gate_selection {
             )?,
         }
         check_fixture(repository)?;
-        model_runner(&environment)
+        match environment.phase {
+            Phase::CalibrationFreeze => {
+                let evidence = model_runner(&environment)?;
+                let artifact = FrozenArtifact {
+                    version: ARTIFACT_VERSION.into(),
+                    plan_revision: PLAN_REVISION,
+                    b0_sha: environment.b0_sha.clone(),
+                    visual_manifest_sha256: environment.visual_manifest_sha256.clone(),
+                    source_gate_fixture_manifest_sha256: environment
+                        .source_gate_fixture_manifest_sha256
+                        .clone(),
+                    selected_candidate_id: evidence.selected_candidate_id,
+                    candidate_ratios: candidate_ratios(),
+                    entries: evidence.entries,
+                };
+                validate_artifact(&artifact, Phase::CalibrationFreeze, &environment)?;
+                write_artifact(&environment.artifact, &canonical_json(&artifact)?, false)
+            }
+            Phase::Holdout => {
+                let bytes = fs::read(&environment.artifact)?;
+                let mut artifact: FrozenArtifact = serde_json::from_slice(&bytes)
+                    .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+                require(
+                    canonical_json(&artifact)? == bytes,
+                    "selection artifact must be canonical JSON",
+                )?;
+                validate_artifact(&artifact, Phase::CalibrationFreeze, &environment)?;
+                let evidence = model_runner(&environment)?;
+                require(
+                    evidence.selected_candidate_id == artifact.selected_candidate_id,
+                    "holdout selected candidate drift",
+                )?;
+                artifact.entries.extend(evidence.entries);
+                validate_artifact(&artifact, Phase::Holdout, &environment)?;
+                write_artifact(&environment.artifact, &canonical_json(&artifact)?, true)
+            }
+        }
+    }
+
+    fn candidate_ratios() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("R0".into(), "0".into()),
+            ("R025".into(), "1/40".into()),
+            ("R05".into(), "1/20".into()),
+            ("R10".into(), "1/10".into()),
+        ])
+    }
+
+    fn validate_artifact(
+        artifact: &FrozenArtifact,
+        phase: Phase,
+        environment: &SelectionEnvironment,
+    ) -> io::Result<()> {
+        require(
+            artifact.version == ARTIFACT_VERSION && artifact.plan_revision == PLAN_REVISION,
+            "selection artifact version or plan revision mismatch",
+        )?;
+        require(
+            artifact.b0_sha == environment.b0_sha
+                && artifact.visual_manifest_sha256 == environment.visual_manifest_sha256
+                && artifact.source_gate_fixture_manifest_sha256
+                    == environment.source_gate_fixture_manifest_sha256,
+            "selection artifact frozen input drift",
+        )?;
+        require(
+            candidate_ratios().contains_key(&artifact.selected_candidate_id),
+            "invalid selected candidate",
+        )?;
+        require(
+            artifact.candidate_ratios == candidate_ratios(),
+            "candidate ratios drift",
+        )?;
+        let expected = match phase {
+            Phase::CalibrationFreeze => (5, 1, 4, 0),
+            Phase::Holdout => (9, 1, 4, 4),
+        };
+        let mut roles = [0_usize; 3];
+        let mut case_ids = HashSet::new();
+        for entry in &artifact.entries {
+            validate_text(&entry.case_id)?;
+            require(
+                case_ids.insert(entry.case_id.as_str()),
+                "duplicate selection case id",
+            )?;
+            decode_sha256(&entry.input_sha256)?;
+            match entry.role {
+                EntryRole::Regression => {
+                    roles[0] += 1;
+                    require(
+                        entry.selected_candidate_id.is_none()
+                            && entry.phase_result.is_none()
+                            && entry.model.is_none()
+                            && entry.runtime.is_none()
+                            && entry.device.is_none()
+                            && entry.output_hashes.is_none()
+                            && entry.assertions.is_none(),
+                        "regression entry must contain only identity fields",
+                    )?;
+                }
+                EntryRole::Calibration | EntryRole::Holdout => {
+                    roles[usize::from(entry.role == EntryRole::Holdout) + 1] += 1;
+                    validate_model_entry(entry, &artifact.selected_candidate_id)?;
+                }
+            }
+        }
+        require(
+            (artifact.entries.len(), roles[0], roles[1], roles[2]) == expected,
+            "selection artifact entry role counts mismatch",
+        )
+    }
+
+    fn validate_model_entry(entry: &SelectionEntry, selected_candidate_id: &str) -> io::Result<()> {
+        require(
+            entry.selected_candidate_id.as_deref() == Some(selected_candidate_id)
+                && entry.phase_result.as_deref() == Some("pass"),
+            "selection evidence did not pass for the selected candidate",
+        )?;
+        let model = entry
+            .model
+            .as_ref()
+            .ok_or_else(|| invalid_data("missing model evidence"))?;
+        let runtime = entry
+            .runtime
+            .as_ref()
+            .ok_or_else(|| invalid_data("missing runtime evidence"))?;
+        let device = entry
+            .device
+            .as_ref()
+            .ok_or_else(|| invalid_data("missing device evidence"))?;
+        let output_hashes = entry
+            .output_hashes
+            .as_ref()
+            .ok_or_else(|| invalid_data("missing output hashes"))?;
+        let assertions = entry
+            .assertions
+            .as_ref()
+            .ok_or_else(|| invalid_data("missing assertions"))?;
+        for value in [
+            &model.provider,
+            &model.backend,
+            &runtime.os,
+            &runtime.device,
+            &device.actual_device,
+        ] {
+            validate_text(value)?;
+        }
+        for hash in [
+            &model.identifier_sha256,
+            &output_hashes.source,
+            &output_hashes.segment_mask,
+            &output_hashes.inpainted,
+            &output_hashes.rendered,
+        ] {
+            decode_sha256(hash)?;
+        }
+        require(
+            assertions.source_text_removed
+                && assertions.target_rendered
+                && assertions.protected_pixels_preserved
+                && assertions.english_roi_preserved,
+            "selection assertions must all pass",
+        )
+    }
+
+    fn validate_text(value: &str) -> io::Result<()> {
+        require(
+            !value.is_empty()
+                && !value
+                    .chars()
+                    .any(|character| matches!(character, '\0' | '\r' | '\n')),
+            "selection evidence text is invalid",
+        )
+    }
+
+    fn canonical_json(value: &impl Serialize) -> io::Result<Vec<u8>> {
+        fn write(value: &serde_json::Value, output: &mut Vec<u8>) -> io::Result<()> {
+            match value {
+                serde_json::Value::Array(values) => {
+                    output.push(b'[');
+                    for (index, value) in values.iter().enumerate() {
+                        if index != 0 {
+                            output.push(b',');
+                        }
+                        write(value, output)?;
+                    }
+                    output.push(b']');
+                }
+                serde_json::Value::Object(values) => {
+                    output.push(b'{');
+                    let mut entries = values.iter().collect::<Vec<_>>();
+                    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+                    for (index, (key, value)) in entries.into_iter().enumerate() {
+                        if index != 0 {
+                            output.push(b',');
+                        }
+                        serde_json::to_writer(&mut *output, key)
+                            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+                        output.push(b':');
+                        write(value, output)?;
+                    }
+                    output.push(b'}');
+                }
+                _ => serde_json::to_writer(output, value)
+                    .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?,
+            }
+            Ok(())
+        }
+
+        let value = serde_json::to_value(value)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        let mut output = Vec::new();
+        write(&value, &mut output)?;
+        output.push(b'\n');
+        Ok(output)
+    }
+
+    fn write_artifact(path: &Path, bytes: &[u8], replace: bool) -> io::Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| invalid_data("selection artifact has no parent"))?;
+        require(parent.is_dir(), "selection artifact parent must exist")?;
+        if replace {
+            let temporary = path.with_extension("tmp");
+            let result = (|| {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temporary)?;
+                file.write_all(bytes)?;
+                file.sync_all()?;
+                fs::rename(&temporary, path)?;
+                OpenOptions::new().read(true).open(parent)?.sync_all()
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(&temporary);
+            }
+            result
+        } else {
+            let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            OpenOptions::new().read(true).open(parent)?.sync_all()
+        }
     }
 
     type RasterBounds = (u32, u32, u32, u32);
@@ -614,6 +957,8 @@ mod source_gate_selection {
                 VISUAL_EVIDENCE_ROOT_ENV,
                 root.to_string_lossy().into_owned(),
             ),
+            (VISUAL_MANIFEST_SHA256_ENV, "1".repeat(64)),
+            (SOURCE_GATE_FIXTURE_SHA256_ENV, "2".repeat(64)),
             (
                 ARTIFACT_ENV,
                 root.join("selection.json").to_string_lossy().into_owned(),
@@ -623,6 +968,66 @@ mod source_gate_selection {
                 root.join("reports").to_string_lossy().into_owned(),
             ),
         ])
+    }
+
+    fn synthetic_hash(value: u8) -> String {
+        format!("{value:064x}")
+    }
+
+    fn synthetic_entries(role: EntryRole, count: usize, prefix: &str) -> Vec<SelectionEntry> {
+        (0..count)
+            .map(|index| SelectionEntry {
+                case_id: format!("{prefix}-{index}"),
+                input_sha256: synthetic_hash(index as u8 + 1),
+                role,
+                selected_candidate_id: Some("R05".into()),
+                phase_result: Some("pass".into()),
+                model: Some(ModelEvidence {
+                    provider: "synthetic-test-provider".into(),
+                    backend: "synthetic-test-backend".into(),
+                    identifier_sha256: synthetic_hash(10),
+                }),
+                runtime: Some(RuntimeEvidence {
+                    os: "synthetic-test-os".into(),
+                    device: "synthetic-test-runtime-device".into(),
+                }),
+                device: Some(DeviceEvidence {
+                    actual_device: "synthetic-test-device".into(),
+                }),
+                output_hashes: Some(OutputHashes {
+                    source: synthetic_hash(11),
+                    segment_mask: synthetic_hash(12),
+                    inpainted: synthetic_hash(13),
+                    rendered: synthetic_hash(14),
+                }),
+                assertions: Some(Assertions {
+                    source_text_removed: true,
+                    target_rendered: true,
+                    protected_pixels_preserved: true,
+                    english_roi_preserved: true,
+                }),
+            })
+            .collect()
+    }
+
+    fn calibration_evidence() -> RunnerEvidence {
+        let mut entries = vec![SelectionEntry {
+            case_id: "regression-0".into(),
+            input_sha256: synthetic_hash(20),
+            role: EntryRole::Regression,
+            selected_candidate_id: None,
+            phase_result: None,
+            model: None,
+            runtime: None,
+            device: None,
+            output_hashes: None,
+            assertions: None,
+        }];
+        entries.extend(synthetic_entries(EntryRole::Calibration, 4, "calibration"));
+        RunnerEvidence {
+            selected_candidate_id: "R05".into(),
+            entries,
+        }
     }
 
     #[test]
@@ -640,7 +1045,7 @@ mod source_gate_selection {
                 |_| fixture,
                 |_| {
                     model_calls.set(model_calls.get() + 1);
-                    Ok(())
+                    Ok(calibration_evidence())
                 },
             )
         };
@@ -694,6 +1099,205 @@ mod source_gate_selection {
         assert!(result.is_err());
         assert_eq!(model_calls.get(), 1);
         assert!(!root.join("selection.json").exists());
+    }
+
+    #[test]
+    fn source_gate_selection_calibration_writes_synced_canonical_pre_holdout_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let values = valid_environment(&root);
+
+        run_with(
+            |name| values.get(name).cloned(),
+            Path::new("/repository"),
+            |_| Ok("a".repeat(40)),
+            |_| Ok(()),
+            |_| Ok(calibration_evidence()),
+        )
+        .unwrap();
+
+        let bytes = fs::read(root.join("selection.json")).unwrap();
+        let artifact: FrozenArtifact = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(bytes, canonical_json(&artifact).unwrap());
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        assert_eq!(artifact.entries.len(), 5);
+        assert_eq!(
+            artifact
+                .entries
+                .iter()
+                .filter(|entry| entry.role == EntryRole::Calibration)
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn source_gate_selection_holdout_builds_closed_nine_entry_final_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let mut values = valid_environment(&root);
+        run_with(
+            |name| values.get(name).cloned(),
+            Path::new("/repository"),
+            |_| Ok("a".repeat(40)),
+            |_| Ok(()),
+            |_| Ok(calibration_evidence()),
+        )
+        .unwrap();
+
+        values.insert(PHASE_ENV, "holdout".into());
+        run_with(
+            |name| values.get(name).cloned(),
+            Path::new("/repository"),
+            |_| Ok("a".repeat(40)),
+            |_| Ok(()),
+            |_| {
+                Ok(RunnerEvidence {
+                    selected_candidate_id: "R05".into(),
+                    entries: synthetic_entries(EntryRole::Holdout, 4, "holdout"),
+                })
+            },
+        )
+        .unwrap();
+
+        let bytes = fs::read(root.join("selection.json")).unwrap();
+        let artifact: FrozenArtifact = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(bytes, canonical_json(&artifact).unwrap());
+        assert_eq!(artifact.entries.len(), 9);
+        assert_eq!(
+            artifact
+                .entries
+                .iter()
+                .map(|entry| entry.case_id.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            9
+        );
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            value
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            HashSet::from_iter([
+                "version".into(),
+                "plan_revision".into(),
+                "b0_sha".into(),
+                "visual_manifest_sha256".into(),
+                "source_gate_fixture_manifest_sha256".into(),
+                "selected_candidate_id".into(),
+                "candidate_ratios".into(),
+                "entries".into(),
+            ])
+        );
+        let evidence = &value["entries"][1];
+        assert_eq!(
+            evidence
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            HashSet::from_iter([
+                "case_id".into(),
+                "input_sha256".into(),
+                "role".into(),
+                "selected_candidate_id".into(),
+                "phase_result".into(),
+                "model".into(),
+                "runtime".into(),
+                "device".into(),
+                "output_hashes".into(),
+                "assertions".into(),
+            ])
+        );
+        for (field, expected) in [
+            (
+                "model",
+                HashSet::from_iter(["provider", "backend", "identifier_sha256"]),
+            ),
+            ("runtime", HashSet::from_iter(["os", "device"])),
+            ("device", HashSet::from_iter(["actual_device"])),
+            (
+                "output_hashes",
+                HashSet::from_iter(["source", "segment_mask", "inpainted", "rendered"]),
+            ),
+            (
+                "assertions",
+                HashSet::from_iter([
+                    "source_text_removed",
+                    "target_rendered",
+                    "protected_pixels_preserved",
+                    "english_roi_preserved",
+                ]),
+            ),
+        ] {
+            assert_eq!(
+                evidence[field]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<HashSet<_>>(),
+                expected
+            );
+        }
+        assert_eq!(
+            artifact
+                .entries
+                .iter()
+                .filter(|entry| entry.role == EntryRole::Regression)
+                .count(),
+            1
+        );
+        assert_eq!(
+            artifact
+                .entries
+                .iter()
+                .filter(|entry| entry.role == EntryRole::Calibration)
+                .count(),
+            4
+        );
+        assert_eq!(
+            artifact
+                .entries
+                .iter()
+                .filter(|entry| entry.role == EntryRole::Holdout)
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn source_gate_selection_rejects_invalid_candidate_and_missing_calibration_entry() {
+        for evidence in [
+            RunnerEvidence {
+                selected_candidate_id: "R100".into(),
+                entries: calibration_evidence().entries,
+            },
+            {
+                let mut evidence = calibration_evidence();
+                evidence.entries.pop();
+                evidence
+            },
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = fs::canonicalize(temp.path()).unwrap();
+            let values = valid_environment(&root);
+            assert!(
+                run_with(
+                    |name| values.get(name).cloned(),
+                    Path::new("/repository"),
+                    |_| Ok("a".repeat(40)),
+                    |_| Ok(()),
+                    |_| Ok(evidence),
+                )
+                .is_err()
+            );
+            assert!(!root.join("selection.json").exists());
+        }
     }
 
     #[test]
