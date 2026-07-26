@@ -16,8 +16,173 @@ use koharu_ml::types::TextRegion;
 
 use crate::{blobs::BlobStore, config::SourceTextPolicy};
 
+#[cfg(test)]
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::{
+    sync::{Arc, Mutex, OnceLock},
+    thread::ThreadId,
+};
+
 pub const SOURCE_GATE_TARGET_DETECTOR: &str = "pp-ocr-v5-source-gate";
 pub const SOURCE_GATE_PROTECTED_DETECTOR: &str = "pp-ocr-v5-source-gate-protected";
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::pipeline) enum EraseDiagnosticStage {
+    SegmentProbability,
+    SegmentRefined,
+    SegmentAllowedSupport,
+    SegmentFinal,
+    InpaintInputSegment,
+    InpaintAllowedSupport,
+    InpaintPreExpandFiltered,
+    InpaintBackendExpanded,
+    InpaintFinal,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(in crate::pipeline) enum EraseDiagnosticBranch {
+    Region,
+    HanOnly,
+    AllText,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::pipeline) struct EraseMaskDiagnostic {
+    pub width: u32,
+    pub height: u32,
+    pub grayscale_blake3: String,
+    pub nonzero_pixels: u64,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::pipeline) struct EraseDiagnosticEvent {
+    pub stage: EraseDiagnosticStage,
+    pub branch: EraseDiagnosticBranch,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub mask: Option<EraseMaskDiagnostic>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub returns_some: Option<bool>,
+}
+
+#[cfg(test)]
+fn deserialize_required_option<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
+
+#[cfg(test)]
+type EraseDiagnosticSink = Arc<Mutex<Vec<EraseDiagnosticEvent>>>;
+
+#[cfg(test)]
+struct ActiveEraseDiagnosticSink {
+    owner: ThreadId,
+    events: EraseDiagnosticSink,
+}
+
+#[cfg(test)]
+static ERASE_DIAGNOSTIC_SINK: OnceLock<Mutex<Option<ActiveEraseDiagnosticSink>>> = OnceLock::new();
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::pipeline) struct EraseDiagnosticCaptureActive;
+
+#[cfg(test)]
+pub(in crate::pipeline) struct EraseDiagnosticCapture {
+    owner: ThreadId,
+    events: EraseDiagnosticSink,
+}
+
+#[cfg(test)]
+impl EraseDiagnosticCapture {
+    pub(in crate::pipeline) fn start() -> std::result::Result<Self, EraseDiagnosticCaptureActive> {
+        let owner = std::thread::current().id();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut active = ERASE_DIAGNOSTIC_SINK
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active.is_some() {
+            return Err(EraseDiagnosticCaptureActive);
+        }
+        *active = Some(ActiveEraseDiagnosticSink {
+            owner,
+            events: events.clone(),
+        });
+        Ok(Self { owner, events })
+    }
+
+    pub(in crate::pipeline) fn take(&self) -> Vec<EraseDiagnosticEvent> {
+        std::mem::take(
+            &mut *self
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
+#[cfg(test)]
+impl Drop for EraseDiagnosticCapture {
+    fn drop(&mut self) {
+        let mut active = ERASE_DIAGNOSTIC_SINK
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .as_ref()
+            .is_some_and(|sink| sink.owner == self.owner && Arc::ptr_eq(&sink.events, &self.events))
+        {
+            *active = None;
+        }
+    }
+}
+
+#[cfg(test)]
+pub(in crate::pipeline) fn record_erase_diagnostic(
+    stage: EraseDiagnosticStage,
+    branch: EraseDiagnosticBranch,
+    mask: Option<&GrayImage>,
+    returns_some: Option<bool>,
+) {
+    let owner = std::thread::current().id();
+    let sink = ERASE_DIAGNOSTIC_SINK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|sink| sink.owner == owner)
+        .map(|sink| sink.events.clone());
+    if let Some(sink) = sink {
+        let mask = mask.map(|mask| EraseMaskDiagnostic {
+            width: mask.width(),
+            height: mask.height(),
+            grayscale_blake3: blake3::hash(mask.as_raw()).to_hex().to_string(),
+            nonzero_pixels: mask.pixels().filter(|pixel| pixel.0[0] != 0).count() as u64,
+        });
+        sink.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(EraseDiagnosticEvent {
+                stage,
+                branch,
+                mask,
+                returns_some,
+            });
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct EligibleTextLine {
@@ -596,6 +761,22 @@ pub fn prepare_inpaint_mask<Expand>(
 where
     Expand: FnOnce(&DynamicImage, &DynamicImage, &[TextRegion]) -> GrayImage,
 {
+    #[cfg(test)]
+    let diagnostic_branch = if region.is_some() {
+        EraseDiagnosticBranch::Region
+    } else if policy == SourceTextPolicy::HanOnly {
+        EraseDiagnosticBranch::HanOnly
+    } else {
+        EraseDiagnosticBranch::AllText
+    };
+    #[cfg(test)]
+    record_erase_diagnostic(
+        EraseDiagnosticStage::InpaintInputSegment,
+        diagnostic_branch,
+        Some(&mask.to_luma8()),
+        None,
+    );
+
     let inference_blocks = if region.is_none() && policy == SourceTextPolicy::HanOnly {
         eligible_lines
             .iter()
@@ -608,22 +789,90 @@ where
     let final_mask = if let Some(region) = region {
         let clipped_mask = clip_mask_to_region(mask, &region);
         let clipped_bubble = clip_mask_to_region(bubble_mask, &region);
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::InpaintAllowedSupport,
+            diagnostic_branch,
+            None,
+            None,
+        );
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::InpaintPreExpandFiltered,
+            diagnostic_branch,
+            Some(&clipped_mask.to_luma8()),
+            None,
+        );
         let expanded = expand(&clipped_mask, &clipped_bubble, &inference_blocks);
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::InpaintBackendExpanded,
+            diagnostic_branch,
+            Some(&expanded),
+            None,
+        );
         DynamicImage::ImageLuma8(clip_gray_mask_to_region(&expanded, &region))
     } else if policy == SourceTextPolicy::HanOnly {
         let allowed = line_support_mask(mask.width(), mask.height(), eligible_lines);
         let filtered = DynamicImage::ImageLuma8(intersect_gray_masks(&mask.to_luma8(), &allowed));
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::InpaintAllowedSupport,
+            diagnostic_branch,
+            Some(&allowed),
+            None,
+        );
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::InpaintPreExpandFiltered,
+            diagnostic_branch,
+            Some(&filtered.to_luma8()),
+            None,
+        );
         let expanded = expand(&filtered, bubble_mask, &inference_blocks);
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::InpaintBackendExpanded,
+            diagnostic_branch,
+            Some(&expanded),
+            None,
+        );
         DynamicImage::ImageLuma8(intersect_gray_masks(&expanded, &allowed))
     } else {
-        DynamicImage::ImageLuma8(expand(mask, bubble_mask, &inference_blocks))
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::InpaintAllowedSupport,
+            diagnostic_branch,
+            None,
+            None,
+        );
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::InpaintPreExpandFiltered,
+            diagnostic_branch,
+            Some(&mask.to_luma8()),
+            None,
+        );
+        let expanded = expand(mask, bubble_mask, &inference_blocks);
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::InpaintBackendExpanded,
+            diagnostic_branch,
+            Some(&expanded),
+            None,
+        );
+        DynamicImage::ImageLuma8(expanded)
     };
 
-    final_mask
-        .to_luma8()
-        .pixels()
-        .any(|pixel| pixel.0[0] != 0)
-        .then_some((final_mask, inference_blocks))
+    let returns_some = final_mask.to_luma8().pixels().any(|pixel| pixel.0[0] != 0);
+    #[cfg(test)]
+    record_erase_diagnostic(
+        EraseDiagnosticStage::InpaintFinal,
+        diagnostic_branch,
+        Some(&final_mask.to_luma8()),
+        Some(returns_some),
+    );
+    returns_some.then_some((final_mask, inference_blocks))
 }
 
 pub fn build_han_only_translation_ops(
@@ -1093,6 +1342,8 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::Cell, sync::Barrier};
+
     use super::*;
     use koharu_core::{BlobRef, Page, ReadingOrder, Region, TextDirection};
     use koharu_ml::inpainting::{
@@ -1100,6 +1351,15 @@ mod tests {
     };
 
     use crate::config::SourceTextPolicy;
+
+    fn start_erase_capture() -> EraseDiagnosticCapture {
+        loop {
+            match EraseDiagnosticCapture::start() {
+                Ok(capture) => return capture,
+                Err(EraseDiagnosticCaptureActive) => std::thread::yield_now(),
+            }
+        }
+    }
 
     fn text_data(text: &str, line_polygons: Option<Vec<[[f32; 2]; 4]>>) -> TextData {
         TextData {
@@ -1616,6 +1876,441 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn erase_diagnostics_lock_inpaint_observation_without_changing_results() {
+        fn returned_bytes(result: &Option<(DynamicImage, Vec<TextRegion>)>) -> Option<Vec<u8>> {
+            result.as_ref().map(|(mask, _)| mask.to_luma8().into_raw())
+        }
+        fn signature(event: &EraseDiagnosticEvent) -> Option<(u32, u32, u64, &str)> {
+            event.mask.as_ref().map(|mask| {
+                (
+                    mask.width,
+                    mask.height,
+                    mask.nonzero_pixels,
+                    mask.grayscale_blake3.as_str(),
+                )
+            })
+        }
+
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(6, 4, |x, y| {
+            Luma([if (x, y) == (1, 1) || (x, y) == (4, 2) {
+                255
+            } else {
+                0
+            }])
+        }));
+        let bubble = DynamicImage::ImageLuma8(GrayImage::new(6, 4));
+        let eligible = vec![support_line(
+            [3.0, 1.0, 6.0, 4.0],
+            Some(vec![quad(3.0, 1.0, 6.0, 4.0)]),
+        )];
+        let all_blocks = vec![support_line([0.0, 0.0, 6.0, 4.0], None).region];
+        let calls = Cell::new(0);
+        let expand = |input: &DynamicImage, _: &DynamicImage, _: &[TextRegion]| {
+            calls.set(calls.get() + 1);
+            let mut expanded = input.to_luma8();
+            expanded.put_pixel(0, 0, Luma([255]));
+            expanded
+        };
+
+        let inactive_han = prepare_inpaint_mask(
+            &mask,
+            &bubble,
+            &all_blocks,
+            &eligible,
+            SourceTextPolicy::HanOnly,
+            None,
+            expand,
+        );
+        let capture = start_erase_capture();
+        let active_han = prepare_inpaint_mask(
+            &mask,
+            &bubble,
+            &all_blocks,
+            &eligible,
+            SourceTextPolicy::HanOnly,
+            None,
+            expand,
+        );
+        assert_eq!(returned_bytes(&active_han), returned_bytes(&inactive_han));
+        let han_events = capture.take();
+        assert_eq!(
+            han_events
+                .iter()
+                .map(|event| event.stage)
+                .collect::<Vec<_>>(),
+            [
+                EraseDiagnosticStage::InpaintInputSegment,
+                EraseDiagnosticStage::InpaintAllowedSupport,
+                EraseDiagnosticStage::InpaintPreExpandFiltered,
+                EraseDiagnosticStage::InpaintBackendExpanded,
+                EraseDiagnosticStage::InpaintFinal,
+            ]
+        );
+        assert!(
+            han_events
+                .iter()
+                .all(|event| event.branch == EraseDiagnosticBranch::HanOnly)
+        );
+        assert_eq!(han_events[0].mask.as_ref().unwrap().nonzero_pixels, 2);
+        assert_eq!(han_events[1].mask.as_ref().unwrap().nonzero_pixels, 9);
+        assert_eq!(han_events[2].mask.as_ref().unwrap().nonzero_pixels, 1);
+        assert_eq!(han_events[3].mask.as_ref().unwrap().nonzero_pixels, 2);
+        assert_eq!(han_events[4].mask.as_ref().unwrap().nonzero_pixels, 1);
+        assert_eq!(han_events[4].returns_some, Some(true));
+        assert_eq!(
+            han_events.iter().map(signature).collect::<Vec<_>>(),
+            [
+                Some((
+                    6,
+                    4,
+                    2,
+                    "116bebacbb6de73e4a2c236fbac6d3f91f38d751381dc759e9b1e88d25846b9e"
+                )),
+                Some((
+                    6,
+                    4,
+                    9,
+                    "a58400ae50a4a4b303857a023d28282c5e75ba50ea823543d28832e35226b3ab"
+                )),
+                Some((
+                    6,
+                    4,
+                    1,
+                    "64b0950aabbf0659df8c4bafaa54c9fef7840bdeec85703fb88775872fb540f3"
+                )),
+                Some((
+                    6,
+                    4,
+                    2,
+                    "0daa796901b99a35273ecabb931b38d050ce50ce33f86c9e737e23c7e31c471e"
+                )),
+                Some((
+                    6,
+                    4,
+                    1,
+                    "64b0950aabbf0659df8c4bafaa54c9fef7840bdeec85703fb88775872fb540f3"
+                )),
+            ]
+        );
+
+        drop(capture);
+        let inactive_all = prepare_inpaint_mask(
+            &mask,
+            &bubble,
+            &all_blocks,
+            &eligible,
+            SourceTextPolicy::AllText,
+            None,
+            expand,
+        );
+        let capture = start_erase_capture();
+        let active_all = prepare_inpaint_mask(
+            &mask,
+            &bubble,
+            &all_blocks,
+            &eligible,
+            SourceTextPolicy::AllText,
+            None,
+            expand,
+        );
+        assert_eq!(returned_bytes(&active_all), returned_bytes(&inactive_all));
+        let all_events = capture.take();
+        assert_eq!(all_events.len(), 5);
+        assert!(
+            all_events
+                .iter()
+                .all(|event| event.branch == EraseDiagnosticBranch::AllText)
+        );
+        assert_eq!(
+            all_events[1].stage,
+            EraseDiagnosticStage::InpaintAllowedSupport
+        );
+        assert_eq!(all_events[1].mask, None);
+        assert_eq!(all_events[4].returns_some, Some(true));
+        assert_eq!(
+            all_events.iter().map(signature).collect::<Vec<_>>(),
+            [
+                Some((
+                    6,
+                    4,
+                    2,
+                    "116bebacbb6de73e4a2c236fbac6d3f91f38d751381dc759e9b1e88d25846b9e"
+                )),
+                None,
+                Some((
+                    6,
+                    4,
+                    2,
+                    "116bebacbb6de73e4a2c236fbac6d3f91f38d751381dc759e9b1e88d25846b9e"
+                )),
+                Some((
+                    6,
+                    4,
+                    3,
+                    "f6c19c1de1f9d32968d49e6c8b1b481f0be5264e126c83d572817e8fe27c2bac"
+                )),
+                Some((
+                    6,
+                    4,
+                    3,
+                    "f6c19c1de1f9d32968d49e6c8b1b481f0be5264e126c83d572817e8fe27c2bac"
+                )),
+            ]
+        );
+
+        let region = Region {
+            x: 1,
+            y: 1,
+            width: 3,
+            height: 2,
+        };
+        drop(capture);
+        let inactive_region = prepare_inpaint_mask(
+            &mask,
+            &bubble,
+            &all_blocks,
+            &eligible,
+            SourceTextPolicy::HanOnly,
+            Some(region),
+            expand,
+        );
+        let capture = start_erase_capture();
+        let active_region = prepare_inpaint_mask(
+            &mask,
+            &bubble,
+            &all_blocks,
+            &eligible,
+            SourceTextPolicy::HanOnly,
+            Some(region),
+            expand,
+        );
+        assert_eq!(
+            returned_bytes(&active_region),
+            returned_bytes(&inactive_region)
+        );
+        let region_events = capture.take();
+        assert_eq!(region_events.len(), 5);
+        assert!(
+            region_events
+                .iter()
+                .all(|event| event.branch == EraseDiagnosticBranch::Region)
+        );
+        assert_eq!(region_events[1].mask, None);
+        assert_eq!(region_events[2].mask.as_ref().unwrap().nonzero_pixels, 1);
+        assert_eq!(region_events[3].mask.as_ref().unwrap().nonzero_pixels, 2);
+        assert_eq!(region_events[4].mask.as_ref().unwrap().nonzero_pixels, 1);
+        assert_eq!(
+            region_events.iter().map(signature).collect::<Vec<_>>(),
+            [
+                Some((
+                    6,
+                    4,
+                    2,
+                    "116bebacbb6de73e4a2c236fbac6d3f91f38d751381dc759e9b1e88d25846b9e"
+                )),
+                None,
+                Some((
+                    6,
+                    4,
+                    1,
+                    "0fc4241829876639d2362de149a9a5f1d0d3d687e0cc2f51743d4981bf7d696c"
+                )),
+                Some((
+                    6,
+                    4,
+                    2,
+                    "2ca0bf1a4387623866ef72bf9660f7ebf72bb21e0d3de4caa748757481d93dcf"
+                )),
+                Some((
+                    6,
+                    4,
+                    1,
+                    "0fc4241829876639d2362de149a9a5f1d0d3d687e0cc2f51743d4981bf7d696c"
+                )),
+            ]
+        );
+
+        let empty = DynamicImage::ImageLuma8(GrayImage::new(6, 4));
+        drop(capture);
+        let inactive_empty = prepare_inpaint_mask(
+            &empty,
+            &bubble,
+            &all_blocks,
+            &eligible,
+            SourceTextPolicy::AllText,
+            None,
+            |input, _, _| {
+                calls.set(calls.get() + 1);
+                input.to_luma8()
+            },
+        );
+        let capture = start_erase_capture();
+        let active_empty = prepare_inpaint_mask(
+            &empty,
+            &bubble,
+            &all_blocks,
+            &eligible,
+            SourceTextPolicy::AllText,
+            None,
+            |input, _, _| {
+                calls.set(calls.get() + 1);
+                input.to_luma8()
+            },
+        );
+        assert_eq!(
+            returned_bytes(&active_empty),
+            returned_bytes(&inactive_empty)
+        );
+        assert_eq!(returned_bytes(&active_empty), None);
+        let empty_events = capture.take();
+        assert_eq!(empty_events[4].returns_some, Some(false));
+        assert_eq!(calls.get(), 8);
+
+        let serialized = serde_json::to_value(&han_events).unwrap();
+        for event in serialized.as_array().unwrap() {
+            let object = event.as_object().unwrap();
+            assert_eq!(object.len(), 4);
+            assert!(object.contains_key("stage"));
+            assert!(object.contains_key("branch"));
+            assert!(object.contains_key("mask"));
+            assert!(object.contains_key("returns_some"));
+            if let Some(mask) = object["mask"].as_object() {
+                assert_eq!(mask.len(), 4);
+                assert!(mask.contains_key("width"));
+                assert!(mask.contains_key("height"));
+                assert!(mask.contains_key("grayscale_blake3"));
+                assert!(mask.contains_key("nonzero_pixels"));
+            }
+        }
+        let serialized_text = serde_json::to_string(&serialized).unwrap();
+        for forbidden in [
+            "path",
+            "node_id",
+            "text",
+            "target",
+            "elapsed",
+            "ocr",
+            "translation",
+        ] {
+            assert!(!serialized_text.contains(forbidden));
+        }
+        let mut unknown = serialized[0].clone();
+        unknown["unexpected"] = true.into();
+        assert!(serde_json::from_value::<EraseDiagnosticEvent>(unknown).is_err());
+        let mut unknown_mask = serialized[0].clone();
+        unknown_mask["mask"]["unexpected"] = true.into();
+        assert!(serde_json::from_value::<EraseDiagnosticEvent>(unknown_mask).is_err());
+        let mut missing = serialized[0].clone();
+        missing.as_object_mut().unwrap().remove("returns_some");
+        assert!(serde_json::from_value::<EraseDiagnosticEvent>(missing).is_err());
+
+        drop(capture);
+        let reset = start_erase_capture();
+        assert!(reset.take().is_empty());
+    }
+
+    #[test]
+    fn erase_diagnostics_ignore_foreign_thread_events_between_owner_stages() {
+        let capture = start_erase_capture();
+        let owner_mask =
+            GrayImage::from_fn(2, 2, |x, y| Luma([if (x, y) == (1, 1) { 255 } else { 0 }]));
+        record_erase_diagnostic(
+            EraseDiagnosticStage::SegmentProbability,
+            EraseDiagnosticBranch::HanOnly,
+            Some(&owner_mask),
+            None,
+        );
+
+        let barrier = Arc::new(Barrier::new(2));
+        let foreign_barrier = barrier.clone();
+        let foreign = std::thread::spawn(move || {
+            let mask = DynamicImage::ImageLuma8(GrayImage::from_pixel(2, 2, Luma([255])));
+            let bubble = DynamicImage::ImageLuma8(GrayImage::new(2, 2));
+            foreign_barrier.wait();
+            let result = prepare_inpaint_mask(
+                &mask,
+                &bubble,
+                &[],
+                &[],
+                SourceTextPolicy::AllText,
+                None,
+                |input, _, _| input.to_luma8(),
+            );
+            foreign_barrier.wait();
+            assert!(result.is_some());
+        });
+
+        barrier.wait();
+        barrier.wait();
+        record_erase_diagnostic(
+            EraseDiagnosticStage::SegmentFinal,
+            EraseDiagnosticBranch::HanOnly,
+            Some(&owner_mask),
+            None,
+        );
+        foreign.join().unwrap();
+
+        let events = capture.take();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events.iter().map(|event| event.stage).collect::<Vec<_>>(),
+            [
+                EraseDiagnosticStage::SegmentProbability,
+                EraseDiagnosticStage::SegmentFinal,
+            ]
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event.branch == EraseDiagnosticBranch::HanOnly)
+        );
+        assert_eq!(events[0].mask, events[1].mask);
+        assert_eq!(events[0].mask.as_ref().unwrap().nonzero_pixels, 1);
+    }
+
+    #[test]
+    fn erase_diagnostics_nested_start_unwind_and_poison_recover() {
+        let capture = start_erase_capture();
+        assert!(matches!(
+            EraseDiagnosticCapture::start(),
+            Err(EraseDiagnosticCaptureActive)
+        ));
+        drop(capture);
+
+        let unwind = std::panic::catch_unwind(|| {
+            let _capture = start_erase_capture();
+            panic!("intentional erase diagnostic unwind");
+        });
+        assert!(unwind.is_err());
+
+        let capture = start_erase_capture();
+        let coordination = ERASE_DIAGNOSTIC_SINK.get().unwrap();
+        let coordination_poison = std::thread::spawn(move || {
+            let _guard = coordination
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            panic!("intentional erase diagnostic coordination poison");
+        });
+        assert!(coordination_poison.join().is_err());
+        drop(capture);
+
+        let capture = start_erase_capture();
+        let events = capture.events.clone();
+        let event_poison = std::thread::spawn(move || {
+            let _guard = events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            panic!("intentional erase diagnostic event poison");
+        });
+        assert!(event_poison.join().is_err());
+        assert!(capture.take().is_empty());
+        drop(capture);
+
+        let restarted = start_erase_capture();
+        assert!(restarted.take().is_empty());
     }
 
     fn translation_scene(nodes: Vec<Node>) -> (Scene, PageId) {

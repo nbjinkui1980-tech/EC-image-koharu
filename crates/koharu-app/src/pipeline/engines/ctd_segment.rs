@@ -15,6 +15,10 @@ use crate::pipeline::engines::support::{
     EligibleTextLine, eligible_lines_for_page, intersect_gray_masks, line_support_mask,
     load_source_image, text_node_to_region, text_nodes, upsert_mask_blob,
 };
+#[cfg(test)]
+use crate::pipeline::engines::support::{
+    EraseDiagnosticBranch, EraseDiagnosticStage, record_erase_diagnostic,
+};
 
 pub struct Model(ComicTextDetector);
 
@@ -84,13 +88,55 @@ fn finalize_segment_mask(
     eligible_lines: &[EligibleTextLine],
     policy: SourceTextPolicy,
 ) -> GrayImage {
+    #[cfg(test)]
+    let diagnostic_branch = if policy == SourceTextPolicy::HanOnly {
+        EraseDiagnosticBranch::HanOnly
+    } else {
+        EraseDiagnosticBranch::AllText
+    };
+    #[cfg(test)]
+    record_erase_diagnostic(
+        EraseDiagnosticStage::SegmentProbability,
+        diagnostic_branch,
+        Some(probability),
+        None,
+    );
     let refined = refine_segmentation_mask(image, probability, regions);
-    if policy == SourceTextPolicy::HanOnly {
+    #[cfg(test)]
+    record_erase_diagnostic(
+        EraseDiagnosticStage::SegmentRefined,
+        diagnostic_branch,
+        Some(&refined),
+        None,
+    );
+    let final_mask = if policy == SourceTextPolicy::HanOnly {
         let allowed = line_support_mask(refined.width(), refined.height(), eligible_lines);
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::SegmentAllowedSupport,
+            diagnostic_branch,
+            Some(&allowed),
+            None,
+        );
         intersect_gray_masks(&refined, &allowed)
     } else {
+        #[cfg(test)]
+        record_erase_diagnostic(
+            EraseDiagnosticStage::SegmentAllowedSupport,
+            diagnostic_branch,
+            None,
+            None,
+        );
         refined
-    }
+    };
+    #[cfg(test)]
+    record_erase_diagnostic(
+        EraseDiagnosticStage::SegmentFinal,
+        diagnostic_branch,
+        Some(&final_mask),
+        None,
+    );
+    final_mask
 }
 
 fn dispatch_segment<Inference>(
@@ -139,6 +185,16 @@ mod tests {
 
     use super::*;
     use crate::config::SourceTextPolicy;
+    use crate::pipeline::engines::support::{EraseDiagnosticCapture, EraseDiagnosticCaptureActive};
+
+    fn start_erase_capture() -> EraseDiagnosticCapture {
+        loop {
+            match EraseDiagnosticCapture::start() {
+                Ok(capture) => return capture,
+                Err(EraseDiagnosticCaptureActive) => std::thread::yield_now(),
+            }
+        }
+    }
 
     fn page_id() -> PageId {
         PageId::new()
@@ -258,5 +314,157 @@ mod tests {
         assert_eq!(mask.get_pixel(10, 4).0[0], 0);
         assert_ne!(mask.get_pixel(10, 11).0[0], 0);
         assert_eq!(mask.get_pixel(31, 11).0[0], 0);
+    }
+
+    #[test]
+    fn ctd_segment_erase_diagnostics_lock_order_and_clipping_without_pixel_drift() {
+        fn signature(
+            event: &crate::pipeline::engines::support::EraseDiagnosticEvent,
+        ) -> Option<(u32, u32, u64, &str)> {
+            event.mask.as_ref().map(|mask| {
+                (
+                    mask.width,
+                    mask.height,
+                    mask.nonzero_pixels,
+                    mask.grayscale_blake3.as_str(),
+                )
+            })
+        }
+
+        let quad = |x1, y1, x2, y2| [[x1, y1], [x2, y1], [x2, y2], [x1, y2]];
+        let (scene, page) = scene_with_texts(vec![(
+            transform(),
+            text(
+                Some("Peach\n蜜桃臀"),
+                Some(vec![quad(2.0, 1.0, 30.0, 7.0), quad(2.0, 9.0, 30.0, 15.0)]),
+            ),
+        )]);
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(32, 16, Rgb([1, 2, 3])));
+        let probability = GrayImage::from_pixel(32, 16, Luma([255]));
+        let (han_regions, eligible) =
+            segment_regions(&scene, page, SourceTextPolicy::HanOnly).unwrap();
+        let (all_regions, _) = segment_regions(&scene, page, SourceTextPolicy::AllText).unwrap();
+
+        let inactive_han = finalize_segment_mask(
+            &image,
+            &probability,
+            &han_regions,
+            &eligible,
+            SourceTextPolicy::HanOnly,
+        );
+        let inactive_all = finalize_segment_mask(
+            &image,
+            &probability,
+            &all_regions,
+            &[],
+            SourceTextPolicy::AllText,
+        );
+
+        let capture = start_erase_capture();
+        let active_han = finalize_segment_mask(
+            &image,
+            &probability,
+            &han_regions,
+            &eligible,
+            SourceTextPolicy::HanOnly,
+        );
+        let han_events = capture.take();
+        assert_eq!(active_han.as_raw(), inactive_han.as_raw());
+        assert_eq!(
+            han_events
+                .iter()
+                .map(|event| event.stage)
+                .collect::<Vec<_>>(),
+            [
+                EraseDiagnosticStage::SegmentProbability,
+                EraseDiagnosticStage::SegmentRefined,
+                EraseDiagnosticStage::SegmentAllowedSupport,
+                EraseDiagnosticStage::SegmentFinal,
+            ]
+        );
+        assert!(
+            han_events
+                .iter()
+                .all(|event| event.branch == EraseDiagnosticBranch::HanOnly)
+        );
+        assert_eq!(han_events[0].mask.as_ref().unwrap().nonzero_pixels, 512);
+        assert!(
+            han_events[1].mask.as_ref().unwrap().nonzero_pixels
+                > han_events[3].mask.as_ref().unwrap().nonzero_pixels
+        );
+        assert_eq!(
+            han_events.iter().map(signature).collect::<Vec<_>>(),
+            [
+                Some((
+                    32,
+                    16,
+                    512,
+                    "6a76f663f0a95a2f733ab79724659a1661ccd223c309cc27f30a56c94f860845"
+                )),
+                Some((
+                    32,
+                    16,
+                    288,
+                    "da387faf229412ba39d10f2261d183a4415b28056aaac81243df359a3f1f0e3f"
+                )),
+                Some((
+                    32,
+                    16,
+                    168,
+                    "0d6aff272656ae31b46fef27fb25340533aba75505a75b4dab0c9f4b4f6880e2"
+                )),
+                Some((
+                    32,
+                    16,
+                    168,
+                    "0d6aff272656ae31b46fef27fb25340533aba75505a75b4dab0c9f4b4f6880e2"
+                )),
+            ]
+        );
+
+        let active_all = finalize_segment_mask(
+            &image,
+            &probability,
+            &all_regions,
+            &[],
+            SourceTextPolicy::AllText,
+        );
+        let all_events = capture.take();
+        assert_eq!(active_all.as_raw(), inactive_all.as_raw());
+        assert_eq!(all_events.len(), 4);
+        assert!(
+            all_events
+                .iter()
+                .all(|event| event.branch == EraseDiagnosticBranch::AllText)
+        );
+        assert_eq!(
+            all_events[2].stage,
+            EraseDiagnosticStage::SegmentAllowedSupport
+        );
+        assert_eq!(all_events[2].mask, None);
+        assert_eq!(
+            all_events.iter().map(signature).collect::<Vec<_>>(),
+            [
+                Some((
+                    32,
+                    16,
+                    512,
+                    "6a76f663f0a95a2f733ab79724659a1661ccd223c309cc27f30a56c94f860845"
+                )),
+                Some((
+                    32,
+                    16,
+                    512,
+                    "6a76f663f0a95a2f733ab79724659a1661ccd223c309cc27f30a56c94f860845"
+                )),
+                None,
+                Some((
+                    32,
+                    16,
+                    512,
+                    "6a76f663f0a95a2f733ab79724659a1661ccd223c309cc27f30a56c94f860845"
+                )),
+            ]
+        );
     }
 }
