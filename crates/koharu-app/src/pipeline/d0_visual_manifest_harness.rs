@@ -1125,7 +1125,12 @@ mod source_gate_selection {
             {
                 for (candidate_id, policy) in &selected {
                     logs.clear();
-                    let mut scene = scene_for_entry(schema_entry, oracle_entry);
+                    let mut scene = scene_for_entry(
+                        schema_entry,
+                        oracle_entry,
+                        decoded_entry.source.width(),
+                        decoded_entry.source.height(),
+                    );
                     let page = *scene.pages.keys().next().expect("scene page");
                     let image = DynamicImage::ImageRgba8(decoded_entry.source.clone());
                     let _policy = SourceGateCropPolicyGuard::set(*policy);
@@ -1240,21 +1245,12 @@ mod source_gate_selection {
             .ok_or_else(|| invalid_data("frozen candidate is unknown"))
     }
 
-    fn scene_for_entry(schema: &VisualManifestEntry, oracle: &OracleValidatedEntry) -> Scene {
-        let width = oracle
-            .targets
-            .iter()
-            .map(|target| target.source_roi.right)
-            .chain(oracle.protected_rois.iter().map(|roi| roi.right))
-            .max()
-            .unwrap_or(1);
-        let height = oracle
-            .targets
-            .iter()
-            .map(|target| target.source_roi.bottom)
-            .chain(oracle.protected_rois.iter().map(|roi| roi.bottom))
-            .max()
-            .unwrap_or(1);
+    fn scene_for_entry(
+        schema: &VisualManifestEntry,
+        oracle: &OracleValidatedEntry,
+        width: u32,
+        height: u32,
+    ) -> Scene {
         let mut page = Page::new(&schema.id, width, height);
         for (target, geometry) in schema.targets.iter().zip(&oracle.targets) {
             let roi = geometry.source_roi;
@@ -1483,14 +1479,12 @@ mod source_gate_selection {
         list_llama_ggml_backend_devices()
             .into_iter()
             .map(|device| {
-                let backend = canonical_device_backend(&device.backend)
-                    .ok_or_else(|| invalid_data("unsupported enumerated backend"))?;
                 Ok(EnumeratedDevice {
                     index: u32::try_from(device.index)
                         .map_err(|_| invalid_data("device index overflow"))?,
                     name: device.name,
                     description: device.description,
-                    backend: backend.into(),
+                    backend: device.backend,
                     device_type: device_type(device.device_type).into(),
                 })
             })
@@ -1508,7 +1502,7 @@ mod source_gate_selection {
             .map(|(ordinal, (backend, _))| {
                 let device = enumerated
                     .iter()
-                    .find(|device| device.backend == *backend)
+                    .find(|device| canonical_device_backend(&device.backend) == Some(backend))
                     .ok_or_else(|| invalid_data("loaded backend was not enumerated"))?;
                 Ok(LoadedModelDevice {
                     model_device_ordinal: ordinal as u32,
