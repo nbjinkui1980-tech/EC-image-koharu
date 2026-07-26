@@ -451,8 +451,8 @@ mod source_gate_selection {
     const B0_SHA_ENV: &str = "HANONLY_B0_SHA";
     const ARTIFACT_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT";
     const REPORT_DIR_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR";
-    const ARTIFACT_VERSION: u32 = 1;
-    const PLAN_REVISION: u32 = 47;
+    const ARTIFACT_VERSION: u32 = 2;
+    const PLAN_REVISION: u32 = 48;
     const B0_DEFAULT_GPU_LAYERS: u32 = 1000;
     const SOURCE_COLOR_CONTRACT_SHA256: &str =
         "13d2256fed7b8189e67db7222ce6ce7964f2745c977c42e7693679ffb2a341f8";
@@ -589,8 +589,10 @@ mod source_gate_selection {
     #[serde(deny_unknown_fields)]
     struct Candidate {
         id: String,
-        numerator: u32,
-        denominator: u32,
+        short_side_numerator: u32,
+        short_side_denominator: u32,
+        long_side_numerator: u32,
+        long_side_denominator: u32,
     }
 
     #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -1012,14 +1014,29 @@ mod source_gate_selection {
     }
 
     fn candidates_schema() -> Vec<Candidate> {
-        [("R0", 0, 1), ("R10", 1, 10), ("R25", 1, 4), ("R50", 1, 2)]
-            .into_iter()
-            .map(|(id, numerator, denominator)| Candidate {
+        [
+            ("S25L4", 1, 4, 1, 25),
+            ("S25L5", 1, 4, 1, 20),
+            ("S25L6", 1, 4, 3, 50),
+            ("S25L7", 1, 4, 7, 100),
+        ]
+        .into_iter()
+        .map(
+            |(
+                id,
+                short_side_numerator,
+                short_side_denominator,
+                long_side_numerator,
+                long_side_denominator,
+            )| Candidate {
                 id: id.into(),
-                numerator,
-                denominator,
-            })
-            .collect()
+                short_side_numerator,
+                short_side_denominator,
+                long_side_numerator,
+                long_side_denominator,
+            },
+        )
+        .collect()
     }
 
     fn run_real_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
@@ -1249,10 +1266,10 @@ mod source_gate_selection {
         environment: &SelectionEnvironment,
     ) -> io::Result<Vec<(String, SourceGateCropPolicy)>> {
         let all = [
-            ("R0", SourceGateCropPolicy::R0),
-            ("R10", SourceGateCropPolicy::R10),
-            ("R25", SourceGateCropPolicy::R25),
-            ("R50", SourceGateCropPolicy::R50),
+            ("S25L4", SourceGateCropPolicy::S25L4),
+            ("S25L5", SourceGateCropPolicy::S25L5),
+            ("S25L6", SourceGateCropPolicy::S25L6),
+            ("S25L7", SourceGateCropPolicy::S25L7),
         ];
         if environment.phase == Phase::CalibrationFreeze {
             return Ok(all
@@ -2042,17 +2059,19 @@ mod source_gate_selection {
         bbox: (f64, f64, f64, f64),
         page: (u32, u32),
     ) -> [(&'static str, RasterBounds); 4] {
-        const RATIOS: [(&str, u32, u32); 4] =
-            [("R0", 0, 1), ("R10", 1, 10), ("R25", 1, 4), ("R50", 1, 2)];
+        const RATIOS: [(&str, u32, u32); 4] = [
+            ("S25L4", 1, 25),
+            ("S25L5", 1, 20),
+            ("S25L6", 3, 50),
+            ("S25L7", 7, 100),
+        ];
         let short_side = (bbox.2 - bbox.0).min(bbox.3 - bbox.1);
+        let long_side = (bbox.2 - bbox.0).max(bbox.3 - bbox.1);
         RATIOS.map(|(name, numerator, denominator)| {
-            let padding = if numerator == 0 {
-                0.0
-            } else {
-                (short_side * f64::from(numerator) / f64::from(denominator))
-                    .ceil()
-                    .max(1.0)
-            };
+            let padding = (short_side / 4.0)
+                .max(long_side * f64::from(numerator) / f64::from(denominator))
+                .ceil()
+                .max(1.0);
             (
                 name,
                 (
@@ -2068,12 +2087,12 @@ mod source_gate_selection {
     #[test]
     fn source_gate_selection_candidates_quantize_outward_and_clip() {
         assert_eq!(
-            candidates((10.2, 20.2, 30.8, 30.8), (100, 100)),
+            candidates((10.2, 20.2, 110.8, 30.8), (200, 100)),
             [
-                ("R0", (10, 20, 31, 31)),
-                ("R10", (8, 18, 33, 33)),
-                ("R25", (7, 17, 34, 34)),
-                ("R50", (4, 14, 37, 37)),
+                ("S25L4", (5, 15, 116, 36)),
+                ("S25L5", (4, 14, 117, 37)),
+                ("S25L6", (3, 13, 118, 38)),
+                ("S25L7", (2, 12, 119, 39)),
             ]
         );
         assert_eq!(
@@ -2377,7 +2396,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
 
     fn calibration_evidence() -> RunnerEvidence {
         RunnerEvidence {
-            selected_candidate_id: "R0".into(),
+            selected_candidate_id: "S25L4".into(),
             process_evidence: ["cpu", "metal"]
                 .map(|device| synthetic_process("calibration", device))
                 .into(),
@@ -2396,7 +2415,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
 
     fn holdout_evidence() -> RunnerEvidence {
         RunnerEvidence {
-            selected_candidate_id: "R0".into(),
+            selected_candidate_id: "S25L4".into(),
             process_evidence: ["cpu", "metal"]
                 .map(|device| synthetic_process("holdout", device))
                 .into(),
@@ -2405,7 +2424,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 .flat_map(|entry_id| {
                     ["cpu", "metal"]
                         .into_iter()
-                        .map(move |device| synthetic_result("holdout", entry_id, device, "R0"))
+                        .map(move |device| synthetic_result("holdout", entry_id, device, "S25L4"))
                 })
                 .collect(),
         }
@@ -2678,7 +2697,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
 
         let bytes = fs::read(root.join("selection.json")).unwrap();
         let mut artifact: FrozenArtifact = serde_json::from_slice(&bytes).unwrap();
-        artifact.selected_candidate_id = "R10".into();
+        artifact.selected_candidate_id = "S25L6".into();
         assert!(
             validate_artifact(&artifact, Phase::CalibrationFreeze, &{
                 SelectionEnvironment::parse(|name| values.get(name).cloned()).unwrap()

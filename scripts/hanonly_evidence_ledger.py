@@ -35,13 +35,37 @@ RUN_ID_RE = re.compile(r"\A\d{8}T\d{6}Z-[0-9a-f]{12}-[1-9]\d*\Z")
 SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 B0_SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")
 B0_UTC_SECONDS_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
-B0_VERSION = 1
+B0_VERSION = 2
 B0_DEFAULT_GPU_LAYERS = 1000
 B0_CANDIDATES = [
-    {"id": "R0", "numerator": 0, "denominator": 1},
-    {"id": "R10", "numerator": 1, "denominator": 10},
-    {"id": "R25", "numerator": 1, "denominator": 4},
-    {"id": "R50", "numerator": 1, "denominator": 2},
+    {
+        "id": "S25L4",
+        "short_side_numerator": 1,
+        "short_side_denominator": 4,
+        "long_side_numerator": 1,
+        "long_side_denominator": 25,
+    },
+    {
+        "id": "S25L5",
+        "short_side_numerator": 1,
+        "short_side_denominator": 4,
+        "long_side_numerator": 1,
+        "long_side_denominator": 20,
+    },
+    {
+        "id": "S25L6",
+        "short_side_numerator": 1,
+        "short_side_denominator": 4,
+        "long_side_numerator": 3,
+        "long_side_denominator": 50,
+    },
+    {
+        "id": "S25L7",
+        "short_side_numerator": 1,
+        "short_side_denominator": 4,
+        "long_side_numerator": 7,
+        "long_side_denominator": 100,
+    },
 ]
 B0_ROOT_KEYS = {
     "version",
@@ -537,7 +561,7 @@ def _validate_b0_artifact(arguments):
         type(value["version"]) is not int
         or value["version"] != B0_VERSION
         or type(value["plan_revision"]) is not int
-        or value["plan_revision"] != 47
+        or value["plan_revision"] != 48
     ):
         raise LedgerError("B0 frozen artifact version or plan revision mismatch")
     if value["b0_sha"] != arguments.b0_sha:

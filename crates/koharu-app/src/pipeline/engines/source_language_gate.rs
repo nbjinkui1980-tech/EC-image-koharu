@@ -190,10 +190,10 @@ pub(in crate::pipeline) enum SourceGateCropPolicy {
     C2,
     C4,
     Q2,
-    R0,
-    R10,
-    R25,
-    R50,
+    S25L4,
+    S25L5,
+    S25L6,
+    S25L7,
 }
 
 const PRIMARY_CROP_POLICY: SourceGateCropPolicy = SourceGateCropPolicy::C2;
@@ -831,16 +831,17 @@ fn safe_crop_bounds(
 
 fn crop_policy_parameters(policy: SourceGateCropPolicy, transform: &Transform) -> (f32, bool) {
     let short_side = transform.width.min(transform.height).max(0.0);
+    let long_side = transform.width.max(transform.height).max(0.0);
     match policy {
         SourceGateCropPolicy::C0 => (0.0, false),
         SourceGateCropPolicy::C1 => (1.0, false),
         SourceGateCropPolicy::C2 => (2.0, false),
         SourceGateCropPolicy::C4 => (4.0, false),
         SourceGateCropPolicy::Q2 => (2.0, true),
-        SourceGateCropPolicy::R0 => (0.0, false),
-        SourceGateCropPolicy::R10 => (short_side / 10.0, false),
-        SourceGateCropPolicy::R25 => (short_side / 4.0, false),
-        SourceGateCropPolicy::R50 => (short_side / 2.0, false),
+        SourceGateCropPolicy::S25L4 => ((short_side / 4.0).max(long_side / 25.0), false),
+        SourceGateCropPolicy::S25L5 => ((short_side / 4.0).max(long_side / 20.0), false),
+        SourceGateCropPolicy::S25L6 => ((short_side / 4.0).max(long_side * 3.0 / 50.0), false),
+        SourceGateCropPolicy::S25L7 => ((short_side / 4.0).max(long_side * 7.0 / 100.0), false),
     }
 }
 
@@ -1824,10 +1825,10 @@ mod tests {
             (SourceGateCropPolicy::C2, [329, 816, 460, 899]),
             (SourceGateCropPolicy::C4, [327, 814, 462, 901]),
             (SourceGateCropPolicy::Q2, [328, 816, 460, 900]),
-            (SourceGateCropPolicy::R0, [331, 818, 458, 897]),
-            (SourceGateCropPolicy::R10, [324, 811, 466, 904]),
-            (SourceGateCropPolicy::R25, [312, 799, 477, 916]),
-            (SourceGateCropPolicy::R50, [293, 780, 497, 935]),
+            (SourceGateCropPolicy::S25L4, [312, 799, 477, 916]),
+            (SourceGateCropPolicy::S25L5, [312, 799, 477, 916]),
+            (SourceGateCropPolicy::S25L6, [312, 799, 477, 916]),
+            (SourceGateCropPolicy::S25L7, [312, 799, 477, 916]),
         ] {
             assert_eq!(
                 safe_crop_bounds_with_policy(&observed, 790, 1023, policy),
@@ -1905,12 +1906,20 @@ mod tests {
             rotation_deg: 0.0,
         };
         assert_eq!(
-            safe_crop_bounds_with_policy(&small, 400, 400, SourceGateCropPolicy::R10),
-            Some([8, 18, 112, 42])
+            safe_crop_bounds_with_policy(&small, 400, 400, SourceGateCropPolicy::S25L4),
+            Some([5, 15, 115, 45])
         );
         assert_eq!(
-            safe_crop_bounds_with_policy(&large, 400, 400, SourceGateCropPolicy::R10),
-            Some([16, 36, 224, 84])
+            safe_crop_bounds_with_policy(&large, 400, 400, SourceGateCropPolicy::S25L4),
+            Some([10, 30, 230, 90])
+        );
+        assert_eq!(
+            safe_crop_bounds_with_policy(&small, 400, 400, SourceGateCropPolicy::S25L7),
+            Some([3, 13, 117, 47])
+        );
+        assert_eq!(
+            safe_crop_bounds_with_policy(&large, 400, 400, SourceGateCropPolicy::S25L7),
+            Some([6, 26, 234, 94])
         );
     }
 
@@ -2096,19 +2105,19 @@ mod tests {
     #[ignore = "hanonly-pre-b1-red"]
     fn hanonly_pre_b1_red_t2_source_gate_ratio_contract() {
         let expected = [
-            ("R0", [100, 120, 300, 220]),
-            ("R10", [90, 110, 310, 230]),
-            ("R25", [75, 95, 325, 245]),
-            ("R50", [50, 70, 350, 270]),
+            ("S25L4", [60, 80, 1140, 260]),
+            ("S25L5", [50, 70, 1150, 270]),
+            ("S25L6", [40, 60, 1160, 280]),
+            ("S25L7", [30, 50, 1170, 290]),
         ];
         let node_id = NodeId::new();
         let (scene, page) = scene_with_nodes(vec![candidate(
             node_id,
-            [100.0, 120.0, 300.0, 220.0],
+            [100.0, 120.0, 1100.0, 220.0],
             false,
             "detector",
         )]);
-        let image = DynamicImage::ImageRgb8(RgbImage::new(400, 400));
+        let image = DynamicImage::ImageRgb8(RgbImage::new(1400, 400));
         let (actual, invalid) = source_gate_candidates(&image, &scene, page).unwrap();
 
         assert!(invalid.is_empty());

@@ -179,7 +179,7 @@ def b0_artifact():
     holdout_ids = [f"holdout-{index}" for index in range(4)]
     value = {
         "version": ledger.B0_VERSION,
-        "plan_revision": 47,
+        "plan_revision": 48,
         "b0_sha": "b" * 40,
         "manifest_sha256": "c" * 64,
         "source_gate_fixture_manifest_sha256": "d" * 64,
@@ -199,11 +199,11 @@ def b0_artifact():
             for device in ("cpu", "metal")
             for candidate in ledger.B0_CANDIDATES
         ],
-        "selected_candidate_id": "R10",
+        "selected_candidate_id": "S25L4",
         "frozen_at_utc": "2026-07-26T00:00:00Z",
         "frozen_payload_sha256": "2" * 64,
         "holdout_results": [
-            result("holdout", entry_id, device, "R10")
+            result("holdout", entry_id, device, "S25L4")
             for entry_id in holdout_ids
             for device in ("cpu", "metal")
         ],
@@ -1317,11 +1317,22 @@ class B0ArtifactTests(unittest.TestCase):
         self.assert_rejected(json.dumps(self.value).encode())
 
     def test_rejects_wrong_plan_revisions(self):
-        for revision in (29, 46, "47", None):
+        for revision in (29, 47, "48", None):
             with self.subTest(revision=revision):
                 self.value = b0_artifact()
                 self.value["plan_revision"] = revision
                 self.assert_rejected()
+
+    def test_rejects_version_one_and_legacy_candidate_schema(self):
+        self.value["version"] = 1
+        self.assert_rejected()
+        self.value = b0_artifact()
+        self.value["candidates"][0] = {
+            "id": "R0",
+            "numerator": 0,
+            "denominator": 1,
+        }
+        self.assert_rejected()
 
     def test_rejects_missing_cell_and_wrong_feature_order(self):
         self.value["calibration_results"].pop()
@@ -1342,7 +1353,7 @@ class B0ArtifactTests(unittest.TestCase):
         self.assert_rejected()
 
     def test_rejects_frozen_projection_hash_drift(self):
-        self.value["selected_candidate_id"] = "R50"
+        self.value["selected_candidate_id"] = "S25L6"
         self.assert_rejected()
 
     def test_rejects_metal_default_gpu_layer_drift(self):
@@ -1410,7 +1421,7 @@ class B0ArtifactTests(unittest.TestCase):
                 self.assert_rejected(**{argument: "e" * len(self.value[field])})
 
     def test_rejects_candidate_ratio_drift(self):
-        self.value["candidates"][1]["denominator"] = 4
+        self.value["candidates"][1]["long_side_denominator"] = 4
         self.assert_rejected()
 
 

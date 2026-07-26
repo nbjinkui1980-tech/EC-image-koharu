@@ -3468,12 +3468,12 @@ mod tests {
             Some("C2") => SourceGateCropPolicy::C2,
             Some("C4") => SourceGateCropPolicy::C4,
             Some("Q2") => SourceGateCropPolicy::Q2,
-            Some("R0") => SourceGateCropPolicy::R0,
-            Some("R10") => SourceGateCropPolicy::R10,
-            Some("R25") => SourceGateCropPolicy::R25,
-            Some("R50") => SourceGateCropPolicy::R50,
+            Some("S25L4") => SourceGateCropPolicy::S25L4,
+            Some("S25L5") => SourceGateCropPolicy::S25L5,
+            Some("S25L6") => SourceGateCropPolicy::S25L6,
+            Some("S25L7") => SourceGateCropPolicy::S25L7,
             Some(_) => anyhow::bail!(
-                "SOURCE_GATE_MATRIX_POLICY must be C0, C1, C2, C4, Q2, R0, R10, R25, or R50"
+                "SOURCE_GATE_MATRIX_POLICY must be C0, C1, C2, C4, Q2, S25L4, S25L5, S25L6, or S25L7"
             ),
             None => SourceGateCropPolicy::production(),
         };
@@ -3522,10 +3522,10 @@ mod tests {
             let policies =
                 if std::env::var("SOURCE_GATE_MATRIX_RUN_RATIO_PROBES").as_deref() == Ok("1") {
                     vec![
-                        SourceGateCropPolicy::R0,
-                        SourceGateCropPolicy::R10,
-                        SourceGateCropPolicy::R25,
-                        SourceGateCropPolicy::R50,
+                        SourceGateCropPolicy::S25L4,
+                        SourceGateCropPolicy::S25L5,
+                        SourceGateCropPolicy::S25L6,
+                        SourceGateCropPolicy::S25L7,
                     ]
                 } else {
                     vec![
