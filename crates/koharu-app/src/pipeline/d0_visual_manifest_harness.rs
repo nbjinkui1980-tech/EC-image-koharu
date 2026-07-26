@@ -708,6 +708,19 @@ mod source_gate_selection {
         results: Vec<SelectionResult>,
     }
 
+    #[derive(Serialize)]
+    struct CalibrationFailureDiagnostic<'a> {
+        schema: &'static str,
+        b0_sha: &'a str,
+        manifest_sha256: &'a str,
+        source_gate_fixture_manifest_sha256: &'a str,
+        failure: &'a str,
+        candidates: Vec<Candidate>,
+        calibration_entry_ids: &'a [String],
+        process_evidence: &'a [ProcessEvidence],
+        calibration_results: &'a [SelectionResult],
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct ParsedLoadLog {
         offloaded_layers: u32,
@@ -923,9 +936,10 @@ mod source_gate_selection {
         match environment.phase {
             Phase::CalibrationFreeze => {
                 let evidence = model_runner(&environment)?;
-                let selected_candidate_id = select_smallest_all_pass(
+                let selected_candidate_id = select_or_write_calibration_diagnostic(
+                    &environment,
+                    &evidence.process_evidence,
                     &evidence.results,
-                    &environment.calibration_entry_ids,
                 )?;
                 require(
                     evidence.selected_candidate_id == selected_candidate_id,
@@ -1195,12 +1209,8 @@ mod source_gate_selection {
             }
             process_evidence.push(process);
         }
-        let entry_ids = match environment.phase {
-            Phase::CalibrationFreeze => &environment.calibration_entry_ids,
-            Phase::Holdout => &environment.holdout_entry_ids,
-        };
         let selected_candidate_id = if environment.phase == Phase::CalibrationFreeze {
-            select_smallest_all_pass(&results, entry_ids)?
+            select_or_write_calibration_diagnostic(environment, &process_evidence, &results)?
         } else {
             selected[0].0.clone()
         };
@@ -1546,13 +1556,43 @@ mod source_gate_selection {
         results: &[SelectionResult],
         entry_ids: &[String],
     ) -> io::Result<String> {
+        let mut failures = Vec::new();
         for candidate in candidates_schema() {
             let cells = results
                 .iter()
                 .filter(|result| result.candidate_id == candidate.id)
                 .collect::<Vec<_>>();
             let expected_cells = entry_ids.len() * 2;
-            if cells.len() != expected_cells || !cells.iter().all(|result| result.derived.passed) {
+            if cells.len() != expected_cells {
+                failures.push(format!(
+                    "{}: incomplete={}/{}",
+                    candidate.id,
+                    cells.len(),
+                    expected_cells
+                ));
+                continue;
+            }
+            let failed = cells
+                .iter()
+                .filter(|result| !result.derived.passed)
+                .map(|result| {
+                    format!(
+                        "{}/{} recall={:.3} protected={} unmatched={} rotation_excluded={}",
+                        result.entry_id,
+                        result
+                            .process_evidence_id
+                            .rsplit('-')
+                            .next()
+                            .unwrap_or("unknown"),
+                        result.derived.target_recall,
+                        result.derived.protected_false_positive_count,
+                        result.derived.unmatched_selected_node_ids.len(),
+                        result.derived.rotation_targets_excluded
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !failed.is_empty() {
+                failures.push(format!("{}: {}", candidate.id, failed.join(", ")));
                 continue;
             }
             let observed = cells
@@ -1574,7 +1614,55 @@ mod source_gate_selection {
                 return Ok(candidate.id);
             }
         }
-        Err(invalid_data("no all-pass Source Gate crop candidate"))
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "no all-pass Source Gate crop candidate; {}",
+                failures.join("; ")
+            ),
+        ))
+    }
+
+    fn select_or_write_calibration_diagnostic(
+        environment: &SelectionEnvironment,
+        process_evidence: &[ProcessEvidence],
+        results: &[SelectionResult],
+    ) -> io::Result<String> {
+        match select_smallest_all_pass(results, &environment.calibration_entry_ids) {
+            Ok(candidate_id) => Ok(candidate_id),
+            Err(error) => {
+                write_calibration_failure_diagnostic(
+                    environment,
+                    process_evidence,
+                    results,
+                    &error.to_string(),
+                )?;
+                Err(error)
+            }
+        }
+    }
+
+    fn write_calibration_failure_diagnostic(
+        environment: &SelectionEnvironment,
+        process_evidence: &[ProcessEvidence],
+        results: &[SelectionResult],
+        failure: &str,
+    ) -> io::Result<()> {
+        let diagnostic = CalibrationFailureDiagnostic {
+            schema: "hanonly-source-gate-calibration-diagnostic-v1",
+            b0_sha: &environment.b0_sha,
+            manifest_sha256: &environment.visual_manifest_sha256,
+            source_gate_fixture_manifest_sha256: &environment.source_gate_fixture_manifest_sha256,
+            failure,
+            candidates: candidates_schema(),
+            calibration_entry_ids: &environment.calibration_entry_ids,
+            process_evidence,
+            calibration_results: results,
+        };
+        let path = environment
+            .artifact
+            .with_file_name("calibration-diagnostic.json");
+        write_artifact(&path, &canonical_json(&diagnostic)?, false)
     }
 
     fn synthetic_entry_ids(phase: &str) -> Vec<String> {
@@ -2090,6 +2178,34 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         assert!(loaded_model_devices(&enumerated, &BTreeMap::from([("CUDA".into(), 1)])).is_err());
     }
 
+    #[test]
+    fn source_gate_selection_reports_each_failed_candidate_cell() {
+        let mut evidence = calibration_evidence();
+        for candidate in candidates_schema() {
+            let failed = evidence
+                .results
+                .iter_mut()
+                .find(|result| {
+                    result.entry_id == "c01"
+                        && result.process_evidence_id == "calibration-cpu"
+                        && result.candidate_id == candidate.id
+                })
+                .unwrap();
+            failed.derived.target_recall = 0.0;
+            failed.derived.passed = false;
+        }
+        let error =
+            select_smallest_all_pass(&evidence.results, &synthetic_entry_ids("calibration"))
+                .unwrap_err()
+                .to_string();
+        for candidate in candidates_schema() {
+            assert!(error.contains(&format!(
+                "{}: c01/cpu recall=0.000 protected=0 unmatched=0 rotation_excluded=true",
+                candidate.id
+            )));
+        }
+    }
+
     fn valid_environment(root: &Path) -> HashMap<&'static str, String> {
         let manifest = root.join("visual-manifest.json");
         let manifest_bytes = serde_json::to_vec(&serde_json::json!({
@@ -2491,6 +2607,47 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             );
             assert!(!root.join("selection.json").exists());
         }
+    }
+
+    #[test]
+    fn source_gate_selection_writes_calibration_diagnostic_when_no_candidate_passes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let values = valid_environment(&root);
+        let mut evidence = calibration_evidence();
+        for result in &mut evidence.results {
+            result.derived.passed = false;
+        }
+
+        let error = run_with(
+            |name| values.get(name).cloned(),
+            Path::new("/repository"),
+            |_| Ok("a".repeat(40)),
+            |_| Ok(()),
+            |_| Ok(evidence),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("no all-pass Source Gate crop candidate")
+        );
+        assert!(!root.join("selection.json").exists());
+        let bytes = fs::read(root.join("calibration-diagnostic.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(bytes, canonical_json(&value).unwrap());
+        assert_eq!(
+            value["schema"],
+            "hanonly-source-gate-calibration-diagnostic-v1"
+        );
+        assert_eq!(value["calibration_results"].as_array().unwrap().len(), 32);
+        assert!(
+            value["failure"]
+                .as_str()
+                .unwrap()
+                .contains("no all-pass Source Gate crop candidate")
+        );
     }
 
     #[test]
