@@ -14,6 +14,9 @@ use std::path::Path;
 
 const MANIFEST_PREFLIGHT_DIRECTORY: &str = "d0-manifest-preflight";
 const MANIFEST_PREFLIGHT_REPORT: &str = "report.json";
+const D0_RUNTIME_DIRECTORY: &str = "d0-baseline-runtime";
+const D0_RUNTIME_TEMP_DIRECTORY: &str = ".d0-baseline-runtime.tmp";
+const D0_RUNTIME_REPORT: &str = "report.json";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FaultPoint {
@@ -26,6 +29,17 @@ pub(super) enum FaultPoint {
     DirectoryFsync,
     CleanupUnlink,
     CleanupDirectoryFsync,
+    BundleDirectoryCreate,
+    BundleFileCreate,
+    BundleWrite,
+    BundleFileFsync,
+    BundleTempDirectoryFsync,
+    BundleRename,
+    BundleParentFsync,
+    BundleCleanupUnlink,
+    BundleCleanupDirectoryFsync,
+    BundleCleanupRmdir,
+    BundleCleanupParentFsync,
 }
 type F = FaultPoint;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +68,79 @@ pub(super) struct PublishedOutput {
     pub(super) bytes: Box<[u8]>,
     pub(super) sha256: [u8; 32],
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum D0ArtifactRole {
+    Source,
+    RawSegment,
+    FinalEraseMask,
+    Inpainted,
+    Rendered,
+}
+
+impl D0ArtifactRole {
+    const ALL: [Self; 5] = [
+        Self::Source,
+        Self::RawSegment,
+        Self::FinalEraseMask,
+        Self::Inpainted,
+        Self::Rendered,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::RawSegment => "raw_segment",
+            Self::FinalEraseMask => "final_erase_mask",
+            Self::Inpainted => "inpainted",
+            Self::Rendered => "rendered",
+        }
+    }
+}
+
+pub(super) struct D0BundleArtifact {
+    pub(super) entry_index: u32,
+    pub(super) role: D0ArtifactRole,
+    pub(super) bytes: Box<[u8]>,
+}
+
+pub(super) struct PublishedBundleFile {
+    pub(super) name: OsString,
+    pub(super) output: PublishedOutput,
+}
+
+pub(super) struct PublishedBundle {
+    _descriptor: OwnedFd,
+    _metadata: Metadata,
+    pub(super) files: Vec<PublishedBundleFile>,
+}
+
+struct ExpectedBundleFile {
+    name: OsString,
+    bytes: Box<[u8]>,
+}
+
+pub(super) fn d0_artifact_name(entry_index: u32, role: D0ArtifactRole) -> String {
+    format!("entry-{entry_index:04}-{}.png", role.label())
+}
+
+pub(super) fn publish_d0_runtime_bundle<T>(
+    evidence_root: &Path,
+    artifacts: Vec<D0BundleArtifact>,
+    report: Vec<u8>,
+    fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+    pre_success_barrier: impl FnOnce(&PublishedBundle) -> io::Result<()>,
+    success: impl FnOnce(&PublishedBundle) -> io::Result<T>,
+) -> io::Result<T> {
+    let parent = OutputDirectory::open(evidence_root)?;
+    let expected = expected_bundle_files(artifacts, report)?;
+    let published = transact_bundle(&parent, &expected, fault)?;
+    let revalidated = revalidate_bundle(&parent, &published, &expected)?;
+    pre_success_barrier(&revalidated)?;
+    let fresh = revalidate_bundle(&parent, &revalidated, &expected)?;
+    success(&fresh)
+}
+
 pub(super) fn publish<T>(
     input: &HeldInput,
     output_directory: &Path,
@@ -254,6 +341,418 @@ fn open_directory_at(parent: BorrowedFd<'_>, name: &OsStr) -> io::Result<OwnedFd
         "output child is not a directory",
     )?;
     Ok(descriptor)
+}
+
+fn expected_bundle_files(
+    mut artifacts: Vec<D0BundleArtifact>,
+    report: Vec<u8>,
+) -> io::Result<Vec<ExpectedBundleFile>> {
+    require(!artifacts.is_empty(), "runtime bundle artifacts are empty")?;
+    require(!report.is_empty(), "runtime bundle report is empty")?;
+    artifacts.sort_by_key(|artifact| (artifact.entry_index, artifact.role));
+    let entries = artifacts.len() / D0ArtifactRole::ALL.len();
+    require(
+        entries * D0ArtifactRole::ALL.len() == artifacts.len(),
+        "runtime bundle artifact cardinality mismatch",
+    )?;
+    for (position, artifact) in artifacts.iter().enumerate() {
+        let entry_index = u32::try_from(position / D0ArtifactRole::ALL.len())
+            .map_err(|_| invalid("runtime bundle entry count overflow"))?;
+        let role = D0ArtifactRole::ALL[position % D0ArtifactRole::ALL.len()];
+        require(
+            artifact.entry_index == entry_index
+                && artifact.entry_index <= 9_999
+                && artifact.role == role,
+            "runtime bundle artifacts are not closed and contiguous",
+        )?;
+    }
+    let mut expected = artifacts
+        .into_iter()
+        .map(|artifact| ExpectedBundleFile {
+            name: d0_artifact_name(artifact.entry_index, artifact.role).into(),
+            bytes: artifact.bytes,
+        })
+        .collect::<Vec<_>>();
+    expected.push(ExpectedBundleFile {
+        name: D0_RUNTIME_REPORT.into(),
+        bytes: report.into_boxed_slice(),
+    });
+    expected.sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
+    Ok(expected)
+}
+
+fn transact_bundle(
+    parent: &OutputDirectory,
+    expected: &[ExpectedBundleFile],
+    fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+) -> io::Result<PublishedBundle> {
+    let parent_descriptor = parent.reopen()?;
+    let temp = optional_bundle_directory(
+        parent_descriptor.as_fd(),
+        OsStr::new(D0_RUNTIME_TEMP_DIRECTORY),
+        parent.metadata.owner,
+    )?;
+    let final_directory = optional_bundle_directory(
+        parent_descriptor.as_fd(),
+        OsStr::new(D0_RUNTIME_DIRECTORY),
+        parent.metadata.owner,
+    )?;
+    match (temp, final_directory) {
+        (Some(_), Some(_)) => Err(io::Error::other(
+            "runtime bundle temp and final directories both exist",
+        )),
+        (None, Some(final_directory)) => {
+            let published = read_bundle(final_directory, parent.metadata.owner, expected)?;
+            sync_bundle_contents(&published, fault)?;
+            fault(F::BundleParentFsync)?;
+            fs(fsync(&parent_descriptor))?;
+            Ok(published)
+        }
+        (Some(temp), None) => {
+            let temp_metadata = metadata_of(&fs(fstat(&temp))?);
+            let (names, exact) = inspect_recoverable_temp(&temp, parent.metadata.owner, expected)?;
+            if !exact {
+                cleanup_recoverable_temp(
+                    parent_descriptor.as_fd(),
+                    &temp,
+                    temp_metadata,
+                    &names,
+                    fault,
+                )?;
+                return create_and_publish_bundle(parent, expected, fault);
+            }
+            let published = read_bundle(temp, parent.metadata.owner, expected)?;
+            sync_bundle_contents(&published, fault)?;
+            fault(F::BundleRename)?;
+            let fresh_parent = parent.reopen()?;
+            require_named_directory(
+                fresh_parent.as_fd(),
+                OsStr::new(D0_RUNTIME_TEMP_DIRECTORY),
+                temp_metadata,
+                parent.metadata.owner,
+            )?;
+            fs(renameat_with(
+                fresh_parent.as_fd(),
+                OsStr::new(D0_RUNTIME_TEMP_DIRECTORY),
+                fresh_parent.as_fd(),
+                OsStr::new(D0_RUNTIME_DIRECTORY),
+                RenameFlags::NOREPLACE,
+            ))?;
+            fault(F::BundleParentFsync)?;
+            fs(fsync(&fresh_parent))?;
+            Ok(published)
+        }
+        (None, None) => create_and_publish_bundle(parent, expected, fault),
+    }
+}
+
+fn create_and_publish_bundle(
+    parent: &OutputDirectory,
+    expected: &[ExpectedBundleFile],
+    fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+) -> io::Result<PublishedBundle> {
+    let parent_descriptor = parent.reopen()?;
+    fault(F::BundleDirectoryCreate)?;
+    fs(mkdirat(
+        parent_descriptor.as_fd(),
+        OsStr::new(D0_RUNTIME_TEMP_DIRECTORY),
+        Mode::from_raw_mode(0o700),
+    ))?;
+    let temp = open_directory_at(
+        parent_descriptor.as_fd(),
+        OsStr::new(D0_RUNTIME_TEMP_DIRECTORY),
+    )?;
+    let temp_metadata = metadata_of(&fs(fstat(&temp))?);
+    require(
+        valid_directory(temp_metadata, parent.metadata.owner),
+        "invalid runtime bundle temp directory",
+    )?;
+
+    for expected_file in expected {
+        let result = (|| {
+            fault(F::BundleFileCreate)?;
+            let descriptor = fs(openat(
+                temp.as_fd(),
+                &expected_file.name,
+                OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(0o600),
+            ))?;
+            require_file(&descriptor, parent.metadata.owner)?;
+            let mut file = File::from(descriptor);
+            let split = expected_file.bytes.len().min(1);
+            file.write_all(&expected_file.bytes[..split])?;
+            fault(F::BundleWrite)?;
+            file.write_all(&expected_file.bytes[split..])?;
+            fault(F::BundleFileFsync)?;
+            fs(fsync(&file))
+        })();
+        if let Err(error) = result {
+            return Err(cleanup_bundle_after_error(
+                parent_descriptor.as_fd(),
+                &temp,
+                temp_metadata,
+                expected,
+                error,
+                fault,
+            ));
+        }
+    }
+    if let Err(error) = fault(F::BundleTempDirectoryFsync).and_then(|()| fs(fsync(&temp))) {
+        return Err(cleanup_bundle_after_error(
+            parent_descriptor.as_fd(),
+            &temp,
+            temp_metadata,
+            expected,
+            error,
+            fault,
+        ));
+    }
+    let published = read_bundle(temp, parent.metadata.owner, expected)?;
+    fault(F::BundleRename)?;
+    let fresh_parent = parent.reopen()?;
+    require_named_directory(
+        fresh_parent.as_fd(),
+        OsStr::new(D0_RUNTIME_TEMP_DIRECTORY),
+        temp_metadata,
+        parent.metadata.owner,
+    )?;
+    fs(renameat_with(
+        fresh_parent.as_fd(),
+        OsStr::new(D0_RUNTIME_TEMP_DIRECTORY),
+        fresh_parent.as_fd(),
+        OsStr::new(D0_RUNTIME_DIRECTORY),
+        RenameFlags::NOREPLACE,
+    ))?;
+    fault(F::BundleParentFsync)?;
+    fs(fsync(&fresh_parent))?;
+    Ok(published)
+}
+
+fn optional_bundle_directory(
+    parent: BorrowedFd<'_>,
+    name: &OsStr,
+    owner: u64,
+) -> io::Result<Option<OwnedFd>> {
+    match open_directory_at(parent, name) {
+        Ok(descriptor) => {
+            let metadata = metadata_of(&fs(fstat(&descriptor))?);
+            require(
+                valid_directory(metadata, owner),
+                "invalid runtime bundle directory",
+            )?;
+            Ok(Some(descriptor))
+        }
+        Err(error) if error.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn require_named_directory(
+    parent: BorrowedFd<'_>,
+    name: &OsStr,
+    expected: Metadata,
+    owner: u64,
+) -> io::Result<()> {
+    let named = open_directory_at(parent, name)?;
+    let metadata = metadata_of(&fs(fstat(&named))?);
+    require(
+        metadata == expected && valid_directory(metadata, owner),
+        "runtime bundle directory namespace changed",
+    )
+}
+
+fn read_bundle(
+    descriptor: OwnedFd,
+    owner: u64,
+    expected: &[ExpectedBundleFile],
+) -> io::Result<PublishedBundle> {
+    let metadata = metadata_of(&fs(fstat(&descriptor))?);
+    require(
+        valid_directory(metadata, owner),
+        "invalid runtime bundle directory",
+    )?;
+    let names = directory_names(descriptor.as_fd())?;
+    require(
+        names
+            .iter()
+            .map(OsString::as_os_str)
+            .eq(expected.iter().map(|file| file.name.as_os_str())),
+        "runtime bundle entries are unknown or partial",
+    )?;
+    let mut files = Vec::with_capacity(expected.len());
+    for expected_file in expected {
+        let file = open_regular(
+            descriptor.as_fd(),
+            &expected_file.name,
+            owner,
+            OFlags::RDONLY,
+        )?;
+        files.push(PublishedBundleFile {
+            name: expected_file.name.clone(),
+            output: read_published(file, expected_file.bytes.clone())?,
+        });
+    }
+    Ok(PublishedBundle {
+        _descriptor: descriptor,
+        _metadata: metadata,
+        files,
+    })
+}
+
+fn directory_names(directory: BorrowedFd<'_>) -> io::Result<Vec<OsString>> {
+    let mut names = Dir::read_from(directory)?
+        .map(|entry| entry.map(|entry| OsStr::from_bytes(entry.file_name().to_bytes()).to_owned()))
+        .collect::<rustix::io::Result<Vec<_>>>()
+        .map_err(io::Error::from)?;
+    names.retain(|name| name != "." && name != "..");
+    names.sort_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+    Ok(names)
+}
+
+fn inspect_recoverable_temp(
+    temp: &OwnedFd,
+    owner: u64,
+    expected: &[ExpectedBundleFile],
+) -> io::Result<(Vec<OsString>, bool)> {
+    let names = directory_names(temp.as_fd())?;
+    let mut exact = names.len() == expected.len();
+    for name in &names {
+        let expected_file = expected
+            .iter()
+            .find(|candidate| candidate.name == *name)
+            .ok_or_else(|| io::Error::other("runtime temp contains an unknown entry"))?;
+        let bytes = read_bounded_regular(temp.as_fd(), name, owner, expected_file.bytes.len())?;
+        require(
+            expected_file.bytes.starts_with(&bytes),
+            "runtime temp file is not an expected byte prefix",
+        )?;
+        exact &= bytes.len() == expected_file.bytes.len();
+    }
+    Ok((names, exact))
+}
+
+fn read_bounded_regular(
+    directory: BorrowedFd<'_>,
+    name: &OsStr,
+    owner: u64,
+    maximum: usize,
+) -> io::Result<Box<[u8]>> {
+    let descriptor = open_regular(directory, name, owner, OFlags::RDONLY)?;
+    let limit = u64::try_from(maximum)
+        .map_err(|_| invalid("runtime bundle file size overflow"))?
+        .checked_add(1)
+        .ok_or_else(|| invalid("runtime bundle file size overflow"))?;
+    let mut bytes = Vec::with_capacity(maximum.min(64 * 1024));
+    descriptor.take(limit).read_to_end(&mut bytes)?;
+    require(
+        bytes.len() <= maximum,
+        "runtime temp file exceeds expected bytes",
+    )?;
+    Ok(bytes.into_boxed_slice())
+}
+
+fn sync_bundle_contents(
+    published: &PublishedBundle,
+    fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+) -> io::Result<()> {
+    for file in &published.files {
+        fault(F::BundleFileFsync)?;
+        fs(fsync(&file.output.descriptor))?;
+    }
+    fault(F::BundleTempDirectoryFsync)?;
+    fs(fsync(&published._descriptor))
+}
+
+fn revalidate_bundle(
+    parent: &OutputDirectory,
+    published: &PublishedBundle,
+    expected: &[ExpectedBundleFile],
+) -> io::Result<PublishedBundle> {
+    let fresh_parent = parent.reopen()?;
+    let fresh = open_directory_at(fresh_parent.as_fd(), OsStr::new(D0_RUNTIME_DIRECTORY))?;
+    let fresh_metadata = metadata_of(&fs(fstat(&fresh))?);
+    require(
+        fresh_metadata == published._metadata
+            && valid_directory(fresh_metadata, parent.metadata.owner),
+        "published runtime bundle namespace changed",
+    )?;
+    let revalidated = read_bundle(fresh, parent.metadata.owner, expected)?;
+    for (held, named) in published.files.iter().zip(&revalidated.files) {
+        let held_metadata = metadata_of(&fs(fstat(&held.output.descriptor))?);
+        let named_metadata = metadata_of(&fs(fstat(&named.output.descriptor))?);
+        require(
+            held.name == named.name
+                && held_metadata == named_metadata
+                && held.output.bytes == named.output.bytes
+                && held.output.sha256 == named.output.sha256,
+            "published runtime bundle file changed",
+        )?;
+    }
+    require_absent(fresh_parent.as_fd(), OsStr::new(D0_RUNTIME_TEMP_DIRECTORY))?;
+    Ok(revalidated)
+}
+
+fn require_absent(parent: BorrowedFd<'_>, name: &OsStr) -> io::Result<()> {
+    match statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) => Ok(()),
+        Ok(_) => Err(io::Error::other(
+            "runtime bundle temp entry exists during success revalidation",
+        )),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn cleanup_bundle_after_error(
+    parent: BorrowedFd<'_>,
+    temp: &OwnedFd,
+    temp_metadata: Metadata,
+    expected: &[ExpectedBundleFile],
+    source: io::Error,
+    fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+) -> io::Error {
+    let cleanup =
+        inspect_recoverable_temp(temp, temp_metadata.owner, expected).and_then(|(names, _)| {
+            cleanup_recoverable_temp(parent, temp, temp_metadata, &names, fault)
+        });
+    match cleanup {
+        Ok(()) => source,
+        Err(cleanup) => io::Error::other(format!("{source}; cleanup failed: {cleanup}")),
+    }
+}
+
+fn cleanup_recoverable_temp(
+    parent: BorrowedFd<'_>,
+    temp: &OwnedFd,
+    temp_metadata: Metadata,
+    names: &[OsString],
+    fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+) -> io::Result<()> {
+    for name in names {
+        fault(F::BundleCleanupUnlink)?;
+        fs(unlinkat(temp.as_fd(), name, AtFlags::empty()))?;
+    }
+    fault(F::BundleCleanupDirectoryFsync)?;
+    fs(fsync(temp))?;
+    fault(F::BundleCleanupRmdir)?;
+    require(
+        directory_names(temp.as_fd())?.is_empty(),
+        "runtime temp changed during cleanup",
+    )?;
+    require_named_directory(
+        parent,
+        OsStr::new(D0_RUNTIME_TEMP_DIRECTORY),
+        temp_metadata,
+        temp_metadata.owner,
+    )?;
+    fs(unlinkat(
+        parent,
+        OsStr::new(D0_RUNTIME_TEMP_DIRECTORY),
+        AtFlags::REMOVEDIR,
+    ))?;
+    fault(F::BundleCleanupParentFsync)?;
+    fs(fsync(parent))
 }
 
 fn transact(
@@ -592,6 +1091,60 @@ mod tests {
     fn publish_err(held: &HeldInput, directory: &Path, child: &OsStr) -> bool {
         publish(held, directory, child, b"x", &mut no_fault, |_| Ok(())).is_err()
     }
+    fn runtime_artifacts() -> Vec<D0BundleArtifact> {
+        D0ArtifactRole::ALL
+            .into_iter()
+            .map(|role| D0BundleArtifact {
+                entry_index: 0,
+                role,
+                bytes: format!("bytes-{}", role.label())
+                    .into_bytes()
+                    .into_boxed_slice(),
+            })
+            .collect()
+    }
+    fn run_bundle(
+        fixture: &Fixture,
+        fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+        calls: &Cell<usize>,
+    ) -> io::Result<()> {
+        run_bundle_with_barrier(fixture, fault, |_| Ok(()), calls)
+    }
+    fn run_bundle_with_barrier(
+        fixture: &Fixture,
+        fault: &mut impl FnMut(FaultPoint) -> io::Result<()>,
+        barrier: impl FnOnce(&PublishedBundle) -> io::Result<()>,
+        calls: &Cell<usize>,
+    ) -> io::Result<()> {
+        publish_d0_runtime_bundle(
+            &fixture.output,
+            runtime_artifacts(),
+            b"{\"schema\":\"runtime\"}\n".to_vec(),
+            fault,
+            barrier,
+            |published| {
+                calls.set(calls.get() + 1);
+                assert_eq!(published.files.len(), 6);
+                assert_eq!(
+                    published.files.last().unwrap().name,
+                    OsStr::new(D0_RUNTIME_REPORT)
+                );
+                Ok(())
+            },
+        )
+    }
+    fn runtime_expected() -> Vec<ExpectedBundleFile> {
+        expected_bundle_files(runtime_artifacts(), b"{\"schema\":\"runtime\"}\n".to_vec()).unwrap()
+    }
+    fn prepare_runtime_directory(fixture: &Fixture, name: &str) -> std::path::PathBuf {
+        let directory = fixture.output.join(name);
+        s::create_dir(&directory).unwrap();
+        mode(&directory, 0o700);
+        for expected in runtime_expected() {
+            file(&directory.join(expected.name), &expected.bytes, 0o600);
+        }
+        directory
+    }
     #[test]
     fn d0_output_transaction_success_idempotence_and_temp_recovery() {
         for initial in ["empty", "temp"] {
@@ -924,6 +1477,434 @@ mod tests {
             run(&fixture, &held, &mut no_fault, &calls).unwrap();
             assert_eq!(calls.get(), 1);
             assert!(!fixture.output.join(temp_name()).exists());
+        }
+    }
+
+    #[test]
+    fn d0_output_transaction_runtime_bundle_is_atomic_exact_and_idempotent() {
+        let fixture = Fixture::new();
+        let calls = Cell::new(0);
+        run_bundle(&fixture, &mut no_fault, &calls).unwrap();
+        run_bundle(&fixture, &mut no_fault, &calls).unwrap();
+        assert_eq!(calls.get(), 2);
+        assert!(!fixture.output.join(D0_RUNTIME_TEMP_DIRECTORY).exists());
+        let final_directory = fixture.output.join(D0_RUNTIME_DIRECTORY);
+        assert_eq!(
+            s::metadata(&final_directory).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        let mut names = s::read_dir(&final_directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            runtime_expected()
+                .into_iter()
+                .map(|file| file.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(names.iter().all(|name| {
+            s::metadata(final_directory.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777
+                == 0o600
+        }));
+    }
+
+    #[test]
+    fn d0_output_transaction_runtime_bundle_recovery_resyncs_before_rename() {
+        let fixture = Fixture::new();
+        prepare_runtime_directory(&fixture, D0_RUNTIME_TEMP_DIRECTORY);
+        let calls = Cell::new(0);
+        let mut ordering = Vec::new();
+        run_bundle(
+            &fixture,
+            &mut |point| {
+                if matches!(
+                    point,
+                    F::BundleFileFsync
+                        | F::BundleTempDirectoryFsync
+                        | F::BundleRename
+                        | F::BundleParentFsync
+                ) {
+                    ordering.push(point);
+                }
+                Ok(())
+            },
+            &calls,
+        )
+        .unwrap();
+        let mut expected = vec![F::BundleFileFsync; runtime_expected().len()];
+        expected.extend([
+            F::BundleTempDirectoryFsync,
+            F::BundleRename,
+            F::BundleParentFsync,
+        ]);
+        assert_eq!(ordering, expected);
+        assert_eq!(calls.get(), 1);
+
+        let fixture = Fixture::new();
+        prepare_runtime_directory(&fixture, D0_RUNTIME_TEMP_DIRECTORY);
+        let calls = Cell::new(0);
+        let mut fault = |point| {
+            if point == F::BundleTempDirectoryFsync {
+                Err(io::Error::other("recovered temp directory fsync injected"))
+            } else {
+                Ok(())
+            }
+        };
+        assert!(run_bundle(&fixture, &mut fault, &calls).is_err());
+        assert_eq!(calls.get(), 0);
+        assert!(!fixture.output.join(D0_RUNTIME_DIRECTORY).exists());
+        assert!(fixture.output.join(D0_RUNTIME_TEMP_DIRECTORY).is_dir());
+        run_bundle(&fixture, &mut no_fault, &calls).unwrap();
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn d0_output_transaction_runtime_bundle_recovers_owned_partial_temp() {
+        for state in ["empty", "prefix", "complete-subset", "mixed"] {
+            let fixture = Fixture::new();
+            let directory = fixture.output.join(D0_RUNTIME_TEMP_DIRECTORY);
+            s::create_dir(&directory).unwrap();
+            mode(&directory, 0o700);
+            let expected = runtime_expected();
+            match state {
+                "empty" => {}
+                "prefix" => file(
+                    &directory.join(&expected[0].name),
+                    &expected[0].bytes[..1],
+                    0o600,
+                ),
+                "complete-subset" => file(
+                    &directory.join(&expected[0].name),
+                    &expected[0].bytes,
+                    0o600,
+                ),
+                "mixed" => {
+                    file(
+                        &directory.join(&expected[0].name),
+                        &expected[0].bytes,
+                        0o600,
+                    );
+                    file(
+                        &directory.join(&expected[1].name),
+                        &expected[1].bytes[..1],
+                        0o600,
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let calls = Cell::new(0);
+            run_bundle(&fixture, &mut no_fault, &calls).unwrap();
+            assert_eq!(calls.get(), 1, "{state}");
+            assert!(!directory.exists(), "{state}");
+            let parent = OutputDirectory::open(&fixture.output).unwrap();
+            assert!(
+                read_bundle(
+                    open_directory_at(parent.descriptor.as_fd(), OsStr::new(D0_RUNTIME_DIRECTORY),)
+                        .unwrap(),
+                    parent.metadata.owner,
+                    &expected,
+                )
+                .is_ok(),
+                "{state}"
+            );
+        }
+    }
+
+    #[test]
+    fn d0_output_transaction_runtime_bundle_cleanup_faults_retry_to_success() {
+        for injected in [
+            F::BundleCleanupUnlink,
+            F::BundleCleanupDirectoryFsync,
+            F::BundleCleanupRmdir,
+            F::BundleCleanupParentFsync,
+        ] {
+            let fixture = Fixture::new();
+            let calls = Cell::new(0);
+            let mut write_failed = false;
+            let mut cleanup_failed = false;
+            let mut fault = |point| {
+                if point == F::BundleWrite && !write_failed {
+                    write_failed = true;
+                    Err(io::Error::other("bundle write injected"))
+                } else if point == injected && !cleanup_failed {
+                    cleanup_failed = true;
+                    Err(io::Error::other("bundle cleanup injected"))
+                } else {
+                    Ok(())
+                }
+            };
+            assert!(run_bundle(&fixture, &mut fault, &calls).is_err());
+            assert!(write_failed && cleanup_failed, "{injected:?}");
+            assert_eq!(calls.get(), 0, "{injected:?}");
+            assert!(!fixture.output.join(D0_RUNTIME_DIRECTORY).exists());
+
+            run_bundle(&fixture, &mut no_fault, &calls).unwrap();
+            assert_eq!(calls.get(), 1, "{injected:?}");
+            assert!(!fixture.output.join(D0_RUNTIME_TEMP_DIRECTORY).exists());
+        }
+    }
+
+    #[test]
+    fn d0_output_transaction_runtime_bundle_barrier_precedes_fresh_output_revalidation() {
+        for replacement in ["directory", "file"] {
+            let fixture = Fixture::new();
+            let calls = Cell::new(0);
+            let barrier_calls = Cell::new(0);
+            let result = run_bundle_with_barrier(
+                &fixture,
+                &mut no_fault,
+                |_| {
+                    barrier_calls.set(barrier_calls.get() + 1);
+                    let final_directory = fixture.output.join(D0_RUNTIME_DIRECTORY);
+                    match replacement {
+                        "directory" => {
+                            s::rename(&final_directory, fixture.output.join("old-final"))?;
+                            prepare_runtime_directory(&fixture, D0_RUNTIME_DIRECTORY);
+                        }
+                        "file" => {
+                            let expected = runtime_expected().remove(0);
+                            let path = final_directory.join(&expected.name);
+                            s::rename(&path, final_directory.join("old-file"))?;
+                            file(&path, &expected.bytes, 0o600);
+                        }
+                        _ => unreachable!(),
+                    }
+                    Ok(())
+                },
+                &calls,
+            );
+            assert!(result.is_err(), "{replacement}");
+            assert_eq!(barrier_calls.get(), 1, "{replacement}");
+            assert_eq!(calls.get(), 0, "{replacement}");
+        }
+
+        let fixture = Fixture::new();
+        let calls = Cell::new(0);
+        assert!(
+            run_bundle_with_barrier(
+                &fixture,
+                &mut no_fault,
+                |_| Err(io::Error::other("future input revalidation failed")),
+                &calls,
+            )
+            .is_err()
+        );
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn d0_output_transaction_runtime_bundle_barrier_temp_entry_blocks_success() {
+        for entry_type in ["directory", "file"] {
+            let fixture = Fixture::new();
+            let calls = Cell::new(0);
+            let barrier_calls = Cell::new(0);
+            let result = run_bundle_with_barrier(
+                &fixture,
+                &mut no_fault,
+                |_| {
+                    barrier_calls.set(barrier_calls.get() + 1);
+                    let temp = fixture.output.join(D0_RUNTIME_TEMP_DIRECTORY);
+                    match entry_type {
+                        "directory" => {
+                            s::create_dir(&temp)?;
+                            mode(&temp, 0o700);
+                        }
+                        "file" => file(&temp, b"intruder", 0o600),
+                        _ => unreachable!(),
+                    }
+                    Ok(())
+                },
+                &calls,
+            );
+            assert!(result.is_err(), "{entry_type}");
+            assert_eq!(barrier_calls.get(), 1, "{entry_type}");
+            assert_eq!(calls.get(), 0, "{entry_type}");
+        }
+    }
+
+    #[test]
+    fn d0_output_transaction_runtime_bundle_rejects_unknown_partial_and_insecure_states() {
+        for state_name in [
+            "final-symlink",
+            "final-file",
+            "final-mode",
+            "unknown",
+            "partial",
+            "file-symlink",
+            "file-mode",
+            "file-mismatch",
+            "temp-unknown",
+            "temp-symlink",
+            "temp-directory-mode",
+            "temp-mode",
+            "temp-mismatch",
+            "both",
+        ] {
+            let fixture = Fixture::new();
+            match state_name {
+                "final-symlink" => {
+                    symlink(&fixture.input, fixture.output.join(D0_RUNTIME_DIRECTORY)).unwrap()
+                }
+                "final-file" => file(&fixture.output.join(D0_RUNTIME_DIRECTORY), b"x", 0o600),
+                "temp-unknown"
+                | "temp-symlink"
+                | "temp-directory-mode"
+                | "temp-mode"
+                | "temp-mismatch" => {
+                    let directory = fixture.output.join(D0_RUNTIME_TEMP_DIRECTORY);
+                    s::create_dir(&directory).unwrap();
+                    mode(
+                        &directory,
+                        if state_name == "temp-directory-mode" {
+                            0o755
+                        } else {
+                            0o700
+                        },
+                    );
+                    let expected = runtime_expected().remove(0);
+                    match state_name {
+                        "temp-unknown" => file(&directory.join("unknown"), b"x", 0o600),
+                        "temp-symlink" => {
+                            symlink(&fixture.input, directory.join(expected.name)).unwrap()
+                        }
+                        "temp-mode" => {
+                            file(&directory.join(expected.name), &expected.bytes[..1], 0o644)
+                        }
+                        "temp-mismatch" => {
+                            file(&directory.join(expected.name), b"not-a-prefix", 0o600)
+                        }
+                        "temp-directory-mode" => {}
+                        _ => unreachable!(),
+                    }
+                }
+                _ => {
+                    let directory = prepare_runtime_directory(&fixture, D0_RUNTIME_DIRECTORY);
+                    match state_name {
+                        "final-mode" => mode(&directory, 0o755),
+                        "unknown" => file(&directory.join("unknown"), b"x", 0o600),
+                        "partial" => s::remove_file(directory.join(D0_RUNTIME_REPORT)).unwrap(),
+                        "file-symlink" => {
+                            let name = runtime_expected().remove(0).name;
+                            s::remove_file(directory.join(&name)).unwrap();
+                            symlink(&fixture.input, directory.join(name)).unwrap();
+                        }
+                        "file-mode" => {
+                            mode(&directory.join(runtime_expected().remove(0).name), 0o644)
+                        }
+                        "file-mismatch" => file(
+                            &directory.join(runtime_expected().remove(0).name),
+                            b"wrong",
+                            0o600,
+                        ),
+                        "both" => {
+                            prepare_runtime_directory(&fixture, D0_RUNTIME_TEMP_DIRECTORY);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            let calls = Cell::new(0);
+            assert!(
+                run_bundle(&fixture, &mut no_fault, &calls).is_err(),
+                "{state_name}"
+            );
+            assert_eq!(calls.get(), 0, "{state_name}");
+        }
+
+        let fixture = Fixture::new();
+        let parent = OutputDirectory::open(&fixture.output).unwrap();
+        prepare_runtime_directory(&fixture, D0_RUNTIME_DIRECTORY);
+        assert!(
+            optional_bundle_directory(
+                parent.descriptor.as_fd(),
+                OsStr::new(D0_RUNTIME_DIRECTORY),
+                parent.metadata.owner.wrapping_add(1),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn d0_output_transaction_runtime_bundle_all_faults_preserve_all_or_nothing() {
+        for injected in [
+            F::BundleDirectoryCreate,
+            F::BundleFileCreate,
+            F::BundleWrite,
+            F::BundleFileFsync,
+            F::BundleTempDirectoryFsync,
+            F::BundleRename,
+            F::BundleParentFsync,
+        ] {
+            let fixture = Fixture::new();
+            let calls = Cell::new(0);
+            let mut fired = false;
+            let mut fault = |point| {
+                if point == injected && !fired {
+                    fired = true;
+                    Err(io::Error::other("runtime bundle injected"))
+                } else {
+                    Ok(())
+                }
+            };
+            assert!(run_bundle(&fixture, &mut fault, &calls).is_err());
+            assert!(fired, "{injected:?}");
+            assert_eq!(calls.get(), 0, "{injected:?}");
+            let final_directory = fixture.output.join(D0_RUNTIME_DIRECTORY);
+            if final_directory.exists() {
+                assert!(
+                    read_bundle(
+                        open_directory_at(
+                            OutputDirectory::open(&fixture.output)
+                                .unwrap()
+                                .descriptor
+                                .as_fd(),
+                            OsStr::new(D0_RUNTIME_DIRECTORY),
+                        )
+                        .unwrap(),
+                        effective_owner().unwrap(),
+                        &runtime_expected(),
+                    )
+                    .is_ok()
+                );
+            }
+            run_bundle(&fixture, &mut no_fault, &calls).unwrap();
+            assert_eq!(calls.get(), 1, "{injected:?}");
+        }
+    }
+
+    #[test]
+    fn d0_output_transaction_runtime_bundle_rejects_directory_races() {
+        for race in ["temp-replaced", "final-collision", "final-replaced"] {
+            let fixture = Fixture::new();
+            let calls = Cell::new(0);
+            let mut fault = |point| {
+                match (race, point) {
+                    ("temp-replaced", F::BundleRename) => {
+                        let temp = fixture.output.join(D0_RUNTIME_TEMP_DIRECTORY);
+                        s::rename(&temp, fixture.output.join("old-temp"))?;
+                        prepare_runtime_directory(&fixture, D0_RUNTIME_TEMP_DIRECTORY);
+                    }
+                    ("final-collision", F::BundleRename) => {
+                        prepare_runtime_directory(&fixture, D0_RUNTIME_DIRECTORY);
+                    }
+                    ("final-replaced", F::BundleParentFsync) => {
+                        let final_directory = fixture.output.join(D0_RUNTIME_DIRECTORY);
+                        s::rename(&final_directory, fixture.output.join("old-final"))?;
+                        prepare_runtime_directory(&fixture, D0_RUNTIME_DIRECTORY);
+                    }
+                    _ => {}
+                }
+                Ok(())
+            };
+            assert!(run_bundle(&fixture, &mut fault, &calls).is_err(), "{race}");
+            assert_eq!(calls.get(), 0, "{race}");
         }
     }
 }
