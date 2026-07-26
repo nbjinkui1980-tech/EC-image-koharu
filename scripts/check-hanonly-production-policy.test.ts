@@ -754,6 +754,20 @@ from scripts.hanonly_evidence_ledger_test import b0_artifact
 
 artifact = Path(sys.argv[1])
 value = b0_artifact()
+raw_log_bytes = b"hanonly b0 raw log\\n"
+relpaths = {
+    process["load_evidence"]["raw_load_log_relpath"]
+    for process in value["process_evidence"]
+}
+relpaths.update(
+    result["execution_evidence"]["raw_inference_log_relpath"]
+    for result in value["calibration_results"] + value["holdout_results"]
+)
+for relpath in relpaths:
+    path = artifact.parent / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw_log_bytes)
+    path.chmod(0o600)
 data = ledger.canonical_json(value)
 artifact.write_bytes(data)
 print(json.dumps({

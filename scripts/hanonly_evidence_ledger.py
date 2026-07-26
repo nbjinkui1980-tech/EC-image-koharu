@@ -218,6 +218,26 @@ def _validate_utc_seconds(value, label):
         raise LedgerError(f"{label} must be a valid UTC timestamp") from error
 
 
+def _validate_b0_raw_log(root, relpath, expected_sha256, label):
+    relpath = _validate_text(relpath, f"{label} path")
+    _validate_hash(expected_sha256, f"{label} sha256")
+    if os.path.isabs(relpath) or os.path.normpath(relpath) != relpath:
+        raise LedgerError(f"{label} path must be relative and normalized")
+    if relpath == "." or relpath.startswith("../") or "/../" in relpath:
+        raise LedgerError(f"{label} path must remain below the artifact directory")
+    path = os.path.join(root, relpath)
+    if os.path.realpath(path) != path:
+        raise LedgerError(f"{label} path must be canonical")
+    stat_result = os.stat(path)
+    if stat.S_IFMT(stat_result.st_mode) != stat.S_IFREG:
+        raise LedgerError(f"{label} path must be a regular file")
+    if _mode(stat_result) != 0o600:
+        raise LedgerError(f"{label} mode must be 0600")
+    with open(path, "rb") as handle:
+        if _sha256(handle.read()) != expected_sha256:
+            raise LedgerError(f"{label} sha256 drift")
+
+
 def _canonical_existing_path(value, label):
     value = _validate_text(value, label)
     if not os.path.isabs(value):
@@ -351,7 +371,7 @@ def _validate_backend_map(value, label, required_backend):
         raise LedgerError(f"{label} is invalid")
 
 
-def _validate_result(result, processes, entry_ids, candidate_ids, phase):
+def _validate_result(result, processes, entry_ids, candidate_ids, phase, artifact_root):
     label = f"{phase} result"
     _require_keys(result, B0_RESULT_KEYS, label)
     if result["entry_id"] not in entry_ids or result["candidate_id"] not in candidate_ids:
@@ -366,8 +386,12 @@ def _validate_result(result, processes, entry_ids, candidate_ids, phase):
         or execution["inference_completed"] is not True
     ):
         raise LedgerError(f"{label} instance or completion evidence is invalid")
-    _validate_text(execution["raw_inference_log_relpath"], "raw inference log path")
-    _validate_hash(execution["raw_inference_log_sha256"], "raw inference log sha256")
+    _validate_b0_raw_log(
+        artifact_root,
+        execution["raw_inference_log_relpath"],
+        execution["raw_inference_log_sha256"],
+        "raw inference log",
+    )
     nodes = result["runtime_nodes"]
     if not isinstance(nodes, list):
         raise LedgerError(f"{label} runtime_nodes must be an array")
@@ -504,6 +528,7 @@ def _validate_b0_artifact(arguments):
         _open_absolute(arguments.repo_root, directory=True, stack=stack)
         artifact = _open_absolute(arguments.artifact, directory=False, stack=stack)
         artifact_bytes = _read_all(artifact.fd)
+    artifact_root = os.path.dirname(artifact.path)
     value = _parse_json(artifact_bytes, "B0 frozen artifact")
     _require_keys(value, B0_ROOT_KEYS, "B0 frozen artifact")
     if canonical_json(value) != artifact_bytes:
@@ -601,8 +626,12 @@ def _validate_b0_artifact(arguments):
         load = process["load_evidence"]
         _require_keys(load, B0_LOAD_KEYS, "load evidence")
         _validate_text(load["word_boxes_backend"], "word boxes backend")
-        _validate_text(load["raw_load_log_relpath"], "raw load log path")
-        _validate_hash(load["raw_load_log_sha256"], "raw load log sha256")
+        _validate_b0_raw_log(
+            artifact_root,
+            load["raw_load_log_relpath"],
+            load["raw_load_log_sha256"],
+            "raw load log",
+        )
         if (
             type(load["gpu_offload_supported"]) is not bool
             or type(load["offloaded_layers"]) is not int
@@ -652,11 +681,15 @@ def _validate_b0_artifact(arguments):
     if not isinstance(holdout, list) or len(holdout) != 8:
         raise LedgerError("holdout result matrix must contain 8 cells")
     for result in calibration:
-        _validate_result(result, processes, calibration_ids, candidate_ids, "calibration")
+        _validate_result(
+            result, processes, calibration_ids, candidate_ids, "calibration", artifact_root
+        )
     for result in holdout:
         if result.get("candidate_id") != value["selected_candidate_id"]:
             raise LedgerError("holdout candidate drift")
-        _validate_result(result, processes, holdout_ids, candidate_ids, "holdout")
+        _validate_result(
+            result, processes, holdout_ids, candidate_ids, "holdout", artifact_root
+        )
     calibration_cells = {
         (result["entry_id"], processes[result["process_evidence_id"]]["requested_device"], result["candidate_id"])
         for result in calibration

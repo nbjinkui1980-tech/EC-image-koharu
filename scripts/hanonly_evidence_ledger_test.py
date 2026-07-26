@@ -20,6 +20,8 @@ except ModuleNotFoundError:
 WIDTH = 790
 HEIGHT = 1023
 HEX64 = "a" * 64
+B0_RAW_LOG_BYTES = b"hanonly b0 raw log\n"
+B0_RAW_LOG_SHA256 = hashlib.sha256(B0_RAW_LOG_BYTES).hexdigest()
 
 
 def jpeg(width=WIDTH, height=HEIGHT, sof=0xC0, extra=b""):
@@ -100,7 +102,7 @@ def b0_artifact():
                 "mtmd_use_gpu": metal,
                 "word_boxes_backend": "rten_cpu",
                 "raw_load_log_relpath": f"source-gate/{phase}/{device}/load.log",
-                "raw_load_log_sha256": HEX64,
+                "raw_load_log_sha256": B0_RAW_LOG_SHA256,
                 "enumerated_devices": [],
                 "loaded_model_devices": [
                     {
@@ -140,7 +142,7 @@ def b0_artifact():
                 "raw_inference_log_relpath": (
                     f"source-gate/{phase}/{entry_id}/{device}/{candidate}.log"
                 ),
-                "raw_inference_log_sha256": HEX64,
+                "raw_inference_log_sha256": B0_RAW_LOG_SHA256,
                 "context_buffer_bytes_by_backend": {
                     "CPU": 1,
                     **({"Metal": 1} if metal else {}),
@@ -1252,6 +1254,7 @@ class B0ArtifactTests(unittest.TestCase):
         self.repo.mkdir()
         self.path = self.root / "artifact.json"
         self.value = b0_artifact()
+        self.write_raw_logs()
 
     def tearDown(self):
         self.temp.cleanup()
@@ -1285,6 +1288,21 @@ class B0ArtifactTests(unittest.TestCase):
         stderr = io.StringIO()
         status = ledger.main(self.args(**overrides), stdout=stdout, stderr=stderr)
         return status, stdout.getvalue(), stderr.getvalue()
+
+    def write_raw_logs(self):
+        relpaths = {
+            process["load_evidence"]["raw_load_log_relpath"]
+            for process in self.value["process_evidence"]
+        }
+        relpaths.update(
+            result["execution_evidence"]["raw_inference_log_relpath"]
+            for result in self.value["calibration_results"] + self.value["holdout_results"]
+        )
+        for relpath in relpaths:
+            path = self.path.parent / relpath
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(B0_RAW_LOG_BYTES)
+            os.chmod(path, 0o600)
 
     def assert_rejected(self, raw=None, **overrides):
         status, output, _ = self.run_artifact(raw, **overrides)
@@ -1333,6 +1351,26 @@ class B0ArtifactTests(unittest.TestCase):
 
     def test_rejects_holdout_process_fingerprint_drift(self):
         self.value["process_evidence"][3]["executable_sha256"] = "3" * 64
+        self.assert_rejected()
+
+    def test_rejects_missing_or_drifting_raw_logs(self):
+        relpath = self.value["process_evidence"][0]["load_evidence"]["raw_load_log_relpath"]
+        (self.path.parent / relpath).unlink()
+        self.assert_rejected()
+        self.write_raw_logs()
+        self.value["process_evidence"][0]["load_evidence"]["raw_load_log_sha256"] = "3" * 64
+        self.assert_rejected()
+
+    def test_rejects_insecure_or_escaping_raw_logs(self):
+        relpath = self.value["holdout_results"][0]["execution_evidence"][
+            "raw_inference_log_relpath"
+        ]
+        os.chmod(self.path.parent / relpath, 0o644)
+        self.assert_rejected()
+        self.write_raw_logs()
+        self.value["holdout_results"][0]["execution_evidence"][
+            "raw_inference_log_relpath"
+        ] = "../escape.log"
         self.assert_rejected()
 
     def test_rejects_vacuous_cpu_and_instance_mismatch(self):
