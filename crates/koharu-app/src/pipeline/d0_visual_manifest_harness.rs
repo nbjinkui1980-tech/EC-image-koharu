@@ -421,6 +421,311 @@ fn han_only_visual_manifest_matrix() {
     );
 }
 
+#[cfg(all(test, feature = "hanonly-test-evidence"))]
+mod source_gate_selection {
+    use super::*;
+    use std::collections::HashMap;
+
+    const PHASE_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_PHASE";
+    const B0_SHA_ENV: &str = "HANONLY_B0_SHA";
+    const ARTIFACT_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT";
+    const REPORT_DIR_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR";
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Phase {
+        CalibrationFreeze,
+        Holdout,
+    }
+
+    struct SelectionEnvironment {
+        phase: Phase,
+        b0_sha: String,
+        artifact: PathBuf,
+    }
+
+    impl SelectionEnvironment {
+        fn parse(mut get: impl FnMut(&str) -> Option<String>) -> io::Result<Self> {
+            let phase = match required(&mut get, PHASE_ENV)?.as_str() {
+                "calibration-freeze" => Phase::CalibrationFreeze,
+                "holdout" => Phase::Holdout,
+                _ => return Err(invalid_data("invalid Source Gate selection phase")),
+            };
+            let b0_sha = required(&mut get, B0_SHA_ENV)?;
+            require(
+                matches!(b0_sha.len(), 40 | 64)
+                    && b0_sha
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "B0 sha must be 40 or 64 lowercase hex characters",
+            )?;
+            let evidence_root = PathBuf::from(required(&mut get, VISUAL_EVIDENCE_ROOT_ENV)?);
+            require_absolute_canonical(&evidence_root)?;
+            let artifact = PathBuf::from(required(&mut get, ARTIFACT_ENV)?);
+            let report_dir = PathBuf::from(required(&mut get, REPORT_DIR_ENV)?);
+            require_future_path_below(&evidence_root, &artifact)?;
+            require_future_path_below(&evidence_root, &report_dir)?;
+            if report_dir.exists() {
+                require(
+                    report_dir.is_dir(),
+                    "selection report path must be a directory",
+                )?;
+            }
+            Ok(Self {
+                phase,
+                b0_sha,
+                artifact,
+            })
+        }
+    }
+
+    fn required(
+        get: &mut impl FnMut(&str) -> Option<String>,
+        name: &'static str,
+    ) -> io::Result<String> {
+        get(name).ok_or_else(|| invalid_data("missing Source Gate selection environment"))
+    }
+
+    fn require_future_path_below(root: &Path, path: &Path) -> io::Result<()> {
+        require_absolute_syntax(path)?;
+        require(path != root, "selection path must not be the evidence root")?;
+        require(
+            path.starts_with(root),
+            "selection path must remain below the evidence root",
+        )?;
+        let existing = path
+            .ancestors()
+            .find(|ancestor| ancestor.exists())
+            .ok_or_else(|| invalid_data("selection path has no existing ancestor"))?;
+        require(
+            fs::canonicalize(existing)? == existing,
+            "selection path must be canonical-ish",
+        )
+    }
+
+    fn require_absolute_syntax(path: &Path) -> io::Result<()> {
+        let bytes = path.as_os_str().as_bytes();
+        require(
+            bytes.len() >= 2
+                && bytes[0] == b'/'
+                && bytes[1] != b'/'
+                && !bytes.ends_with(b"/")
+                && bytes[1..].split(|byte| *byte == b'/').all(|component| {
+                    !component.is_empty()
+                        && component != b"."
+                        && component != b".."
+                        && !component.contains(&0)
+                }),
+            "path must be absolute and canonical-ish",
+        )
+    }
+
+    fn git_head(repository: &Path) -> io::Result<String> {
+        let output = Command::new("git")
+            .current_dir(repository)
+            .args(["rev-parse", "HEAD"])
+            .output()?;
+        require(output.status.success(), "git rev-parse HEAD failed")?;
+        String::from_utf8(output.stdout)
+            .map(|head| head.trim().to_owned())
+            .map_err(|_| invalid_data("git HEAD must be utf-8"))
+    }
+
+    fn run_with(
+        get: impl FnMut(&str) -> Option<String>,
+        repository: &Path,
+        read_head: impl FnOnce(&Path) -> io::Result<String>,
+        check_fixture: impl FnOnce(&Path) -> io::Result<()>,
+        model_runner: impl FnOnce(&SelectionEnvironment) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let environment = SelectionEnvironment::parse(get)?;
+        require(
+            read_head(repository)? == environment.b0_sha,
+            "B0 HEAD drift detected",
+        )?;
+        match environment.phase {
+            Phase::CalibrationFreeze => require(
+                !environment.artifact.exists(),
+                "calibration-freeze selection artifact already exists",
+            )?,
+            Phase::Holdout => require(
+                environment.artifact.is_file(),
+                "holdout selection artifact must be an existing regular file",
+            )?,
+        }
+        check_fixture(repository)?;
+        model_runner(&environment)
+    }
+
+    type RasterBounds = (u32, u32, u32, u32);
+
+    fn candidates(
+        bbox: (f64, f64, f64, f64),
+        page: (u32, u32),
+    ) -> [(&'static str, RasterBounds); 4] {
+        const RATIOS: [(&str, u32, u32); 4] = [
+            ("R0", 0, 1),
+            ("R025", 1, 40),
+            ("R05", 1, 20),
+            ("R10", 1, 10),
+        ];
+        let short_side = (bbox.2 - bbox.0).min(bbox.3 - bbox.1);
+        RATIOS.map(|(name, numerator, denominator)| {
+            let padding = if numerator == 0 {
+                0.0
+            } else {
+                (short_side * f64::from(numerator) / f64::from(denominator))
+                    .ceil()
+                    .max(1.0)
+            };
+            (
+                name,
+                (
+                    (bbox.0 - padding).floor().clamp(0.0, f64::from(page.0)) as u32,
+                    (bbox.1 - padding).floor().clamp(0.0, f64::from(page.1)) as u32,
+                    (bbox.2 + padding).ceil().clamp(0.0, f64::from(page.0)) as u32,
+                    (bbox.3 + padding).ceil().clamp(0.0, f64::from(page.1)) as u32,
+                ),
+            )
+        })
+    }
+
+    #[test]
+    fn source_gate_selection_candidates_quantize_outward_and_clip() {
+        assert_eq!(
+            candidates((10.2, 20.2, 30.8, 30.8), (100, 100)),
+            [
+                ("R0", (10, 20, 31, 31)),
+                ("R025", (9, 19, 32, 32)),
+                ("R05", (9, 19, 32, 32)),
+                ("R10", (8, 18, 33, 33)),
+            ]
+        );
+        assert_eq!(
+            candidates((0.2, 0.2, 9.8, 9.8), (10, 10))[3].1,
+            (0, 0, 10, 10)
+        );
+    }
+
+    fn valid_environment(root: &Path) -> HashMap<&'static str, String> {
+        HashMap::from([
+            (PHASE_ENV, "calibration-freeze".into()),
+            (B0_SHA_ENV, "a".repeat(40)),
+            (
+                VISUAL_EVIDENCE_ROOT_ENV,
+                root.to_string_lossy().into_owned(),
+            ),
+            (
+                ARTIFACT_ENV,
+                root.join("selection.json").to_string_lossy().into_owned(),
+            ),
+            (
+                REPORT_DIR_ENV,
+                root.join("reports").to_string_lossy().into_owned(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn source_gate_selection_preflight_fails_before_model_runner() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let model_calls = std::cell::Cell::new(0);
+        let run = |values: &HashMap<&'static str, String>,
+                   head: io::Result<String>,
+                   fixture: io::Result<()>| {
+            run_with(
+                |name| values.get(name).cloned(),
+                Path::new("/repository"),
+                |_| head,
+                |_| fixture,
+                |_| {
+                    model_calls.set(model_calls.get() + 1);
+                    Ok(())
+                },
+            )
+        };
+
+        let mut missing = valid_environment(&root);
+        missing.remove(PHASE_ENV);
+        assert!(run(&missing, Ok("a".repeat(40)), Ok(())).is_err());
+
+        let valid = valid_environment(&root);
+        let mut invalid = valid.clone();
+        invalid.insert(PHASE_ENV, "selection".into());
+        assert!(run(&invalid, Ok("a".repeat(40)), Ok(())).is_err());
+        invalid.insert(PHASE_ENV, "calibration-freeze".into());
+        invalid.insert(B0_SHA_ENV, "A".repeat(40));
+        assert!(run(&invalid, Ok("a".repeat(40)), Ok(())).is_err());
+        assert!(run(&valid, Ok("b".repeat(40)), Ok(())).is_err());
+
+        fs::write(root.join("selection.json"), b"frozen").unwrap();
+        assert!(run(&valid, Ok("a".repeat(40)), Ok(())).is_err());
+        fs::remove_file(root.join("selection.json")).unwrap();
+
+        let mut holdout = valid.clone();
+        holdout.insert(PHASE_ENV, "holdout".into());
+        assert!(run(&holdout, Ok("a".repeat(40)), Ok(())).is_err());
+        fs::create_dir(root.join("selection.json")).unwrap();
+        assert!(run(&holdout, Ok("a".repeat(40)), Ok(())).is_err());
+        fs::remove_dir(root.join("selection.json")).unwrap();
+
+        assert!(
+            run(
+                &valid,
+                Ok("a".repeat(40)),
+                Err(io::Error::other("fixed fixture is dirty")),
+            )
+            .is_err()
+        );
+        assert_eq!(model_calls.get(), 0);
+
+        let result = run_with(
+            |name| valid.get(name).cloned(),
+            Path::new("/repository"),
+            |_| Ok("a".repeat(40)),
+            |_| Ok(()),
+            |_| {
+                model_calls.set(model_calls.get() + 1);
+                Err(io::Error::other(
+                    "Source Gate model runner is not implemented",
+                ))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(model_calls.get(), 1);
+        assert!(!root.join("selection.json").exists());
+    }
+
+    #[test]
+    fn source_gate_selection_rejects_root_and_escaping_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        for artifact in [root.clone(), root.join("../escape")] {
+            let mut values = valid_environment(&root);
+            values.insert(ARTIFACT_ENV, artifact.to_string_lossy().into_owned());
+            assert!(SelectionEnvironment::parse(|name| values.get(name).cloned()).is_err());
+        }
+    }
+
+    #[test]
+    #[ignore = "requires frozen B0 selection environment and installed Source Gate models"]
+    fn han_only_source_gate_crop_selection_matrix() {
+        let repository = repository_root().expect("repository root");
+        run_with(
+            |name| std::env::var(name).ok(),
+            &repository,
+            git_head,
+            require_fixture_clean,
+            |_| {
+                Err(io::Error::other(
+                    "Source Gate model runner is not implemented",
+                ))
+            },
+        )
+        .expect("Source Gate selection harness failed");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
