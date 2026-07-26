@@ -71,6 +71,7 @@ pub(crate) struct TypographyEffectDiagnostic {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TypographyTargetDiagnostic {
+    pub(crate) node_id: NodeId,
     pub(crate) preserve_lines: bool,
     pub(crate) safe_region_count: usize,
     pub(crate) planner_line_count: usize,
@@ -1031,6 +1032,7 @@ fn typography_target_diagnostic(
         .first()
         .expect("validated Typography style has one font family");
     TypographyTargetDiagnostic {
+        node_id: target.node_id,
         preserve_lines: target.preserve_lines,
         safe_region_count: target.safe_regions.len(),
         planner_line_count: proposed.planner_line_count,
@@ -1402,6 +1404,17 @@ mod tests {
         assert_eq!(han_event.target_count, 2);
         assert_eq!(han_event.accepted_op_count, Some(2));
         let han_targets = han_event.target_field_outcomes.as_ref().unwrap();
+        assert_eq!(
+            han_targets
+                .iter()
+                .map(|target| target.node_id)
+                .collect::<Vec<_>>(),
+            han_request
+                .targets
+                .iter()
+                .map(|target| target.node_id)
+                .collect::<Vec<_>>()
+        );
         let expected_current_fills = han_request
             .targets
             .iter()
@@ -1549,6 +1562,7 @@ mod tests {
         );
         let all_target = &all_event.target_field_outcomes.as_ref().unwrap()[0];
         assert_eq!(all_event.outcome, TypographyDiagnosticOutcome::Accepted);
+        assert_eq!(all_target.node_id, all_request.targets[0].node_id);
         assert_eq!(all_target.line_outcome, TypographyFieldOutcome::Applied);
         assert!(!all_target.translation_exactly_preserved);
         assert_eq!(all_target.current_font_size, Some(72.0));
@@ -1685,6 +1699,14 @@ mod tests {
         }))?;
         let (_, event) = build_with_typography_diagnostics(&request, &response)?;
         let value = serde_json::to_value(&event)?;
+        assert_eq!(
+            value["target_field_outcomes"][0]["node_id"],
+            json!(request.targets[0].node_id)
+        );
+        assert_eq!(
+            serde_json::from_value::<TypographyDiagnosticEvent>(value.clone())?,
+            event
+        );
         for field in ["accepted_op_count", "target_field_outcomes"] {
             let mut missing = value.clone();
             missing.as_object_mut().unwrap().remove(field);
@@ -1741,7 +1763,6 @@ mod tests {
         let serialized = serde_json::to_string(&event)?;
         let serialized_value = serde_json::to_value(&event)?;
         for forbidden_key in [
-            "node_id",
             "page_id",
             "translation",
             "source_text",
@@ -1763,11 +1784,11 @@ mod tests {
             "PRIVATE_SOURCE_TEXT",
             "PRIVATE_TRANSLATION_TEXT",
             "ArialMT",
-            node_id.as_str(),
             page_id.as_str(),
         ] {
             assert!(!serialized.contains(forbidden_value));
         }
+        assert!(serialized.contains(node_id.as_str()));
         Ok(())
     }
 

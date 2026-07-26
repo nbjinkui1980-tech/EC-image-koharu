@@ -129,6 +129,7 @@ pub(crate) struct RendererAlphaBbox {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RendererDiagnosticEvent {
+    pub(crate) node_id: NodeId,
     pub(crate) source_geometry_estimate: f32,
     #[serde(deserialize_with = "deserialize_required_option")]
     pub(crate) valid_detected_size: Option<f32>,
@@ -675,6 +676,7 @@ impl Renderer {
             let (alpha_bbox, alpha_nonzero_pixels, alpha_blake3) =
                 renderer_alpha_summary(&rendered);
             record_renderer_diagnostic(RendererDiagnosticEvent {
+                node_id: block.node_id,
                 source_geometry_estimate: prepared.diagnostic.source_geometry_estimate,
                 valid_detected_size: prepared.diagnostic.valid_detected_size,
                 valid_predicted_size: prepared.diagnostic.valid_predicted_size,
@@ -2379,6 +2381,7 @@ mod tests {
             )?;
         assert_eq!(events.len(), 1);
         let event = &events[0];
+        assert_eq!(event.node_id, block.node_id);
         assert_eq!(event.source_geometry_estimate, 96.0);
         assert_eq!(event.valid_detected_size, Some(40.0));
         assert_eq!(event.valid_predicted_size, Some(28.0));
@@ -2403,13 +2406,19 @@ mod tests {
         assert_diagnostic_matches_sprite(event, &active.blocks[0].sprite);
 
         let value = serde_json::to_value(event)?;
-        assert_eq!(value.as_object().unwrap().len(), 30);
+        assert_eq!(value.as_object().unwrap().len(), 31);
+        assert_eq!(
+            serde_json::from_value::<RendererDiagnosticEvent>(value.clone())?,
+            *event
+        );
         let serialized = serde_json::to_string(&value)?;
         for forbidden in [
+            block.translation.as_str(),
             "translation",
             "text",
-            "node",
             "path",
+            "font_path",
+            "font_family",
             "target",
             "elapsed",
             "timestamp",

@@ -88,9 +88,13 @@ where
 type EraseDiagnosticSink = Arc<Mutex<Vec<EraseDiagnosticEvent>>>;
 
 #[cfg(test)]
+type EraseFinalMaskSink = Arc<Mutex<Option<GrayImage>>>;
+
+#[cfg(test)]
 struct ActiveEraseDiagnosticSink {
     owner: ThreadId,
     events: EraseDiagnosticSink,
+    final_mask: EraseFinalMaskSink,
 }
 
 #[cfg(test)]
@@ -104,6 +108,7 @@ pub(in crate::pipeline) struct EraseDiagnosticCaptureActive;
 pub(in crate::pipeline) struct EraseDiagnosticCapture {
     owner: ThreadId,
     events: EraseDiagnosticSink,
+    final_mask: EraseFinalMaskSink,
 }
 
 #[cfg(test)]
@@ -111,6 +116,7 @@ impl EraseDiagnosticCapture {
     pub(in crate::pipeline) fn start() -> std::result::Result<Self, EraseDiagnosticCaptureActive> {
         let owner = std::thread::current().id();
         let events = Arc::new(Mutex::new(Vec::new()));
+        let final_mask = Arc::new(Mutex::new(None));
         let mut active = ERASE_DIAGNOSTIC_SINK
             .get_or_init(|| Mutex::new(None))
             .lock()
@@ -121,8 +127,13 @@ impl EraseDiagnosticCapture {
         *active = Some(ActiveEraseDiagnosticSink {
             owner,
             events: events.clone(),
+            final_mask: final_mask.clone(),
         });
-        Ok(Self { owner, events })
+        Ok(Self {
+            owner,
+            events,
+            final_mask,
+        })
     }
 
     pub(in crate::pipeline) fn take(&self) -> Vec<EraseDiagnosticEvent> {
@@ -132,6 +143,13 @@ impl EraseDiagnosticCapture {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
+    }
+
+    pub(in crate::pipeline) fn take_inpaint_final_mask(&self) -> Option<GrayImage> {
+        self.final_mask
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 }
 
@@ -165,8 +183,15 @@ pub(in crate::pipeline) fn record_erase_diagnostic(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
         .filter(|sink| sink.owner == owner)
-        .map(|sink| sink.events.clone());
-    if let Some(sink) = sink {
+        .map(|sink| (sink.events.clone(), sink.final_mask.clone()));
+    if let Some((sink, final_mask)) = sink {
+        if stage == EraseDiagnosticStage::InpaintFinal
+            && let Some(mask) = mask
+        {
+            *final_mask
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mask.clone());
+        }
         let mask = mask.map(|mask| EraseMaskDiagnostic {
             width: mask.width(),
             height: mask.height(),
@@ -1960,6 +1985,19 @@ mod tests {
         assert_eq!(han_events[3].mask.as_ref().unwrap().nonzero_pixels, 2);
         assert_eq!(han_events[4].mask.as_ref().unwrap().nonzero_pixels, 1);
         assert_eq!(han_events[4].returns_some, Some(true));
+        let final_mask = capture
+            .take_inpaint_final_mask()
+            .expect("final inpaint mask bytes");
+        assert_eq!(final_mask.dimensions(), (6, 4));
+        assert_eq!(
+            Some(final_mask.as_raw().clone()),
+            returned_bytes(&active_han)
+        );
+        assert_eq!(
+            blake3::hash(final_mask.as_raw()).to_hex().to_string(),
+            han_events[4].mask.as_ref().unwrap().grayscale_blake3
+        );
+        assert!(capture.take_inpaint_final_mask().is_none());
         assert_eq!(
             han_events.iter().map(signature).collect::<Vec<_>>(),
             [
@@ -2223,6 +2261,7 @@ mod tests {
             Some(&owner_mask),
             None,
         );
+        assert!(capture.take_inpaint_final_mask().is_none());
 
         let barrier = Arc::new(Barrier::new(2));
         let foreign_barrier = barrier.clone();
@@ -2253,6 +2292,7 @@ mod tests {
         );
         foreign.join().unwrap();
 
+        assert!(capture.take_inpaint_final_mask().is_none());
         let events = capture.take();
         assert_eq!(events.len(), 2);
         assert_eq!(
