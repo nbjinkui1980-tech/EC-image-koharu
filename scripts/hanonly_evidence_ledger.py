@@ -39,9 +39,9 @@ B0_VERSION = 1
 B0_DEFAULT_GPU_LAYERS = 1000
 B0_CANDIDATES = [
     {"id": "R0", "numerator": 0, "denominator": 1},
-    {"id": "R025", "numerator": 1, "denominator": 40},
-    {"id": "R05", "numerator": 1, "denominator": 20},
     {"id": "R10", "numerator": 1, "denominator": 10},
+    {"id": "R25", "numerator": 1, "denominator": 4},
+    {"id": "R50", "numerator": 1, "denominator": 2},
 ]
 B0_ROOT_KEYS = {
     "version",
@@ -537,7 +537,7 @@ def _validate_b0_artifact(arguments):
         type(value["version"]) is not int
         or value["version"] != B0_VERSION
         or type(value["plan_revision"]) is not int
-        or value["plan_revision"] != 46
+        or value["plan_revision"] != 47
     ):
         raise LedgerError("B0 frozen artifact version or plan revision mismatch")
     if value["b0_sha"] != arguments.b0_sha:

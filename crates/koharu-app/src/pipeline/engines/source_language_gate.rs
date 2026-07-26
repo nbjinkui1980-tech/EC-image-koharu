@@ -191,9 +191,9 @@ pub(in crate::pipeline) enum SourceGateCropPolicy {
     C4,
     Q2,
     R0,
-    R025,
-    R05,
     R10,
+    R25,
+    R50,
 }
 
 const PRIMARY_CROP_POLICY: SourceGateCropPolicy = SourceGateCropPolicy::C2;
@@ -838,9 +838,9 @@ fn crop_policy_parameters(policy: SourceGateCropPolicy, transform: &Transform) -
         SourceGateCropPolicy::C4 => (4.0, false),
         SourceGateCropPolicy::Q2 => (2.0, true),
         SourceGateCropPolicy::R0 => (0.0, false),
-        SourceGateCropPolicy::R025 => (short_side / 40.0, false),
-        SourceGateCropPolicy::R05 => (short_side / 20.0, false),
         SourceGateCropPolicy::R10 => (short_side / 10.0, false),
+        SourceGateCropPolicy::R25 => (short_side / 4.0, false),
+        SourceGateCropPolicy::R50 => (short_side / 2.0, false),
     }
 }
 
@@ -1825,9 +1825,9 @@ mod tests {
             (SourceGateCropPolicy::C4, [327, 814, 462, 901]),
             (SourceGateCropPolicy::Q2, [328, 816, 460, 900]),
             (SourceGateCropPolicy::R0, [331, 818, 458, 897]),
-            (SourceGateCropPolicy::R025, [329, 816, 460, 899]),
-            (SourceGateCropPolicy::R05, [327, 814, 462, 900]),
             (SourceGateCropPolicy::R10, [324, 811, 466, 904]),
+            (SourceGateCropPolicy::R25, [312, 799, 477, 916]),
+            (SourceGateCropPolicy::R50, [293, 780, 497, 935]),
         ] {
             assert_eq!(
                 safe_crop_bounds_with_policy(&observed, 790, 1023, policy),
@@ -2097,9 +2097,9 @@ mod tests {
     fn hanonly_pre_b1_red_t2_source_gate_ratio_contract() {
         let expected = [
             ("R0", [100, 120, 300, 220]),
-            ("R025", [97, 117, 303, 223]),
-            ("R05", [95, 115, 305, 225]),
             ("R10", [90, 110, 310, 230]),
+            ("R25", [75, 95, 325, 245]),
+            ("R50", [50, 70, 350, 270]),
         ];
         let node_id = NodeId::new();
         let (scene, page) = scene_with_nodes(vec![candidate(

@@ -179,7 +179,7 @@ def b0_artifact():
     holdout_ids = [f"holdout-{index}" for index in range(4)]
     value = {
         "version": ledger.B0_VERSION,
-        "plan_revision": 46,
+        "plan_revision": 47,
         "b0_sha": "b" * 40,
         "manifest_sha256": "c" * 64,
         "source_gate_fixture_manifest_sha256": "d" * 64,
@@ -199,11 +199,11 @@ def b0_artifact():
             for device in ("cpu", "metal")
             for candidate in ledger.B0_CANDIDATES
         ],
-        "selected_candidate_id": "R025",
+        "selected_candidate_id": "R10",
         "frozen_at_utc": "2026-07-26T00:00:00Z",
         "frozen_payload_sha256": "2" * 64,
         "holdout_results": [
-            result("holdout", entry_id, device, "R025")
+            result("holdout", entry_id, device, "R10")
             for entry_id in holdout_ids
             for device in ("cpu", "metal")
         ],
@@ -1317,7 +1317,7 @@ class B0ArtifactTests(unittest.TestCase):
         self.assert_rejected(json.dumps(self.value).encode())
 
     def test_rejects_wrong_plan_revisions(self):
-        for revision in (29, 45, "46", None):
+        for revision in (29, 46, "47", None):
             with self.subTest(revision=revision):
                 self.value = b0_artifact()
                 self.value["plan_revision"] = revision
@@ -1342,7 +1342,7 @@ class B0ArtifactTests(unittest.TestCase):
         self.assert_rejected()
 
     def test_rejects_frozen_projection_hash_drift(self):
-        self.value["selected_candidate_id"] = "R05"
+        self.value["selected_candidate_id"] = "R50"
         self.assert_rejected()
 
     def test_rejects_metal_default_gpu_layer_drift(self):

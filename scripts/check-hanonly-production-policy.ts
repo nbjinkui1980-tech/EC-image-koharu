@@ -1130,7 +1130,7 @@ export async function validateB0Authorization(
 
   const parsed = object(parseJson(bytes), 'b0-authorization', 'B0 artifact')
   const selected = parsed.selected_candidate_id
-  if (!['R0', 'R025', 'R05', 'R10'].includes(String(selected))) {
+  if (!['R0', 'R10', 'R25', 'R50'].includes(String(selected))) {
     fail('b0-authorization', 'selected candidate is invalid')
   }
   if (flag(args, '--verify-selected-ratio-in-production')) {

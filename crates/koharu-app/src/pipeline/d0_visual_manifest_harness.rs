@@ -452,7 +452,7 @@ mod source_gate_selection {
     const ARTIFACT_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT";
     const REPORT_DIR_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR";
     const ARTIFACT_VERSION: u32 = 1;
-    const PLAN_REVISION: u32 = 46;
+    const PLAN_REVISION: u32 = 47;
     const B0_DEFAULT_GPU_LAYERS: u32 = 1000;
     const SOURCE_COLOR_CONTRACT_SHA256: &str =
         "13d2256fed7b8189e67db7222ce6ce7964f2745c977c42e7693679ffb2a341f8";
@@ -1012,19 +1012,14 @@ mod source_gate_selection {
     }
 
     fn candidates_schema() -> Vec<Candidate> {
-        [
-            ("R0", 0, 1),
-            ("R025", 1, 40),
-            ("R05", 1, 20),
-            ("R10", 1, 10),
-        ]
-        .into_iter()
-        .map(|(id, numerator, denominator)| Candidate {
-            id: id.into(),
-            numerator,
-            denominator,
-        })
-        .collect()
+        [("R0", 0, 1), ("R10", 1, 10), ("R25", 1, 4), ("R50", 1, 2)]
+            .into_iter()
+            .map(|(id, numerator, denominator)| Candidate {
+                id: id.into(),
+                numerator,
+                denominator,
+            })
+            .collect()
     }
 
     fn run_real_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
@@ -1255,9 +1250,9 @@ mod source_gate_selection {
     ) -> io::Result<Vec<(String, SourceGateCropPolicy)>> {
         let all = [
             ("R0", SourceGateCropPolicy::R0),
-            ("R025", SourceGateCropPolicy::R025),
-            ("R05", SourceGateCropPolicy::R05),
             ("R10", SourceGateCropPolicy::R10),
+            ("R25", SourceGateCropPolicy::R25),
+            ("R50", SourceGateCropPolicy::R50),
         ];
         if environment.phase == Phase::CalibrationFreeze {
             return Ok(all
@@ -2047,12 +2042,8 @@ mod source_gate_selection {
         bbox: (f64, f64, f64, f64),
         page: (u32, u32),
     ) -> [(&'static str, RasterBounds); 4] {
-        const RATIOS: [(&str, u32, u32); 4] = [
-            ("R0", 0, 1),
-            ("R025", 1, 40),
-            ("R05", 1, 20),
-            ("R10", 1, 10),
-        ];
+        const RATIOS: [(&str, u32, u32); 4] =
+            [("R0", 0, 1), ("R10", 1, 10), ("R25", 1, 4), ("R50", 1, 2)];
         let short_side = (bbox.2 - bbox.0).min(bbox.3 - bbox.1);
         RATIOS.map(|(name, numerator, denominator)| {
             let padding = if numerator == 0 {
@@ -2080,9 +2071,9 @@ mod source_gate_selection {
             candidates((10.2, 20.2, 30.8, 30.8), (100, 100)),
             [
                 ("R0", (10, 20, 31, 31)),
-                ("R025", (9, 19, 32, 32)),
-                ("R05", (9, 19, 32, 32)),
                 ("R10", (8, 18, 33, 33)),
+                ("R25", (7, 17, 34, 34)),
+                ("R50", (4, 14, 37, 37)),
             ]
         );
         assert_eq!(
