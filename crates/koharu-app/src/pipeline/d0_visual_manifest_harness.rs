@@ -30,7 +30,6 @@ const VISUAL_MANIFEST_SHA256_ENV: &str = "HANONLY_VISUAL_MANIFEST_SHA256";
 const VISUAL_EVIDENCE_ROOT_ENV: &str = "HANONLY_VISUAL_EVIDENCE_ROOT";
 const SOURCE_GATE_FIXTURE_SHA256_ENV: &str = "HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256";
 const LEDGER_NAME: &str = "evidence-ledger.json";
-const B0_DEFAULT_GPU_LAYERS: u32 = 1000;
 const FIXTURE_RELATIVE_PATH: &str =
     "crates/koharu-app/tests/fixtures/source-gate-deterministic-recall/fixture-manifest.json";
 
@@ -436,6 +435,7 @@ mod source_gate_selection {
     const REPORT_DIR_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR";
     const ARTIFACT_VERSION: u32 = 1;
     const PLAN_REVISION: u32 = 46;
+    const B0_DEFAULT_GPU_LAYERS: u32 = 1000;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum Phase {
