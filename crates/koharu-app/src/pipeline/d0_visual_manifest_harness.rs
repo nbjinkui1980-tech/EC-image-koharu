@@ -11,6 +11,7 @@ use std::process::Command;
 use rustix::fs::fstat;
 use serde::{Deserialize, Serialize};
 
+use super::d0_guarded_baseline::load_or_publish_target_correlation_map;
 use super::d0_held_input::HeldInput;
 use super::d0_output_transaction::{
     FaultPoint, PublishedOutput, publish_manifest_preflight_report,
@@ -220,11 +221,19 @@ fn run_manifest_only_preflight() -> HarnessResult<HarnessSummary> {
         fixture: &fixture,
         assets: &validated.upstream.held_schema,
     };
+    let mut correlation_fault = |_| Ok(());
     publish_revalidated_report(
         &revalidation,
         &evidence_root,
         &report,
-        || Ok(()),
+        || {
+            load_or_publish_target_correlation_map(
+                &evidence_root,
+                &validated.upstream.held_schema,
+                &mut correlation_fault,
+                |_, _| Ok(()),
+            )
+        },
         &mut |_| Ok(()),
         |_| Ok(summary),
     )
