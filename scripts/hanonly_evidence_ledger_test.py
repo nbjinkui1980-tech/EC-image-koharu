@@ -175,7 +175,7 @@ def b0_artifact():
 
     calibration_ids = [f"calibration-{index}" for index in range(4)]
     holdout_ids = [f"holdout-{index}" for index in range(4)]
-    return {
+    value = {
         "version": ledger.B0_VERSION,
         "plan_revision": 46,
         "b0_sha": "b" * 40,
@@ -208,6 +208,10 @@ def b0_artifact():
         "holdout_completed_at_utc": "2026-07-26T00:01:00Z",
         "retuned_after_freeze": False,
     }
+    value["frozen_payload_sha256"] = ledger._sha256(
+        ledger.canonical_json(ledger._b0_frozen_projection(value))
+    )
+    return value
 
 
 class Case:
@@ -1310,6 +1314,10 @@ class B0ArtifactTests(unittest.TestCase):
 
     def test_rejects_retuning_after_freeze(self):
         self.value["retuned_after_freeze"] = True
+        self.assert_rejected()
+
+    def test_rejects_frozen_projection_hash_drift(self):
+        self.value["selected_candidate_id"] = "R05"
         self.assert_rejected()
 
     def test_rejects_vacuous_cpu_and_instance_mismatch(self):

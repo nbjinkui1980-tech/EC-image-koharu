@@ -424,6 +424,7 @@ fn han_only_visual_manifest_matrix() {
 #[cfg(all(test, feature = "hanonly-test-evidence"))]
 mod source_gate_selection {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::collections::{BTreeMap, HashMap, HashSet};
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -720,7 +721,7 @@ mod source_gate_selection {
         match environment.phase {
             Phase::CalibrationFreeze => {
                 let evidence = model_runner(&environment)?;
-                let artifact = FrozenArtifact {
+                let mut artifact = FrozenArtifact {
                     version: ARTIFACT_VERSION,
                     plan_revision: PLAN_REVISION,
                     b0_sha: environment.b0_sha.clone(),
@@ -746,6 +747,7 @@ mod source_gate_selection {
                     holdout_completed_at_utc: None,
                     retuned_after_freeze: false,
                 };
+                artifact.frozen_payload_sha256 = frozen_projection_sha256(&artifact)?;
                 validate_artifact(&artifact, Phase::CalibrationFreeze, &environment)?;
                 write_artifact(&environment.artifact, &canonical_json(&artifact)?, false)
             }
@@ -846,7 +848,52 @@ mod source_gate_selection {
             ) == expected,
             "selection artifact matrix counts mismatch",
         )?;
+        require(
+            frozen_projection_sha256(artifact)? == artifact.frozen_payload_sha256,
+            "frozen payload sha256 mismatch",
+        )?;
         validate_result_matrix(artifact)
+    }
+
+    fn frozen_projection_sha256(artifact: &FrozenArtifact) -> io::Result<String> {
+        let mut process_evidence = artifact
+            .process_evidence
+            .iter()
+            .filter(|process| process.phase == "calibration")
+            .cloned()
+            .collect::<Vec<_>>();
+        process_evidence.sort_by_key(|process| process.id.clone());
+        let mut calibration_results = artifact.calibration_results.clone();
+        calibration_results.sort_by_key(|result| {
+            (
+                result.entry_id.clone(),
+                result.process_evidence_id.clone(),
+                result.candidate_id.clone(),
+            )
+        });
+        let projection = serde_json::json!({
+            "version": artifact.version,
+            "plan_revision": artifact.plan_revision,
+            "b0_sha": &artifact.b0_sha,
+            "manifest_sha256": &artifact.manifest_sha256,
+            "source_gate_fixture_manifest_sha256": &artifact.source_gate_fixture_manifest_sha256,
+            "image_input_contract_sha256": &artifact.image_input_contract_sha256,
+            "source_color_contract_sha256": &artifact.source_color_contract_sha256,
+            "color_constant_set_sha256": &artifact.color_constant_set_sha256,
+            "requested_devices": &artifact.requested_devices,
+            "enabled_cargo_features": &artifact.enabled_cargo_features,
+            "backend_evidence_parser_version": artifact.backend_evidence_parser_version,
+            "candidates": &artifact.candidates,
+            "calibration_entry_ids": &artifact.calibration_entry_ids,
+            "holdout_entry_ids": &artifact.holdout_entry_ids,
+            "process_evidence": process_evidence,
+            "calibration_results": calibration_results,
+            "selected_candidate_id": &artifact.selected_candidate_id,
+            "frozen_at_utc": &artifact.frozen_at_utc,
+            "retuned_after_freeze": artifact.retuned_after_freeze,
+        });
+        let digest = Sha256::digest(canonical_json(&projection)?);
+        Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
     }
 
     fn validate_result_matrix(artifact: &FrozenArtifact) -> io::Result<()> {
@@ -1515,6 +1562,29 @@ mod source_gate_selection {
             );
             assert!(!root.join("selection.json").exists());
         }
+    }
+
+    #[test]
+    fn source_gate_selection_rejects_frozen_projection_hash_drift() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let values = valid_environment(&root);
+        run_with(
+            |name| values.get(name).cloned(),
+            Path::new("/repository"),
+            |_| Ok("a".repeat(40)),
+            |_| Ok(()),
+            |_| Ok(calibration_evidence()),
+        )
+        .unwrap();
+
+        let bytes = fs::read(root.join("selection.json")).unwrap();
+        let mut artifact: FrozenArtifact = serde_json::from_slice(&bytes).unwrap();
+        artifact.selected_candidate_id = "R10".into();
+        assert!(validate_artifact(&artifact, Phase::CalibrationFreeze, &{
+            SelectionEnvironment::parse(|name| values.get(name).cloned()).unwrap()
+        })
+        .is_err());
     }
 
     #[test]

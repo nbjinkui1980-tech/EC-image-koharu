@@ -439,6 +439,45 @@ def _validate_result(result, processes, entry_ids, candidate_ids, phase):
         _validate_backend_map(compute_map, "compute buffer map", "Metal")
 
 
+def _b0_frozen_projection(value):
+    return {
+        "backend_evidence_parser_version": value["backend_evidence_parser_version"],
+        "b0_sha": value["b0_sha"],
+        "calibration_entry_ids": value["calibration_entry_ids"],
+        "calibration_results": sorted(
+            value["calibration_results"],
+            key=lambda result: (
+                result["entry_id"],
+                result["process_evidence_id"],
+                result["candidate_id"],
+            ),
+        ),
+        "candidates": value["candidates"],
+        "color_constant_set_sha256": value["color_constant_set_sha256"],
+        "enabled_cargo_features": value["enabled_cargo_features"],
+        "frozen_at_utc": value["frozen_at_utc"],
+        "holdout_entry_ids": value["holdout_entry_ids"],
+        "image_input_contract_sha256": value["image_input_contract_sha256"],
+        "manifest_sha256": value["manifest_sha256"],
+        "plan_revision": value["plan_revision"],
+        "process_evidence": sorted(
+            (
+                process
+                for process in value["process_evidence"]
+                if process["phase"] == "calibration"
+            ),
+            key=lambda process: process["id"],
+        ),
+        "requested_devices": value["requested_devices"],
+        "retuned_after_freeze": value["retuned_after_freeze"],
+        "selected_candidate_id": value["selected_candidate_id"],
+        "source_color_contract_sha256": value["source_color_contract_sha256"],
+        "source_gate_fixture_manifest_sha256": value[
+            "source_gate_fixture_manifest_sha256"
+        ],
+    }
+
+
 def _validate_b0_artifact(arguments):
     if not B0_SHA_RE.fullmatch(arguments.b0_sha):
         raise LedgerError("b0 sha must be 40 lowercase hexadecimal characters")
@@ -600,6 +639,8 @@ def _validate_b0_artifact(arguments):
     }
     if len(calibration_cells) != 32 or len(holdout_cells) != 8:
         raise LedgerError("selection result matrix contains duplicate or missing cells")
+    if _sha256(canonical_json(_b0_frozen_projection(value))) != value["frozen_payload_sha256"]:
+        raise LedgerError("frozen payload sha256 mismatch")
     return b"PASS B0 frozen artifact\n"
 
 
