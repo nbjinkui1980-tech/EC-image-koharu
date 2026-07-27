@@ -1359,7 +1359,7 @@ mod tests {
 
         let scene = fixture.session.scene_snapshot();
         assert!(visible_texts(&scene, fixture.page).is_empty());
-        assert_eq!(pp_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(pp_calls.load(Ordering::Relaxed), 4);
         assert_eq!(vl_calls.load(Ordering::Relaxed), 0);
         assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
         assert_eq!(
@@ -1528,8 +1528,8 @@ mod tests {
 
         let scene = fixture.session.scene_snapshot();
         assert!(visible_texts(&scene, fixture.page).is_empty());
-        assert_eq!(pp_calls.load(Ordering::Relaxed), 1);
-        assert_eq!(vl_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(pp_calls.load(Ordering::Relaxed), 4);
+        assert_eq!(vl_calls.load(Ordering::Relaxed), 4);
         assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
         Ok(())
     }

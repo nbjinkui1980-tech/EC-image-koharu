@@ -2274,7 +2274,7 @@ mod tests {
         for y in 0..image.height() {
             for x in 0..image.width() {
                 let expected =
-                    ((10..43).contains(&x) || (51..76).contains(&x)) && (10..26).contains(&y);
+                    ((2..35).contains(&x) || (43..68).contains(&x)) && (2..18).contains(&y);
                 assert_eq!(mask.get_pixel(x, y).0[0] != 0, expected, "pixel {x},{y}");
             }
         }
@@ -2427,7 +2427,7 @@ mod tests {
             &scene,
             page,
             |_, _| Ok(vec![word("中文", 0, 0.0, 0.0, 40.0, 20.0)]),
-            |_| std::future::ready(Ok(vec!["中文".to_string()])),
+            |_| std::future::ready(Ok(Vec::new())),
         )
         .await
         .unwrap_err();
