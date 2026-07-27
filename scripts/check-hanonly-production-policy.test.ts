@@ -738,9 +738,34 @@ async function writeB0ArtifactFixture(root: string): Promise<{
   manifestSha256: string
   fixtureManifestSha256: string
   artifactSha256: string
+  preCalibrationCheck: string
+  preHoldoutCheck: string
 }> {
   const artifact = path.join(root, 'crop-policy-selection.json')
-  const child = Bun.spawn(['python3', '-', artifact], {
+  const b0Sha = 'b'.repeat(40)
+  const manifestSha256 = 'c'.repeat(64)
+  const fixtureManifestSha256 = 'd'.repeat(64)
+  const checks = path.join(root, 'source-gate-selection/checks')
+  await mkdir(checks, { recursive: true, mode: 0o700 })
+  await chmod(path.dirname(checks), 0o700)
+  await chmod(checks, 0o700)
+  const preCalibrationCheck = path.join(checks, 'pre-calibration.json')
+  const preHoldoutCheck = path.join(checks, 'pre-holdout.json')
+  for (const [phase, output] of [
+    ['pre-calibration', preCalibrationCheck],
+    ['pre-holdout', preHoldoutCheck],
+  ] as const) {
+    const result = await runCli(['--b0-source-gate-anti-fixture'], {
+      HANONLY_B0_SHA: b0Sha,
+      HANONLY_B0_REQUIRED_CHECK_PHASE: phase,
+      HANONLY_B0_REQUIRED_CHECK_ATTESTATION_OUT: output,
+      HANONLY_EVIDENCE_ROOT: root,
+      HANONLY_VISUAL_MANIFEST_SHA256: manifestSha256,
+      HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256: fixtureManifestSha256,
+    })
+    expect(result.exitCode).toBe(0)
+  }
+  const child = Bun.spawn(['python3', '-', artifact, preCalibrationCheck, preHoldoutCheck], {
     cwd: repoRoot,
     stdin: 'pipe',
     stdout: 'pipe',
@@ -755,6 +780,25 @@ from scripts.hanonly_evidence_ledger_test import b0_artifact
 
 artifact = Path(sys.argv[1])
 value = b0_artifact()
+checks = []
+for attestation_path in map(Path, sys.argv[2:]):
+    data = attestation_path.read_bytes()
+    attestation = json.loads(data)
+    checks.append({
+        "phase": attestation["phase"],
+        "command": ledger.B0_REQUIRED_CHECK_COMMAND,
+        "checker_endpoint_sha256": attestation["checker_endpoint_sha256"],
+        "manifest_sha256": attestation["manifest_sha256"],
+        "source_gate_fixture_manifest_sha256": attestation["source_gate_fixture_manifest_sha256"],
+        "attestation_relpath": attestation_path.relative_to(artifact.parent).as_posix(),
+        "attestation_sha256": ledger._sha256(data),
+        "b0_sha": attestation["b0_sha"],
+        "result": "pass",
+    })
+value["required_checks"] = checks
+value["frozen_payload_sha256"] = ledger._sha256(
+    ledger.canonical_json(ledger._b0_frozen_projection(value))
+)
 raw_log_bytes = b"hanonly b0 raw log\\n"
 relpaths = {
     process["load_evidence"]["raw_load_log_relpath"]
@@ -762,6 +806,10 @@ relpaths = {
 }
 relpaths.update(
     result["execution_evidence"]["raw_inference_log_relpath"]
+    for result in value["calibration_results"] + value["holdout_results"]
+)
+relpaths.update(
+    result["execution_evidence"]["source_gate_diagnostic_relpath"]
     for result in value["calibration_results"] + value["holdout_results"]
 )
 for relpath in relpaths:
@@ -785,7 +833,12 @@ print(json.dumps({
     new Response(child.stderr).text(),
   ])
   expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: '' })
-  return { artifact, ...JSON.parse(stdout) }
+  return {
+    artifact,
+    preCalibrationCheck,
+    preHoldoutCheck,
+    ...JSON.parse(stdout),
+  }
 }
 
 function b0RedSources(): RustSourceFile[] {
@@ -1239,9 +1292,9 @@ process.exit(result.exitCode)
 
     const result = await runCli([
       '--verify-generated-rust',
-      '--default-cargo-json',
+      '--cargo-default-messages',
       fixture.defaultLog,
-      '--evidence-cargo-json',
+      '--cargo-evidence-messages',
       fixture.evidenceLog,
     ])
 
@@ -1264,6 +1317,10 @@ process.exit(result.exitCode)
         fixture.artifact,
         '--expected-b0-sha',
         fixture.b0Sha,
+        '--required-check-attestation',
+        fixture.preCalibrationCheck,
+        '--required-check-attestation',
+        fixture.preHoldoutCheck,
         '--emit-artifact-sha256',
       ],
       {
@@ -1290,6 +1347,31 @@ process.exit(result.exitCode)
 
     expect(result.exitCode).not.toBe(0)
     expect(result.stdout).toBe('')
+    expect(result.stderr).toStartWith('FAIL [b0-authorization]:')
+  })
+
+  test('rejects B0 authorization without both required-check attestations', async () => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-b0-')))
+    temporaryRoots.push(temporaryRoot)
+    const fixture = await writeB0ArtifactFixture(temporaryRoot)
+
+    const result = await runCli(
+      [
+        '--validate-b0-authorization',
+        '--artifact',
+        fixture.artifact,
+        '--expected-b0-sha',
+        fixture.b0Sha,
+        '--required-check-attestation',
+        fixture.preCalibrationCheck,
+      ],
+      {
+        HANONLY_VISUAL_MANIFEST_SHA256: fixture.manifestSha256,
+        HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256: fixture.fixtureManifestSha256,
+      },
+    )
+
+    expect(result.exitCode).not.toBe(0)
     expect(result.stderr).toStartWith('FAIL [b0-authorization]:')
   })
 

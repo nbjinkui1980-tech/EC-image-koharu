@@ -153,6 +153,7 @@ pub(in crate::pipeline) enum SourceGateDiagnosticEvent {
     VlSummary {
         node_id: NodeId,
         contains_han: bool,
+        han_scalar_count: usize,
         character_count: usize,
         line_count: usize,
     },
@@ -166,6 +167,7 @@ pub(in crate::pipeline) enum SourceGateDiagnosticEvent {
 #[derive(Clone, Debug, Serialize)]
 pub(in crate::pipeline) struct PpWordDiagnostic {
     pub line_index: usize,
+    pub han_scalar_count: usize,
     pub character_count: usize,
     pub script: &'static str,
     pub confidence: f32,
@@ -1199,6 +1201,11 @@ where
                     };
                     PpWordDiagnostic {
                         line_index: word.line_index,
+                        han_scalar_count: word
+                            .text
+                            .chars()
+                            .filter(|ch| contains_han(&ch.to_string()))
+                            .count(),
                         character_count: word.text.chars().filter(|ch| !ch.is_whitespace()).count(),
                         script,
                         confidence: word.confidence,
@@ -1260,6 +1267,10 @@ where
         record_diagnostic(SourceGateDiagnosticEvent::VlSummary {
             node_id: candidate.node_id,
             contains_han: contains_han(&vl_text),
+            han_scalar_count: vl_text
+                .chars()
+                .filter(|ch| contains_han(&ch.to_string()))
+                .count(),
             character_count: vl_text.chars().filter(|ch| !ch.is_whitespace()).count(),
             line_count: vl_text
                 .lines()

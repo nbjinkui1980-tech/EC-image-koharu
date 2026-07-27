@@ -188,6 +188,18 @@ function optionalArg(args: readonly string[], name: string): string | undefined 
   return args[index + 1]
 }
 
+function repeatedArgs(args: readonly string[], name: string): string[] {
+  const values: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== name) continue
+    if (index + 1 >= args.length || args[index + 1].startsWith('--')) {
+      fail('argv', `${name} requires a value`)
+    }
+    values.push(args[index + 1])
+  }
+  return values
+}
+
 function flag(args: readonly string[], name: string): boolean {
   return args.includes(name)
 }
@@ -933,6 +945,23 @@ export async function runB0SourceGateAntiFixture(root: string): Promise<void> {
   const manifestSha256 = requiredHashEnv('HANONLY_VISUAL_MANIFEST_SHA256')
   const fixtureManifestSha256 = requiredHashEnv('HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256')
   const output = await b0AntiFixtureOutputPath(root)
+  const attestation = await buildB0SourceGateAntiFixtureAttestation(
+    root,
+    phase,
+    b0Sha,
+    manifestSha256,
+    fixtureManifestSha256,
+  )
+  await writeSyncedFile(output, `${canonicalJson(attestation)}\n`)
+}
+
+async function buildB0SourceGateAntiFixtureAttestation(
+  root: string,
+  phase: B0AntiFixturePhase,
+  b0Sha: string,
+  manifestSha256: string,
+  fixtureManifestSha256: string,
+): Promise<JsonObject> {
   const files = await readB0AntiFixtureSources(root)
   const verdicts = validateB0SourceGateAntiFixture(files)
   const checkerEndpointSha256 = createHash('sha256')
@@ -955,7 +984,7 @@ export async function runB0SourceGateAntiFixture(root: string): Promise<void> {
       verdict.category.startsWith('descriptor_data'),
     ),
   }
-  const attestation = {
+  return {
     version: 1,
     mode: 'b0-source-gate-anti-fixture',
     phase,
@@ -968,7 +997,6 @@ export async function runB0SourceGateAntiFixture(root: string): Promise<void> {
     policy_scan_sha256: createHash('sha256').update(canonicalJson(scan)).digest('hex'),
     result: 'pass',
   }
-  await writeSyncedFile(output, `${canonicalJson(attestation)}\n`)
 }
 
 function trackedRustPaths(root: string): string[] {
@@ -1413,6 +1441,10 @@ export async function validateB0Authorization(
   if (!fixtureManifestSha256 || !hex64.test(fixtureManifestSha256)) {
     fail('b0-authorization', 'HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256 is required')
   }
+  const requiredCheckAttestations = repeatedArgs(args, '--required-check-attestation')
+  if (requiredCheckAttestations.length !== 2) {
+    fail('b0-authorization', 'exactly two required-check attestations are required')
+  }
 
   const bytes = await readFile(artifact)
   const artifactSha256 = createHash('sha256').update(bytes).digest('hex')
@@ -1421,6 +1453,55 @@ export async function validateB0Authorization(
   }
 
   const parsed = object(parseJson(bytes), 'b0-authorization', 'B0 artifact')
+  const storedChecks = array(parsed.required_checks, 'b0-authorization', 'required_checks')
+  if (storedChecks.length !== 2) {
+    fail('b0-authorization', 'artifact required-check count drift')
+  }
+  const phases: B0AntiFixturePhase[] = ['pre-calibration', 'pre-holdout']
+  for (const [index, phase] of phases.entries()) {
+    const attestationPath = requiredCheckAttestations[index]
+    if (
+      !path.isAbsolute(attestationPath) ||
+      (await realpath(attestationPath)) !== attestationPath
+    ) {
+      fail('b0-authorization', 'required-check attestation path must be absolute and canonical')
+    }
+    const expectedRelpath = `source-gate-selection/checks/${phase}.json`
+    if (path.relative(path.dirname(artifact), attestationPath) !== expectedRelpath) {
+      fail('b0-authorization', 'required-check attestation path drift')
+    }
+    const expectedAttestation = await buildB0SourceGateAntiFixtureAttestation(
+      root,
+      phase,
+      expectedB0Sha,
+      visualManifestSha256,
+      fixtureManifestSha256,
+    )
+    const attestationBytes = await readFile(attestationPath)
+    if (attestationBytes.toString('utf8') !== `${canonicalJson(expectedAttestation)}\n`) {
+      fail('b0-authorization', 'required-check attestation would not be reproduced')
+    }
+    const attestationSha256 = createHash('sha256').update(attestationBytes).digest('hex')
+    const expectedCheck = {
+      phase,
+      command: 'bun scripts/check-hanonly-production-policy.ts --b0-source-gate-anti-fixture',
+      checker_endpoint_sha256: expectedAttestation.checker_endpoint_sha256,
+      manifest_sha256: visualManifestSha256,
+      source_gate_fixture_manifest_sha256: fixtureManifestSha256,
+      attestation_relpath: expectedRelpath,
+      attestation_sha256: attestationSha256,
+      b0_sha: expectedB0Sha,
+      result: 'pass',
+    }
+    if (
+      !deepEqual(
+        object(storedChecks[index], 'b0-authorization', 'required-check entry'),
+        expectedCheck,
+      )
+    ) {
+      fail('b0-authorization', 'artifact required-check entry drift')
+    }
+  }
   const selected = parsed.selected_candidate_id
   if (!['S25L4', 'S25L5', 'S25L6', 'S25L7'].includes(String(selected))) {
     fail('b0-authorization', 'selected candidate is invalid')
@@ -1499,8 +1580,8 @@ async function main(): Promise<void> {
   if (args.includes('--verify-generated-rust')) {
     await runGeneratedRustAudit(
       repoRoot,
-      requiredArg(args, '--default-cargo-json'),
-      requiredArg(args, '--evidence-cargo-json'),
+      requiredArg(args, '--cargo-default-messages'),
+      requiredArg(args, '--cargo-evidence-messages'),
     )
     process.stdout.write('PASS: hanonly generated Rust audit\n')
     return

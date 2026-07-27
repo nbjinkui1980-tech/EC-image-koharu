@@ -75,7 +75,30 @@ def jpeg_with_sof_payload(payload):
     )
 
 
+def b0_attestation(phase, b0_sha, manifest_sha256, fixture_sha256, checker_sha256):
+    return {
+        "version": 1,
+        "mode": "b0-source-gate-anti-fixture",
+        "phase": phase,
+        "b0_sha": b0_sha,
+        "manifest_sha256": manifest_sha256,
+        "source_gate_fixture_manifest_sha256": fixture_sha256,
+        "checker_endpoint_sha256": checker_sha256,
+        "scanned_roots": ledger.B0_ANTI_FIXTURE_SCANNED_ROOTS,
+        "allowed_descriptor_roots": ledger.B0_ANTI_FIXTURE_ALLOWED_DESCRIPTOR_ROOTS,
+        "policy_scan_sha256": "9" * 64,
+        "result": "pass",
+    }
+
+
 def b0_artifact():
+    b0_sha = "b" * 40
+    manifest_sha256 = "c" * 64
+    fixture_sha256 = "d" * 64
+    checker_sha256 = hashlib.sha256(
+        Path(__file__).with_name("check-hanonly-production-policy.ts").read_bytes()
+    ).hexdigest()
+
     def process(phase, device):
         metal = device == "metal"
         return {
@@ -143,6 +166,10 @@ def b0_artifact():
                     f"source-gate/{phase}/{entry_id}/{device}/{candidate}.log"
                 ),
                 "raw_inference_log_sha256": B0_RAW_LOG_SHA256,
+                "source_gate_diagnostic_relpath": (
+                    f"source-gate/{phase}/{entry_id}/{device}/{candidate}.source-gate.json"
+                ),
+                "source_gate_diagnostic_sha256": B0_RAW_LOG_SHA256,
                 "context_buffer_bytes_by_backend": {
                     "CPU": 1,
                     **({"Metal": 1} if metal else {}),
@@ -171,24 +198,62 @@ def b0_artifact():
                 "target_recall": 1.0,
                 "protected_false_positive_count": 0,
                 "rotation_targets_excluded": True,
+                "source_coverage_preflight": {
+                    "pp_han_scalar_count": 1,
+                    "vl_expected_han_scalar_count": 1,
+                    "pp_vl_complete_coverage": True,
+                    "rejected_after_vl": False,
+                    "pp_vl_incomplete_coverage": False,
+                    "covered_source_roi_ids": ["target"],
+                    "source_text_roi_coverage": 1.0,
+                    "source_removal_preflight_passed": True,
+                },
                 "passed": True,
             },
         }
 
-    calibration_ids = [f"calibration-{index}" for index in range(4)]
-    holdout_ids = [f"holdout-{index}" for index in range(4)]
+    calibration_ids = [f"c{index:02}" for index in range(1, 5)]
+    holdout_ids = [f"h{index:02}" for index in range(1, 5)]
+    required_checks = []
+    for phase in ("pre-calibration", "pre-holdout"):
+        attestation = b0_attestation(
+            phase,
+            b0_sha,
+            manifest_sha256,
+            fixture_sha256,
+            checker_sha256,
+        )
+        required_checks.append(
+            {
+                "phase": phase,
+                "command": ledger.B0_REQUIRED_CHECK_COMMAND,
+                "checker_endpoint_sha256": checker_sha256,
+                "manifest_sha256": manifest_sha256,
+                "source_gate_fixture_manifest_sha256": fixture_sha256,
+                "attestation_relpath": (
+                    f"source-gate-selection/checks/{phase}.json"
+                ),
+                "attestation_sha256": ledger._sha256(
+                    ledger.canonical_json(attestation)
+                ),
+                "b0_sha": b0_sha,
+                "result": "pass",
+            }
+        )
     value = {
         "version": ledger.B0_VERSION,
-        "plan_revision": 48,
-        "b0_sha": "b" * 40,
-        "manifest_sha256": "c" * 64,
-        "source_gate_fixture_manifest_sha256": "d" * 64,
+        "plan_revision": ledger.B0_PLAN_REVISION,
+        "b0_sha": b0_sha,
+        "manifest_sha256": manifest_sha256,
+        "source_gate_fixture_manifest_sha256": fixture_sha256,
         "image_input_contract_sha256": "e" * 64,
         "source_color_contract_sha256": "f" * 64,
         "color_constant_set_sha256": "1" * 64,
         "requested_devices": ["cpu", "metal"],
         "enabled_cargo_features": ["hanonly-test-evidence", "metal"],
         "backend_evidence_parser_version": 1,
+        "required_checks": required_checks,
+        "frozen_recall_contract": ledger._expected_frozen_recall("S25L4"),
         "candidates": json.loads(json.dumps(ledger.B0_CANDIDATES)),
         "calibration_entry_ids": calibration_ids,
         "holdout_entry_ids": holdout_ids,
@@ -1252,9 +1317,15 @@ class B0ArtifactTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        checker = self.repo / ledger.B0_CHECKER_ENDPOINT
+        checker.parent.mkdir(parents=True)
+        checker.write_bytes(
+            Path(__file__).with_name("check-hanonly-production-policy.ts").read_bytes()
+        )
         self.path = self.root / "artifact.json"
         self.value = b0_artifact()
         self.write_raw_logs()
+        self.write_required_checks()
 
     def tearDown(self):
         self.temp.cleanup()
@@ -1298,10 +1369,31 @@ class B0ArtifactTests(unittest.TestCase):
             result["execution_evidence"]["raw_inference_log_relpath"]
             for result in self.value["calibration_results"] + self.value["holdout_results"]
         )
+        relpaths.update(
+            result["execution_evidence"]["source_gate_diagnostic_relpath"]
+            for result in self.value["calibration_results"] + self.value["holdout_results"]
+        )
         for relpath in relpaths:
             path = self.path.parent / relpath
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(B0_RAW_LOG_BYTES)
+            os.chmod(path, 0o600)
+
+    def write_required_checks(self):
+        directory = self.path.parent / "source-gate-selection/checks"
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory.parent, 0o700)
+        os.chmod(directory, 0o700)
+        for check in self.value["required_checks"]:
+            attestation = b0_attestation(
+                check["phase"],
+                self.value["b0_sha"],
+                self.value["manifest_sha256"],
+                self.value["source_gate_fixture_manifest_sha256"],
+                check["checker_endpoint_sha256"],
+            )
+            path = self.path.parent / check["attestation_relpath"]
+            path.write_bytes(ledger.canonical_json(attestation))
             os.chmod(path, 0o600)
 
     def assert_rejected(self, raw=None, **overrides):
@@ -1317,7 +1409,7 @@ class B0ArtifactTests(unittest.TestCase):
         self.assert_rejected(json.dumps(self.value).encode())
 
     def test_rejects_wrong_plan_revisions(self):
-        for revision in (29, 47, "48", None):
+        for revision in (*range(29, 49), "49", None):
             with self.subTest(revision=revision):
                 self.value = b0_artifact()
                 self.value["plan_revision"] = revision
@@ -1354,6 +1446,15 @@ class B0ArtifactTests(unittest.TestCase):
 
     def test_rejects_frozen_projection_hash_drift(self):
         self.value["selected_candidate_id"] = "S25L6"
+        self.assert_rejected()
+
+    def test_rejects_required_check_and_recall_contract_drift(self):
+        self.value["required_checks"].reverse()
+        self.assert_rejected()
+        self.value = b0_artifact()
+        self.value["frozen_recall_contract"][
+            "coverage_acceptance_rule_sha256"
+        ] = "3" * 64
         self.assert_rejected()
 
     def test_rejects_metal_default_gpu_layer_drift(self):

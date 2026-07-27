@@ -36,7 +36,35 @@ SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 B0_SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")
 B0_UTC_SECONDS_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z")
 B0_VERSION = 2
+B0_PLAN_REVISION = 49
 B0_DEFAULT_GPU_LAYERS = 1000
+B0_REQUIRED_CHECK_COMMAND = (
+    "bun scripts/check-hanonly-production-policy.ts --b0-source-gate-anti-fixture"
+)
+B0_CHECKER_ENDPOINT = "scripts/check-hanonly-production-policy.ts"
+B0_ANTI_FIXTURE_SCANNED_ROOTS = [
+    "crates/koharu-app/src/pipeline/engines/source_language_gate.rs",
+    "crates/koharu-ml/src/pp_ocr_v5.rs",
+    "crates/koharu-llm/src/paddleocr_vl.rs",
+    "crates/koharu-app/src/pipeline/mod.rs",
+    "scripts/check-hanonly-production-policy.ts",
+    "scripts/check-hanonly-production-policy.test.ts",
+    "scripts/hanonly_evidence_ledger.py",
+    "scripts/hanonly_evidence_ledger_test.py",
+]
+B0_ANTI_FIXTURE_ALLOWED_DESCRIPTOR_ROOTS = [
+    "crates/koharu-app/src/pipeline/mod.rs",
+    "scripts/check-hanonly-production-policy.ts",
+    "scripts/check-hanonly-production-policy.test.ts",
+    "scripts/hanonly_evidence_ledger.py",
+    "scripts/hanonly_evidence_ledger_test.py",
+]
+B0_RECALL_PREIMAGES = {
+    "ppocr_crop_local_preprocessing_sha256": '{"contract":"hanonly-b0-ppocr-crop-local-preprocessing-v1","operations":["decode-crop-rgba","isotropic-upscale-if-short-side-below-64","detect-and-recognize-in-upscaled-crop-space"]}',
+    "inverse_mapping_rule_sha256": '{"contract":"hanonly-b0-inverse-mapping-v1","operations":["divide-upscaled-word-box-coordinates-by-inference-scale","preserve-half-open-crop-local-geometry","translate-by-source-crop-origin"]}',
+    "coverage_acceptance_rule_sha256": '{"contract":"hanonly-b0-coverage-acceptance-v1","requirements":["pp-and-vl-han-scalar-counts-match","no-rejected-after-vl","no-pp-vl-incomplete-coverage","all-removal-target-rois-covered"]}',
+    "source_removal_preflight_rule_sha256": '{"contract":"hanonly-b0-source-removal-preflight-v1","requirements":["target-recall-equals-one","protected-false-positive-count-equals-zero","rotation-targets-excluded","unmatched-selected-node-count-equals-zero","coverage-acceptance-passes"]}',
+}
 B0_CANDIDATES = [
     {
         "id": "S25L4",
@@ -79,6 +107,8 @@ B0_ROOT_KEYS = {
     "requested_devices",
     "enabled_cargo_features",
     "backend_evidence_parser_version",
+    "required_checks",
+    "frozen_recall_contract",
     "candidates",
     "calibration_entry_ids",
     "holdout_entry_ids",
@@ -145,6 +175,8 @@ B0_EXECUTION_KEYS = {
     "inference_completed",
     "raw_inference_log_relpath",
     "raw_inference_log_sha256",
+    "source_gate_diagnostic_relpath",
+    "source_gate_diagnostic_sha256",
     "context_buffer_bytes_by_backend",
     "compute_buffer_bytes_by_backend",
 }
@@ -165,7 +197,47 @@ B0_DERIVED_KEYS = {
     "target_recall",
     "protected_false_positive_count",
     "rotation_targets_excluded",
+    "source_coverage_preflight",
     "passed",
+}
+B0_SOURCE_COVERAGE_KEYS = {
+    "pp_han_scalar_count",
+    "vl_expected_han_scalar_count",
+    "pp_vl_complete_coverage",
+    "rejected_after_vl",
+    "pp_vl_incomplete_coverage",
+    "covered_source_roi_ids",
+    "source_text_roi_coverage",
+    "source_removal_preflight_passed",
+}
+B0_REQUIRED_CHECK_KEYS = {
+    "phase",
+    "command",
+    "checker_endpoint_sha256",
+    "manifest_sha256",
+    "source_gate_fixture_manifest_sha256",
+    "attestation_relpath",
+    "attestation_sha256",
+    "b0_sha",
+    "result",
+}
+B0_ATTESTATION_KEYS = {
+    "version",
+    "mode",
+    "phase",
+    "b0_sha",
+    "manifest_sha256",
+    "source_gate_fixture_manifest_sha256",
+    "checker_endpoint_sha256",
+    "scanned_roots",
+    "allowed_descriptor_roots",
+    "policy_scan_sha256",
+    "result",
+}
+B0_FROZEN_RECALL_KEYS = {
+    "candidate_set",
+    "selected_candidate_id",
+    *B0_RECALL_PREIMAGES,
 }
 JPEG_SOF_MARKERS = {
     0xC0,
@@ -260,6 +332,74 @@ def _validate_b0_raw_log(root, relpath, expected_sha256, label):
     with open(path, "rb") as handle:
         if _sha256(handle.read()) != expected_sha256:
             raise LedgerError(f"{label} sha256 drift")
+
+
+def _expected_frozen_recall(selected_candidate_id):
+    return {
+        "candidate_set": [candidate["id"] for candidate in B0_CANDIDATES],
+        "selected_candidate_id": selected_candidate_id,
+        **{
+            field: _sha256(preimage.encode("utf-8"))
+            for field, preimage in B0_RECALL_PREIMAGES.items()
+        },
+    }
+
+
+def _validate_required_check(
+    check,
+    expected_phase,
+    artifact_root,
+    checker_endpoint_sha256,
+    b0_sha,
+    manifest_sha256,
+    fixture_manifest_sha256,
+):
+    _require_keys(check, B0_REQUIRED_CHECK_KEYS, "B0 required check")
+    relpath = f"source-gate-selection/checks/{expected_phase}.json"
+    expected = {
+        "phase": expected_phase,
+        "command": B0_REQUIRED_CHECK_COMMAND,
+        "checker_endpoint_sha256": checker_endpoint_sha256,
+        "manifest_sha256": manifest_sha256,
+        "source_gate_fixture_manifest_sha256": fixture_manifest_sha256,
+        "attestation_relpath": relpath,
+        "attestation_sha256": check["attestation_sha256"],
+        "b0_sha": b0_sha,
+        "result": "pass",
+    }
+    if check != expected:
+        raise LedgerError("B0 required-check entry drift")
+    _validate_hash(check["attestation_sha256"], "required-check attestation sha256")
+    path = os.path.join(artifact_root, relpath)
+    with contextlib.ExitStack() as stack:
+        held = _open_absolute(path, directory=False, stack=stack)
+        if _mode(held.stat) != 0o600:
+            raise LedgerError("required-check attestation mode must be 0600")
+        if _mode(os.stat(os.path.dirname(path))) != 0o700:
+            raise LedgerError("required-check attestation parent mode must be 0700")
+        data = _read_all(held.fd)
+    if _sha256(data) != check["attestation_sha256"]:
+        raise LedgerError("required-check attestation sha256 drift")
+    attestation = _parse_json(data, "B0 required-check attestation")
+    _require_keys(attestation, B0_ATTESTATION_KEYS, "B0 required-check attestation")
+    if canonical_json(attestation) != data:
+        raise LedgerError("B0 required-check attestation is not canonical JSON")
+    if (
+        attestation["version"] != 1
+        or attestation["mode"] != "b0-source-gate-anti-fixture"
+        or attestation["phase"] != expected_phase
+        or attestation["b0_sha"] != b0_sha
+        or attestation["manifest_sha256"] != manifest_sha256
+        or attestation["source_gate_fixture_manifest_sha256"]
+        != fixture_manifest_sha256
+        or attestation["checker_endpoint_sha256"] != checker_endpoint_sha256
+        or attestation["scanned_roots"] != B0_ANTI_FIXTURE_SCANNED_ROOTS
+        or attestation["allowed_descriptor_roots"]
+        != B0_ANTI_FIXTURE_ALLOWED_DESCRIPTOR_ROOTS
+        or attestation["result"] != "pass"
+    ):
+        raise LedgerError("B0 required-check attestation drift")
+    _validate_hash(attestation["policy_scan_sha256"], "policy scan sha256")
 
 
 def _canonical_existing_path(value, label):
@@ -416,6 +556,12 @@ def _validate_result(result, processes, entry_ids, candidate_ids, phase, artifac
         execution["raw_inference_log_sha256"],
         "raw inference log",
     )
+    _validate_b0_raw_log(
+        artifact_root,
+        execution["source_gate_diagnostic_relpath"],
+        execution["source_gate_diagnostic_sha256"],
+        "source gate diagnostic",
+    )
     nodes = result["runtime_nodes"]
     if not isinstance(nodes, list):
         raise LedgerError(f"{label} runtime_nodes must be an array")
@@ -453,6 +599,48 @@ def _validate_result(result, processes, entry_ids, candidate_ids, phase, artifac
         or type(derived["passed"]) is not bool
     ):
         raise LedgerError(f"{label} derived metrics are invalid")
+    coverage = derived["source_coverage_preflight"]
+    _require_keys(coverage, B0_SOURCE_COVERAGE_KEYS, f"{label} source coverage")
+    if (
+        type(coverage["pp_han_scalar_count"]) is not int
+        or type(coverage["vl_expected_han_scalar_count"]) is not int
+        or type(coverage["pp_vl_complete_coverage"]) is not bool
+        or type(coverage["rejected_after_vl"]) is not bool
+        or type(coverage["pp_vl_incomplete_coverage"]) is not bool
+        or not isinstance(coverage["covered_source_roi_ids"], list)
+        or any(
+            not isinstance(value, str) or not value
+            for value in coverage["covered_source_roi_ids"]
+        )
+        or type(coverage["source_text_roi_coverage"]) not in (int, float)
+        or type(coverage["source_removal_preflight_passed"]) is not bool
+    ):
+        raise LedgerError(f"{label} source coverage evidence is invalid")
+    expected_complete_coverage = (
+        coverage["pp_han_scalar_count"] > 0
+        and coverage["pp_han_scalar_count"]
+        == coverage["vl_expected_han_scalar_count"]
+        and coverage["rejected_after_vl"] is False
+        and coverage["pp_vl_incomplete_coverage"] is False
+        and coverage["source_text_roi_coverage"] == 1.0
+    )
+    expected_preflight = (
+        derived["target_recall"] == 1.0 and expected_complete_coverage
+    )
+    expected_pass = (
+        expected_preflight
+        and derived["protected_false_positive_count"] == 0
+        and not derived["selected_protected_node_ids"]
+        and not derived["selected_rotation_target_ids"]
+        and not derived["unmatched_selected_node_ids"]
+        and derived["rotation_targets_excluded"] is True
+    )
+    if (
+        coverage["pp_vl_complete_coverage"] is not expected_complete_coverage
+        or coverage["source_removal_preflight_passed"] is not expected_preflight
+        or derived["passed"] is not expected_pass
+    ):
+        raise LedgerError(f"{label} source coverage or pass evidence is inconsistent")
     load = process["load_evidence"]
     requested_device = process["requested_device"]
     loaded = load["loaded_model_devices"]
@@ -518,6 +706,7 @@ def _b0_frozen_projection(value):
         "color_constant_set_sha256": value["color_constant_set_sha256"],
         "enabled_cargo_features": value["enabled_cargo_features"],
         "frozen_at_utc": value["frozen_at_utc"],
+        "frozen_recall_contract": value["frozen_recall_contract"],
         "holdout_entry_ids": value["holdout_entry_ids"],
         "image_input_contract_sha256": value["image_input_contract_sha256"],
         "manifest_sha256": value["manifest_sha256"],
@@ -531,6 +720,11 @@ def _b0_frozen_projection(value):
             key=lambda process: process["id"],
         ),
         "requested_devices": value["requested_devices"],
+        "required_checks": [
+            check
+            for check in value["required_checks"]
+            if check["phase"] == "pre-calibration"
+        ],
         "retuned_after_freeze": value["retuned_after_freeze"],
         "selected_candidate_id": value["selected_candidate_id"],
         "source_color_contract_sha256": value["source_color_contract_sha256"],
@@ -549,7 +743,13 @@ def _validate_b0_artifact(arguments):
         "source gate fixture manifest sha256",
     )
     with contextlib.ExitStack() as stack:
-        _open_absolute(arguments.repo_root, directory=True, stack=stack)
+        repo_root = _open_absolute(arguments.repo_root, directory=True, stack=stack)
+        checker = _open_absolute(
+            os.path.join(repo_root.path, B0_CHECKER_ENDPOINT),
+            directory=False,
+            stack=stack,
+        )
+        checker_endpoint_sha256 = _sha256(_read_all(checker.fd))
         artifact = _open_absolute(arguments.artifact, directory=False, stack=stack)
         artifact_bytes = _read_all(artifact.fd)
     artifact_root = os.path.dirname(artifact.path)
@@ -561,7 +761,7 @@ def _validate_b0_artifact(arguments):
         type(value["version"]) is not int
         or value["version"] != B0_VERSION
         or type(value["plan_revision"]) is not int
-        or value["plan_revision"] != 48
+        or value["plan_revision"] != B0_PLAN_REVISION
     ):
         raise LedgerError("B0 frozen artifact version or plan revision mismatch")
     if value["b0_sha"] != arguments.b0_sha:
@@ -593,6 +793,27 @@ def _validate_b0_artifact(arguments):
     candidate_ids = {candidate["id"] for candidate in B0_CANDIDATES}
     if value["selected_candidate_id"] not in candidate_ids:
         raise LedgerError("invalid selected candidate")
+    expected_recall = _expected_frozen_recall(value["selected_candidate_id"])
+    _require_keys(
+        value["frozen_recall_contract"],
+        B0_FROZEN_RECALL_KEYS,
+        "frozen recall contract",
+    )
+    if value["frozen_recall_contract"] != expected_recall:
+        raise LedgerError("frozen recall contract drift")
+    required_checks = value["required_checks"]
+    if not isinstance(required_checks, list) or len(required_checks) != 2:
+        raise LedgerError("B0 required checks must contain two records")
+    for check, phase in zip(required_checks, ("pre-calibration", "pre-holdout")):
+        _validate_required_check(
+            check,
+            phase,
+            artifact_root,
+            checker_endpoint_sha256,
+            value["b0_sha"],
+            value["manifest_sha256"],
+            value["source_gate_fixture_manifest_sha256"],
+        )
     calibration_ids = value["calibration_entry_ids"]
     holdout_ids = value["holdout_entry_ids"]
     if (
@@ -724,6 +945,22 @@ def _validate_b0_artifact(arguments):
     }
     if len(calibration_cells) != 32 or len(holdout_cells) != 8:
         raise LedgerError("selection result matrix contains duplicate or missing cells")
+    selected = next(
+        (
+            candidate["id"]
+            for candidate in B0_CANDIDATES
+            if all(
+                result["derived"]["passed"]
+                for result in calibration
+                if result["candidate_id"] == candidate["id"]
+            )
+        ),
+        None,
+    )
+    if selected != value["selected_candidate_id"]:
+        raise LedgerError("selected candidate is not the smallest all-pass candidate")
+    if any(not result["derived"]["passed"] for result in holdout):
+        raise LedgerError("holdout result failed")
     if _sha256(canonical_json(_b0_frozen_projection(value))) != value["frozen_payload_sha256"]:
         raise LedgerError("frozen payload sha256 mismatch")
     return b"PASS B0 frozen artifact\n"

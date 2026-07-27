@@ -428,7 +428,8 @@ mod source_gate_selection {
     };
     use super::super::d0_visual_manifest_schema::{EntryRole, Expected, VisualManifestEntry};
     use super::super::engines::source_language_gate::{
-        SourceGateCropPolicy, SourceGateCropPolicyGuard, SourceGateDiagnosticCapture,
+        SourceGateCropPolicy, SourceGateCropPolicyGuard, SourceGateDecision,
+        SourceGateDiagnosticCapture, SourceGateDiagnosticEvent, SourceGateRejectReason,
         dispatch_source_gate,
     };
     use super::super::engines::support::SOURCE_GATE_TARGET_DETECTOR;
@@ -451,9 +452,34 @@ mod source_gate_selection {
     const B0_SHA_ENV: &str = "HANONLY_B0_SHA";
     const ARTIFACT_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT";
     const REPORT_DIR_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR";
+    const REQUIRED_CHECK_ENV: &str = "HANONLY_SOURCE_GATE_REQUIRED_CHECK_ATTESTATION";
     const ARTIFACT_VERSION: u32 = 2;
-    const PLAN_REVISION: u32 = 48;
+    const PLAN_REVISION: u32 = 49;
     const B0_DEFAULT_GPU_LAYERS: u32 = 1000;
+    const REQUIRED_CHECK_COMMAND: &str =
+        "bun scripts/check-hanonly-production-policy.ts --b0-source-gate-anti-fixture";
+    const CHECKER_ENDPOINT: &str = "scripts/check-hanonly-production-policy.ts";
+    const PPOCR_PREPROCESSING_PREIMAGE: &str = "{\"contract\":\"hanonly-b0-ppocr-crop-local-preprocessing-v1\",\"operations\":[\"decode-crop-rgba\",\"isotropic-upscale-if-short-side-below-64\",\"detect-and-recognize-in-upscaled-crop-space\"]}";
+    const INVERSE_MAPPING_PREIMAGE: &str = "{\"contract\":\"hanonly-b0-inverse-mapping-v1\",\"operations\":[\"divide-upscaled-word-box-coordinates-by-inference-scale\",\"preserve-half-open-crop-local-geometry\",\"translate-by-source-crop-origin\"]}";
+    const COVERAGE_ACCEPTANCE_PREIMAGE: &str = "{\"contract\":\"hanonly-b0-coverage-acceptance-v1\",\"requirements\":[\"pp-and-vl-han-scalar-counts-match\",\"no-rejected-after-vl\",\"no-pp-vl-incomplete-coverage\",\"all-removal-target-rois-covered\"]}";
+    const SOURCE_REMOVAL_PREFLIGHT_PREIMAGE: &str = "{\"contract\":\"hanonly-b0-source-removal-preflight-v1\",\"requirements\":[\"target-recall-equals-one\",\"protected-false-positive-count-equals-zero\",\"rotation-targets-excluded\",\"unmatched-selected-node-count-equals-zero\",\"coverage-acceptance-passes\"]}";
+    const ANTI_FIXTURE_SCANNED_ROOTS: &[&str] = &[
+        "crates/koharu-app/src/pipeline/engines/source_language_gate.rs",
+        "crates/koharu-ml/src/pp_ocr_v5.rs",
+        "crates/koharu-llm/src/paddleocr_vl.rs",
+        "crates/koharu-app/src/pipeline/mod.rs",
+        "scripts/check-hanonly-production-policy.ts",
+        "scripts/check-hanonly-production-policy.test.ts",
+        "scripts/hanonly_evidence_ledger.py",
+        "scripts/hanonly_evidence_ledger_test.py",
+    ];
+    const ANTI_FIXTURE_ALLOWED_DESCRIPTOR_ROOTS: &[&str] = &[
+        "crates/koharu-app/src/pipeline/mod.rs",
+        "scripts/check-hanonly-production-policy.ts",
+        "scripts/check-hanonly-production-policy.test.ts",
+        "scripts/hanonly_evidence_ledger.py",
+        "scripts/hanonly_evidence_ledger_test.py",
+    ];
     const SOURCE_COLOR_CONTRACT_SHA256: &str =
         "13d2256fed7b8189e67db7222ce6ce7964f2745c977c42e7693679ffb2a341f8";
     const COLOR_CONSTANT_SET_SHA256: &str =
@@ -494,6 +520,8 @@ mod source_gate_selection {
         artifact: PathBuf,
         calibration_entry_ids: Vec<String>,
         holdout_entry_ids: Vec<String>,
+        required_check: RequiredCheck,
+        required_check_attestation: HeldInput,
     }
 
     impl SelectionEnvironment {
@@ -568,6 +596,15 @@ mod source_gate_selection {
                     "selection report path must be a directory",
                 )?;
             }
+            let required_check_path = PathBuf::from(required(&mut get, REQUIRED_CHECK_ENV)?);
+            let (required_check, required_check_attestation) = load_required_check(
+                &evidence_root,
+                &required_check_path,
+                phase,
+                &b0_sha,
+                &visual_manifest_sha256,
+                &source_gate_fixture_manifest_sha256,
+            )?;
             Ok(Self {
                 phase,
                 b0_sha,
@@ -581,8 +618,51 @@ mod source_gate_selection {
                 artifact,
                 calibration_entry_ids,
                 holdout_entry_ids,
+                required_check,
+                required_check_attestation,
             })
         }
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RequiredCheckAttestation {
+        version: u32,
+        mode: String,
+        phase: String,
+        b0_sha: String,
+        manifest_sha256: String,
+        source_gate_fixture_manifest_sha256: String,
+        checker_endpoint_sha256: String,
+        scanned_roots: Vec<String>,
+        allowed_descriptor_roots: Vec<String>,
+        policy_scan_sha256: String,
+        result: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RequiredCheck {
+        phase: String,
+        command: String,
+        checker_endpoint_sha256: String,
+        manifest_sha256: String,
+        source_gate_fixture_manifest_sha256: String,
+        attestation_relpath: String,
+        attestation_sha256: String,
+        b0_sha: String,
+        result: String,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct FrozenRecallContract {
+        candidate_set: Vec<String>,
+        selected_candidate_id: String,
+        ppocr_crop_local_preprocessing_sha256: String,
+        inverse_mapping_rule_sha256: String,
+        coverage_acceptance_rule_sha256: String,
+        source_removal_preflight_rule_sha256: String,
     }
 
     #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -682,6 +762,19 @@ mod source_gate_selection {
 
     #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]
+    struct SourceCoveragePreflight {
+        pp_han_scalar_count: usize,
+        vl_expected_han_scalar_count: usize,
+        pp_vl_complete_coverage: bool,
+        rejected_after_vl: bool,
+        pp_vl_incomplete_coverage: bool,
+        covered_source_roi_ids: Vec<String>,
+        source_text_roi_coverage: f64,
+        source_removal_preflight_passed: bool,
+    }
+
+    #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
     struct DerivedEvidence {
         actual_device: String,
         matched_target_ids: Vec<String>,
@@ -692,6 +785,7 @@ mod source_gate_selection {
         target_recall: f64,
         protected_false_positive_count: u32,
         rotation_targets_excluded: bool,
+        source_coverage_preflight: SourceCoveragePreflight,
         passed: bool,
     }
 
@@ -850,6 +944,8 @@ mod source_gate_selection {
         requested_devices: Vec<String>,
         enabled_cargo_features: Vec<String>,
         backend_evidence_parser_version: u32,
+        required_checks: Vec<RequiredCheck>,
+        frozen_recall_contract: FrozenRecallContract,
         candidates: Vec<Candidate>,
         calibration_entry_ids: Vec<String>,
         holdout_entry_ids: Vec<String>,
@@ -904,6 +1000,91 @@ mod source_gate_selection {
         )
     }
 
+    fn required_check_phase(phase: Phase) -> &'static str {
+        match phase {
+            Phase::CalibrationFreeze => "pre-calibration",
+            Phase::Holdout => "pre-holdout",
+        }
+    }
+
+    fn required_check_relpath(phase: Phase) -> String {
+        format!(
+            "source-gate-selection/checks/{}.json",
+            required_check_phase(phase)
+        )
+    }
+
+    fn load_required_check(
+        evidence_root: &Path,
+        path: &Path,
+        phase: Phase,
+        b0_sha: &str,
+        manifest_sha256: &str,
+        source_gate_fixture_manifest_sha256: &str,
+    ) -> io::Result<(RequiredCheck, HeldInput)> {
+        require_absolute_syntax(path)?;
+        require(
+            path.starts_with(evidence_root),
+            "required-check attestation must remain below the evidence root",
+        )?;
+        let relpath = path
+            .strip_prefix(evidence_root)
+            .ok()
+            .and_then(Path::to_str)
+            .ok_or_else(|| invalid_data("required-check attestation path is invalid"))?;
+        require(
+            relpath == required_check_relpath(phase),
+            "required-check attestation phase path drift",
+        )?;
+        let held = HeldInput::open(path)?;
+        held.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
+        let attestation: RequiredCheckAttestation = serde_json::from_slice(held.bytes())
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            canonical_json(&attestation)? == held.bytes(),
+            "required-check attestation must be canonical JSON",
+        )?;
+        require(
+            attestation.version == 1
+                && attestation.mode == "b0-source-gate-anti-fixture"
+                && attestation.phase == required_check_phase(phase)
+                && attestation.b0_sha == b0_sha
+                && attestation.manifest_sha256 == manifest_sha256
+                && attestation.source_gate_fixture_manifest_sha256
+                    == source_gate_fixture_manifest_sha256
+                && attestation.scanned_roots
+                    == ANTI_FIXTURE_SCANNED_ROOTS
+                        .iter()
+                        .map(|value| (*value).to_owned())
+                        .collect::<Vec<_>>()
+                && attestation.allowed_descriptor_roots
+                    == ANTI_FIXTURE_ALLOWED_DESCRIPTOR_ROOTS
+                        .iter()
+                        .map(|value| (*value).to_owned())
+                        .collect::<Vec<_>>()
+                && attestation.result == "pass",
+            "required-check attestation drift",
+        )?;
+        decode_sha256(&attestation.checker_endpoint_sha256)?;
+        decode_sha256(&attestation.policy_scan_sha256)?;
+        let required_check = RequiredCheck {
+            phase: attestation.phase,
+            command: REQUIRED_CHECK_COMMAND.into(),
+            checker_endpoint_sha256: attestation.checker_endpoint_sha256,
+            manifest_sha256: attestation.manifest_sha256,
+            source_gate_fixture_manifest_sha256: attestation.source_gate_fixture_manifest_sha256,
+            attestation_relpath: relpath.into(),
+            attestation_sha256: held
+                .sha256()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            b0_sha: attestation.b0_sha,
+            result: attestation.result,
+        };
+        Ok((required_check, held))
+    }
+
     fn git_head(repository: &Path) -> io::Result<String> {
         let output = Command::new("git")
             .current_dir(repository)
@@ -927,6 +1108,14 @@ mod source_gate_selection {
             read_head(repository)? == environment.b0_sha,
             "B0 HEAD drift detected",
         )?;
+        require(
+            sha256_file(&repository.join(CHECKER_ENDPOINT))?
+                == environment.required_check.checker_endpoint_sha256,
+            "required-check checker endpoint drift",
+        )?;
+        environment
+            .required_check_attestation
+            .with_revalidated_path(|_| Ok(()))?;
         match environment.phase {
             Phase::CalibrationFreeze => require(
                 !environment.artifact.exists(),
@@ -965,6 +1154,8 @@ mod source_gate_selection {
                     requested_devices: vec!["cpu".into(), "metal".into()],
                     enabled_cargo_features: vec!["hanonly-test-evidence".into(), "metal".into()],
                     backend_evidence_parser_version: 1,
+                    required_checks: vec![environment.required_check.clone()],
+                    frozen_recall_contract: frozen_recall_contract(&selected_candidate_id),
                     candidates: candidates_schema(),
                     calibration_entry_ids: environment.calibration_entry_ids.clone(),
                     holdout_entry_ids: environment.holdout_entry_ids.clone(),
@@ -999,6 +1190,9 @@ mod source_gate_selection {
                     evidence.results.iter().all(|result| result.derived.passed),
                     "holdout result failed",
                 )?;
+                artifact
+                    .required_checks
+                    .push(environment.required_check.clone());
                 artifact.process_evidence.extend(evidence.process_evidence);
                 artifact.holdout_results = evidence.results;
                 let frozen_at = chrono::DateTime::parse_from_rfc3339(&artifact.frozen_at_utc)
@@ -1037,6 +1231,24 @@ mod source_gate_selection {
             },
         )
         .collect()
+    }
+
+    fn frozen_recall_contract(selected_candidate_id: &str) -> FrozenRecallContract {
+        FrozenRecallContract {
+            candidate_set: candidates_schema()
+                .into_iter()
+                .map(|candidate| candidate.id)
+                .collect(),
+            selected_candidate_id: selected_candidate_id.into(),
+            ppocr_crop_local_preprocessing_sha256: sha256_hex(
+                PPOCR_PREPROCESSING_PREIMAGE.as_bytes(),
+            ),
+            inverse_mapping_rule_sha256: sha256_hex(INVERSE_MAPPING_PREIMAGE.as_bytes()),
+            coverage_acceptance_rule_sha256: sha256_hex(COVERAGE_ACCEPTANCE_PREIMAGE.as_bytes()),
+            source_removal_preflight_rule_sha256: sha256_hex(
+                SOURCE_REMOVAL_PREFLIGHT_PREIMAGE.as_bytes(),
+            ),
+        }
     }
 
     fn run_real_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
@@ -1209,8 +1421,14 @@ mod source_gate_selection {
                         ),
                         &canonical_json(&source_gate_events)?,
                     )?;
-                    let (runtime_nodes, derived) =
-                        derive_result(device, &scene, page, schema_entry, oracle_entry)?;
+                    let (runtime_nodes, derived) = derive_result(
+                        device,
+                        &scene,
+                        page,
+                        schema_entry,
+                        oracle_entry,
+                        &source_gate_events,
+                    )?;
                     results.push(SelectionResult {
                         entry_id: schema_entry.id.clone(),
                         process_evidence_id: process_id.clone(),
@@ -1333,12 +1551,50 @@ mod source_gate_selection {
         page: koharu_core::PageId,
         schema: &VisualManifestEntry,
         oracle: &OracleValidatedEntry,
+        diagnostics: &[SourceGateDiagnosticEvent],
     ) -> io::Result<(Vec<RuntimeNode>, DerivedEvidence)> {
+        let mut pp_han_by_node = HashMap::new();
+        let mut vl_han_by_node = HashMap::new();
+        let mut rejected_after_vl = false;
+        let mut pp_vl_incomplete_coverage = false;
+        for event in diagnostics {
+            match event {
+                SourceGateDiagnosticEvent::PpSummary { node_id, words } => {
+                    pp_han_by_node.insert(
+                        *node_id,
+                        words
+                            .iter()
+                            .map(|word| word.han_scalar_count)
+                            .sum::<usize>(),
+                    );
+                }
+                SourceGateDiagnosticEvent::VlSummary {
+                    node_id,
+                    han_scalar_count,
+                    ..
+                } => {
+                    vl_han_by_node.insert(*node_id, *han_scalar_count);
+                }
+                SourceGateDiagnosticEvent::Decision {
+                    decision: SourceGateDecision::RejectedAfterVl { reason },
+                    ..
+                } => {
+                    rejected_after_vl = true;
+                    pp_vl_incomplete_coverage |=
+                        *reason == SourceGateRejectReason::PpVlIncompleteCoverage;
+                }
+                _ => {}
+            }
+        }
         let mut runtime_nodes = Vec::new();
         let mut matched = HashSet::new();
         let mut selected = HashSet::new();
         let mut selected_protected = Vec::new();
         let mut unmatched_selected = Vec::new();
+        let mut pp_han_scalar_count = 0;
+        let mut vl_expected_han_scalar_count = 0;
+        let mut pp_vl_complete_coverage = true;
+        let mut expected_diagnostic_nodes = 0;
         let page = scene
             .page(page)
             .ok_or_else(|| invalid_data("runtime scene page is missing"))?;
@@ -1363,6 +1619,14 @@ mod source_gate_selection {
                 .map(|(schema, _)| schema);
             if let Some(target) = target {
                 matched.insert(target.id.clone());
+                if target.expected != Expected::UnsupportedRotation {
+                    let pp_count = pp_han_by_node.get(node_id).copied().unwrap_or_default();
+                    let vl_count = vl_han_by_node.get(node_id).copied().unwrap_or_default();
+                    pp_han_scalar_count += pp_count;
+                    vl_expected_han_scalar_count += vl_count;
+                    expected_diagnostic_nodes += 1;
+                    pp_vl_complete_coverage &= pp_count > 0 && pp_count == vl_count;
+                }
                 if selected_as_han {
                     selected.insert(target.id.clone());
                 }
@@ -1416,7 +1680,15 @@ mod source_gate_selection {
         selected_protected.sort();
         unmatched_selected.sort();
         let rotation_targets_excluded = rotation.is_empty();
-        let passed = recall == 1.0
+        pp_vl_complete_coverage &=
+            expected_diagnostic_nodes > 0 && !rejected_after_vl && !pp_vl_incomplete_coverage;
+        let covered_source_roi_ids = selected
+            .iter()
+            .filter(|id| expected.contains(id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let source_removal_preflight_passed = recall == 1.0 && pp_vl_complete_coverage;
+        let passed = source_removal_preflight_passed
             && selected_protected.is_empty()
             && unmatched_selected.is_empty()
             && rotation_targets_excluded;
@@ -1432,6 +1704,16 @@ mod source_gate_selection {
                 target_recall: recall,
                 protected_false_positive_count: selected_protected.len() as u32,
                 rotation_targets_excluded,
+                source_coverage_preflight: SourceCoveragePreflight {
+                    pp_han_scalar_count,
+                    vl_expected_han_scalar_count,
+                    pp_vl_complete_coverage,
+                    rejected_after_vl,
+                    pp_vl_incomplete_coverage,
+                    covered_source_roi_ids,
+                    source_text_roi_coverage: recall,
+                    source_removal_preflight_passed,
+                },
                 passed,
             },
         ))
@@ -1734,11 +2016,27 @@ mod source_gate_selection {
                 && !artifact.retuned_after_freeze,
             "candidate ratios drift",
         )?;
+        require(
+            artifact.frozen_recall_contract
+                == frozen_recall_contract(&artifact.selected_candidate_id),
+            "frozen recall contract drift",
+        )?;
+        validate_required_checks(artifact, phase, environment)?;
         for hash in [
             &artifact.image_input_contract_sha256,
             &artifact.source_color_contract_sha256,
             &artifact.color_constant_set_sha256,
             &artifact.frozen_payload_sha256,
+            &artifact
+                .frozen_recall_contract
+                .ppocr_crop_local_preprocessing_sha256,
+            &artifact.frozen_recall_contract.inverse_mapping_rule_sha256,
+            &artifact
+                .frozen_recall_contract
+                .coverage_acceptance_rule_sha256,
+            &artifact
+                .frozen_recall_contract
+                .source_removal_preflight_rule_sha256,
         ] {
             decode_sha256(hash)?;
         }
@@ -1762,6 +2060,43 @@ mod source_gate_selection {
         validate_result_matrix(artifact)
     }
 
+    fn validate_required_checks(
+        artifact: &FrozenArtifact,
+        phase: Phase,
+        environment: &SelectionEnvironment,
+    ) -> io::Result<()> {
+        let expected_phases = match phase {
+            Phase::CalibrationFreeze => [Some(Phase::CalibrationFreeze), None],
+            Phase::Holdout => [Some(Phase::CalibrationFreeze), Some(Phase::Holdout)],
+        };
+        require(
+            artifact.required_checks.len()
+                == expected_phases
+                    .iter()
+                    .filter(|phase| phase.is_some())
+                    .count(),
+            "required-check phase count drift",
+        )?;
+        for (stored, expected_phase) in artifact
+            .required_checks
+            .iter()
+            .zip(expected_phases.into_iter().flatten())
+        {
+            let path = environment.evidence_root.join(&stored.attestation_relpath);
+            let (current, held) = load_required_check(
+                &environment.evidence_root,
+                &path,
+                expected_phase,
+                &artifact.b0_sha,
+                &artifact.manifest_sha256,
+                &artifact.source_gate_fixture_manifest_sha256,
+            )?;
+            require(&current == stored, "required-check artifact entry drift")?;
+            held.with_revalidated_path(|_| Ok(()))?;
+        }
+        Ok(())
+    }
+
     fn frozen_projection_sha256(artifact: &FrozenArtifact) -> io::Result<String> {
         let mut process_evidence = artifact
             .process_evidence
@@ -1778,6 +2113,12 @@ mod source_gate_selection {
                 result.candidate_id.clone(),
             )
         });
+        let required_checks = artifact
+            .required_checks
+            .iter()
+            .filter(|check| check.phase == "pre-calibration")
+            .cloned()
+            .collect::<Vec<_>>();
         let projection = serde_json::json!({
             "version": artifact.version,
             "plan_revision": artifact.plan_revision,
@@ -1790,6 +2131,8 @@ mod source_gate_selection {
             "requested_devices": &artifact.requested_devices,
             "enabled_cargo_features": &artifact.enabled_cargo_features,
             "backend_evidence_parser_version": artifact.backend_evidence_parser_version,
+            "required_checks": required_checks,
+            "frozen_recall_contract": &artifact.frozen_recall_contract,
             "candidates": &artifact.candidates,
             "calibration_entry_ids": &artifact.calibration_entry_ids,
             "holdout_entry_ids": &artifact.holdout_entry_ids,
@@ -1905,11 +2248,27 @@ mod source_gate_selection {
             .ok_or_else(|| invalid_data("missing process evidence"))?;
         let load = &process.load_evidence;
         let execution = &result.execution_evidence;
+        let coverage = &result.derived.source_coverage_preflight;
+        let expected_complete_coverage = coverage.pp_han_scalar_count > 0
+            && coverage.pp_han_scalar_count == coverage.vl_expected_han_scalar_count
+            && !coverage.rejected_after_vl
+            && !coverage.pp_vl_incomplete_coverage
+            && coverage.source_text_roi_coverage == 1.0;
+        let expected_preflight = result.derived.target_recall == 1.0 && expected_complete_coverage;
+        let expected_pass = expected_preflight
+            && result.derived.protected_false_positive_count == 0
+            && result.derived.selected_protected_node_ids.is_empty()
+            && result.derived.selected_rotation_target_ids.is_empty()
+            && result.derived.unmatched_selected_node_ids.is_empty()
+            && result.derived.rotation_targets_excluded;
         require(
             process.phase == phase
                 && execution.paddle_instance_id == process.paddle_instance_id
                 && execution.inference_completed
-                && result.derived.actual_device == process.requested_device,
+                && result.derived.actual_device == process.requested_device
+                && coverage.pp_vl_complete_coverage == expected_complete_coverage
+                && coverage.source_removal_preflight_passed == expected_preflight
+                && result.derived.passed == expected_pass,
             "selection result instance or device mismatch",
         )?;
         decode_sha256(&execution.raw_inference_log_sha256)?;
@@ -2249,9 +2608,19 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         }))
         .unwrap();
         fs::write(&manifest, &manifest_bytes).unwrap();
+        let manifest_sha256 = sha256_hex(&manifest_bytes);
+        let b0_sha = "a".repeat(40);
+        let fixture_sha256 = "2".repeat(64);
+        let required_check = write_required_check(
+            root,
+            Phase::CalibrationFreeze,
+            &b0_sha,
+            &manifest_sha256,
+            &fixture_sha256,
+        );
         HashMap::from([
             (PHASE_ENV, "calibration-freeze".into()),
-            (B0_SHA_ENV, "a".repeat(40)),
+            (B0_SHA_ENV, b0_sha),
             (
                 VISUAL_INPUT_ENV,
                 root.join("regression.png").to_string_lossy().into_owned(),
@@ -2262,8 +2631,8 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 root.to_string_lossy().into_owned(),
             ),
             (VISUAL_MANIFEST_ENV, manifest.to_string_lossy().into_owned()),
-            (VISUAL_MANIFEST_SHA256_ENV, sha256_hex(&manifest_bytes)),
-            (SOURCE_GATE_FIXTURE_SHA256_ENV, "2".repeat(64)),
+            (VISUAL_MANIFEST_SHA256_ENV, manifest_sha256),
+            (SOURCE_GATE_FIXTURE_SHA256_ENV, fixture_sha256),
             (
                 ARTIFACT_ENV,
                 root.join("selection.json").to_string_lossy().into_owned(),
@@ -2272,7 +2641,73 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 REPORT_DIR_ENV,
                 root.join("reports").to_string_lossy().into_owned(),
             ),
+            (
+                REQUIRED_CHECK_ENV,
+                required_check.to_string_lossy().into_owned(),
+            ),
         ])
+    }
+
+    fn write_required_check(
+        root: &Path,
+        phase: Phase,
+        b0_sha: &str,
+        manifest_sha256: &str,
+        fixture_sha256: &str,
+    ) -> PathBuf {
+        let directory = root.join("source-gate-selection/checks");
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        fs::set_permissions(
+            root.join("source-gate-selection"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        let attestation = RequiredCheckAttestation {
+            version: 1,
+            mode: "b0-source-gate-anti-fixture".into(),
+            phase: required_check_phase(phase).into(),
+            b0_sha: b0_sha.into(),
+            manifest_sha256: manifest_sha256.into(),
+            source_gate_fixture_manifest_sha256: fixture_sha256.into(),
+            checker_endpoint_sha256: sha256_file(
+                &repository_root().unwrap().join(CHECKER_ENDPOINT),
+            )
+            .unwrap(),
+            scanned_roots: ANTI_FIXTURE_SCANNED_ROOTS
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+            allowed_descriptor_roots: ANTI_FIXTURE_ALLOWED_DESCRIPTOR_ROOTS
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+            policy_scan_sha256: "3".repeat(64),
+            result: "pass".into(),
+        };
+        let path = root.join(required_check_relpath(phase));
+        fs::write(&path, canonical_json(&attestation).unwrap()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    }
+
+    fn set_required_check(values: &mut HashMap<&'static str, String>, root: &Path, phase: Phase) {
+        let path = write_required_check(
+            root,
+            phase,
+            values.get(B0_SHA_ENV).unwrap(),
+            values.get(VISUAL_MANIFEST_SHA256_ENV).unwrap(),
+            values.get(SOURCE_GATE_FIXTURE_SHA256_ENV).unwrap(),
+        );
+        values.insert(REQUIRED_CHECK_ENV, path.to_string_lossy().into_owned());
+    }
+
+    fn test_repository() -> PathBuf {
+        repository_root().unwrap()
     }
 
     fn synthetic_hash(value: u8) -> String {
@@ -2389,6 +2824,16 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 target_recall: 1.0,
                 protected_false_positive_count: 0,
                 rotation_targets_excluded: true,
+                source_coverage_preflight: SourceCoveragePreflight {
+                    pp_han_scalar_count: 1,
+                    vl_expected_han_scalar_count: 1,
+                    pp_vl_complete_coverage: true,
+                    rejected_after_vl: false,
+                    pp_vl_incomplete_coverage: false,
+                    covered_source_roi_ids: vec!["target".into()],
+                    source_text_roi_coverage: 1.0,
+                    source_removal_preflight_passed: true,
+                },
                 passed: true,
             },
         }
@@ -2440,7 +2885,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                    fixture: io::Result<()>| {
             run_with(
                 |name| values.get(name).cloned(),
-                Path::new("/repository"),
+                &test_repository(),
                 |_| head,
                 |_| fixture,
                 |_| {
@@ -2455,6 +2900,9 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         assert!(run(&missing, Ok("a".repeat(40)), Ok(())).is_err());
 
         let valid = valid_environment(&root);
+        let mut missing_check = valid.clone();
+        missing_check.remove(REQUIRED_CHECK_ENV);
+        assert!(run(&missing_check, Ok("a".repeat(40)), Ok(())).is_err());
         let mut invalid = valid.clone();
         invalid.insert(PHASE_ENV, "selection".into());
         assert!(run(&invalid, Ok("a".repeat(40)), Ok(())).is_err());
@@ -2486,7 +2934,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
 
         let result = run_with(
             |name| valid.get(name).cloned(),
-            Path::new("/repository"),
+            &test_repository(),
             |_| Ok("a".repeat(40)),
             |_| Ok(()),
             |_| {
@@ -2509,7 +2957,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
 
         run_with(
             |name| values.get(name).cloned(),
-            Path::new("/repository"),
+            &test_repository(),
             |_| Ok("a".repeat(40)),
             |_| Ok(()),
             |_| Ok(calibration_evidence()),
@@ -2522,6 +2970,11 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         assert_eq!(bytes.last(), Some(&b'\n'));
         assert_eq!(artifact.process_evidence.len(), 2);
         assert_eq!(artifact.calibration_results.len(), 32);
+        assert_eq!(artifact.required_checks.len(), 1);
+        assert_eq!(
+            artifact.frozen_recall_contract,
+            frozen_recall_contract(&artifact.selected_candidate_id)
+        );
         assert!(artifact.holdout_results.is_empty());
         assert!(artifact.holdout_completed_at_utc.is_none());
     }
@@ -2533,7 +2986,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let mut values = valid_environment(&root);
         run_with(
             |name| values.get(name).cloned(),
-            Path::new("/repository"),
+            &test_repository(),
             |_| Ok("a".repeat(40)),
             |_| Ok(()),
             |_| Ok(calibration_evidence()),
@@ -2541,9 +2994,10 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         .unwrap();
 
         values.insert(PHASE_ENV, "holdout".into());
+        set_required_check(&mut values, &root, Phase::Holdout);
         run_with(
             |name| values.get(name).cloned(),
-            Path::new("/repository"),
+            &test_repository(),
             |_| Ok("a".repeat(40)),
             |_| Ok(()),
             |_| Ok(holdout_evidence()),
@@ -2556,6 +3010,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         assert_eq!(artifact.process_evidence.len(), 4);
         assert_eq!(artifact.calibration_results.len(), 32);
         assert_eq!(artifact.holdout_results.len(), 8);
+        assert_eq!(artifact.required_checks.len(), 2);
         assert!(!artifact.retuned_after_freeze);
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(
@@ -2577,6 +3032,8 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 "requested_devices".into(),
                 "enabled_cargo_features".into(),
                 "backend_evidence_parser_version".into(),
+                "required_checks".into(),
+                "frozen_recall_contract".into(),
                 "candidates".into(),
                 "calibration_entry_ids".into(),
                 "holdout_entry_ids".into(),
@@ -2629,7 +3086,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             assert!(
                 run_with(
                     |name| values.get(name).cloned(),
-                    Path::new("/repository"),
+                    &test_repository(),
                     |_| Ok("a".repeat(40)),
                     |_| Ok(()),
                     |_| Ok(evidence),
@@ -2652,7 +3109,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
 
         let error = run_with(
             |name| values.get(name).cloned(),
-            Path::new("/repository"),
+            &test_repository(),
             |_| Ok("a".repeat(40)),
             |_| Ok(()),
             |_| Ok(evidence),
@@ -2688,7 +3145,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let values = valid_environment(&root);
         run_with(
             |name| values.get(name).cloned(),
-            Path::new("/repository"),
+            &test_repository(),
             |_| Ok("a".repeat(40)),
             |_| Ok(()),
             |_| Ok(calibration_evidence()),

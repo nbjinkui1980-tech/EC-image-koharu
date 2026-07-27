@@ -2469,6 +2469,7 @@ mod tests {
                     contains_han,
                     character_count,
                     line_count,
+                    ..
                 } => {
                     builders.entry(node_id).or_default().vl_summary = Some(MatrixVlSummary {
                         contains_han,
