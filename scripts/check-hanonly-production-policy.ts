@@ -202,6 +202,13 @@ const expectedB1RedIds = [
   'hanonly_pre_b1_red_t2_replace_import_atomicity_contract',
   'hanonly_pre_b1_red_t2_rotation_status_contract',
 ] as const
+const b0OwnedRedIds = [
+  'hanonly_pre_b1_red_t2_source_gate_ratio_contract',
+  'hanonly_pre_b1_red_t2_crop_local_ppocr_contract',
+] as const
+const expectedB0B1MarkerIds = expectedB1RedIds.filter(
+  (id) => !(b0OwnedRedIds as readonly string[]).includes(id),
+)
 const expectedGreenCRedIds = [
   'hanonly_pre_greenc_red_t3_transient_planner_hint_contract',
   'hanonly_pre_greenc_red_t3_run_state_lifetime_contract',
@@ -267,6 +274,35 @@ const generatedRustForbiddenNeedles = [
   'crop-policy-selection',
   'test.jpeg',
 ] as const
+const b0AntiFixtureProductionRoots = [
+  'crates/koharu-app/src/pipeline/engines/source_language_gate.rs',
+  'crates/koharu-ml/src/pp_ocr_v5.rs',
+  'crates/koharu-llm/src/paddleocr_vl.rs',
+] as const
+const b0AntiFixtureEvidenceRoots = ['crates/koharu-app/src/pipeline/mod.rs'] as const
+const b0AntiFixtureScriptRoots = [
+  'scripts/check-hanonly-production-policy.ts',
+  'scripts/check-hanonly-production-policy.test.ts',
+  'scripts/hanonly_evidence_ledger.py',
+  'scripts/hanonly_evidence_ledger_test.py',
+] as const
+const b0AntiFixtureScannedRoots = [
+  ...b0AntiFixtureProductionRoots,
+  ...b0AntiFixtureEvidenceRoots,
+  ...b0AntiFixtureScriptRoots,
+] as const
+const b0AntiFixtureAllowedDescriptorRoots = [
+  ...b0AntiFixtureEvidenceRoots,
+  ...b0AntiFixtureScriptRoots,
+] as const
+
+type B0AntiFixturePhase = 'pre-calibration' | 'pre-holdout'
+
+interface B0AntiFixtureVerdict {
+  category: string
+  root: string
+  result: 'pass'
+}
 
 export function validateSnapshotMetadata(value: unknown): SnapshotMetadata {
   const record = object(value, 'snapshot-metadata', 'metadata')
@@ -681,6 +717,260 @@ export async function readRepoText(
   }
 }
 
+function sourceByPath(files: readonly RustSourceFile[], relativePath: string): RustSourceFile {
+  const file = files.find((item) => item.path === relativePath)
+  if (!file) fail('b0-source-gate-anti-fixture', `${relativePath} is missing`)
+  return file
+}
+
+function productionRustText(file: RustSourceFile): string {
+  return file.text.split(/\n#\[cfg\(test\)\]\s*\nmod tests\b/, 1)[0]
+}
+
+function b0AntiFixtureForbiddenVerdicts(files: readonly RustSourceFile[]): B0AntiFixtureVerdict[] {
+  const checks: Array<{ category: string; pattern: RegExp }> = [
+    {
+      category: 'fixture_name',
+      pattern:
+        /\b(?:c0[1-4]|h0[1-4])\b|test\.(?:jpe?g|webp)|peach-hip|s-curve|full-body-shaping|slim-waist|confidence-body/,
+    },
+    { category: 'fixed_hash', pattern: /\b[0-9a-f]{64}\b/i },
+    {
+      category: 'fixed_dimension',
+      pattern: /\b(?:width|height|image_width|image_height)\s*(?:==|!=)\s*\d{2,5}/,
+    },
+    {
+      category: 'fixed_crop',
+      pattern: /\[\s*\d{1,5}\s*,\s*\d{1,5}\s*,\s*\d{1,5}\s*,\s*\d{1,5}\s*\]/,
+    },
+    {
+      category: 'fixed_node_id',
+      pattern: /NodeId::(?:from|from_u128|from_bytes)|node_id\s*(?:==|!=)\s*["']/,
+    },
+    {
+      category: 'corpus_role',
+      pattern:
+        /corpus_role|entry_role|role\s*(?:==|!=)\s*["'](?:calibration|holdout|regression)["']/,
+    },
+  ]
+  const verdicts: B0AntiFixtureVerdict[] = []
+  for (const root of b0AntiFixtureProductionRoots) {
+    const text = productionRustText(sourceByPath(files, root))
+    for (const check of checks) {
+      if (check.pattern.test(text)) {
+        fail('b0-source-gate-anti-fixture', `${root} contains ${check.category}`)
+      }
+      verdicts.push({ category: check.category, root, result: 'pass' })
+    }
+  }
+  return verdicts
+}
+
+function b0AntiFixtureDescriptorVerdicts(files: readonly RustSourceFile[]): B0AntiFixtureVerdict[] {
+  const descriptorPattern =
+    /source_gate_fixture_manifest_sha256|manifest_sha256|fixtureManifestSha256|EntryRole|VisualManifest/
+  const verdicts: B0AntiFixtureVerdict[] = []
+  for (const root of b0AntiFixtureProductionRoots) {
+    if (descriptorPattern.test(productionRustText(sourceByPath(files, root)))) {
+      fail('b0-source-gate-anti-fixture', `${root} consumes descriptor data`)
+    }
+    verdicts.push({ category: 'descriptor_data_absent_from_production', root, result: 'pass' })
+  }
+  for (const root of b0AntiFixtureAllowedDescriptorRoots) {
+    sourceByPath(files, root)
+    verdicts.push({ category: 'descriptor_data_allowed_root', root, result: 'pass' })
+  }
+  return verdicts
+}
+
+function validateB0SourceGateTraceability(
+  files: readonly RustSourceFile[],
+): B0AntiFixtureVerdict[] {
+  const sourceGate = sourceByPath(
+    files,
+    'crates/koharu-app/src/pipeline/engines/source_language_gate.rs',
+  ).text
+  for (const needle of [
+    'select_chinese_target_with_fallback',
+    'validate_pp_vl_alignment_internal',
+    'safe_crop_bounds_with_policy',
+    'crop_policy_parameters',
+    'compute_safe_crop_bounds',
+    'SourceGateDecision::Accepted',
+  ]) {
+    if (!sourceGate.includes(needle)) {
+      fail('b0-source-gate-anti-fixture', `Source Gate traceability lost ${needle}`)
+    }
+  }
+  const ppOcr = sourceByPath(files, 'crates/koharu-ml/src/pp_ocr_v5.rs').text
+  for (const needle of ['word_box_inference_scale', 'word_box_source_bbox', 'pub fn word_boxes']) {
+    if (!ppOcr.includes(needle)) {
+      fail('b0-source-gate-anti-fixture', `PP-OCR traceability lost ${needle}`)
+    }
+  }
+  return [
+    {
+      category: 'source_gate_acceptance_traces_to_ocr_vl_geometry',
+      root: 'crates/koharu-app/src/pipeline/engines/source_language_gate.rs',
+      result: 'pass',
+    },
+    {
+      category: 'ppocr_crop_local_scaling_traceable',
+      root: 'crates/koharu-ml/src/pp_ocr_v5.rs',
+      result: 'pass',
+    },
+  ]
+}
+
+export function validateB0SourceGateAntiFixture(
+  files: readonly RustSourceFile[],
+): B0AntiFixtureVerdict[] {
+  const actualRoots = files.map((file) => file.path)
+  if (!deepEqual(actualRoots, [...b0AntiFixtureScannedRoots])) {
+    fail('b0-source-gate-anti-fixture', 'scanned roots drift')
+  }
+  return [
+    ...b0AntiFixtureForbiddenVerdicts(files),
+    ...b0AntiFixtureDescriptorVerdicts(files),
+    ...validateB0SourceGateTraceability(files),
+  ]
+}
+
+async function readB0AntiFixtureSources(root: string): Promise<RustSourceFile[]> {
+  return Promise.all(
+    b0AntiFixtureScannedRoots.map(async (relativePath) => ({
+      path: relativePath,
+      text: await readRepoText(root, relativePath, relativePath),
+    })),
+  )
+}
+
+function requiredHashEnv(name: string): string {
+  const value = process.env[name]
+  if (!value || !hex64.test(value)) {
+    fail('b0-source-gate-anti-fixture', `${name} is required`)
+  }
+  return value
+}
+
+function requiredB0ShaEnv(): string {
+  const value = process.env.HANONLY_B0_SHA
+  if (!value || !hex40.test(value)) {
+    fail('b0-source-gate-anti-fixture', 'HANONLY_B0_SHA is required')
+  }
+  return value
+}
+
+function requiredB0AntiFixturePhase(): B0AntiFixturePhase {
+  const value = process.env.HANONLY_B0_REQUIRED_CHECK_PHASE
+  if (value !== 'pre-calibration' && value !== 'pre-holdout') {
+    fail('b0-source-gate-anti-fixture', 'HANONLY_B0_REQUIRED_CHECK_PHASE is required')
+  }
+  return value
+}
+
+async function b0AntiFixtureOutputPath(root: string): Promise<string> {
+  const output = process.env.HANONLY_B0_REQUIRED_CHECK_ATTESTATION_OUT
+  if (!output || !path.isAbsolute(output) || path.resolve(output) !== output) {
+    fail('b0-source-gate-anti-fixture', 'HANONLY_B0_REQUIRED_CHECK_ATTESTATION_OUT is required')
+  }
+  const parent = path.dirname(output)
+  let canonicalParent: string
+  try {
+    canonicalParent = await realpath(parent)
+  } catch {
+    fail('b0-source-gate-anti-fixture', 'attestation parent is unavailable')
+  }
+  if (parent !== canonicalParent || path.basename(output).includes(path.sep)) {
+    fail('b0-source-gate-anti-fixture', 'attestation output path is not canonical')
+  }
+  const evidenceRoot = process.env.HANONLY_EVIDENCE_ROOT
+  if (evidenceRoot) {
+    let canonicalEvidenceRoot: string
+    try {
+      canonicalEvidenceRoot = await realpath(evidenceRoot)
+    } catch {
+      fail('b0-source-gate-anti-fixture', 'HANONLY_EVIDENCE_ROOT is unavailable')
+    }
+    const relative = path.relative(canonicalEvidenceRoot, output)
+    if (relative === '' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      fail('b0-source-gate-anti-fixture', 'attestation output is outside evidence root')
+    }
+  }
+  const repoRelative = path.relative(await realpath(root), output)
+  if (
+    repoRelative === '' ||
+    (!repoRelative.startsWith(`..${path.sep}`) && !path.isAbsolute(repoRelative))
+  ) {
+    fail('b0-source-gate-anti-fixture', 'attestation output must be outside the repository')
+  }
+  return output
+}
+
+async function writeSyncedFile(filePath: string, data: string): Promise<void> {
+  const handle = await open(
+    filePath,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+    0o600,
+  )
+  try {
+    await handle.writeFile(data)
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+  const parent = await open(path.dirname(filePath), constants.O_RDONLY)
+  try {
+    await parent.sync()
+  } finally {
+    await parent.close()
+  }
+}
+
+export async function runB0SourceGateAntiFixture(root: string): Promise<void> {
+  const phase = requiredB0AntiFixturePhase()
+  const b0Sha = requiredB0ShaEnv()
+  const manifestSha256 = requiredHashEnv('HANONLY_VISUAL_MANIFEST_SHA256')
+  const fixtureManifestSha256 = requiredHashEnv('HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256')
+  const output = await b0AntiFixtureOutputPath(root)
+  const files = await readB0AntiFixtureSources(root)
+  const verdicts = validateB0SourceGateAntiFixture(files)
+  const checkerEndpointSha256 = createHash('sha256')
+    .update(sourceByPath(files, 'scripts/check-hanonly-production-policy.ts').text)
+    .digest('hex')
+  const scan = {
+    version: 1,
+    mode: 'b0-source-gate-anti-fixture',
+    phase,
+    b0_sha: b0Sha,
+    manifest_sha256: manifestSha256,
+    source_gate_fixture_manifest_sha256: fixtureManifestSha256,
+    checker_endpoint_sha256: checkerEndpointSha256,
+    scanned_roots: [...b0AntiFixtureScannedRoots],
+    allowed_descriptor_roots: [...b0AntiFixtureAllowedDescriptorRoots],
+    forbidden_category_verdicts: verdicts.filter(
+      (verdict) => verdict.category !== 'descriptor_data_allowed_root',
+    ),
+    descriptor_use_verdicts: verdicts.filter((verdict) =>
+      verdict.category.startsWith('descriptor_data'),
+    ),
+  }
+  const attestation = {
+    version: 1,
+    mode: 'b0-source-gate-anti-fixture',
+    phase,
+    b0_sha: b0Sha,
+    manifest_sha256: manifestSha256,
+    source_gate_fixture_manifest_sha256: fixtureManifestSha256,
+    checker_endpoint_sha256: checkerEndpointSha256,
+    scanned_roots: [...b0AntiFixtureScannedRoots],
+    allowed_descriptor_roots: [...b0AntiFixtureAllowedDescriptorRoots],
+    policy_scan_sha256: createHash('sha256').update(canonicalJson(scan)).digest('hex'),
+    result: 'pass',
+  }
+  await writeSyncedFile(output, `${canonicalJson(attestation)}\n`)
+}
+
 function trackedRustPaths(root: string): string[] {
   const result = Bun.spawnSync({
     cmd: ['git', 'ls-files', '*.rs'],
@@ -753,8 +1043,10 @@ export function validateRedTestState(
   for (const marker of stagedRedMarkers) {
     const expectedIds = expectedRedByMarker.get(marker)!
     if (state === 'b0') {
+      const expectedMarkerIds =
+        marker === 'hanonly-pre-b1-red' ? expectedB0B1MarkerIds : expectedIds
       const actualIds = [...(stagedRedEntries(files).get(marker) ?? [])].sort()
-      if (!deepEqual(actualIds, [...expectedIds].sort())) {
+      if (!deepEqual(actualIds, [...expectedMarkerIds].sort())) {
         fail('red-test-state', `${marker} inventory drift`)
       }
     } else if (countOccurrences(fullText, marker) !== 0) {
@@ -1216,6 +1508,11 @@ async function main(): Promise<void> {
   if (args.includes('--validate-b0-authorization')) {
     const digest = await validateB0Authorization(repoRoot, args)
     if (digest) process.stdout.write(`${digest}\n`)
+    return
+  }
+  if (deepEqual(args, ['--b0-source-gate-anti-fixture'])) {
+    await runB0SourceGateAntiFixture(repoRoot)
+    process.stdout.write('PASS: hanonly b0 source gate anti-fixture\n')
     return
   }
   fail('argv', 'expected a known HanOnly production policy mode')

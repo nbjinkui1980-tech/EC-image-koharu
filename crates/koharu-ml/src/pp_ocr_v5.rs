@@ -55,7 +55,12 @@ fn word_box_inference_scale(width: u32, height: u32) -> u32 {
 
 fn word_box_source_bbox(bbox: [f32; 4], scale: u32) -> [f32; 4] {
     let scale = scale.max(1) as f32;
-    bbox.map(|coordinate| coordinate / scale)
+    [
+        (bbox[0] / scale).floor(),
+        (bbox[1] / scale).floor(),
+        (bbox[2] / scale).ceil(),
+        (bbox[3] / scale).ceil(),
+    ]
 }
 
 impl PpOcrV5 {
@@ -206,7 +211,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-b1-red"]
     fn hanonly_pre_b1_red_t2_crop_local_ppocr_contract() {
         assert_eq!(
             word_box_source_bbox([59.0, 41.0, 473.0, 115.0], 2),

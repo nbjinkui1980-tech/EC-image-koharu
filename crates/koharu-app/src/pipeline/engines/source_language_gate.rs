@@ -196,7 +196,13 @@ pub(in crate::pipeline) enum SourceGateCropPolicy {
     S25L7,
 }
 
-const PRIMARY_CROP_POLICY: SourceGateCropPolicy = SourceGateCropPolicy::C2;
+const PRIMARY_CROP_POLICY: SourceGateCropPolicy = SourceGateCropPolicy::S25L4;
+const B0_CROP_POLICIES: [SourceGateCropPolicy; 4] = [
+    PRIMARY_CROP_POLICY,
+    SourceGateCropPolicy::S25L5,
+    SourceGateCropPolicy::S25L6,
+    SourceGateCropPolicy::S25L7,
+];
 
 impl SourceGateCropPolicy {
     #[cfg(test)]
@@ -206,22 +212,22 @@ impl SourceGateCropPolicy {
 }
 
 #[cfg(test)]
-static TEST_CROP_POLICY: OnceLock<Mutex<SourceGateCropPolicy>> = OnceLock::new();
+static TEST_CROP_POLICY: OnceLock<Mutex<Option<SourceGateCropPolicy>>> = OnceLock::new();
 
 #[cfg(test)]
 pub(in crate::pipeline) struct SourceGateCropPolicyGuard {
-    previous: SourceGateCropPolicy,
+    previous: Option<SourceGateCropPolicy>,
 }
 
 #[cfg(test)]
 impl SourceGateCropPolicyGuard {
     pub(in crate::pipeline) fn set(policy: SourceGateCropPolicy) -> Self {
         let mut active = TEST_CROP_POLICY
-            .get_or_init(|| Mutex::new(SourceGateCropPolicy::C1))
+            .get_or_init(|| Mutex::new(None))
             .lock()
             .expect("source gate crop policy mutex poisoned");
         let previous = *active;
-        *active = policy;
+        *active = Some(policy);
         Self { previous }
     }
 }
@@ -230,7 +236,7 @@ impl SourceGateCropPolicyGuard {
 impl Drop for SourceGateCropPolicyGuard {
     fn drop(&mut self) {
         *TEST_CROP_POLICY
-            .get_or_init(|| Mutex::new(SourceGateCropPolicy::C1))
+            .get_or_init(|| Mutex::new(None))
             .lock()
             .expect("source gate crop policy mutex poisoned") = self.previous;
     }
@@ -809,24 +815,16 @@ pub(crate) fn has_gate_candidates(scene: &Scene, page: PageId) -> bool {
     })
 }
 
-fn safe_crop_bounds(
-    transform: &Transform,
-    image_width: u32,
-    image_height: u32,
-) -> Option<[u32; 4]> {
+fn active_crop_policies() -> Vec<SourceGateCropPolicy> {
     #[cfg(test)]
-    let policy = *TEST_CROP_POLICY
-        .get_or_init(|| Mutex::new(PRIMARY_CROP_POLICY))
+    if let Some(policy) = *TEST_CROP_POLICY
+        .get_or_init(|| Mutex::new(None))
         .lock()
-        .expect("source gate crop policy mutex poisoned");
-    #[cfg(not(test))]
-    let policy = PRIMARY_CROP_POLICY;
-    compute_safe_crop_bounds(
-        transform,
-        image_width,
-        image_height,
-        crop_policy_parameters(policy, transform),
-    )
+        .expect("source gate crop policy mutex poisoned")
+    {
+        return vec![policy];
+    }
+    B0_CROP_POLICIES.to_vec()
 }
 
 fn crop_policy_parameters(policy: SourceGateCropPolicy, transform: &Transform) -> (f32, bool) {
@@ -845,7 +843,6 @@ fn crop_policy_parameters(policy: SourceGateCropPolicy, transform: &Transform) -
     }
 }
 
-#[cfg(test)]
 fn safe_crop_bounds_with_policy(
     transform: &Transform,
     image_width: u32,
@@ -938,40 +935,49 @@ fn source_gate_candidates(
                 node.transform.height,
             ],
         });
-        let Some([left, top, right, bottom]) =
-            safe_crop_bounds(&node.transform, image.width(), image.height())
-        else {
-            invalid.push(*node_id);
-            candidate_index += 1;
-            continue;
-        };
-        let crop = image.crop_imm(left, top, right - left, bottom - top);
-        if tracing::enabled!(target: "koharu::source_gate", tracing::Level::DEBUG) {
-            tracing::debug!(
-                target: "koharu::source_gate",
+        let mut valid = false;
+        for policy in active_crop_policies() {
+            let Some([left, top, right, bottom]) = safe_crop_bounds_with_policy(
+                &node.transform,
+                image.width(),
+                image.height(),
+                policy,
+            ) else {
+                candidate_index += 1;
+                continue;
+            };
+            valid = true;
+            let crop = image.crop_imm(left, top, right - left, bottom - top);
+            if tracing::enabled!(target: "koharu::source_gate", tracing::Level::DEBUG) {
+                tracing::debug!(
+                    target: "koharu::source_gate",
+                    candidate_index,
+                    node_id = ?node_id,
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    crop_rgba_hash = %rgba_fingerprint(&crop),
+                    "source_gate.crop"
+                );
+            }
+            #[cfg(test)]
+            record_diagnostic(SourceGateDiagnosticEvent::Crop {
                 candidate_index,
-                node_id = ?node_id,
-                left,
-                top,
-                right,
-                bottom,
-                crop_rgba_hash = %rgba_fingerprint(&crop),
-                "source_gate.crop"
-            );
+                node_id: *node_id,
+                bounds: [left, top, right, bottom],
+                crop_rgba_hash: rgba_fingerprint(&crop),
+            });
+            candidates.push(SourceGateCandidate {
+                node_id: *node_id,
+                crop,
+                crop_bounds: [left, top, right, bottom],
+            });
+            candidate_index += 1;
         }
-        #[cfg(test)]
-        record_diagnostic(SourceGateDiagnosticEvent::Crop {
-            candidate_index,
-            node_id: *node_id,
-            bounds: [left, top, right, bottom],
-            crop_rgba_hash: rgba_fingerprint(&crop),
-        });
-        candidates.push(SourceGateCandidate {
-            node_id: *node_id,
-            crop,
-            crop_bounds: [left, top, right, bottom],
-        });
-        candidate_index += 1;
+        if !valid {
+            invalid.push(*node_id);
+        }
     }
     Ok((candidates, invalid))
 }
@@ -1152,7 +1158,8 @@ where
         trace_decision(*node_id, &SourceGateDecision::InvalidCandidateGeometry);
     }
     let mut rejected = invalid;
-    let mut pending = Vec::new();
+    let mut candidate_failures = HashSet::new();
+    let mut resolved = HashSet::new();
     let mut accepted = scene
         .page(page)
         .into_iter()
@@ -1162,8 +1169,13 @@ where
                 && matches!(&node.kind, NodeKind::Text(text) if text.detector.as_deref() == Some(SOURCE_GATE_TARGET_DETECTOR))
         })
         .count();
+    let mut next_at = scene.page(page).map(|page| page.nodes.len()).unwrap_or(0);
+    let mut mutations = Vec::new();
 
     for candidate in candidates {
+        if resolved.contains(&candidate.node_id) {
+            continue;
+        }
         let words = word_boxes(candidate.node_id, &candidate.crop)?;
         tracing::debug!(
             target: "koharu::source_gate",
@@ -1219,38 +1231,23 @@ where
             );
         }
         match classify_pp_words(&words) {
-            Ok(()) => pending.push((candidate, words)),
+            Ok(()) => {}
             Err(reason) => {
                 trace_decision(
                     candidate.node_id,
                     &SourceGateDecision::RejectedBeforeVl { reason },
                 );
-                rejected.push(candidate.node_id);
+                candidate_failures.insert(candidate.node_id);
+                continue;
             }
         }
-    }
 
-    let vl_texts = if pending.is_empty() {
-        Vec::new()
-    } else {
-        validate(
-            pending
-                .iter()
-                .map(|(candidate, _)| candidate.crop.clone())
-                .collect(),
-        )
-        .await?
-    };
-    if vl_texts.len() != pending.len() {
-        for (candidate, _) in &pending {
+        let mut vl_texts = validate(vec![candidate.crop.clone()]).await?;
+        if vl_texts.len() != 1 {
             trace_decision(candidate.node_id, &SourceGateDecision::VlBatchError);
+            ensure!(false, "source gate OCR count mismatch");
         }
-        ensure!(false, "source gate OCR count mismatch");
-    }
-
-    let mut next_at = scene.page(page).map(|page| page.nodes.len()).unwrap_or(0);
-    let mut mutations = Vec::new();
-    for ((candidate, words), vl_text) in pending.into_iter().zip(vl_texts) {
+        let vl_text = vl_texts.remove(0);
         tracing::debug!(
             target: "koharu::source_gate",
             node_id = ?candidate.node_id,
@@ -1278,6 +1275,9 @@ where
         ) {
             Ok((selection, decision)) => {
                 trace_decision(candidate.node_id, &decision);
+                if !resolved.insert(candidate.node_id) {
+                    continue;
+                }
                 accepted += selection.targets.len();
                 mutations.extend(update_target_ops(
                     page,
@@ -1289,10 +1289,15 @@ where
             Err(reason) => {
                 let decision = SourceGateDecision::RejectedAfterVl { reason };
                 trace_decision(candidate.node_id, &decision);
-                rejected.push(candidate.node_id);
+                candidate_failures.insert(candidate.node_id);
             }
         }
     }
+    rejected.extend(
+        candidate_failures
+            .into_iter()
+            .filter(|node_id| !resolved.contains(node_id)),
+    );
 
     let mut removed = HashSet::new();
     let mut ops = mutations;
@@ -2102,7 +2107,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-b1-red"]
     fn hanonly_pre_b1_red_t2_source_gate_ratio_contract() {
         let expected = [
             ("S25L4", [60, 80, 1140, 260]),

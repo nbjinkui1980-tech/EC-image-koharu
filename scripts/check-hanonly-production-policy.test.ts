@@ -26,6 +26,7 @@ import {
   readStableFile,
   repoRoot,
   validateB0Authorization,
+  validateB0SourceGateAntiFixture,
   validateDependencyInventory,
   validateFrozenInterpreterRecords,
   validateGeneratedRustAudit,
@@ -812,7 +813,18 @@ function b0RedSources(): RustSourceFile[] {
     {
       path: 'synthetic.rs',
       text: [
-        ...b1.map((id) => `#[test]\n#[ignore = "hanonly-pre-b1-red"]\nfn ${id}() {}`),
+        ...b1.map((id) =>
+          [
+            '#[test]',
+            ...([
+              'hanonly_pre_b1_red_t2_source_gate_ratio_contract',
+              'hanonly_pre_b1_red_t2_crop_local_ppocr_contract',
+            ].includes(id)
+              ? []
+              : ['#[ignore = "hanonly-pre-b1-red"]']),
+            `fn ${id}() {}`,
+          ].join('\n'),
+        ),
         ...greenC.map(
           (id) => `#[tokio::test]\n#[ignore = "hanonly-pre-greenc-red"]\nasync fn ${id}() {}`,
         ),
@@ -831,6 +843,16 @@ describe('RED test state policy', () => {
     files[0].text = files[0].text.replace(
       '#[ignore = "hanonly-pre-b1-red"]\nfn hanonly_pre_b1_red_t2_dynamic_layout_contract',
       'fn hanonly_pre_b1_red_t2_dynamic_layout_contract',
+    )
+
+    expect(() => validateRedTestState(files, 'b0')).toThrow(PolicyError)
+  })
+
+  test('rejects B0-owned source gate tests if they remain ignored', () => {
+    const files = b0RedSources()
+    files[0].text = files[0].text.replace(
+      'fn hanonly_pre_b1_red_t2_source_gate_ratio_contract',
+      '#[ignore = "hanonly-pre-b1-red"]\nfn hanonly_pre_b1_red_t2_source_gate_ratio_contract',
     )
 
     expect(() => validateRedTestState(files, 'b0')).toThrow(PolicyError)
@@ -891,6 +913,87 @@ describe('release feature inventory policy', () => {
     )
 
     expect(() => validateReleaseFeatureInventory(files)).toThrow(PolicyError)
+  })
+})
+
+const antiFixturePaths = [
+  'crates/koharu-app/src/pipeline/engines/source_language_gate.rs',
+  'crates/koharu-ml/src/pp_ocr_v5.rs',
+  'crates/koharu-llm/src/paddleocr_vl.rs',
+  'crates/koharu-app/src/pipeline/mod.rs',
+  'scripts/check-hanonly-production-policy.ts',
+  'scripts/check-hanonly-production-policy.test.ts',
+  'scripts/hanonly_evidence_ledger.py',
+  'scripts/hanonly_evidence_ledger_test.py',
+] as const
+
+async function antiFixtureSources(): Promise<RustSourceFile[]> {
+  return Promise.all(
+    antiFixturePaths.map(async (relativePath) => ({
+      path: relativePath,
+      text: await readFile(path.join(repoRoot, relativePath), 'utf8'),
+    })),
+  )
+}
+
+describe('B0 source gate anti-fixture policy', () => {
+  test('accepts the current R49 scan roots', async () => {
+    const files = await antiFixtureSources()
+    expect(() => validateB0SourceGateAntiFixture(files)).not.toThrow()
+  })
+
+  test('rejects fixture branches in production Source Gate roots', async () => {
+    const files = await antiFixtureSources()
+    files[0].text = 'if entry_id == "h03" { return true }\n' + files[0].text
+
+    expect(() => validateB0SourceGateAntiFixture(files)).toThrow(PolicyError)
+  })
+
+  test('rejects descriptor flow in production PP-OCR roots', async () => {
+    const files = await antiFixtureSources()
+    files[1].text = 'let source_gate_fixture_manifest_sha256 = "fixture";\n' + files[1].text
+
+    expect(() => validateB0SourceGateAntiFixture(files)).toThrow(PolicyError)
+  })
+
+  test('writes a canonical phase-bound attestation from the CLI', async () => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-r49-')))
+    temporaryRoots.push(temporaryRoot)
+    const evidenceRoot = path.join(temporaryRoot, 'evidence')
+    await mkdir(evidenceRoot)
+    const attestation = path.join(evidenceRoot, 'pre-calibration-attestation.json')
+
+    const result = await runCli(['--b0-source-gate-anti-fixture'], {
+      HANONLY_B0_SHA: 'a'.repeat(40),
+      HANONLY_B0_REQUIRED_CHECK_PHASE: 'pre-calibration',
+      HANONLY_B0_REQUIRED_CHECK_ATTESTATION_OUT: attestation,
+      HANONLY_EVIDENCE_ROOT: evidenceRoot,
+      HANONLY_VISUAL_MANIFEST_SHA256: 'b'.repeat(64),
+      HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256: 'c'.repeat(64),
+    })
+
+    expect(result).toEqual({
+      exitCode: 0,
+      stdout: 'PASS: hanonly b0 source gate anti-fixture\n',
+      stderr: '',
+    })
+    const parsed = JSON.parse(await readFile(attestation, 'utf8'))
+    expect(Object.keys(parsed).sort()).toEqual([
+      'allowed_descriptor_roots',
+      'b0_sha',
+      'checker_endpoint_sha256',
+      'manifest_sha256',
+      'mode',
+      'phase',
+      'policy_scan_sha256',
+      'result',
+      'scanned_roots',
+      'source_gate_fixture_manifest_sha256',
+      'version',
+    ])
+    expect(parsed.phase).toBe('pre-calibration')
+    expect(parsed.result).toBe('pass')
+    expect(parsed.scanned_roots).toEqual([...antiFixturePaths])
   })
 })
 
