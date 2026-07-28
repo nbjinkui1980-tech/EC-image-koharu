@@ -1,0 +1,828 @@
+{
+  "version": 1,
+  "plan_revision": 51,
+  "purpose": "Replace the infeasible Revision 50 native-agent identity proof with an executable encrypted one-shot blind holdout custody while preserving the production-generic detector-support repair.",
+  "base_production_contract": {
+    "path": ".omx/plans/hanonly-r50-b0-evidence-contract.json",
+    "sha256": "d29a18cd93d6d26516414009451117b131334f2a26439b0806d173e1e1c50afb",
+    "inherited_top_level_keys": [
+      "canonicalization",
+      "detector_support_preimage",
+      "detector_support_record",
+      "diagnostic_index",
+      "diagnostic_payload"
+    ],
+    "superseded_top_level_keys": [
+      "historical_root_registry",
+      "holdout_lane_attestations",
+      "holdout_seal",
+      "b0_authorization_record",
+      "b0_preflight_attestation"
+    ]
+  },
+  "scope": {
+    "allowed_production_changes": [
+      "shared PP-OCR detector observation preserving every raw detector occurrence and missing recognition",
+      "shared Source Gate detector-support ownership and raster coverage acceptance",
+      "crop-local PP-OCR preprocessing and inverse coordinate mapping already owned by B0",
+      "durable B0 diagnostics and authorization validators"
+    ],
+    "forbidden_production_changes": [
+      "layout",
+      "font",
+      "renderer",
+      "UI",
+      "target typography",
+      "color policy",
+      "fixture identity branches",
+      "threshold-only relaxation",
+      "protected Latin relaxation",
+      "PP/VL disagreement bypass"
+    ]
+  },
+  "corpus": {
+    "calibration_ids": [
+      "r51-c01",
+      "r51-c02",
+      "r51-c03",
+      "r51-c04"
+    ],
+    "formal_holdout_ids": [
+      "r51-h01",
+      "r51-h02",
+      "r51-h03",
+      "r51-h04"
+    ],
+    "disclosed_challenge_ids": [
+      "r49-h01",
+      "r49-h02",
+      "r49-h03",
+      "r49-h04",
+      "x01",
+      "x02",
+      "x03",
+      "x04",
+      "x05"
+    ],
+    "oracle_correction": "R49 h04 product-id is pure protected Latin and remains rejected; R49 corpus is immutable and the corrected semantic classification exists only in R51 challenge metadata."
+  },
+  "historical_inventory": {
+    "contract": "hanonly-r51-historical-inventory-v1",
+    "path": "historical-inventory.json",
+    "freeze_timing": "before holdout candidate selection and before the encrypted holdout freeze",
+    "generator_endpoint": "/usr/bin/python3 .omx/plans/hanonly-r51-historical-inventory.py --contract .omx/plans/hanonly-r51-b0-custody-contract.json --expected-contract-sha256 <R51_CONTRACT_SHA256> --output <CUSTODY_DIRECTORY>/historical-inventory.json",
+    "generator_path": ".omx/plans/hanonly-r51-historical-inventory.py",
+    "generator_sha256": "4d2f01836aed7cf9844fa8ddcea788e9a0357cc9390c33686f64d74970c7e99e",
+    "python": {
+      "path": "/usr/bin/python3",
+      "version": "Python 3.9.6",
+      "sha256": "3e7d30871a9740446f33a907b14d28f10ebe6d4e1c146a4c0788308f573a6609"
+    },
+    "sips": {
+      "path": "/usr/bin/sips",
+      "version": "sips-316",
+      "sha256": "e893abb712ee4799b10f4756943d9310229ddbaebea752ca9cd39a58240edcdf"
+    },
+    "discovery_parent": "/Users/jinkui/ec-image-Koharu",
+    "discovery_pattern": "^hanonly-r(?:46|47|48|49|50)(?:$|[-.].*)$",
+    "exact_roots": [
+      {
+        "canonical_path": "/Users/jinkui/Desktop/O1CN01cXQH6K21RoSOXqtgc_!!2258006982.webp",
+        "kind": "file"
+      },
+      {
+        "canonical_path": "/Users/jinkui/Desktop/O1CN01hz5g3V21RoSOud1c7_!!2258006982.webp",
+        "kind": "file"
+      },
+      {
+        "canonical_path": "/Users/jinkui/Desktop/O1CN01q16mCP21RoSP0S0iV_!!2258006982.webp",
+        "kind": "file"
+      },
+      {
+        "canonical_path": "/Users/jinkui/Desktop/O1CN01q7bcbc1LeRXxWM7XS_!!2217614951324-0-scmitem1000.webp",
+        "kind": "file"
+      },
+      {
+        "canonical_path": "/Users/jinkui/Desktop/O1CN01xDeIY7260Oq7IMGkO_!!2445297599.webp",
+        "kind": "file"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r46-corpus",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r46-evidence",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r46-evidence-fc04c709",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-b0-740860d1-evidence",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-b0-evidence",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-corpus",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-corpus.failed-protected-equality-20260727T150632Z",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-corpus.failed-rust-oracle-20260727T150415Z",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-freeze",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-freeze.failed-protected-equality-20260727T150632Z",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-freeze.failed-rust-oracle-20260727T150415Z",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-generated.UbDkTO",
+        "kind": "directory"
+      },
+      {
+        "canonical_path": "/Users/jinkui/ec-image-Koharu/hanonly-r49-intake",
+        "kind": "directory"
+      }
+    ],
+    "fields": [
+      "contract",
+      "plan_revision",
+      "decoder",
+      "root_discovery",
+      "roots",
+      "items",
+      "inventory_payload_sha256"
+    ],
+    "root_item_fields": [
+      "canonical_path",
+      "st_dev",
+      "st_ino",
+      "kind"
+    ],
+    "item_fields": [
+      "root_index",
+      "relative_path",
+      "byte_length",
+      "raw_sha256",
+      "decoded_kind",
+      "decoded_width",
+      "decoded_height",
+      "normalized_scanline_sha256"
+    ],
+    "inventory_payload_sha256_projection": "SHA-256 of canonical sorted-key compact UTF-8 JSON over the complete inventory object before adding inventory_payload_sha256; the final public file SHA-256 is computed over the complete object and is stored only in the freeze receipt and downstream attestations",
+    "decoded_identity": "the frozen helper copies bytes from one no-follow file descriptor, fixes the private input copy atime/mtime to Unix epoch, and uses pinned /usr/bin/sips to emit PNG. It verifies first/unique IHDR, chunk CRCs, contiguous IDAT, no unknown critical chunk, exactly one terminal IEND with no trailing bytes, accepts only noninterlaced 8-bit grayscale, grayscale-alpha, RGB, or RGBA, and requires Python stdlib zlib EOF with no unused or unconsumed bytes before validating exact scanline length. It hashes domain sips-normalized-scanlines-v1 NUL, big-endian width/height/color-type, then the decompressed filtered scanline bytes. decoded_kind is sips-normalized-scanlines-v1; unsupported non-image files use null decoded fields",
+    "completeness": "the helper requires the discovery parent full-match set to equal the exact directory roots, includes the five exact disclosed source-file roots, snapshots every root twice, rejects omission, alias, symlink, replacement, duplicate device/inode, type/size/mtime drift, or root-set drift, and sorts roots by exact_roots order and items by root_index then relative_path",
+    "canonicalization": "sorted-key compact UTF-8 JSON without trailing newline",
+    "publish": "require an absolute custody path, open slash, then open every custody-directory component descriptor-relative with O_DIRECTORY|O_NOFOLLOW while closing only its predecessor; retain the final mode-0700 directory descriptor. Create-new mode-0600 .historical-inventory.<expected-sha256>.tmp descriptor-relative, complete write and file fsync; publish historical-inventory.json with descriptor-relative no-follow hard-link create-new so an existing final cannot be replaced; verify exact final/temp bytes, mode, owner and same inode; final fsync and directory fsync; unlink the exact temp and directory fsync again",
+    "publish_resume": "absent temp/final creates both in order; exact regular same-owner mode-0600 temp with final absent is completed or replaced only when partial; exact final alone revalidates and returns its SHA; exact final plus exact same-inode temp removes the temp after revalidation; symlink, wrong type/mode/owner/bytes, different-inode final/temp, unknown name, or any other state rejects",
+    "consumer": "the freeze operator compares every formal source raw SHA256 and normalized scanline SHA256 to this inventory and publishes the four opaque source identities in the freeze receipt so the implementation validator can independently recompute exclusion without reading source bytes"
+  },
+  "blind_holdout": {
+    "freeze_timing": "The encrypted bundle and freeze receipt must exist before the first Revision 51 production-code edit or R51 implementation worktree creation.",
+    "operator_boundary": "The custody operator receives no implementation diff, calibration output, selected candidate, or runtime result before freeze. The implementation thread receives no plaintext asset path, image, oracle, mask, archive listing, encryption key, MAC key, or decrypted directory path.",
+    "plaintext_bundle": {
+      "contract": "hanonly-r51-plaintext-holdout-v1",
+      "entries": [
+        "manifest.json",
+        "oracle.json",
+        "hashes.json",
+        "assets/"
+      ],
+      "manifest_role": "holdout",
+      "entry_count": 4,
+      "entry_ids": [
+        "r51-h01",
+        "r51-h02",
+        "r51-h03",
+        "r51-h04"
+      ],
+      "manifest": {
+        "fields": [
+          "contract",
+          "plan_revision",
+          "role",
+          "entries"
+        ],
+        "contract_value": "hanonly-r51-holdout-manifest-v1",
+        "role_value": "holdout",
+        "entry_order": "exact r51-h01 through r51-h04",
+        "entry_fields": [
+          "id",
+          "role",
+          "source_relpath",
+          "clean_reference_relpath",
+          "aspect",
+          "background",
+          "dimension_bin",
+          "multi_node",
+          "protected_rois",
+          "targets"
+        ],
+        "target_fields": [
+          "id",
+          "source_roi",
+          "clean_reference_edit_roi",
+          "erase_source_ink_mask_relpath",
+          "residual_source_ink_mask_relpath",
+          "expected",
+          "writing",
+          "effect",
+          "position",
+          "translation_length"
+        ],
+        "target_order": "ascending id with at least one target per entry",
+        "path_mapping": "source assets/source/<entry-id>.<png|jpg|jpeg|webp>; clean assets/clean/<entry-id>.png; masks assets/masks/<entry-id>/<target-id>-erase.png and -residual.png; exact normalized relative UTF-8 paths, no empty/dot/dot-dot/absolute/NUL/backslash/prefix collision or symlink component",
+        "rectangles": "arrays of four nonnegative decimal integers [left,top,right,bottom], strict positive area, half-open, within decoded source dimensions",
+        "protected_rois": "sorted lexicographically, pairwise nonoverlapping, and disjoint from every target clean_reference_edit_roi",
+        "target_geometry": "source_roi is contained by clean_reference_edit_roi; target edit ROIs and target masks are pairwise disjoint",
+        "id_rules": "entry IDs are the exact closed list; target IDs match ^[a-z0-9]+(?:-[a-z0-9]+)*$, are nonempty ASCII, and are unique within each entry",
+        "multi_node": "boolean and true exactly when target count exceeds one",
+        "aspect_values": [
+          "portrait",
+          "landscape",
+          "square_or_near"
+        ],
+        "background_values": [
+          "pure",
+          "gradient",
+          "texture",
+          "product",
+          "person"
+        ],
+        "dimension_bin_values": [
+          "lt720",
+          "720_1439",
+          "1440_2159",
+          "gte2160"
+        ],
+        "expected_value": "automatic_strict",
+        "writing_values": [
+          "horizontal",
+          "vertical"
+        ],
+        "effect_values": [
+          "plain",
+          "stroke"
+        ],
+        "position_values": [
+          "interior",
+          "page_edge"
+        ],
+        "translation_length_values": [
+          "short",
+          "equal",
+          "2x",
+          "3x"
+        ]
+      },
+      "oracle": {
+        "fields": [
+          "contract",
+          "plan_revision",
+          "manifest_sha256",
+          "entries"
+        ],
+        "contract_value": "hanonly-r51-holdout-oracle-v1",
+        "entry_order": "exact manifest entry order",
+        "entry_fields": [
+          "id",
+          "targets"
+        ],
+        "target_order": "exact manifest target order",
+        "target_fields": [
+          "id",
+          "source_text_utf8",
+          "source_text_sha256",
+          "source_script_class",
+          "source_han_scalar_count",
+          "expected_decision",
+          "expected_rejection_reason"
+        ],
+        "source_text": "Unicode NFC, nonempty, no control/private-use/unassigned scalar; SHA-256 of exact UTF-8 bytes; source_script_class exact han_or_mixed; source_han_scalar_count equals the positive count of Unicode Han scalars",
+        "decision": "expected_decision exact select and expected_rejection_reason null for every formal holdout target; pure protected Latin is exercised only by the immutable challenge corpus and deterministic production regression",
+        "target_recall": "for each cell, selected formal targets divided by all oracle targets; exact 1.0 is required and no target may be preserved or rejected"
+      },
+      "hashes": {
+        "fields": [
+          "contract",
+          "plan_revision",
+          "manifest_sha256",
+          "oracle_sha256",
+          "assets"
+        ],
+        "contract_value": "hanonly-r51-holdout-hashes-v1",
+        "asset_key_order": "normalized relative path ascending and exactly every regular file below assets",
+        "asset_fields": [
+          "byte_length",
+          "raw_sha256",
+          "decoded_kind",
+          "width",
+          "height",
+          "normalized_identity_sha256"
+        ],
+        "decoded_kind_values": [
+          "sips-normalized-scanlines-v1",
+          "binary-mask-v1"
+        ],
+        "source_and_clean_identity": "same pinned sips plus verified PNG normalized-scanline algorithm as historical_inventory",
+        "mask_identity": "PNG only; noninterlaced 8-bit grayscale or RGBA; every decoded pixel is opaque RGB 0,0,0 or 255,255,255; normalized row-major bytes are 0 or 1 and normalized_identity_sha256 hashes domain hanonly-r51-binary-mask-v1 NUL, big-endian width/height, then normalized bytes",
+        "hashes": "all SHA-256 fields exactly 64 lowercase hex; byte lengths and dimensions positive decimal integers"
+      },
+      "cross_validation": [
+        "manifest.json, oracle.json, and hashes.json are sorted-key compact UTF-8 JSON without trailing newline and reject duplicate or unknown fields",
+        "oracle manifest_sha256 equals exact manifest bytes; hashes manifest_sha256 and oracle_sha256 equal exact bytes; freeze receipt commitments equal all three exact file hashes",
+        "every referenced asset exists exactly once in hashes.assets, every hashes.assets key is referenced exactly once, and no other archive path exists",
+        "source and clean dimensions match; every target mask dimension equals its entry dimensions; erase and residual normalized binary masks are byte-identical and nonempty",
+        "every mask foreground pixel lies inside its clean_reference_edit_roi; target mask foreground sets are pairwise disjoint and avoid every protected ROI",
+        "within each target clean_reference_edit_roi, that target's mask foreground equals exactly the Source/Clean changed-pixel support; Source and Clean are pixel-identical outside the union of all target masks and in every protected ROI, so shrinking or expanding a mask rejects",
+        "aspect and dimension_bin are recomputed from decoded dimensions; multi_node is recomputed from target count",
+        "oracle entry/target IDs and order exactly equal manifest; source text script/count/hash and decision invariants recompute exactly",
+        "any schema, canonicalization, path, hash, decoded identity, geometry, mask, Source/Clean, oracle, order, or cross-binding failure rejects before encryption"
+      ],
+      "required_assets": "exactly one source image and one clean reference per entry plus one erase-source-ink mask and one residual-source-ink mask per target",
+      "canonicalization": "all JSON uses sorted-key compact UTF-8 without trailing newline; archive uses the encryption.archive canonical POSIX ustar contract",
+      "unknown_entries": "reject"
+    },
+    "encryption": {
+      "archive": "POSIX ustar; pathname byte order ascending; uid/gid zero; uname/gname empty; mtime zero; regular files mode 0600 and directories mode 0700; only regular files and directories; no absolute, empty, dot, dot-dot, duplicate, prefix-colliding, NUL, hard-link, symlink, device, fifo, pax, sparse, or unknown entries",
+      "extraction": "Python-standard-library tar parser validates the complete archive table before mutation, then creates each directory/file descriptor-relative with no-follow and create-new beneath one new mode-0700 private root; no tar command extraction",
+      "cipher": "AES-256-CTR using /opt/local/bin/openssl 3.5.4",
+      "integrity": "encrypt-then-MAC HMAC-SHA256 over ASCII domain hanonly-r51-holdout-v1 NUL, canonical header bytes, NUL, then ciphertext bytes",
+      "key_material": "independent random 32-byte encryption key, 32-byte MAC key, and 16-byte IV generated by the custody operator",
+      "key_persistence": "keys remain only in the persistent custody-agent context and are never written to disk, environment, command output, logs, messages, receipts, or implementation-thread context",
+      "key_loss": "terminal fail-closed Revision 51 failure"
+    },
+    "external_directory": {
+      "mode": "0700",
+      "files": {
+        "historical-inventory.json": "0600",
+        "holdout.enc": "0600",
+        "holdout-header.json": "0600",
+        "holdout-freeze-receipt.json": "0600",
+        "holdout-open.json": "0600 create-new only at formal open",
+        "holdout-failure.json": "0600 create-new on the first formal failure observation",
+        "holdout-terminal.json": "0600 create-new after eight passing cells or immediately after the first failed cell diagnostic and failure marker"
+      },
+      "symlink_policy": "every component and final is opened no-follow from held directory descriptors",
+      "legal_temp_names": [
+        ".historical-inventory.<expected-sha256>.tmp",
+        ".holdout.enc.<expected-sha256>.tmp",
+        ".holdout-header.<expected-sha256>.tmp",
+        ".holdout-freeze-receipt.<expected-sha256>.tmp",
+        ".holdout-open.<expected-sha256>.tmp",
+        ".holdout-failure.<expected-sha256>.tmp",
+        ".holdout-terminal.<expected-sha256>.tmp"
+      ],
+      "unknown_entry_policy": "reject",
+      "freeze_publish_order": [
+        "historical-inventory.json",
+        "holdout.enc",
+        "holdout-header.json",
+        "holdout-freeze-receipt.json"
+      ],
+      "allowed_freeze_states": [
+        "empty",
+        "exact historical inventory only",
+        "exact historical inventory and ciphertext",
+        "exact historical inventory, ciphertext, and header",
+        "all four exact freeze finals"
+      ],
+      "temp_rule": "at most one exact deterministic temp for the next file in publish order; matching temp is removed and recreated from retained custody bytes; every wrong, unknown, multiple, out-of-order, symlink, nonregular, wrong-mode, wrong-owner, or wrong-byte entry rejects",
+      "each_publish": "for every ciphertext/header/receipt/open/failure/terminal final: retain a custody-directory descriptor reached by per-component no-follow walk; create-new mode-0600 deterministic temp descriptor-relative, complete write and fsync; publish final by descriptor-relative no-follow hard-link create-new so no existing final can be replaced; reopen and verify exact bytes/mode/owner and same temp/final inode; final fsync and directory fsync; unlink exact temp and directory fsync",
+      "freeze_resume": "the persistent custody context may resume only the next publish step from an allowed state using retained key and plaintext commitments; key loss or any disallowed state is terminal failure",
+      "terminal_states": [
+        "frozen with open, failure, and terminal all absent",
+        "exact durable open only while the operator is running",
+        "exact durable open plus exact passing terminal and failure absent",
+        "exact durable failure with open optional and terminal absent",
+        "exact durable failure with open optional plus exact failing terminal"
+      ],
+      "terminal_precedence": "holdout-failure.json is irreversible and dominates every terminal receipt, including a late passing receipt; authorization requires failure absent. Terminal without open is invalid unless failure exists. Any temp after its exact final, unknown entry, wrong-byte final, or other state rejects"
+    },
+    "public_header": {
+      "contract": "hanonly-r51-encrypted-holdout-header-v1",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "cipher",
+        "integrity",
+        "iv_hex",
+        "ciphertext_byte_length",
+        "plaintext_archive_byte_length"
+      ],
+      "types": "plan_revision integer 51; cipher exact aes-256-ctr; integrity exact hmac-sha256-etm-v1; iv_hex exactly 32 lowercase hex; both lengths positive decimal integers",
+      "privacy": "no path, filename, entry ID, role, dimension, count other than byte lengths, image/oracle/mask fact, hash of an individual plaintext file, or free-form field",
+      "canonicalization": "sorted-key compact UTF-8 JSON without trailing newline"
+    },
+    "freeze_receipt": {
+      "contract": "hanonly-r51-encrypted-holdout-freeze-v1",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "base_b0_sha",
+        "implementation_thread_id",
+        "frozen_before_production_edit",
+        "entry_ids",
+        "cipher",
+        "integrity",
+        "iv_sha256",
+        "ciphertext_byte_length",
+        "ciphertext_sha256",
+        "header_sha256",
+        "hmac_sha256",
+        "plaintext_archive_sha256_commitment",
+        "manifest_sha256_commitment",
+        "oracle_sha256_commitment",
+        "hashes_sha256_commitment",
+        "historical_inventory_sha256",
+        "formal_source_identities",
+        "disclosed_challenge_exclusion_pass",
+        "result"
+      ],
+      "formal_source_identity_fields": [
+        "opaque_id",
+        "raw_sha256",
+        "decoded_width",
+        "decoded_height",
+        "normalized_scanline_sha256"
+      ],
+      "formal_source_identity_order": "opaque IDs r51-h01 through r51-h04 only; no path or filename",
+      "plaintext_commitments": "manifest, oracle, and hashes commitments are the exact SHA-256 values of their canonical plaintext files; the archive commitment is the exact SHA-256 of canonical POSIX ustar bytes and thereby binds all assets and paths",
+      "hmac_sha256": "exact 64-lowercase-hex HMAC-SHA256 tag over the encryption.integrity domain input; this is the tag itself, not a hash of the tag, and the custody operator recomputes it before decryption",
+      "exclusion_recompute": "each raw_sha256 and normalized_scanline_sha256 is absent from every historical inventory item and all four formal identities are distinct",
+      "result": "pass",
+      "publish": "canonical sorted-key compact UTF-8 JSON without trailing newline using the exact freeze state machine"
+    },
+    "implementation_thread_preflight": [
+      "descriptor-validate directory and four frozen files",
+      "verify mode, owner, type, exact closed entries, byte lengths, and hashes",
+      "recompute historical inventory root completeness and formal-source raw/decoded exclusion from the public receipt identities",
+      "verify holdout-open.json, holdout-failure.json, and holdout-terminal.json are absent",
+      "record only freeze-receipt SHA256 and ciphertext SHA256",
+      "never open or list plaintext bundle contents"
+    ],
+    "formal_open": {
+      "actor": "the same persistent custody operator context that retained both keys",
+      "timing": "only after clean B0 SHA, all calibration cells, selected-candidate freeze, recall-contract freeze, and pre-holdout anti-fixture attestation",
+      "open_marker_contract": {
+        "contract": "hanonly-r51-encrypted-holdout-open-v1",
+        "fields": [
+          "contract",
+          "plan_revision",
+          "b0_sha",
+          "selected_candidate_id",
+          "freeze_receipt_sha256",
+          "ciphertext_sha256",
+          "pre_holdout_attestation_sha256",
+          "nonce_hex",
+          "result"
+        ],
+        "types": "plan_revision integer 51; B0 SHA 40 lowercase hex; candidate normative enum; all SHA values 64 lowercase hex; nonce_hex 64 lowercase hex from operator openssl rand 32; result exact opened",
+        "canonicalization": "sorted-key compact UTF-8 JSON without trailing newline"
+      },
+      "open_marker_durability": "on entry, before HMAC key access, decryption key access, HMAC verification, decryption, model load, or runtime-output open, require open marker final and temp absent; the same uninterrupted formal-open invocation uses external_directory.each_publish to create-new holdout-open.json without replacement, fresh descriptor-walk identity revalidation, and an internal non-serializable created_open_marker_this_invocation flag that can become true only after that successful publication; any failure terminates without key use",
+      "single_use": "a formal-open invocation may access keys only when its internal created_open_marker_this_invocation flag is true. Any open marker or open-marker temp present at invocation entry forbids decryption and every formal holdout rerun, including after crash; no CLI argument, environment variable, file, receipt, resumed process, restarted native agent, or caller input can set or restore the flag",
+      "main_thread_behavior": "the implementation thread waits only on the native subagent completion handle and performs no custody filesystem or process inspection while the handle is running",
+      "supervision": "two sequential one-hour waits are the fixed deadline. Completed returns the opaque terminal-receipt path and SHA only. On failed, closed, two timeouts, or completed-invalid, the implementation thread first descriptor-publishes an irreversible holdout-failure.json with completion observation fixed from the handle, operator_close_result close_pending, open_marker_observation not_inspected, and null open SHA. Only after that failure final is durable does it invoke native close_agent once. The close result is written only to the G004 ledger and never mutates or replaces the failure marker. Only after close returns or fails may it inspect public open/terminal finals. It never resumes or respawns the custody operator",
+      "decryption": "operator verifies header, ciphertext hash, and HMAC before decrypting into a new mode-0700 private temporary directory",
+      "plaintext_revalidation": "before model load, the frozen B0 evidence executable validates the complete plaintext_bundle schema, canonical bytes, hashes, exact Source/Clean delta-to-mask equality, hidden oracle script/count/decision, and archive commitments, then publishes the closed bundle-validation receipt. Any failure writes the irreversible failure marker and stops",
+      "execution": "operator invokes the frozen B0 holdout command once for four entries on CPU and actual Metal with the selected candidate and no parameter mutation. Cells run in exact ascending cell-key order and stop immediately after the first failed cell diagnostic",
+      "cleanup": "after eight passes or the first failed cell, operator removes only its private plaintext temporary directory; encrypted bundle and all diagnostics remain. Cleanup failure publishes the failure marker",
+      "crash": "completion-handle failure, closed handle, or second deadline is a terminal formal holdout failure with or without an open marker; the durable failure marker forbids authorization even if a late passing terminal appears"
+    },
+    "failure_marker": {
+      "contract": "hanonly-r51-encrypted-holdout-failure-v1",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "b0_sha",
+        "selected_candidate_id",
+        "freeze_receipt_sha256",
+        "ciphertext_sha256",
+        "pre_holdout_attestation_sha256",
+        "open_marker_observation",
+        "open_marker_sha256",
+        "failure_kind",
+        "failed_cell_key",
+        "completion_observation",
+        "operator_close_result",
+        "failure_nonce_hex",
+        "result"
+      ],
+      "types": "open_marker_sha256 and failed_cell_key nullable; all present SHA values 64 lowercase hex; failure_nonce_hex 64 lowercase hex from the first marker writer; result exact fail-closed",
+      "open_marker_observation_values": [
+        "present",
+        "absent",
+        "not_inspected"
+      ],
+      "failure_kind_values": [
+        "open_marker_failure",
+        "integrity_failure",
+        "decrypt_failure",
+        "model_or_device_failure",
+        "cell_failure",
+        "plaintext_cleanup_failure",
+        "completion_failed",
+        "completion_closed",
+        "completion_deadline",
+        "terminal_receipt_invalid"
+      ],
+      "completion_observation_values": [
+        "operator",
+        "failed",
+        "closed",
+        "two_timeouts",
+        "completed_invalid"
+      ],
+      "operator_close_result_values": [
+        "not_applicable",
+        "close_pending"
+      ],
+      "conditional_fields": "cell_failure requires failed_cell_key equal the first failed cell, completion_observation operator, operator_close_result not_applicable, open_marker_observation present, and exact open_marker_sha256. Other operator-local failure uses present plus exact hash when open exists or absent plus null before open. Completion failed/closed/deadline/terminal-receipt-invalid requires failed_cell_key null, the matching completion observation, operator_close_result close_pending, open_marker_observation not_inspected, and open_marker_sha256 null",
+      "first_failure": "the operator writes on its first local failure; the supervisor writes before close_agent on handle/deadline/invalid-terminal failure. Publication is create-new; an existing exact failure marker is never replaced and remains authoritative. A supervisor crash before close cannot authorize because the failure final is already durable",
+      "publish": "canonical sorted-key compact UTF-8 without trailing newline; descriptor-walk every path component no-follow; create-new exact temp, complete write, temp fsync, create-new final without replacement, reopen exact verify, final fsync, directory fsync, remove exact temp, directory fsync",
+      "authorization": "any exact failure marker, any failure-marker temp, or any wrong/unknown failure state unconditionally rejects artifact authorization; no terminal receipt can clear it"
+    },
+    "bundle_validation_receipt": {
+      "contract": "hanonly-r51-bundle-validation-v1",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "b0_sha",
+        "test_executable_sha256",
+        "enabled_cargo_features",
+        "r51_contract_sha256",
+        "freeze_receipt_sha256",
+        "plaintext_archive_sha256",
+        "manifest_sha256",
+        "oracle_sha256",
+        "hashes_sha256",
+        "schema_validation_pass",
+        "asset_binding_pass",
+        "mask_source_clean_equality_pass",
+        "oracle_semantics_pass",
+        "result"
+      ],
+      "producer": "the frozen B0 evidence executable inside the custody context before model load",
+      "enabled_cargo_features": [
+        "hanonly-test-evidence"
+      ],
+      "privacy": "contains only aggregate hashes, frozen executable identity, closed booleans, and result; no path, source text, dimensions, ROI, pixel count, image, oracle value, or mask bytes",
+      "bindings": "all plaintext/archive hashes equal freeze-receipt commitments; executable SHA and feature set equal evidence_test_executable_sha256 and evidence_enabled_cargo_features in B0 preflight and the executable used by every cell; each boolean is exact true and result pass",
+      "publication": "mode-0600 canonical JSON is published inside the durable diagnostic evidence root before model load and registered by relative path, byte length, and SHA-256 in the terminal diagnostic index; the terminal receipt repeats its SHA-256. Authorization descriptor-opens it through that index and may read this privacy-safe aggregate receipt",
+      "failure": "missing, wrong, false, drifted, or noncanonical receipt writes the irreversible failure marker before model load"
+    },
+    "target_coverage_proof": {
+      "contract": "hanonly-r51-target-coverage-proof-v1",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "b0_sha",
+        "cell_key",
+        "entry_id",
+        "target_id",
+        "oracle_mask_raw_sha256",
+        "oracle_mask_normalized_sha256",
+        "page_width",
+        "page_height",
+        "support_stride_bytes",
+        "selected_support_relpath",
+        "selected_support_byte_length",
+        "selected_support_sha256",
+        "downstream_support_relpath",
+        "downstream_support_byte_length",
+        "downstream_support_sha256",
+        "oracle_foreground_pixels",
+        "selected_support_foreground_pixels",
+        "downstream_support_foreground_pixels",
+        "selected_covered_pixels",
+        "downstream_covered_pixels",
+        "missing_selected_pixels",
+        "missing_downstream_pixels",
+        "protected_overlap_pixels",
+        "target_selected",
+        "result"
+      ],
+      "producer": "the frozen B0 evidence executable inside custody from descriptor-held oracle mask bytes and the actual selected and downstream raster geometry for that exact cell",
+      "geometry": "page width/height are positive integers; stride equals width; each support relative path is normalized beneath the diagnostic root with no path escape or symlink component; each file is exactly width times height bytes, row-major with every byte 0 or 1. Selected and downstream supports derive from production SelectionResult/Scene handoff and downstream support, not rectangles or reported counts",
+      "pass": "oracle_mask foreground is a subset of both actual supports; selected/downstream support foreground counts equal independently counted 1 bytes and are each at least oracle_foreground_pixels; selected/downstream covered pixels each equal oracle_foreground_pixels; missing_selected, missing_downstream, and protected_overlap are zero; target_selected true; result pass",
+      "hash_binding": "proof SHA-256 is included in the cell diagnostic and coverage index; oracle mask hashes equal hashes.json; selected/downstream SHA-256 values hash the exact registered raw 0/1 support files; byte lengths equal width times height; covered counts are independently recomputed as positions where the private oracle mask bit and support byte are both 1 by the frozen executable, while authorization independently recomputes each support hash, byte length, binary encoding, dimensions, and foreground count. Every formal oracle target has exactly one proof per executed cell",
+      "support_raster_publication": "for each proof, publish selected then downstream support rasters before the proof JSON. Each exact mode-0600 raster uses a deterministic .<final-name>.<expected-sha256>.tmp beneath the diagnostic evidence root, descriptor-relative per-component no-follow walk, create-new temp, complete write and file fsync, descriptor-relative no-follow hard-link create-new final without replacement, reopen exact bytes/mode/owner and same temp/final inode, final fsync, parent-directory fsync, unlink exact temp, and parent-directory fsync. Existing wrong bytes, mode, owner, inode, symlink, unknown temp, final collision, partial write, or out-of-order state fails the cell; no raster final is mutable or replaceable",
+      "privacy": "public proof exposes opaque entry/target IDs, hashes, counts, booleans, and result only; no mask bytes, ROI, source text, image, oracle content, or support raster bytes",
+      "failure": "any absent/duplicate/extra target proof, hash/count mismatch, nonzero missing/protected count, unselected target, or non-pass result fails the cell immediately"
+    },
+    "terminal_receipt": {
+      "contract": "hanonly-r51-encrypted-holdout-terminal-v1",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "b0_sha",
+        "selected_candidate_id",
+        "freeze_receipt_sha256",
+        "open_marker_sha256",
+        "ciphertext_sha256",
+        "pre_holdout_attestation_sha256",
+        "bundle_validation_receipt_sha256",
+        "terminal_diagnostic_index_sha256",
+        "cell_results",
+        "first_failed_cell",
+        "unexecuted_cell_keys",
+        "all_cells_terminated",
+        "all_cells_passed",
+        "plaintext_removed",
+        "result"
+      ],
+      "cell_keys": "r51-h01/cpu, r51-h01/metal through r51-h04/cpu, r51-h04/metal",
+      "cell_result_fields": [
+        "cell_key",
+        "result",
+        "selection_result",
+        "target_recall",
+        "pp_han_count",
+        "vl_han_count",
+        "rejection_reason",
+        "device_evidence_sha256",
+        "log_sha256",
+        "diagnostic_sha256",
+        "target_coverage_index_sha256"
+      ],
+      "cell_result_order": "ascending nonempty prefix of the exact eight cell keys; result pass or fail; selection_result selected, preserved, rejected, or null; counts nonnegative integers; hashes 64 lowercase hex; rejection_reason closed enum or null; target_coverage_index_sha256 binds exactly one sorted target_coverage_proof per oracle target for that cell",
+      "pass_shape": "all eight cell records pass, first_failed_cell null, unexecuted_cell_keys empty, all_cells_terminated true, all_cells_passed true, plaintext_removed true, result pass",
+      "failure_shape": "cell_results ends at the first failed cell, first_failed_cell equals that final key, unexecuted_cell_keys is the exact remaining suffix, all_cells_terminated false, all_cells_passed false, result fail-closed, and an exact failure marker already exists; non-cell failure may have an empty cell prefix with failed cell null",
+      "publish": "after eight passing diagnostics or immediately after the first failed-cell diagnostic and durable failure marker, create-new .holdout-terminal.<expected-sha256>.tmp, complete write, temp fsync, create-new final without replacement, reopen and exact verify, final fsync, custody-directory fsync; any existing terminal or collision rejects",
+      "failure_result": "fail-closed"
+    }
+  },
+  "selection": {
+    "candidate_order": [
+      "S25L4",
+      "S25L5",
+      "S25L6",
+      "S25L7"
+    ],
+    "rule": "select the first candidate in order that passes every r51-c01 through r51-c04 CPU and actual-Metal cell",
+    "holdout_retuning": "forbidden"
+  },
+  "required_regressions": [
+    "mixed numeric and Han source where PP misses Han and VL safely confirms Han",
+    "PP/VL line or scalar counts differ while complete source Han detector support is proved",
+    "PP order differs while complete geometric ownership is proved",
+    "pure protected Latin remains rejected",
+    "incomplete source support remains rejected",
+    "raw detector occurrences with missing recognition remain observable"
+  ],
+  "diagnostic_extension": {
+    "contract": "hanonly-r51-diagnostic-extension-v1",
+    "r50_projection": "every R51 diagnostic index, index record, and cell diagnostic projects byte-for-byte to the five inherited R50 production schema keys after removing only the R51 fields named here",
+    "index_fields_added": [
+      "bundle_validation_receipt_path",
+      "bundle_validation_receipt_sha256",
+      "bundle_validation_receipt_byte_length"
+    ],
+    "index_binding": "all three bundle-validation fields and inherited holdout_manifest_sha256 are null through calibration. The inherited add_first_holdout_cell absent-to-captured generation atomically changes holdout_manifest_sha256 from null to the exact lowercase manifest_sha256 contained in the validated bundle_validation_receipt, changes all three bundle-validation fields from null to that receipt's exact privacy-safe path/SHA/length, and adds that one captured cell; these are the sole extensions to that existing first-cell transition and none of the four fields ever changes afterward. No receipt-only or manifest-only generation is legal. Authorization recomputes holdout_manifest_sha256 equality from the public bundle_validation_receipt",
+    "record_fields_added": [
+      "target_coverage_index_path",
+      "target_coverage_index_sha256",
+      "target_coverage_index_byte_length"
+    ],
+    "record_binding": "all three fields are null for calibration; every holdout record binds one immutable canonical target-coverage index for that exact cell before terminal classification",
+    "diagnostic_payload_fields_added": [
+      "bundle_validation_receipt_sha256",
+      "target_coverage_index_sha256"
+    ],
+    "coverage_index": {
+      "contract": "hanonly-r51-target-coverage-index-v1",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "b0_sha",
+        "cell_key",
+        "manifest_sha256",
+        "oracle_sha256",
+        "hashes_sha256",
+        "records"
+      ],
+      "record_fields": [
+        "entry_id",
+        "target_id",
+        "proof_path",
+        "proof_sha256",
+        "proof_byte_length"
+      ],
+      "completeness": "records sorted by entry_id then target_id and equal exactly every oracle target with no missing, duplicate, or extra proof",
+      "publication": "for each sorted target, both exact support-raster finals publish first under target_coverage_proof.support_raster_publication, then the coverage proof JSON publishes; after all targets, the coverage index publishes. Proof and index files are mode-0600 create-new canonical JSON under the diagnostic evidence root with file fsync, descriptor-relative no-follow hard-link create-new final without replacement, exact same-inode verification, final fsync, temp unlink, and parent fsync before the cell may terminalize"
+    },
+    "authorization": "descriptor-open the terminal diagnostic index, bundle-validation receipt, every holdout cell diagnostic, every coverage index, every target proof, and private support-raster payload by registered relative path; verify bytes/modes/owners/SHA/lengths, frozen B0 executable identity, all commitments, exact completeness, support-raster hashes, and every zero-missing pass invariant without opening image, oracle, or mask bytes",
+    "canonicalization": "all added JSON is sorted-key compact UTF-8 without trailing newline and rejects unknown or duplicate fields"
+  },
+  "b0_preflight_attestation": {
+    "contract": "hanonly-r51-b0-preflight-v1",
+    "validator_endpoint": "bun scripts/check-hanonly-production-policy.ts --write-r51-b0-preflight-attestation",
+    "fields": [
+      "contract",
+      "plan_revision",
+      "b0_sha",
+      "implementation_thread_id",
+      "r51_contract_sha256",
+      "operative_plan_sha256",
+      "r51_test_spec_sha256",
+      "base_production_contract_sha256",
+      "freeze_receipt_sha256",
+      "historical_inventory_sha256",
+      "ciphertext_sha256",
+      "frozen_interpreter_sha256",
+      "evidence_test_executable_path",
+      "evidence_test_executable_sha256",
+      "evidence_enabled_cargo_features",
+      "gate_results",
+      "staged_red_log_sha256",
+      "result"
+    ],
+    "evidence_test_executable": "the preflight endpoint runs exact command bun cargo test -p koharu-app --features hanonly-test-evidence --no-run --message-format=json in the clean detached B0 worktree, requires exactly one compiler-artifact executable for the koharu-app lib-test target containing the required harness, descriptor-walks its canonical absolute regular same-owner path below the configured CARGO_TARGET_DIR with no symlink component, and records that path and SHA-256",
+    "evidence_enabled_cargo_features": [
+      "hanonly-test-evidence"
+    ],
+    "gate_results": "closed object covering directed Source Gate and PP-OCR regressions, two B0-owned tests, default workspace tests, workspace all-targets check, generated, format, policy, anti-fixture, R51 marker inventory, and five T2 plus nine T3 staged-RED proof; every value pass",
+    "frozen_interpreter_sha256": "closed sorted object covering the R51 contract, checker and checker tests, evidence ledger and tests, package.json, ui/package.json, and bun.lock",
+    "publish": "mode-0600 .r51-b0-preflight.<expected-sha256>.tmp then r51-b0-preflight.json using descriptor-relative create-new temp, complete write and file fsync, descriptor-relative no-follow hard-link create-new final without replacement, reopen exact bytes/mode/owner and same inode, final fsync, parent-directory fsync, unlink exact temp, and parent-directory fsync",
+    "resume": "absent means gates have not completed; exact temp may be removed and regenerated only while no later artifact exists; exact final is descriptor-revalidated and skips all pre-B0 gates; every collision, drift, later artifact without exact final, or unknown state rejects"
+  },
+  "authorization": {
+    "contract": "hanonly-r51-b0-authorization-v1",
+    "validator_endpoint": "bun scripts/check-hanonly-production-policy.ts --validate-r51-b0-authorization",
+    "record_fields": [
+      "contract",
+      "plan_revision",
+      "b0_sha",
+      "r51_contract_sha256",
+      "operative_plan_sha256",
+      "r51_test_spec_sha256",
+      "base_production_contract_sha256",
+      "b0_preflight_attestation_sha256",
+      "calibration_manifest_sha256",
+      "calibration_ledger_sha256",
+      "freeze_receipt_sha256",
+      "historical_inventory_sha256",
+      "ciphertext_sha256",
+      "pre_calibration_attestation_sha256",
+      "pre_holdout_attestation_sha256",
+      "frozen_recall_contract_sha256",
+      "selected_candidate_id",
+      "open_marker_sha256",
+      "bundle_validation_receipt_sha256",
+      "terminal_receipt_sha256",
+      "terminal_diagnostic_index_sha256",
+      "failure_marker_absent",
+      "artifact_payload_sha256",
+      "result"
+    ],
+    "artifact_path": "hanonly-r51-b0-artifact.json",
+    "artifact_required_fields": [
+      "version",
+      "plan_revision",
+      "b0_sha",
+      "selected_candidate_id",
+      "frozen_recall_contract",
+      "calibration_manifest_sha256",
+      "freeze_receipt_sha256",
+      "ciphertext_sha256",
+      "required_checks",
+      "calibration_results",
+      "holdout_results",
+      "bundle_validation_receipt_sha256",
+      "terminal_diagnostic_index_sha256",
+      "authorization_record_sha256"
+    ],
+    "artifact_payload_projection": "the complete artifact_required_fields object except authorization_record_sha256, canonicalized before the authorization record is published; its SHA-256 is artifact_payload_sha256 in the authorization record",
+    "artifact_derivation": "after the authorization final is durable, add only authorization_record_sha256 to the previously hashed artifact payload, canonicalize, and publish the final artifact; the authorization record never contains artifact_sha256, so no hash cycle exists",
+    "canonicalization": "sorted-key compact UTF-8 JSON without trailing newline",
+    "record_publish": "mode-0600 .r51-b0-authorization.<expected-sha256>.tmp then r51-b0-authorization.json using descriptor-relative create-new temp, complete write and file fsync, descriptor-relative no-follow hard-link create-new final without replacement, reopen exact bytes/mode/owner and same inode, final fsync, parent-directory fsync, unlink exact temp, and parent-directory fsync",
+    "artifact_publish": "only after the exact authorization final exists: mode-0600 .hanonly-r51-b0-artifact.<expected-sha256>.tmp then hanonly-r51-b0-artifact.json using descriptor-relative create-new temp, complete write and file fsync, descriptor-relative no-follow hard-link create-new final without replacement, reopen exact bytes/mode/owner and same inode, final fsync, parent-directory fsync, unlink exact temp, and parent-directory fsync; return canonical stdout with authorization_record_sha256, artifact path, and final artifact_sha256",
+    "allowed_resume_states": [
+      "authorization and artifact absent with all prerequisite finals exact",
+      "one exact authorization temp with both finals absent",
+      "exact authorization final with artifact absent",
+      "exact authorization final with one exact artifact temp and artifact final absent",
+      "exact authorization and artifact finals with no temp"
+    ],
+    "resume": "an exact next-step temp is removed and only that publication step resumes; an exact authorization final with no artifact derives and publishes the artifact from the bound payload without calibration or holdout execution; both exact finals are fully revalidated and return the same record and artifact SHA; artifact final without authorization final, any unknown/multiple/out-of-order temp, drift, or other state rejects",
+    "validation": "descriptor-open and independently recompute every public record field, R51 plan/test/contract hashes, base production projection, preflight gates, manifest/ledger, both anti-fixture attestations, candidate order, actual CPU/Metal evidence, one open marker, failure marker and temp both absent, one terminal receipt with eight passing cells, and the complete diagnostic_extension chain. For withheld plaintext, do not open image/oracle/mask bytes: instead verify the frozen B0 evidence executable identity, privacy-safe bundle-validation receipt against freeze commitments, every exact oracle-target coverage proof/index, private selected/downstream support-raster hashes, zero missing/protected counts, exact target completeness, plaintext_removed true, artifact canonical bytes, clean detached B0 HEAD, permissions, and all SHA256 bindings",
+    "pass": "all calibration cells pass, all eight formal holdout cells pass, actual Metal is proved, all diagnostics are durable, plaintext is removed, and every binding recomputes; result pass",
+    "failure": "no artifact freeze; preserve encrypted bundle, receipts, diagnostics, logs, and ledger; G004 stays in_progress; G005 stays pending"
+  }
+}

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import type { FileHandle, Stats } from 'node:fs/promises'
-import { open, readFile, realpath } from 'node:fs/promises'
+import { mkdir, open, readFile, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -1545,6 +1545,474 @@ export async function validateB0Authorization(
   return flag(args, '--emit-artifact-sha256') ? artifactSha256 : undefined
 }
 
+type CargoCompilerArtifact = {
+  reason?: unknown
+  package_id?: unknown
+  target?: {
+    kind?: unknown
+    name?: unknown
+  }
+  profile?: {
+    test?: unknown
+  }
+  features?: unknown
+  executable?: unknown
+}
+
+function r51Args(args: readonly string[], endpoint: string): string[] {
+  const filtered = args.filter((value) => value !== endpoint)
+  if (filtered.length !== args.length - 1) {
+    fail('r51-argv', `${endpoint} must appear exactly once`)
+  }
+  return filtered
+}
+
+function hasR51Option(args: readonly string[], option: string): boolean {
+  return args.some((value) => value === option || value.startsWith(`${option}=`))
+}
+
+function r51Python(
+  root: string,
+  command: string,
+  args: readonly string[],
+  category: string,
+): string {
+  const result = Bun.spawnSync({
+    cmd: ['python3', 'scripts/hanonly_evidence_ledger.py', command, '--repo-root', root, ...args],
+    cwd: root,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  if (result.exitCode !== 0) {
+    fail(category, 'R51 evidence ledger validation failed')
+  }
+  return result.stdout.toString()
+}
+
+export function r51EvidenceExecutable(cargoJson: string): string {
+  const artifacts: CargoCompilerArtifact[] = []
+  for (const line of cargoJson.split('\n')) {
+    if (!line) continue
+    let message: CargoCompilerArtifact
+    try {
+      message = JSON.parse(line) as CargoCompilerArtifact
+    } catch {
+      fail('r51-b0-preflight', 'Cargo returned invalid JSON messages')
+    }
+    if (
+      message.reason === 'compiler-artifact' &&
+      message.profile?.test === true &&
+      Array.isArray(message.target?.kind) &&
+      deepEqual(message.target.kind, ['lib']) &&
+      message.target.name === 'koharu_app' &&
+      typeof message.package_id === 'string' &&
+      /(?:^|[/#])koharu-app(?:[#@]|$)/.test(message.package_id) &&
+      typeof message.executable === 'string'
+    ) {
+      if (!deepEqual(message.features, ['hanonly-test-evidence'])) {
+        fail('r51-b0-preflight', 'evidence lib-test Cargo feature set drift')
+      }
+      artifacts.push(message)
+    }
+  }
+  if (artifacts.length !== 1) {
+    fail('r51-b0-preflight', 'expected exactly one koharu-app evidence lib-test executable')
+  }
+  return artifacts[0].executable as string
+}
+
+function runR51Gate(
+  root: string,
+  command: readonly string[],
+  env?: Record<string, string>,
+): Buffer {
+  const result = Bun.spawnSync({
+    cmd: [...command],
+    cwd: root,
+    env: { ...process.env, ...env },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  const output = Buffer.concat([result.stdout, result.stderr])
+  if (result.exitCode !== 0) {
+    fail('r51-b0-preflight', `gate failed: ${command.join(' ')}`)
+  }
+  return output
+}
+
+export const r51MarkerInventoryCommand = [
+  'bun',
+  'scripts/check-hanonly-production-policy.ts',
+  '--validate-red-test-state',
+  'b0',
+] as const
+
+function r51CustodySnapshot(root: string, args: readonly string[]): string {
+  const forwarded = [
+    '--r51-contract',
+    requiredArg(args, '--r51-contract'),
+    '--operative-plan',
+    requiredArg(args, '--operative-plan'),
+    '--r51-test-spec',
+    requiredArg(args, '--r51-test-spec'),
+    '--base-production-contract',
+    requiredArg(args, '--base-production-contract'),
+    '--freeze-receipt',
+    requiredArg(args, '--freeze-receipt'),
+    '--historical-inventory',
+    requiredArg(args, '--historical-inventory'),
+    '--ciphertext',
+    requiredArg(args, '--ciphertext'),
+  ]
+  return r51Python(root, 'snapshot-r51-preflight-custody', forwarded, 'r51-b0-preflight-custody')
+}
+
+async function writeR51EvidenceFile(filePath: string, bytes: Buffer): Promise<void> {
+  const parent = path.dirname(filePath)
+  const parentStat = await stat(parent)
+  if (
+    (await realpath(parent)) !== parent ||
+    !parentStat.isDirectory() ||
+    parentStat.uid !== process.getuid?.() ||
+    (parentStat.mode & 0o7777) !== 0o700
+  ) {
+    fail('r51-b0-preflight', 'preflight output parent must be same-owner mode-0700')
+  }
+  let handle: FileHandle
+  try {
+    handle = await open(
+      filePath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600,
+    )
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    const existingHandle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW)
+    try {
+      const existing = await existingHandle.stat()
+      if (
+        !existing.isFile() ||
+        existing.uid !== process.getuid?.() ||
+        (existing.mode & 0o7777) !== 0o600 ||
+        !(await existingHandle.readFile()).equals(bytes)
+      ) {
+        fail('r51-b0-preflight', 'existing preflight evidence drift')
+      }
+    } finally {
+      await existingHandle.close()
+    }
+    return
+  }
+  try {
+    await handle.writeFile(bytes)
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+}
+
+async function runR51PreflightGates(
+  root: string,
+  outputPath: string,
+): Promise<{ gateResultsPath: string; stagedRedPath: string }> {
+  const gateResults = {
+    directed_source_gate_regressions: 'pass',
+    directed_ppocr_regressions: 'pass',
+    b0_owned_tests: 'pass',
+    default_workspace_tests: 'pass',
+    workspace_all_targets_check: 'pass',
+    generated: 'pass',
+    format: 'pass',
+    policy: 'pass',
+    anti_fixture: 'pass',
+    r51_marker_inventory: 'pass',
+    staged_red_t2: 'pass',
+    staged_red_t3: 'pass',
+  } as const
+  const commands: Record<keyof typeof gateResults, readonly string[]> = {
+    directed_source_gate_regressions: [
+      'bun',
+      'cargo',
+      'test',
+      '-p',
+      'koharu-app',
+      '--features',
+      'hanonly-test-evidence',
+      'pipeline::engines::source_language_gate::tests',
+      '--',
+      '--nocapture',
+    ],
+    directed_ppocr_regressions: [
+      'bun',
+      'cargo',
+      'test',
+      '-p',
+      'koharu-ml',
+      'pp_ocr_v5',
+      '--',
+      '--nocapture',
+    ],
+    b0_owned_tests: [
+      'bun',
+      'cargo',
+      'test',
+      '-p',
+      'koharu-app',
+      'hanonly_pre_b1_red_t2_source_gate_ratio_contract',
+      '--',
+      '--nocapture',
+    ],
+    default_workspace_tests: ['bun', 'cargo', 'test', '--workspace', '--tests'],
+    workspace_all_targets_check: ['bun', 'cargo', 'check', '--workspace', '--all-targets'],
+    generated: ['bun', 'run', 'check:generated'],
+    format: ['bun', 'run', 'format:check'],
+    policy: ['bun', 'test', 'scripts/check-hanonly-production-policy.test.ts'],
+    anti_fixture: [
+      'bun',
+      'scripts/check-hanonly-production-policy.ts',
+      '--b0-source-gate-anti-fixture',
+    ],
+    r51_marker_inventory: r51MarkerInventoryCommand,
+    staged_red_t2: ['true'],
+    staged_red_t3: ['true'],
+  }
+  for (const [name, command] of Object.entries(commands)) {
+    if (name.startsWith('staged_red_')) continue
+    runR51Gate(root, command)
+    if (name === 'directed_ppocr_regressions') {
+      runR51Gate(root, [
+        'bun',
+        'cargo',
+        'test',
+        '-p',
+        'koharu-ml',
+        'hanonly_pre_b1_red_t2_crop_local_ppocr_contract',
+        '--',
+        '--nocapture',
+      ])
+    }
+    if (name === 'policy') {
+      runR51Gate(root, ['python3', '-m', 'unittest', 'scripts/hanonly_evidence_ledger_test.py'], {
+        PYTHONDONTWRITEBYTECODE: '1',
+      })
+    }
+  }
+
+  const list = runR51Gate(root, [
+    'bun',
+    'cargo',
+    'test',
+    '--workspace',
+    '--tests',
+    '--',
+    '--list',
+    '--ignored',
+  ])
+  const listed = list
+    .toString('utf8')
+    .split('\n')
+    .filter((line) => line.endsWith(': test'))
+    .map((line) => line.slice(0, -': test'.length))
+  const stagedHashes: Record<string, string> = {}
+  const stagedRedDir = path.join(path.dirname(outputPath), 'r51-staged-red')
+  try {
+    await mkdir(stagedRedDir, { mode: 0o700 })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+  const stagedRedDirStat = await stat(stagedRedDir)
+  if (
+    (await realpath(stagedRedDir)) !== stagedRedDir ||
+    !stagedRedDirStat.isDirectory() ||
+    stagedRedDirStat.uid !== process.getuid?.() ||
+    (stagedRedDirStat.mode & 0o7777) !== 0o700
+  ) {
+    fail('r51-b0-preflight', 'staged RED evidence directory is insecure')
+  }
+  for (const id of [...expectedB0B1MarkerIds, ...expectedGreenCRedIds]) {
+    const matches = listed.filter((name) => name.split('::').at(-1) === id)
+    if (matches.length !== 1) {
+      fail('r51-b0-preflight', `staged RED identity drift: ${id}`)
+    }
+    const result = Bun.spawnSync({
+      cmd: [
+        'bun',
+        'cargo',
+        'test',
+        '--workspace',
+        '--tests',
+        matches[0],
+        '--',
+        '--exact',
+        '--ignored',
+        '--nocapture',
+      ],
+      cwd: root,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const bytes = Buffer.concat([result.stdout, result.stderr])
+    const text = bytes.toString('utf8')
+    if (
+      result.exitCode === 0 ||
+      !text.includes('running 1 test') ||
+      !text.includes('FAILED') ||
+      !text.includes('test result: FAILED')
+    ) {
+      fail('r51-b0-preflight', `staged RED did not fail exactly: ${id}`)
+    }
+    await writeR51EvidenceFile(path.join(stagedRedDir, `${id}.log`), bytes)
+    stagedHashes[id] = createHash('sha256').update(bytes).digest('hex')
+  }
+  runR51Gate(root, ['git', 'diff', '--exit-code'])
+  runR51Gate(root, ['git', 'diff', '--cached', '--exit-code'])
+  const status = runR51Gate(root, ['git', 'status', '--porcelain=v1', '--untracked-files=all'])
+  if (status.length !== 0) fail('r51-b0-preflight', 'gate execution dirtied the B0 worktree')
+
+  const parent = path.dirname(outputPath)
+  const gateResultsPath = path.join(parent, 'r51-preflight-gates.json')
+  const stagedRedPath = path.join(parent, 'r51-staged-red-hashes.json')
+  await writeR51EvidenceFile(gateResultsPath, Buffer.from(canonicalJson(gateResults)))
+  await writeR51EvidenceFile(stagedRedPath, Buffer.from(canonicalJson(stagedHashes)))
+  return { gateResultsPath, stagedRedPath }
+}
+
+export async function writeR51B0PreflightAttestation(
+  root: string,
+  args: readonly string[],
+): Promise<string> {
+  const forwarded = r51Args(args, '--write-r51-b0-preflight-attestation')
+  if (
+    hasR51Option(forwarded, '--repo-root') ||
+    hasR51Option(forwarded, '--evidence-test-executable') ||
+    hasR51Option(forwarded, '--cargo-target-dir') ||
+    hasR51Option(forwarded, '--gate-results') ||
+    hasR51Option(forwarded, '--staged-red-log')
+  ) {
+    fail('r51-argv', 'R51 preflight reserves internal evidence arguments')
+  }
+  const outputPath = requiredArg(args, '--output')
+  const canonicalRoot = await realpath(root)
+  const custodySnapshot = r51CustodySnapshot(canonicalRoot, args)
+  const cargoTargetDir = process.env.CARGO_TARGET_DIR
+  if (
+    !cargoTargetDir ||
+    !path.isAbsolute(cargoTargetDir) ||
+    (await realpath(cargoTargetDir)) !== cargoTargetDir
+  ) {
+    fail('r51-b0-preflight', 'canonical CARGO_TARGET_DIR is required')
+  }
+  let existingBytes: Buffer | undefined
+  try {
+    const existingHandle = await open(outputPath, constants.O_RDONLY | constants.O_NOFOLLOW)
+    try {
+      existingBytes = await existingHandle.readFile()
+    } finally {
+      await existingHandle.close()
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  if (existingBytes) {
+    let existing: JsonObject
+    try {
+      existing = JSON.parse(existingBytes.toString('utf8')) as JsonObject
+    } catch {
+      fail('r51-b0-preflight', 'existing preflight attestation is invalid')
+    }
+    if (typeof existing.evidence_test_executable_path !== 'string') {
+      fail('r51-b0-preflight', 'existing preflight executable binding is invalid')
+    }
+    const parent = path.dirname(outputPath)
+    if (r51CustodySnapshot(canonicalRoot, args) !== custodySnapshot) {
+      fail('r51-b0-preflight-custody', 'custody changed during preflight rerun')
+    }
+    return r51Python(
+      canonicalRoot,
+      'write-r51-b0-preflight-attestation',
+      [
+        ...forwarded,
+        '--gate-results',
+        path.join(parent, 'r51-preflight-gates.json'),
+        '--staged-red-log',
+        path.join(parent, 'r51-staged-red-hashes.json'),
+        '--evidence-test-executable',
+        existing.evidence_test_executable_path,
+        '--cargo-target-dir',
+        cargoTargetDir,
+      ],
+      'r51-b0-preflight',
+    )
+  }
+  const harness = await readRepoText(
+    root,
+    'crates/koharu-app/src/pipeline/d0_visual_manifest_harness.rs',
+    'R51 evidence harness',
+  )
+  if (
+    !harness.includes('#[cfg(all(test, feature = "hanonly-test-evidence"))]') ||
+    !harness.includes('fn han_only_source_gate_crop_selection_matrix()')
+  ) {
+    fail('r51-b0-preflight', 'required R51 evidence harness is unavailable')
+  }
+  const cargo = Bun.spawnSync({
+    cmd: [
+      'bun',
+      'cargo',
+      'test',
+      '-p',
+      'koharu-app',
+      '--features',
+      'hanonly-test-evidence',
+      '--no-run',
+      '--message-format=json',
+    ],
+    cwd: root,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  if (cargo.exitCode !== 0) {
+    fail('r51-b0-preflight', 'exact R51 evidence test build failed')
+  }
+  const executable = r51EvidenceExecutable(cargo.stdout.toString())
+  const generated = await runR51PreflightGates(root, outputPath)
+  if (r51CustodySnapshot(canonicalRoot, args) !== custodySnapshot) {
+    fail('r51-b0-preflight-custody', 'custody changed during preflight tests')
+  }
+  return r51Python(
+    canonicalRoot,
+    'write-r51-b0-preflight-attestation',
+    [
+      ...forwarded,
+      '--gate-results',
+      generated.gateResultsPath,
+      '--staged-red-log',
+      generated.stagedRedPath,
+      '--evidence-test-executable',
+      executable,
+      '--cargo-target-dir',
+      cargoTargetDir,
+    ],
+    'r51-b0-preflight',
+  )
+}
+
+export async function validateR51B0Authorization(
+  root: string,
+  args: readonly string[],
+): Promise<string> {
+  const forwarded = r51Args(args, '--validate-r51-b0-authorization')
+  if (hasR51Option(forwarded, '--repo-root')) {
+    fail('r51-argv', 'R51 authorization reserves --repo-root')
+  }
+  return r51Python(
+    await realpath(root),
+    'validate-r51-b0-authorization',
+    forwarded,
+    'r51-b0-authorization',
+  )
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
   if (deepEqual(args, ['--test-dependency-inventory'])) {
@@ -1589,6 +2057,14 @@ async function main(): Promise<void> {
   if (args.includes('--validate-b0-authorization')) {
     const digest = await validateB0Authorization(repoRoot, args)
     if (digest) process.stdout.write(`${digest}\n`)
+    return
+  }
+  if (args.includes('--write-r51-b0-preflight-attestation')) {
+    process.stdout.write(await writeR51B0PreflightAttestation(repoRoot, args))
+    return
+  }
+  if (args.includes('--validate-r51-b0-authorization')) {
+    process.stdout.write(await validateR51B0Authorization(repoRoot, args))
     return
   }
   if (deepEqual(args, ['--b0-source-gate-anti-fixture'])) {

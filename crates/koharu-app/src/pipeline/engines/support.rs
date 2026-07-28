@@ -794,6 +794,21 @@ fn pixel_bbox(bbox: [f32; 4], width: u32, height: u32) -> Option<[i32; 4]> {
     Some([left, top, right, bottom])
 }
 
+pub(crate) fn support_bboxes_overlap(
+    first: [f32; 4],
+    second: [f32; 4],
+    width: u32,
+    height: u32,
+) -> bool {
+    let (Some(first), Some(second)) = (
+        pixel_bbox(first, width, height),
+        pixel_bbox(second, width, height),
+    ) else {
+        return true;
+    };
+    first[0] <= second[2] && second[0] <= first[2] && first[1] <= second[3] && second[1] <= first[3]
+}
+
 pub fn intersect_gray_masks(source: &GrayImage, allowed: &GrayImage) -> GrayImage {
     assert_eq!(source.dimensions(), allowed.dimensions());
     GrayImage::from_fn(source.width(), source.height(), |x, y| {
