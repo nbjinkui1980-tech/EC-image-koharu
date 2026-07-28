@@ -955,6 +955,10 @@ export async function runB0SourceGateAntiFixture(root: string): Promise<void> {
   await writeSyncedFile(output, `${canonicalJson(attestation)}\n`)
 }
 
+async function scanB0SourceGateAntiFixture(root: string): Promise<void> {
+  validateB0SourceGateAntiFixture(await readB0AntiFixtureSources(root))
+}
+
 async function buildB0SourceGateAntiFixtureAttestation(
   root: string,
   phase: B0AntiFixturePhase,
@@ -1593,6 +1597,13 @@ export function r51EvidenceExecutable(cargoJson: string): string {
   const artifacts: CargoCompilerArtifact[] = []
   for (const line of cargoJson.split('\n')) {
     if (!line) continue
+    if (
+      /^Storage: \d+(?:\.\d+)? GiB free, target \d+(?:\.\d+)? GiB, ui\/\.next \d+(?:\.\d+)? GiB$/.test(
+        line,
+      )
+    ) {
+      continue
+    }
     let message: CargoCompilerArtifact
     try {
       message = JSON.parse(line) as CargoCompilerArtifact
@@ -1770,7 +1781,7 @@ async function runR51PreflightGates(
     anti_fixture: [
       'bun',
       'scripts/check-hanonly-production-policy.ts',
-      '--b0-source-gate-anti-fixture',
+      '--scan-b0-source-gate-anti-fixture',
     ],
     r51_marker_inventory: r51MarkerInventoryCommand,
     staged_red_t2: ['true'],
@@ -2070,6 +2081,11 @@ async function main(): Promise<void> {
   if (deepEqual(args, ['--b0-source-gate-anti-fixture'])) {
     await runB0SourceGateAntiFixture(repoRoot)
     process.stdout.write('PASS: hanonly b0 source gate anti-fixture\n')
+    return
+  }
+  if (deepEqual(args, ['--scan-b0-source-gate-anti-fixture'])) {
+    await scanB0SourceGateAntiFixture(repoRoot)
+    process.stdout.write('PASS: hanonly b0 source gate anti-fixture scan\n')
     return
   }
   fail('argv', 'expected a known HanOnly production policy mode')

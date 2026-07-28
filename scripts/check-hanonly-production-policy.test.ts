@@ -1225,7 +1225,14 @@ describe('R51 evidence executable selection', () => {
   }
 
   test('selects exactly one evidence lib-test executable', () => {
-    expect(r51EvidenceExecutable(`${JSON.stringify(artifact)}\n`)).toBe(artifact.executable)
+    expect(
+      r51EvidenceExecutable(
+        `Storage: 33.6 GiB free, target 4.3 GiB, ui/.next 0.0 GiB\n${JSON.stringify(artifact)}\n`,
+      ),
+    ).toBe(artifact.executable)
+    expect(() => r51EvidenceExecutable(`unexpected output\n${JSON.stringify(artifact)}\n`)).toThrow(
+      PolicyError,
+    )
   })
 
   test('uses the executable RED-state CLI contract', () => {
@@ -1284,6 +1291,14 @@ describe('CLI contract', () => {
     expect(obsolete.exitCode).not.toBe(0)
     expect(obsolete.stdout).toBe('')
     expect(obsolete.stderr).toStartWith('FAIL [argv]:')
+  })
+
+  test('runs the preflight anti-fixture scan without creating a formal attestation', async () => {
+    expect(await runCli(['--scan-b0-source-gate-anti-fixture'])).toEqual({
+      exitCode: 0,
+      stdout: 'PASS: hanonly b0 source gate anti-fixture scan\n',
+      stderr: '',
+    })
   })
 
   test('does not start a build when the preflight custody snapshot fails', async () => {
