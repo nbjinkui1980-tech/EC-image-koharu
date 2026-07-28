@@ -1809,6 +1809,7 @@ async function runR51PreflightGates(
     }
   }
 
+  runR51Gate(root, ['bun', 'run', 'clean:rust:dev'])
   const list = runR51Gate(root, [
     'bun',
     'cargo',
@@ -1966,6 +1967,7 @@ export async function writeR51B0PreflightAttestation(
   ) {
     fail('r51-b0-preflight', 'required R51 evidence harness is unavailable')
   }
+  const generated = await runR51PreflightGates(root, outputPath)
   const cargo = Bun.spawnSync({
     cmd: [
       'bun',
@@ -1986,7 +1988,6 @@ export async function writeR51B0PreflightAttestation(
     fail('r51-b0-preflight', 'exact R51 evidence test build failed')
   }
   const executable = r51EvidenceExecutable(cargo.stdout.toString())
-  const generated = await runR51PreflightGates(root, outputPath)
   if (r51CustodySnapshot(canonicalRoot, args) !== custodySnapshot) {
     fail('r51-b0-preflight-custody', 'custody changed during preflight tests')
   }
