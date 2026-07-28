@@ -1,0 +1,771 @@
+{
+  "canonicalization": {
+    "encoding": "utf-8",
+    "json": "sorted-keys-compact",
+    "trailing_newline": false
+  },
+  "detector_support_preimage": {
+    "contract": "detector-support-raster-preimage-v1",
+    "fields": [
+      "contract",
+      "plan_revision",
+      "b0_sha",
+      "phase",
+      "entry_id",
+      "device",
+      "candidate_id",
+      "target_id",
+      "raw_detector",
+      "canonical_assignment",
+      "emitted_scene_quad",
+      "eligible_text_line_quad",
+      "detector_support_mask",
+      "line_support_mask",
+      "line_support_equals_detector",
+      "agreed_mask",
+      "agreed_mask_subset",
+      "protected_support_pixels",
+      "unsupported_rotation_selected",
+      "unmatched_selected_nodes",
+      "ownership_verdict",
+      "selection_verdict",
+      "rejection_reason"
+    ],
+    "raw_detector_fields": [
+      "index",
+      "source_scaled_quad_f32_bits",
+      "rect",
+      "recognition_present",
+      "recognition_class"
+    ],
+    "source_scaled_quad_f32_bits": {
+      "shape": "[corner0_x_bits,corner0_y_bits,corner1_x_bits,corner1_y_bits,corner2_x_bits,corner2_y_bits,corner3_x_bits,corner3_y_bits]",
+      "length": 8,
+      "values": "unsigned-32-bit-integers-equal-to-f32-to_bits-before-raster-quantization",
+      "order": "exact-order-returned-by-RotatedRect-corners-with-no-axis-alignment-or-reordering",
+      "multiset_rule": "validator-requires-indexed-record-multiset-to-equal-raw-detector-output-multiset-including-duplicates-before-assignment-or-quantization"
+    },
+    "rect": {
+      "shape": "[x0,y0,x1,y1]",
+      "length": 4,
+      "coordinates": "signed-integer-source-pixels-after-existing-raster-quantization",
+      "bounds": "half-open-x0-inclusive-y0-inclusive-x1-exclusive-y1-exclusive"
+    },
+    "quad": {
+      "shape": "[x0,y0,x1,y0,x1,y1,x0,y1]",
+      "length": 8,
+      "coordinates": "signed-integer-source-pixels-after-existing-raster-quantization",
+      "order": "clockwise-from-top-left",
+      "derivation": "exact-axis-aligned-rect-corners-with-no-expansion"
+    },
+    "mask": {
+      "fields": [
+        "width",
+        "height",
+        "stride",
+        "pixel_encoding",
+        "row_order",
+        "bytes_sha256"
+      ],
+      "width_height_stride": "positive-integers-with-stride-equal-width",
+      "pixel_encoding": "one-byte-per-pixel-0-or-1",
+      "row_order": "top-to-bottom-rows-left-to-right-columns",
+      "byte_length": "width-times-height",
+      "rect_raster": "after-page-clip-pixel-is-1-iff-x0-less-than-or-equal-x-less-than-x1-and-y0-less-than-or-equal-y-less-than-y1"
+    },
+    "recognition_class_values": [
+      "han",
+      "neutral",
+      "protected_latin",
+      "ambiguous_latin",
+      "missing"
+    ],
+    "canonical_assignment_values": [
+      "selected_han",
+      "preserved_source",
+      "vl_only_promoted",
+      "unassigned",
+      "shared"
+    ],
+    "ownership_verdict_values": [
+      "unique",
+      "unassigned",
+      "shared",
+      "ambiguous"
+    ],
+    "selection_verdict_values": [
+      "selected",
+      "preserved",
+      "rejected"
+    ]
+  },
+  "detector_support_record": {
+    "fields": [
+      "preimage",
+      "canonical_byte_length",
+      "sha256"
+    ],
+    "canonical_byte_length": "exact-byte-length-of-canonical-preimage",
+    "sha256": "sha256-of-canonical-preimage"
+  },
+  "diagnostic_index": {
+    "contract": "hanonly-r50-diagnostic-index-v1",
+    "fields": [
+      "contract",
+      "plan_revision",
+      "b0_sha",
+      "calibration_manifest_sha256",
+      "holdout_manifest_sha256",
+      "fixture_manifest_sha256",
+      "generation",
+      "previous_index_path",
+      "previous_index_sha256",
+      "previous_index_byte_length",
+      "expected_cell_count",
+      "records"
+    ],
+    "generation": "positive-integer-incremented-by-exactly-one",
+    "first_generation_previous_values": null,
+    "later_generation_previous_values": "required-relative-immutable-generation-path-plus-recomputed-sha256-and-byte-length",
+    "immutable_generation_path": "diagnostic-index.generations/generation-as-eight-decimal-digits.json",
+    "current_path": "diagnostic-index.json",
+    "record_fields": [
+      "cell_key",
+      "phase",
+      "candidate_id",
+      "entry_id",
+      "device",
+      "state",
+      "diagnostic_path",
+      "diagnostic_sha256",
+      "diagnostic_byte_length",
+      "selection_result",
+      "target_recall",
+      "pp_han_count",
+      "vl_han_count",
+      "rejection_reason",
+      "device_evidence_path",
+      "device_evidence_sha256",
+      "device_evidence_byte_length",
+      "log_path",
+      "log_sha256",
+      "log_byte_length",
+      "terminal_reason"
+    ],
+    "cell_key": "phase/candidate_id/device/entry_id",
+    "phase_values": [
+      "calibration-freeze",
+      "holdout"
+    ],
+    "device_values": [
+      "cpu",
+      "metal"
+    ],
+    "state_values": [
+      "captured_unclassified",
+      "passed",
+      "failed"
+    ],
+    "selection_result_values": [
+      "selected",
+      "preserved",
+      "rejected",
+      null
+    ],
+    "target_recall": "closed-object-with-integer-target-total-selected-covered-uncovered",
+    "record_order": "ascending-cell_key",
+    "transition": "exactly-one-change-per-generation-either-add-one-new-captured_unclassified-cell-or-change-one-existing-captured_unclassified-cell-to-one-terminal-state",
+    "add_cell": "expected_cell_count-increments-by-one-and-new-record-state-is-captured_unclassified",
+    "holdout_manifest_before_seal": null,
+    "add_first_holdout_cell": "allowed-only-after-frozen-calibration-generation-and-selected-candidate-binding-and-atomically-changes-holdout_manifest_sha256-from-null-to-the-single-sealed-lowercase-sha256",
+    "add_later_holdout_cell": "requires-the-identical-already-bound-holdout_manifest_sha256",
+    "holdout_manifest_rebind": "reject",
+    "terminalize_cell": "expected_cell_count-unchanged-and-no-record-other-than-the-selected-existing-cell-changes",
+    "terminal_record_rewrite": "reject",
+    "unknown_duplicate_missing_or_conflicting_records": "reject"
+  },
+  "diagnostic_payload": {
+    "contract": "hanonly-r50-cell-diagnostic-v1",
+    "fields": [
+      "contract",
+      "plan_revision",
+      "b0_sha",
+      "calibration_manifest_sha256",
+      "holdout_manifest_sha256",
+      "fixture_manifest_sha256",
+      "phase",
+      "entry_id",
+      "device",
+      "candidate_id",
+      "state",
+      "selection_result",
+      "target_recall",
+      "pp_han_count",
+      "vl_han_count",
+      "rejection_reason",
+      "raw_detector_outputs",
+      "canonical_lines",
+      "raw_detector_count",
+      "raw_detector_f32_bits_multiset_sha256",
+      "detector_support_records",
+      "device_evidence_sha256",
+      "device_evidence_byte_length",
+      "log_sha256",
+      "log_byte_length",
+      "terminal_reason"
+    ],
+    "raw_detector_count": "nonnegative-integer",
+    "raw_detector_outputs": {
+      "item_fields": [
+        "occurrence_index",
+        "source_scaled_quad_f32_bits"
+      ],
+      "order": "ascending-occurrence_index",
+      "completeness": "indices-are-unique-and-exactly-zero-through-raw_detector_count-minus-one"
+    },
+    "canonical_lines": {
+      "item_fields": [
+        "line_index",
+        "detector_occurrences",
+        "recognition"
+      ],
+      "order": "ascending-line_index",
+      "detector_occurrences": {
+        "item_fields": [
+          "occurrence_index",
+          "canonical_corners_f32_bits"
+        ],
+        "order": "the-corresponding-canonical-Vec-RotatedRect-order",
+        "canonical_corners_f32_bits": "eight-u32-values-in-exact-RotatedRect-corners-order"
+      },
+      "recognition": "null-or-closed-object-with-present-true-recognition_class-and-segment_count",
+      "alignment": "recognition-array-length-equals-canonical-lines-length-including-null",
+      "per_occurrence_equality": "each-canonical-corners-f32-bits-exactly-equals-the-raw_detector_outputs-bits-at-the-same-occurrence-index",
+      "flattened_multiset": "flattened-occurrence-indices-are-unique-complete-and-their-actual-canonical-f32-bits-multiset-equals-raw_detector_outputs"
+    },
+    "raw_detector_f32_bits_multiset_sha256": "sha256-of-canonical-array-sorted-by-index-containing-every-source_scaled_quad_f32_bits",
+    "detector_support_records": {
+      "item": "detector_support_record",
+      "order": "ascending-preimage.raw_detector.index",
+      "completeness": "indices-are-unique-and-exactly-zero-through-raw_detector_count-minus-one",
+      "target_id": "string-for-owned-target-or-null-for-unassigned-preserved-or-rejected-detector"
+    },
+    "target_recall": {
+      "fields": [
+        "target_total",
+        "selected",
+        "covered",
+        "uncovered"
+      ],
+      "values": "nonnegative-integers"
+    }
+  },
+  "historical_root_registry": {
+    "contract": "hanonly-r50-historical-root-registry-v1",
+    "freeze_phase": "before-the-first-B0-production-code-edit",
+    "fields": [
+      "contract",
+      "plan_revision",
+      "project_parent",
+      "shared_evidence_base",
+      "root_name_rules",
+      "roots",
+      "registry_inventory_sha256"
+    ],
+    "root_name_rules": [
+      "project-parent-direct-child-matches-EC-image-koharu-hanonly-r(46|47|48|49|50)-*",
+      "project-parent-direct-child-matches-hanonly-r(46|47|48|49|50)-*",
+      "every-existing-shared-evidence-base-direct-child",
+      "fixed-disclosed-root-hanonly-r49-corpus-if-present",
+      "fixed-disclosed-root-hanonly-r49-intake-if-present"
+    ],
+    "root_item_fields": [
+      "canonical_path",
+      "st_dev",
+      "st_ino",
+      "kind",
+      "root_inventory_sha256"
+    ],
+    "root_item_order": "ascending-canonical-path-with-no-duplicate-device-inode-pair",
+    "inventory_item_fields": [
+      "relative_path",
+      "byte_length",
+      "raw_sha256",
+      "decoded_kind",
+      "decoded_width",
+      "decoded_height",
+      "decoded_blake3"
+    ],
+    "decoded_nullability": "all-four-decoded-fields-null-for-unsupported-non-image-files-otherwise-kind-dimensions-and-blake3-required",
+    "completeness": "descriptor-enumerate-the-two-authoritative-parents-and-fixed-disclosed-names-before-freeze-and-at-every-validation; reject-any-matching-root-omitted-added-renamed-or-replaced-except-the-exact-current-R50-run-root-created-after-freeze-and-bound-by-calibration-ledger",
+    "publish": "mode-0600-hanonly-r50-historical-root-registry.json-via-.hanonly-r50-historical-root-registry.<expected-sha256>.tmp-create-new-file-fsync-rename-final-fsync-parent-fsync-with-absent-exact-temp-exact-final-only-state-machine"
+  },
+  "holdout_lane_attestations": {
+    "common_fields": [
+      "contract",
+      "plan_revision",
+      "b0_sha",
+      "selected_candidate_id",
+      "calibration_artifact_sha256",
+      "seal_input_sha256",
+      "implementation_thread_id",
+      "issuer_thread_id",
+      "parent_leader_thread_id",
+      "native_role",
+      "native_launch_receipt",
+      "assigned_assets",
+      "runtime_output_opened",
+      "result"
+    ],
+    "contract_values": [
+      "hanonly-r50-holdout-operator-v1",
+      "hanonly-r50-erase-mask-lane-v1",
+      "hanonly-r50-residual-mask-lane-v1"
+    ],
+    "field_types": "plan_revision-integer-50; b0_sha-40-lowercase-hex; candidate-normative-enum; calibration-artifact-seal-input-and-all-asset-digests-64-lowercase-hex; all-thread-role-submission-and-relative-path-values-nonempty-ASCII-with-no-NUL; runtime_output_opened-boolean-false; result-string-pass",
+    "native_launch_receipt": {
+      "fields": [
+        "path",
+        "byte_length",
+        "sha256"
+      ],
+      "source": "mode-0600-regular-non-symlink-receipt-below-read-only-CODEX_NATIVE_SUBAGENT_RECEIPT_ROOT-created-by-the-native-orchestration-runtime-not-by-any-lane-or-the-leader",
+      "receipt_fields": [
+        "contract",
+        "submission_id",
+        "agent_id",
+        "parent_thread_id",
+        "agent_role",
+        "status",
+        "issued_attestation_sha256"
+      ],
+      "receipt_contract": "codex-native-subagent-completion-v1",
+      "status": "completed"
+    },
+    "assigned_asset_item_fields": [
+      "relative_path",
+      "raw_sha256",
+      "decoded_kind",
+      "decoded_width",
+      "decoded_height",
+      "decoded_blake3"
+    ],
+    "assigned_asset_sets": {
+      "hanonly-r50-holdout-operator-v1": "every-and-only-source-and-clean-reference",
+      "hanonly-r50-erase-mask-lane-v1": "every-and-only-erase-source-ink-mask",
+      "hanonly-r50-residual-mask-lane-v1": "every-and-only-residual-source-ink-mask"
+    },
+    "identity_rules": "three-distinct-issuer-thread-submission-and-receipt-device-inode-tuples-sharing-one-parent-leader-thread; none-equals-implementation-thread; receipt-agent-role-and-issued-attestation-sha256-exactly-match-the-lane-file",
+    "runtime_output_opened": false,
+    "result": "pass",
+    "canonicalization": "repository-global-sorted-keys-compact-utf8-no-trailing-newline",
+    "publish": "each-native-subagent-independently-creates-only-its-mode-0600-final-via-one-hash-named-create-new-temp-file-fsync-rename-final-fsync-intake-directory-fsync; absent-exact-temp-exact-final-only; every-collision-rejects"
+  },
+  "holdout_seal": {
+    "contract": "hanonly-r50-holdout-seal-v1",
+    "input_directory": {
+      "ownership_mode": "current-user-mode-0700-real-directory-below-canonical-evidence-root-outside-all-worktrees",
+      "required_entries": [
+        "seal-input.json",
+        "custody-attestation.json",
+        "operator-attestation.json",
+        "erase-mask-lane-attestation.json",
+        "residual-mask-lane-attestation.json",
+        "assets"
+      ],
+      "unknown_entries": "reject"
+    },
+    "seal_input": {
+      "path": "seal-input.json",
+      "ownership_mode": "current-user-mode-0600-regular-non-symlink",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "b0_sha",
+        "selected_candidate_id",
+        "runtime_output_opened",
+        "entries"
+      ],
+      "contract_value": "hanonly-r50-holdout-seal-v1",
+      "runtime_output_opened": false,
+      "entry_count": 4,
+      "entry_ids": [
+        "r50-h01",
+        "r50-h02",
+        "r50-h03",
+        "r50-h04"
+      ],
+      "entry_fields": [
+        "id",
+        "role",
+        "image_relpath",
+        "image_sha256",
+        "decoded_rgba_blake3",
+        "aspect",
+        "background",
+        "dimension_bin",
+        "multi_node",
+        "clean_reference_relpath",
+        "clean_reference_sha256",
+        "clean_reference_decoded_rgba_blake3",
+        "protected_rois",
+        "targets"
+      ],
+      "target_fields": [
+        "id",
+        "source_roi",
+        "clean_reference_edit_roi",
+        "erase_source_ink_mask_relpath",
+        "erase_source_ink_mask_sha256",
+        "residual_source_ink_mask_relpath",
+        "residual_source_ink_mask_sha256",
+        "expected",
+        "writing",
+        "effect",
+        "position",
+        "translation_length"
+      ],
+      "role_value": "holdout",
+      "asset_paths": "normalized-relative-paths-beneath-assets-with-no-empty-dot-dot-absolute-or-symlink-component",
+      "asset_ownership_mode": "current-user-mode-0600-regular-files",
+      "rectangles": "four-nonnegative-integers-half-open-contained-by-decoded-image",
+      "entry_order": "r50-h01-through-r50-h04",
+      "target_order": "ascending-id",
+      "id_rules": "entry-and-target-ids-are-nonempty-ascii-and-unique-with-target-ids-unique-within-entry",
+      "multi_node": "boolean",
+      "aspect_values": [
+        "portrait",
+        "landscape",
+        "square_or_near"
+      ],
+      "background_values": [
+        "pure",
+        "gradient",
+        "texture",
+        "product",
+        "person"
+      ],
+      "dimension_bin_values": [
+        "lt720",
+        "720_1439",
+        "1440_2159",
+        "gte2160"
+      ],
+      "expected_values": [
+        "automatic_strict",
+        "manual_override",
+        "unsupported_source_color",
+        "unsupported_rotation"
+      ],
+      "writing_values": [
+        "horizontal",
+        "vertical"
+      ],
+      "effect_values": [
+        "plain",
+        "stroke",
+        "shadow",
+        "glow",
+        "decorative"
+      ],
+      "position_values": [
+        "interior",
+        "page_edge"
+      ],
+      "translation_length_values": [
+        "short",
+        "equal",
+        "2x",
+        "3x"
+      ]
+    },
+    "custody_attestation": {
+      "path": "custody-attestation.json",
+      "ownership_mode": "current-user-mode-0600-regular-non-symlink-created-before-seal-by-an-independent-operator",
+      "contract": "hanonly-r50-holdout-custody-v1",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "implementation_thread_id",
+        "b0_sha",
+        "selected_candidate_id",
+        "calibration_artifact_sha256",
+        "seal_input_sha256",
+        "operator_attestation",
+        "erase_mask_lane_attestation",
+        "residual_mask_lane_attestation",
+        "historical_root_registry_path",
+        "historical_root_registry_sha256",
+        "historical_inventory_sha256",
+        "formal_source_raw_sha256_absent_from_history",
+        "formal_source_decoded_blake3_absent_from_history",
+        "disclosed_corpus_ids",
+        "disclosed_corpus_excluded",
+        "runtime_output_opened",
+        "result"
+      ],
+      "implementation_thread_id": "exact-CODEX_THREAD_ID-recorded-in-the-B0-preflight-attestation-and-exact-Codex-Thread-ID-trailer-of-B0-commit",
+      "lane_attestation_reference": "closed-object-with-path-byte_length-sha256-for-one-mode-0600-regular-non-symlink-file-in-the-intake-directory",
+      "operator_attestation": "hanonly-r50-holdout-operator-v1-issued-by-one-native-subagent-thread-distinct-from-implementation-and-both-mask-lanes-binding-B0-candidate-calibration-artifact-seal-input-all-source-and-clean-raw-sha256-and-decoded-blake3-and-runtime_output_opened-false",
+      "erase_mask_lane_attestation": "hanonly-r50-erase-mask-lane-v1-issued-by-one-native-subagent-thread-distinct-from-implementation-operator-and-residual-lane-binding-B0-candidate-seal-input-and-every-and-only-erase-mask-relative-path-raw-sha256-decoded-blake3",
+      "residual_mask_lane_attestation": "hanonly-r50-residual-mask-lane-v1-issued-by-one-native-subagent-thread-distinct-from-implementation-operator-and-erase-lane-binding-B0-candidate-seal-input-and-every-and-only-residual-mask-relative-path-raw-sha256-decoded-blake3",
+      "native_agent_receipt": "each-lane-attestation-binds-issuer_CODEX_THREAD_ID-parent_leader_CODEX_THREAD_ID-native-role-and-spawn-submission-id-from-the-native-agent-launch-record; validator-requires-three-distinct-subagent-thread-and-submission-pairs-with-the-same-parent-leader-and-no-pair-equal-to-implementation",
+      "historical_root_registry": "mode-0600-regular-non-symlink-hanonly-r50-historical-root-registry-v1-created-and-frozen-before-the-first-B0-production-code-edit-and-bound-by-path-byte-length-sha256-in-the-calibration-ledger-and-B0-preflight-attestation; its-closed-sorted-root-list-is-the-only-authoritative-root-set-and-cannot-be-supplied-or-reduced-by-the-holdout-operator",
+      "historical_inventory_sha256": "sha256-of-canonical-sorted-inventory-of-every-regular-artifact-log-manifest-ledger-and-image-source-relative-path-byte-length-raw-sha256-decoded-kind-dimensions-and-decoded-blake3-beneath-every-registry-root",
+      "formal_source_raw_sha256_absent_from_history": true,
+      "formal_source_decoded_blake3_absent_from_history": true,
+      "disclosed_corpus_ids": [
+        "r49-h01",
+        "r49-h02",
+        "r49-h03",
+        "r49-h04",
+        "x01",
+        "x02",
+        "x03",
+        "x04",
+        "x05"
+      ],
+      "disclosed_corpus_excluded": true,
+      "runtime_output_opened": false,
+      "result": "pass",
+      "validation": "descriptor-recompute-all-input-and-asset-hashes-load-the-pre-B0-frozen-registry-from-the-calibration-ledger-inventory-every-and-only-registry-root-require-no-formal-source-raw-sha256-decoded-blake3-or-entry-id-in-history-verify-three-separate-lane-attestation-bytes-receipts-and-disjoint-native-thread-identities-and-reject-unknown-missing-self-asserted-unbound-or-omitted-root-fields"
+    },
+    "decoded_attestation": {
+      "producer": "existing-koharu-app-no-model-Rust-decoder-preflight-before-seal-holdout",
+      "ownership_mode": "current-user-mode-0600-regular-non-symlink",
+      "fields": [
+        "contract",
+        "plan_revision",
+        "b0_sha",
+        "selected_candidate_id",
+        "seal_input_sha256",
+        "test_executable_sha256",
+        "enabled_cargo_features",
+        "assets"
+      ],
+      "contract_value": "hanonly-r50-holdout-decode-attestation-v1",
+      "test_executable_sha256": "64-lowercase-hex-of-the-running-B0-test-executable",
+      "enabled_cargo_features": [
+        "hanonly-test-evidence"
+      ],
+      "asset_item_fields": [
+        "raw_sha256",
+        "decoded_kind",
+        "width",
+        "height",
+        "decoded_blake3"
+      ],
+      "raw_sha256_and_decoded_blake3": "64-lowercase-hex",
+      "decoded_kind_values": [
+        "rgba8_image",
+        "binary_mask"
+      ],
+      "width_height": "positive-integers",
+      "decoded_bytes": "rgba8_image-is-oriented-row-major-width-times-height-times-4-bytes-binary-mask-is-row-major-width-times-height-bytes-each-0-or-1",
+      "assets": "object-keyed-by-normalized-relative-path-sorted-by-key-and-covering-exactly-every-and-only-image-clean-reference-erase-mask-and-residual-mask-referenced-by-seal-input",
+      "decoder": "existing-Rust-image-and-mask-decoder-used-by-hanonly-evidence-harness",
+      "model_load": "forbidden",
+      "publish": {
+        "directory": "dedicated-current-user-mode-0700-holdout-seal-directory",
+        "directory_creation": "Rust-preflight-descriptor-walks-held-evidence-root-and-selection-parent-uses-mkdirat-for-absent-child-reopens-with-O_DIRECTORY-O_NOFOLLOW-verifies-owner-mode-type-fsyncs-new-directory-and-parent; existing-child-must-be-the-same-valid-directory-state; symlink-collision-or-unknown-entry-rejects",
+        "final_name": "r50-holdout-decode-attestation.json",
+        "temp_name": ".r50-holdout-decode-attestation.expected-attestation-sha256.tmp",
+        "write": "mode-0600-create_new-complete-write-file-fsync-atomic-rename-final-fsync-parent-directory-fsync",
+        "retry": "absent-or-exact-deterministic-temp-or-exact-attestation-final-with-optional-exact-manifest-and-ledger-finals; matching-temp-is-removed-and-rewritten; every-existing-final-is-recomputed-from-the-same-seal-input-and-must-be-byte-exact; complete-three-final-state-repeats-each-file-and-directory-fsync-and-succeeds; every-other-entry-type-name-or-byte-collision-rejects-without-overwrite"
+      },
+      "authorization": "G004-B0-authorization-reruns-the-same-no-model-decoder-in-memory-from-descriptor-opened-seal-input-assets-recomputes-the-canonical-attestation-and-requires-byte-equality-plus-running-test-executable-hash-and-feature-set; later-IMPL-authorization-does-not-rerun-and-instead-requires-the-immutable-B0-artifact-digest-attestation-bytes-B0-commit-and-recorded-G004-authorization-record-digest"
+    },
+    "output_manifest": {
+      "fields": [
+        "contract",
+        "plan_revision",
+        "b0_sha",
+        "selected_candidate_id",
+        "seal_input_sha256",
+        "custody_attestation_sha256",
+        "decoded_attestation_sha256",
+        "entries"
+      ],
+      "mapping": "canonical-copy-of-validated-seal-input-entries-with-image_relpath-to-path-clean_reference_relpath-to-clean_reference_path-erase_source_ink_mask_relpath-to-erase_source_ink_mask_path-and-residual_source_ink_mask_relpath-to-residual_source_ink_mask_path-each-replaced-by-its-canonical-absolute-descriptor-verified-path-and-no-other-transformation"
+    },
+    "output_ledger": {
+      "fields": [
+        "contract",
+        "plan_revision",
+        "b0_sha",
+        "selected_candidate_id",
+        "seal_input_path",
+        "seal_input_sha256",
+        "custody_attestation_path",
+        "custody_attestation_sha256",
+        "operator_attestation_path",
+        "operator_attestation_sha256",
+        "erase_mask_lane_attestation_path",
+        "erase_mask_lane_attestation_sha256",
+        "residual_mask_lane_attestation_path",
+        "residual_mask_lane_attestation_sha256",
+        "historical_root_registry_path",
+        "historical_root_registry_byte_length",
+        "historical_root_registry_sha256",
+        "decoded_attestation_path",
+        "decoded_attestation_sha256",
+        "output_manifest_path",
+        "output_manifest_sha256",
+        "asset_sha256"
+      ],
+      "asset_sha256": "object-keyed-by-normalized-relative-path-sorted-by-key"
+    },
+    "write_contract": {
+      "directory": "dedicated-current-user-mode-0700-source-gate-selection/holdout-seal-containing-only-the-three-final-files-or-one-contract-owned-deterministic-temp-at-its-legal-phase",
+      "order": "output-manifest-then-ledger",
+      "manifest_temp": ".r50-holdout-manifest.expected-manifest-sha256.tmp",
+      "ledger_temp": ".r50-holdout-ledger.expected-ledger-sha256.tmp",
+      "each_publish": "mode-0600-create-new-canonical-json-file-fsync-atomic-rename-parent-directory-fsync",
+      "allowed_start_states": [
+        "both-final-absent-and-no-temp",
+        "only-exact-deterministic-manifest-temp",
+        "exact-final-manifest-only-and-no-temp",
+        "exact-final-manifest-plus-exact-deterministic-ledger-temp",
+        "both-exact-final-files-and-no-temp"
+      ],
+      "retry": "matching-temp-is-removed-and-rewritten-exact-final-manifest-resumes-ledger-publication-both-exact-finals-repeat-file-and-directory-fsync-and-return-identical-output",
+      "reject_states": [
+        "ledger-final-without-manifest-final",
+        "wrong-byte-final",
+        "unknown-or-multiple-temp",
+        "temp-in-wrong-phase",
+        "unknown-holdout-seal-directory-entry"
+      ],
+      "crash_points": "retry-from-every-create-write-file-fsync-rename-final-fsync-and-directory-fsync-boundary-converges-to-both-exact-finals-or-rejects-without-overwrite"
+    },
+    "negative_cases": [
+      "missing-or-unknown-entry",
+      "wrong-owner-mode-or-type",
+      "symlink-or-path-escape",
+      "wrong-entry-count-id-role-or-order",
+      "runtime-output-opened",
+      "wrong-b0-or-candidate",
+      "missing-duplicate-unknown-or-invalid-field",
+      "rectangle-out-of-bounds",
+      "asset-hash-or-decoded-hash-drift",
+      "missing-clean-reference-or-mask",
+      "existing-output-byte-mismatch",
+      "write-fsync-rename-or-directory-fsync-failure"
+    ]
+  },
+  "b0_authorization_record": {
+    "contract": "hanonly-r50-b0-authorization-v1",
+    "fields": [
+      "contract",
+      "plan_revision",
+      "b0_sha",
+      "artifact_sha256",
+      "b0_preflight_attestation_sha256",
+      "pre_calibration_attestation_sha256",
+      "pre_holdout_attestation_sha256",
+      "holdout_custody_attestation_sha256",
+      "holdout_decode_attestation_sha256",
+      "decode_rerun_test_executable_sha256",
+      "decode_rerun_enabled_cargo_features",
+      "validator_endpoint_sha256",
+      "result"
+    ],
+    "decode_rerun_enabled_cargo_features": [
+      "hanonly-test-evidence"
+    ],
+    "result": "pass",
+    "final_name": "b0-authorization.json",
+    "temp_name": ".b0-authorization.<expected-record-sha256>.tmp",
+    "expected_bytes": "sorted-keys-compact-utf8-no-trailing-newline-canonical-record-bytes",
+    "expected_sha256": "sha256-of-expected-bytes-and-the-lowercase-hex-used-in-the-unique-temp-name",
+    "allowed_start_states": [
+      "final-and-temp-absent",
+      "only-exact-temp-with-name-hash-content-length-owner-mode-and-type-matching-recomputed-expected-record",
+      "only-exact-final-with-content-length-owner-mode-and-type-matching-recomputed-expected-record"
+    ],
+    "reject_start_states": [
+      "wrong-or-unknown-temp",
+      "temp-and-final-both-present",
+      "wrong-byte-final",
+      "symlink-nonregular-wrong-owner-or-wrong-mode",
+      "unknown-authorization-directory-entry"
+    ],
+    "resume_mapping": "exact-temp-maps-only-to-holdout_complete_authorization_incomplete-removes-only-that-task-owned-temp-and-republishes-authorization-without-running-any-formal-holdout-cell; exact-final-maps-to-authorized",
+    "publish": "mode-0600-create_new-exact-temp-complete-write-file-fsync-atomic-rename-final-file-fsync-parent-directory-fsync; retry-from-every-create-write-file-fsync-rename-final-fsync-and-parent-fsync-boundary-converges-to-the-exact-final-or-rejects-without-overwrite",
+    "sha256": "sha256-of-sorted-keys-compact-utf8-no-trailing-newline-record-bytes"
+  },
+  "b0_preflight_attestation": {
+    "contract": "hanonly-r50-b0-preflight-v1",
+    "fields": [
+      "contract",
+      "plan_revision",
+      "b0_sha",
+      "evidence_contract_sha256",
+      "operative_plan_sha256",
+      "test_spec_sha256",
+      "frozen_interpreter_sha256",
+      "implementation_thread_id",
+      "historical_root_registry_path",
+      "historical_root_registry_byte_length",
+      "historical_root_registry_sha256",
+      "gate_results",
+      "red_log_sha256",
+      "result"
+    ],
+    "frozen_interpreter_sha256": "object-containing-exact-eight-path-set-sorted-by-path-with-64-lowercase-hex-values",
+    "implementation_thread_id": "exact-CODEX_THREAD_ID-equal-to-the-B0-commit-Codex-Thread-ID-trailer-and-not-equal-to-any-later-holdout-lane-thread-id",
+    "historical_root_registry_path": "canonical-absolute-descriptor-validated-path-equal-to-the-calibration-ledger-field",
+    "historical_root_registry_byte_length": "positive-integer-equal-to-the-calibration-ledger-field-and-opened-file-bytes",
+    "historical_root_registry_sha256": "64-lowercase-hex-of-the-pre-production-edit-frozen-registry-bound-by-the-calibration-ledger",
+    "gate_results": "closed-object-keyed-by-every-ordered-pre-B0-command-with-value-pass",
+    "red_log_sha256": "closed-object-covering-every-red-list-and-red-run-log-sorted-by-relative-path",
+    "owned_paths": [
+      "b0-preflight-attestation.json",
+      ".b0-preflight-attestation.expected-sha256.tmp",
+      "crop-policy-selection.json",
+      "cargo",
+      "source-gate-selection",
+      "red-list-each-normative-staged-id.log",
+      "red-each-normative-staged-id.log"
+    ],
+    "owned_tree": {
+      "cargo": [
+        "default.jsonl",
+        "evidence.jsonl"
+      ],
+      "source-gate-selection": {
+        "checks": [
+          "pre-calibration.json",
+          ".pre-calibration.expected-sha256.tmp",
+          "pre-holdout.json",
+          ".pre-holdout.expected-sha256.tmp"
+        ],
+        "calibration-freeze": "only-contract-derived-candidate-device-entry-cell-diagnostic-device-evidence-and-log-finals-or-the-single-deterministic-temp-legal-for-the-current-publication",
+        "diagnostic-index.generations": "only-generation-as-eight-decimal-digits-json-finals-or-the-single-deterministic-temp-legal-for-the-current-publication",
+        "diagnostic-index.json": "final-or-single-contract-owned-deterministic-temp",
+        "holdout-seal": [
+          "r50-holdout-decode-attestation.json",
+          ".r50-holdout-decode-attestation.expected-sha256.tmp",
+          "r50-holdout-manifest.json",
+          ".r50-holdout-manifest.expected-manifest-sha256.tmp",
+          "r50-holdout-ledger.json",
+          ".r50-holdout-ledger.expected-ledger-sha256.tmp"
+        ],
+        "holdout": "only-contract-derived-selected-candidate-device-entry-cell-diagnostic-device-evidence-and-log-finals-or-the-single-deterministic-temp-legal-for-the-current-publication",
+        "b0-authorization.json": "exact-final-or-.b0-authorization.<expected-record-sha256>.tmp-only"
+      }
+    },
+    "fresh_admission": "one-frozen-checker-endpoint-uses-parent-descriptor-relative-lstat-equivalent-no-follow-inspection-for-the-entire-owned-path-set-before-the-first-gate; fresh-requires-every-final-temp-log-directory-and-symlink-absent; final-attestation-absent-with-any-other-owned-path-present-is-crash-partial; any-symlink-including-dangling-rejects",
+    "admission_states": [
+      "fresh",
+      "preflight_complete"
+    ],
+    "tree_creation": "no-path-mkdir-or-redirection; the-frozen-checker-captures-every-staged-RED-list-and-run-subprocess-and-both-fixed-cargo-inventory-subprocesses-directly-to-held-descriptor-relative-O_NOFOLLOW-create-new-files; each-frozen-checker-or-Rust-harness-writer-holds-the-evidence-root-descriptor-creates-each-absent-child-with-mkdirat-reopens-with-O_DIRECTORY-and-O_NOFOLLOW-validates-current-user-owner-mode-0700-type-and-closed-entries-writes-finals-through-descriptor-relative-create-new-and-fsync-and-fsyncs-each-created-child-and-parent; namespace-replacement-rejects-or-continues-only-through-held-descriptors-with-zero-outside-root-change",
+    "staged_red_capture": "one-frozen-checker-endpoint-accepts-only-the-closed-crate-and-normative-test-id-pairs-runs-list-ignored-requires-exactly-one-full-name-with-the-requested-terminal-id-runs-that-full-name-with-exact-ignored-nocapture-requires-nonzero-status-and-exactly-one-running-one-FAILED-line-and-failed-summary-and-fsyncs-both-logs-plus-parent",
+    "result": "pass",
+    "publish": "mode-0600-create_new-deterministic-temp-file-fsync-atomic-rename-final-fsync-parent-directory-fsync-with-exact-final-idempotent-retry-and-all-collisions-rejected",
+    "resume": "descriptor-validate-all-fields-hashes-log-bytes-B0-head-and-clean-worktree-before-skipping-the-entire-pre-B0-gate-block; missing-incomplete-or-drifted-attestation-rejects"
+  },
+  "plan_revision": 50,
+  "version": 1
+}

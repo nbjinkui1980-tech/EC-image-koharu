@@ -506,6 +506,9 @@ mod d0_revision_46_contract;
 ))]
 mod d0_held_input;
 
+#[cfg(all(test, feature = "hanonly-test-evidence"))]
+mod d0_r51_holdout_bundle;
+
 #[cfg(all(
     test,
     target_pointer_width = "64",
@@ -563,7 +566,9 @@ mod tests {
         BlobRef, FontSource, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId,
         NodeKind, NodePatch, Page, Scene, TextData, TextDataPatch, TextStyle, Transform,
     };
-    use koharu_ml::pp_ocr_v5::PpOcrWordBox;
+    use koharu_ml::pp_ocr_v5::{
+        PpOcrDetectorOccurrence, PpOcrLineObservation, PpOcrV5Observation, PpOcrWordBox,
+    };
     use koharu_runtime::{ComputePolicy, RuntimeManager, default_app_data_root};
     use serde::ser::SerializeStruct;
     use serde::{Deserialize, Serialize};
@@ -883,6 +888,54 @@ mod tests {
         vl_texts: Vec<String>,
     }
 
+    fn pp_observation(mut words: Vec<PpOcrWordBox>) -> PpOcrV5Observation {
+        let line_indices = words
+            .iter()
+            .map(|word| word.line_index)
+            .collect::<std::collections::BTreeSet<_>>();
+        for word in &mut words {
+            word.line_index = line_indices
+                .iter()
+                .position(|line_index| *line_index == word.line_index)
+                .expect("word line index is present");
+        }
+        let detectors = words
+            .iter()
+            .enumerate()
+            .map(|(occurrence_index, word)| PpOcrDetectorOccurrence {
+                occurrence_index,
+                corners: [
+                    [word.bbox[0], word.bbox[1]],
+                    [word.bbox[2], word.bbox[1]],
+                    [word.bbox[2], word.bbox[3]],
+                    [word.bbox[0], word.bbox[3]],
+                ],
+            })
+            .collect();
+        let mut by_line = BTreeMap::<usize, Vec<usize>>::new();
+        for (index, word) in words.iter().enumerate() {
+            by_line.entry(word.line_index).or_default().push(index);
+        }
+        let lines = by_line
+            .into_values()
+            .map(|detector_indices| {
+                let recognition = detector_indices
+                    .iter()
+                    .map(|index| words[*index].text.as_str())
+                    .collect::<String>();
+                PpOcrLineObservation {
+                    detector_indices,
+                    recognition: Some(recognition),
+                }
+            })
+            .collect();
+        PpOcrV5Observation {
+            detectors,
+            lines,
+            word_boxes: words,
+        }
+    }
+
     #[async_trait]
     impl Engine for CountingEngine {
         async fn run(&self, ctx: EngineCtx<'_>) -> anyhow::Result<Vec<Op>> {
@@ -920,7 +973,9 @@ mod tests {
                 ctx.page,
                 |node_id, _| {
                     self.pp_calls.fetch_add(1, Ordering::Relaxed);
-                    Ok(self.word_boxes.get(&node_id).cloned().unwrap_or_default())
+                    Ok(pp_observation(
+                        self.word_boxes.get(&node_id).cloned().unwrap_or_default(),
+                    ))
                 },
                 |crops| {
                     self.vl_calls.fetch_add(crops.len(), Ordering::Relaxed);
@@ -2450,7 +2505,7 @@ mod tests {
                     item.crop_bounds = Some(bounds);
                     item.crop_hash = Some(crop_rgba_hash);
                 }
-                SourceGateDiagnosticEvent::PpSummary { node_id, words } => {
+                SourceGateDiagnosticEvent::PpSummary { node_id, words, .. } => {
                     builders.entry(node_id).or_default().pp_words = Some(
                         words
                             .into_iter()
@@ -2477,6 +2532,7 @@ mod tests {
                         line_count,
                     });
                 }
+                SourceGateDiagnosticEvent::SelectionGeometry { .. } => {}
                 SourceGateDiagnosticEvent::Decision { node_id, decision } => {
                     builders.entry(node_id).or_default().decision = Some(decision);
                 }

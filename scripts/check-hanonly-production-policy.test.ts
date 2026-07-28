@@ -25,6 +25,8 @@ import {
   readRepoText,
   readStableFile,
   repoRoot,
+  r51EvidenceExecutable,
+  r51MarkerInventoryCommand,
   validateB0Authorization,
   validateB0SourceGateAntiFixture,
   validateDependencyInventory,
@@ -971,6 +973,7 @@ describe('release feature inventory policy', () => {
 
 const antiFixturePaths = [
   'crates/koharu-app/src/pipeline/engines/source_language_gate.rs',
+  'crates/koharu-app/src/pipeline/engines/support.rs',
   'crates/koharu-ml/src/pp_ocr_v5.rs',
   'crates/koharu-llm/src/paddleocr_vl.rs',
   'crates/koharu-app/src/pipeline/mod.rs',
@@ -990,7 +993,7 @@ async function antiFixtureSources(): Promise<RustSourceFile[]> {
 }
 
 describe('B0 source gate anti-fixture policy', () => {
-  test('accepts the current R49 scan roots', async () => {
+  test('accepts the current R51 scan roots', async () => {
     const files = await antiFixtureSources()
     expect(() => validateB0SourceGateAntiFixture(files)).not.toThrow()
   })
@@ -1002,9 +1005,16 @@ describe('B0 source gate anti-fixture policy', () => {
     expect(() => validateB0SourceGateAntiFixture(files)).toThrow(PolicyError)
   })
 
+  test('rejects fixture branches in shared production support', async () => {
+    const files = await antiFixtureSources()
+    files[1].text = 'if entry_id == "h03" { return true }\n' + files[1].text
+
+    expect(() => validateB0SourceGateAntiFixture(files)).toThrow(PolicyError)
+  })
+
   test('rejects descriptor flow in production PP-OCR roots', async () => {
     const files = await antiFixtureSources()
-    files[1].text = 'let source_gate_fixture_manifest_sha256 = "fixture";\n' + files[1].text
+    files[2].text = 'let source_gate_fixture_manifest_sha256 = "fixture";\n' + files[2].text
 
     expect(() => validateB0SourceGateAntiFixture(files)).toThrow(PolicyError)
   })
@@ -1212,6 +1222,69 @@ describe('generated Rust policy', () => {
   })
 })
 
+describe('R51 evidence executable selection', () => {
+  const artifact = {
+    reason: 'compiler-artifact',
+    package_id: 'path+file:///repo/crates/koharu-app#0.61.2',
+    target: { kind: ['lib'], name: 'koharu_app' },
+    profile: { test: true },
+    features: ['hanonly-test-evidence'],
+    executable: '/target/debug/deps/koharu_app-test',
+  }
+
+  test('selects exactly one evidence lib-test executable', () => {
+    expect(r51EvidenceExecutable(`${JSON.stringify(artifact)}\n`)).toBe(artifact.executable)
+    expect(
+      r51EvidenceExecutable(
+        `Storage: 33.5 GiB free, target 4.3 GiB, ui/.next 0.0 GiB\n${JSON.stringify(artifact)}\n`,
+      ),
+    ).toBe(artifact.executable)
+  })
+
+  test('rejects duplicate, late, and malformed storage snapshots', () => {
+    const storage = 'Storage: 33.5 GiB free, target 4.3 GiB, ui/.next 0.0 GiB'
+    expect(() =>
+      r51EvidenceExecutable(`${storage}\n${storage}\n${JSON.stringify(artifact)}\n`),
+    ).toThrow(PolicyError)
+    expect(() => r51EvidenceExecutable(`${JSON.stringify(artifact)}\n${storage}\n`)).toThrow(
+      PolicyError,
+    )
+    expect(() => r51EvidenceExecutable(`Storage: unknown\n${JSON.stringify(artifact)}\n`)).toThrow(
+      PolicyError,
+    )
+  })
+
+  test('uses the executable RED-state CLI contract', () => {
+    expect(r51MarkerInventoryCommand).toEqual([
+      'bun',
+      'scripts/check-hanonly-production-policy.ts',
+      '--validate-red-test-state',
+      'b0',
+    ])
+  })
+
+  test('rejects duplicate artifacts and feature drift', () => {
+    expect(() =>
+      r51EvidenceExecutable(`${JSON.stringify(artifact)}\n${JSON.stringify(artifact)}\n`),
+    ).toThrow(PolicyError)
+    expect(() =>
+      r51EvidenceExecutable(
+        `${JSON.stringify({ ...artifact, features: ['hanonly-test-evidence', 'metal'] })}\n`,
+      ),
+    ).toThrow(PolicyError)
+    expect(() =>
+      r51EvidenceExecutable(
+        `${JSON.stringify({ ...artifact, target: { kind: ['lib', 'rlib'], name: 'koharu_app' } })}\n`,
+      ),
+    ).toThrow(PolicyError)
+    expect(() =>
+      r51EvidenceExecutable(
+        `${JSON.stringify({ ...artifact, package_id: 'path+file:///repo/not-koharu-app#0.61.2' })}\n`,
+      ),
+    ).toThrow(PolicyError)
+  })
+})
+
 describe('CLI contract', () => {
   test('imports without running the CLI', async () => {
     const moduleUrl = pathToFileURL(checkerPath).href
@@ -1224,6 +1297,74 @@ describe('CLI contract', () => {
 
     expect(exitCode).toBe(0)
     expect(stdout).toBe('IMPORTED\n')
+  })
+
+  test('executes the R51 marker argv and rejects the obsolete --state form', async () => {
+    const valid = await runCli(['--validate-red-test-state', 'b0'])
+    expect(valid).toEqual({
+      exitCode: 0,
+      stdout: 'PASS: hanonly b0 red test state\n',
+      stderr: '',
+    })
+    const obsolete = await runCli(['--validate-red-test-state', '--state', 'b0'])
+    expect(obsolete.exitCode).not.toBe(0)
+    expect(obsolete.stdout).toBe('')
+    expect(obsolete.stderr).toStartWith('FAIL [argv]:')
+  })
+
+  test('does not start a build when the preflight custody snapshot fails', async () => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-r51-')))
+    temporaryRoots.push(temporaryRoot)
+    const bin = path.join(temporaryRoot, 'bin')
+    const spawnLog = path.join(temporaryRoot, 'spawn.log')
+    const target = path.join(temporaryRoot, 'target')
+    await mkdir(bin)
+    await mkdir(target)
+    for (const [name, exitCode] of [
+      ['python3', 2],
+      ['bun', 99],
+    ] as const) {
+      const shim = path.join(bin, name)
+      await writeFile(
+        shim,
+        `#!${process.execPath}
+import { appendFileSync } from 'node:fs'
+appendFileSync(process.env.HANONLY_R51_SPAWN_LOG, ${JSON.stringify(name)} + "\\n")
+process.exit(${exitCode})
+`,
+        { mode: 0o700 },
+      )
+      await chmod(shim, 0o700)
+    }
+    const result = await runCli(
+      [
+        '--write-r51-b0-preflight-attestation',
+        '--output',
+        path.join(temporaryRoot, 'r51-b0-preflight.json'),
+        '--r51-contract',
+        path.join(repoRoot, '.omx/plans/hanonly-r51-b0-custody-contract.json'),
+        '--operative-plan',
+        path.join(repoRoot, '.omx/plans/2026-07-23-hanonly-visual-rendering-remediation-plan.md'),
+        '--r51-test-spec',
+        path.join(repoRoot, '.omx/plans/test-spec-hanonly-r51-b0-custody.md'),
+        '--base-production-contract',
+        path.join(repoRoot, '.omx/plans/hanonly-r50-b0-evidence-contract.json'),
+        '--freeze-receipt',
+        path.join(temporaryRoot, 'holdout-freeze-receipt.json'),
+        '--historical-inventory',
+        path.join(temporaryRoot, 'historical-inventory.json'),
+        '--ciphertext',
+        path.join(temporaryRoot, 'holdout.enc'),
+      ],
+      {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        CARGO_TARGET_DIR: target,
+        HANONLY_R51_SPAWN_LOG: spawnLog,
+      },
+    )
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stdout).toBe('')
+    expect(await readFile(spawnLog, 'utf8')).toBe('python3\n')
   })
 
   test('uses the exact cargo metadata argv and prints only PASS on success', async () => {

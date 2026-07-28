@@ -366,6 +366,28 @@ pub fn eligible_text_lines(
         return Some(Vec::new());
     }
 
+    if lines.len() == 1
+        && han_count == 1
+        && text.detector.as_deref() == Some(SOURCE_GATE_TARGET_DETECTOR)
+        && text
+            .line_polygons
+            .as_ref()
+            .is_some_and(|value| value.len() > 1)
+    {
+        let polygons = text
+            .line_polygons
+            .as_ref()?
+            .iter()
+            .map(|quad| {
+                safe_mixed_line_bbox(quad, transform, image_width, image_height).map(bbox_quad)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let (line_index, line) = lines[0];
+        let mut eligible = eligible_line(text, line_index, line, node_bbox, false);
+        eligible.region.line_polygons = Some(polygons);
+        return Some(vec![eligible]);
+    }
+
     let safe_polygons = text.line_polygons.as_ref().and_then(|polygons| {
         if polygons.len() != lines.len() {
             return None;
@@ -729,55 +751,60 @@ pub fn line_support_mask(
 ) -> GrayImage {
     let mut mask = GrayImage::new(width, height);
     for line in eligible_lines {
-        let bbox = match line.region.line_polygons.as_deref() {
-            Some([quad]) if quad_is_axis_aligned(quad) => {
-                if quad.iter().flatten().any(|value| !value.is_finite()) {
-                    continue;
-                }
-                let area = (0..4)
-                    .map(|index| {
-                        let next = (index + 1) % 4;
-                        quad[index][0] * quad[next][1] - quad[next][0] * quad[index][1]
+        let bboxes = match line.region.line_polygons.as_deref() {
+            Some(polygons) => polygons
+                .iter()
+                .filter_map(|quad| {
+                    if quad.iter().flatten().any(|value| !value.is_finite())
+                        || !quad_is_axis_aligned(quad)
+                    {
+                        return None;
+                    }
+                    let area = (0..4)
+                        .map(|index| {
+                            let next = (index + 1) % 4;
+                            quad[index][0] * quad[next][1] - quad[next][0] * quad[index][1]
+                        })
+                        .sum::<f32>()
+                        .abs()
+                        * 0.5;
+                    (area > f32::EPSILON).then(|| {
+                        [
+                            quad.iter()
+                                .map(|point| point[0])
+                                .fold(f32::INFINITY, f32::min),
+                            quad.iter()
+                                .map(|point| point[1])
+                                .fold(f32::INFINITY, f32::min),
+                            quad.iter()
+                                .map(|point| point[0])
+                                .fold(f32::NEG_INFINITY, f32::max),
+                            quad.iter()
+                                .map(|point| point[1])
+                                .fold(f32::NEG_INFINITY, f32::max),
+                        ]
                     })
-                    .sum::<f32>()
-                    .abs()
-                    * 0.5;
-                if area <= f32::EPSILON {
-                    continue;
-                }
-                [
-                    quad.iter()
-                        .map(|point| point[0])
-                        .fold(f32::INFINITY, f32::min),
-                    quad.iter()
-                        .map(|point| point[1])
-                        .fold(f32::INFINITY, f32::min),
-                    quad.iter()
-                        .map(|point| point[0])
-                        .fold(f32::NEG_INFINITY, f32::max),
-                    quad.iter()
-                        .map(|point| point[1])
-                        .fold(f32::NEG_INFINITY, f32::max),
-                ]
-            }
-            None => [
+                })
+                .collect::<Vec<_>>(),
+            None => vec![[
                 line.region.x,
                 line.region.y,
                 line.region.x + line.region.width,
                 line.region.y + line.region.height,
-            ],
-            _ => continue,
+            ]],
         };
-        let Some([left, top, right, bottom]) = pixel_bbox(bbox, width, height) else {
-            continue;
-        };
-        let polygon = [
-            Point::new(left, top),
-            Point::new(right, top),
-            Point::new(right, bottom),
-            Point::new(left, bottom),
-        ];
-        draw_polygon_mut(&mut mask, &polygon, Luma([255]));
+        for bbox in bboxes {
+            let Some([left, top, right, bottom]) = pixel_bbox(bbox, width, height) else {
+                continue;
+            };
+            let polygon = [
+                Point::new(left, top),
+                Point::new(right, top),
+                Point::new(right, bottom),
+                Point::new(left, bottom),
+            ];
+            draw_polygon_mut(&mut mask, &polygon, Luma([255]));
+        }
     }
     mask
 }
@@ -792,6 +819,21 @@ fn pixel_bbox(bbox: [f32; 4], width: u32, height: u32) -> Option<[i32; 4]> {
     let right = (clipped[2].ceil().min(width as f32) as i32 - 1).max(left);
     let bottom = (clipped[3].ceil().min(height as f32) as i32 - 1).max(top);
     Some([left, top, right, bottom])
+}
+
+pub(crate) fn support_bboxes_overlap(
+    first: [f32; 4],
+    second: [f32; 4],
+    width: u32,
+    height: u32,
+) -> bool {
+    let (Some(first), Some(second)) = (
+        pixel_bbox(first, width, height),
+        pixel_bbox(second, width, height),
+    ) else {
+        return true;
+    };
+    first[0] <= second[2] && second[0] <= first[2] && first[1] <= second[3] && second[1] <= first[3]
 }
 
 pub fn intersect_gray_masks(source: &GrayImage, allowed: &GrayImage) -> GrayImage {
