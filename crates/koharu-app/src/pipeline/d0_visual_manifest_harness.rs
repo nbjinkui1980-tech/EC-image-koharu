@@ -5696,6 +5696,8 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 node_id,
                 bounds: [0, 0, 64, 64],
                 crop_rgba_hash: synthetic_hash(47),
+                vl_bounds: [0, 0, 64, 64],
+                vl_crop_rgba_hash: synthetic_hash(48),
             },
             SourceGateDiagnosticEvent::PpSummary {
                 node_id,

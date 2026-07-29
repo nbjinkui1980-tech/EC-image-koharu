@@ -80,6 +80,10 @@ pub(in crate::pipeline) enum SourceGateDecision {
         target_count: usize,
         protected_count: usize,
     },
+    AcceptedDetectorFallback {
+        target_count: usize,
+        protected_count: usize,
+    },
     AcceptedIsolatedProtectedLatinGeometry {
         target_count: usize,
         protected_count: usize,
@@ -99,6 +103,7 @@ impl SourceGateDecision {
             self,
             Self::RejectedAfterVl { .. }
                 | Self::AcceptedPrimary { .. }
+                | Self::AcceptedDetectorFallback { .. }
                 | Self::AcceptedIsolatedProtectedLatinGeometry { .. }
                 | Self::VlBatchError
         ) as u8
@@ -110,6 +115,7 @@ impl SourceGateDecision {
             Self::InvalidCandidateGeometry | Self::RejectedBeforeVl { .. } => "not_requested",
             Self::RejectedAfterVl { .. }
             | Self::AcceptedPrimary { .. }
+            | Self::AcceptedDetectorFallback { .. }
             | Self::AcceptedIsolatedProtectedLatinGeometry { .. } => "completed",
             Self::VlBatchError => "batch_error",
         }
@@ -117,10 +123,12 @@ impl SourceGateDecision {
 
     #[cfg(test)]
     pub(in crate::pipeline) fn fallback(&self) -> &'static str {
-        if matches!(self, Self::AcceptedIsolatedProtectedLatinGeometry { .. }) {
-            "isolated_protected_latin_geometry"
-        } else {
-            "none"
+        match self {
+            Self::AcceptedDetectorFallback { .. } => "layout_geometry",
+            Self::AcceptedIsolatedProtectedLatinGeometry { .. } => {
+                "isolated_protected_latin_geometry"
+            }
+            _ => "none",
         }
     }
 }
@@ -146,6 +154,8 @@ pub(in crate::pipeline) enum SourceGateDiagnosticEvent {
         node_id: NodeId,
         bounds: [u32; 4],
         crop_rgba_hash: String,
+        vl_bounds: [u32; 4],
+        vl_crop_rgba_hash: String,
     },
     PpSummary {
         node_id: NodeId,
@@ -1087,10 +1097,11 @@ fn bbox_contains(outer: [f32; 4], inner: [f32; 4]) -> bool {
     outer[0] <= inner[0] && outer[1] <= inner[1] && outer[2] >= inner[2] && outer[3] >= inner[3]
 }
 
-fn select_chinese_target_from_observation(
+fn select_chinese_target_from_observation_with_layout(
     vl_text: &str,
     observation: &PpOcrV5Observation,
     crop_bounds: [u32; 4],
+    layout_bbox: [f32; 4],
     image_width: u32,
     image_height: u32,
 ) -> std::result::Result<(SourceSelection, SourceGateDecision), SourceGateRejectReason> {
@@ -1120,6 +1131,23 @@ fn select_chinese_target_from_observation(
         .iter()
         .map(|detector| detector_bbox(detector.corners, crop_width, crop_height))
         .collect::<std::result::Result<Vec<_>, _>>()?;
+    let detector_scene_bboxes = detector_bboxes
+        .iter()
+        .map(|[left, top, right, bottom]| {
+            [
+                crop_left as f32 + left,
+                crop_top as f32 + top,
+                crop_left as f32 + right,
+                crop_top as f32 + bottom,
+            ]
+        })
+        .collect::<Vec<_>>();
+    if detector_scene_bboxes
+        .iter()
+        .any(|bbox| !bbox_contains(layout_bbox, *bbox))
+    {
+        return Err(SourceGateRejectReason::PpVlIncompleteCoverage);
+    }
     if detector_bboxes.iter().enumerate().any(|(index, bbox)| {
         detector_bboxes.iter().skip(index + 1).any(|other| {
             bboxes_intersect(*bbox, *other)
@@ -1206,49 +1234,6 @@ fn select_chinese_target_from_observation(
         return Err(SourceGateRejectReason::ProtectedLatinHanConflict);
     }
 
-    if !pp_has_han {
-        if contains_latin_alphabetic(vl_text)
-            || observation
-                .lines
-                .iter()
-                .filter_map(|line| line.recognition.as_deref())
-                .any(contains_latin_alphabetic)
-        {
-            return Err(SourceGateRejectReason::PpNoHanProtectedLatin);
-        }
-        if detector_bboxes.len() != 1 || observation.lines.len() != 1 {
-            return Err(SourceGateRejectReason::PpVlIncompleteCoverage);
-        }
-        let text = vl_text
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .collect::<String>();
-        if text.is_empty() || !contains_han(&text) {
-            return Err(SourceGateRejectReason::NoSafeHanRun);
-        }
-        let [left, top, right, bottom] = detector_bboxes[0];
-        let bbox = [
-            crop_left as f32 + left,
-            crop_top as f32 + top,
-            crop_left as f32 + right,
-            crop_top as f32 + bottom,
-        ];
-        return Ok((
-            SourceSelection {
-                targets: vec![SourceTarget {
-                    text,
-                    bbox,
-                    line_polygon: bbox_quad(bbox),
-                }],
-                protected_lines: Vec::new(),
-            },
-            SourceGateDecision::AcceptedPrimary {
-                target_count: 1,
-                protected_count: 0,
-            },
-        ));
-    }
-
     for words in &mut owned_words {
         words.sort_by(|left, right| {
             left.bbox[1]
@@ -1272,6 +1257,84 @@ fn select_chinese_target_from_observation(
         return Err(SourceGateRejectReason::ProtectedLatinHanConflict);
     }
 
+    let mut reading_order = (0..detector_bboxes.len()).collect::<Vec<_>>();
+    reading_order.sort_by(|left, right| {
+        line_for_detector[*left]
+            .cmp(&line_for_detector[*right])
+            .then_with(|| detector_bboxes[*left][0].total_cmp(&detector_bboxes[*right][0]))
+    });
+    let pp_scalars = reading_order
+        .iter()
+        .flat_map(|index| detector_texts[*index].chars())
+        .filter(|character| !character.is_whitespace())
+        .collect::<Vec<_>>();
+    let vl_scalars = vl_text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<Vec<_>>();
+    let scalar_alignment_proven = pp_scalars.len() == vl_scalars.len()
+        && pp_scalars.iter().zip(&vl_scalars).all(|(pp, vl)| {
+            pp == vl || (contains_han(&pp.to_string()) && contains_han(&vl.to_string()))
+        });
+    if !pp_has_han {
+        let pp_contains_latin = observation
+            .word_boxes
+            .iter()
+            .any(|word| contains_latin_alphabetic(&word.text))
+            || observation
+                .lines
+                .iter()
+                .filter_map(|line| line.recognition.as_deref())
+                .any(contains_latin_alphabetic);
+        if pp_contains_latin || contains_latin_alphabetic(vl_text) {
+            return Err(SourceGateRejectReason::PpNoHanProtectedLatin);
+        }
+        let single_complete_detector = detector_bboxes.len() == 1
+            && observation.lines.len() == 1
+            && observation.lines[0].detector_indices.as_slice() == [0]
+            && observation.lines[0]
+                .recognition
+                .as_deref()
+                .is_some_and(|recognition| !recognition.trim().is_empty());
+        if !single_complete_detector {
+            return Err(SourceGateRejectReason::PpVlIncompleteCoverage);
+        }
+        let text = vl_scalars.iter().collect::<String>();
+        if text.is_empty() || !contains_han(&text) {
+            return Err(SourceGateRejectReason::NoSafeHanRun);
+        }
+        return Ok((
+            SourceSelection {
+                targets: vec![SourceTarget {
+                    text,
+                    bbox: layout_bbox,
+                    line_polygon: bbox_quad(layout_bbox),
+                }],
+                protected_lines: Vec::new(),
+            },
+            SourceGateDecision::AcceptedDetectorFallback {
+                target_count: 1,
+                protected_count: 0,
+            },
+        ));
+    }
+    if !scalar_alignment_proven {
+        return Err(SourceGateRejectReason::PpVlIncompleteCoverage);
+    }
+
+    let mut selected_texts = detector_texts.clone();
+    let mut vl_offset = 0;
+    for detector_index in &reading_order {
+        let scalar_count = detector_texts[*detector_index]
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .count();
+        selected_texts[*detector_index] = vl_scalars[vl_offset..vl_offset + scalar_count]
+            .iter()
+            .collect();
+        vl_offset += scalar_count;
+    }
+
     let mut attached_to = vec![None; detector_bboxes.len()];
     for line_index in 0..observation.lines.len() {
         let mut detectors = detector_bboxes
@@ -1284,7 +1347,7 @@ fn select_chinese_target_from_observation(
             detector_bboxes[*left][0].total_cmp(&detector_bboxes[*right][0])
         });
         for (position, detector_index) in detectors.iter().copied().enumerate() {
-            let text = &detector_texts[detector_index];
+            let text = &selected_texts[detector_index];
             if contains_han(text) || contains_protected_latin_word(text) {
                 continue;
             }
@@ -1294,7 +1357,7 @@ fn select_chinese_target_from_observation(
             ]
             .into_iter()
             .flatten()
-            .filter(|candidate| contains_han(&detector_texts[*candidate]))
+            .filter(|candidate| contains_han(&selected_texts[*candidate]))
             .collect::<Vec<_>>();
             adjacent_han.sort_by(|left, right| {
                 let gap = |candidate: usize| {
@@ -1331,7 +1394,7 @@ fn select_chinese_target_from_observation(
         });
         let text = members
             .iter()
-            .map(|index| detector_texts[*index].as_str())
+            .map(|index| selected_texts[*index].as_str())
             .collect::<String>();
         let [left, top, right, bottom] = members.iter().skip(1).fold(
             detector_bboxes[members[0]],
@@ -1383,10 +1446,35 @@ fn select_chinese_target_from_observation(
     ))
 }
 
+#[cfg(test)]
+fn select_chinese_target_from_observation(
+    vl_text: &str,
+    observation: &PpOcrV5Observation,
+    crop_bounds: [u32; 4],
+    image_width: u32,
+    image_height: u32,
+) -> std::result::Result<(SourceSelection, SourceGateDecision), SourceGateRejectReason> {
+    select_chinese_target_from_observation_with_layout(
+        vl_text,
+        observation,
+        crop_bounds,
+        [
+            crop_bounds[0] as f32,
+            crop_bounds[1] as f32,
+            crop_bounds[2] as f32,
+            crop_bounds[3] as f32,
+        ],
+        image_width,
+        image_height,
+    )
+}
+
 struct SourceGateCandidate {
     node_id: NodeId,
     crop: DynamicImage,
+    vl_crop: DynamicImage,
     crop_bounds: [u32; 4],
+    layout_bbox: [f32; 4],
 }
 
 pub(in crate::pipeline) fn rgba_fingerprint(image: &DynamicImage) -> String {
@@ -1469,6 +1557,15 @@ fn safe_crop_bounds_with_policy(
     compute_safe_crop_bounds(transform, image_width, image_height, policy)
 }
 
+#[cfg(test)]
+pub(in crate::pipeline) fn primary_crop_bounds_for_test(
+    transform: &Transform,
+    image_width: u32,
+    image_height: u32,
+) -> Option<[u32; 4]> {
+    safe_crop_bounds_with_policy(transform, image_width, image_height, PRIMARY_CROP_POLICY)
+}
+
 fn compute_safe_crop_bounds(
     transform: &Transform,
     image_width: u32,
@@ -1507,6 +1604,47 @@ fn compute_safe_crop_bounds(
     let right = right.min(image_width as f32) as u32;
     let bottom = bottom.min(image_height as f32) as u32;
     (left < right && top < bottom).then_some([left, top, right, bottom])
+}
+
+fn strict_layout_geometry(
+    transform: &Transform,
+    image_width: u32,
+    image_height: u32,
+) -> Option<([f32; 4], [u32; 4])> {
+    let right = transform.x + transform.width;
+    let bottom = transform.y + transform.height;
+    if image_width == 0
+        || image_height == 0
+        || [
+            transform.x,
+            transform.y,
+            transform.width,
+            transform.height,
+            transform.rotation_deg,
+            right,
+            bottom,
+        ]
+        .iter()
+        .any(|value| !value.is_finite())
+        || transform.rotation_deg != 0.0
+        || transform.x < 0.0
+        || transform.y < 0.0
+        || transform.x >= right
+        || transform.y >= bottom
+        || right > image_width as f32
+        || bottom > image_height as f32
+    {
+        return None;
+    }
+    Some((
+        [transform.x, transform.y, right, bottom],
+        [
+            transform.x.floor() as u32,
+            transform.y.floor() as u32,
+            right.ceil() as u32,
+            bottom.ceil() as u32,
+        ],
+    ))
 }
 
 fn source_gate_candidates(
@@ -1551,6 +1689,15 @@ fn source_gate_candidates(
                 node.transform.height,
             ],
         });
+        let Some((layout_bbox, [vl_left, vl_top, vl_right, vl_bottom])) =
+            strict_layout_geometry(&node.transform, image.width(), image.height())
+        else {
+            invalid.push(*node_id);
+            candidate_index += active_crop_policies().len();
+            continue;
+        };
+        let vl_crop = image.crop_imm(vl_left, vl_top, vl_right - vl_left, vl_bottom - vl_top);
+        let vl_crop_rgba_hash = rgba_fingerprint(&vl_crop);
         let mut valid = false;
         for policy in active_crop_policies() {
             let Some([left, top, right, bottom]) = safe_crop_bounds_with_policy(
@@ -1574,6 +1721,11 @@ fn source_gate_candidates(
                     right,
                     bottom,
                     crop_rgba_hash = %rgba_fingerprint(&crop),
+                    vl_left,
+                    vl_top,
+                    vl_right,
+                    vl_bottom,
+                    vl_crop_rgba_hash,
                     "source_gate.crop"
                 );
             }
@@ -1583,11 +1735,15 @@ fn source_gate_candidates(
                 node_id: *node_id,
                 bounds: [left, top, right, bottom],
                 crop_rgba_hash: rgba_fingerprint(&crop),
+                vl_bounds: [vl_left, vl_top, vl_right, vl_bottom],
+                vl_crop_rgba_hash: vl_crop_rgba_hash.clone(),
             });
             candidates.push(SourceGateCandidate {
                 node_id: *node_id,
                 crop,
+                vl_crop: vl_crop.clone(),
                 crop_bounds: [left, top, right, bottom],
+                layout_bbox,
             });
             candidate_index += 1;
         }
@@ -1880,7 +2036,7 @@ where
             }
         }
 
-        let mut vl_texts = validate(vec![candidate.crop.clone()]).await?;
+        let mut vl_texts = validate(vec![candidate.vl_crop.clone()]).await?;
         if vl_texts.len() != 1 {
             trace_decision(candidate.node_id, &SourceGateDecision::VlBatchError);
             ensure!(false, "source gate OCR count mismatch");
@@ -1908,10 +2064,11 @@ where
                 .filter(|line| !line.trim().is_empty())
                 .count(),
         });
-        let selection = select_chinese_target_from_observation(
+        let selection = select_chinese_target_from_observation_with_layout(
             &vl_text,
             &observation,
             candidate.crop_bounds,
+            candidate.layout_bbox,
             image.width(),
             image.height(),
         );
@@ -2189,10 +2346,10 @@ mod tests {
 
         assert_eq!(selection.targets.len(), 1);
         assert_eq!(selection.targets[0].text, "360度呵护");
-        assert_eq!(selection.targets[0].bbox, [12.0, 23.0, 92.0, 43.0]);
+        assert_eq!(selection.targets[0].bbox, [10.0, 20.0, 110.0, 70.0]);
         assert!(matches!(
             decision,
-            SourceGateDecision::AcceptedPrimary {
+            SourceGateDecision::AcceptedDetectorFallback {
                 target_count: 1,
                 protected_count: 0
             }
@@ -2281,10 +2438,10 @@ mod tests {
     }
 
     #[test]
-    fn detector_ownership_ignores_pp_vl_counts_and_word_order() {
+    fn detector_ownership_ignores_line_breaks_and_word_order_and_uses_vl_han() {
         let detectors = vec![
-            detector(0, 2.0, 3.0, 42.0, 23.0),
-            detector(1, 48.0, 3.0, 88.0, 23.0),
+            detector(0, 2.0, 4.0, 42.0, 24.0),
+            detector(1, 48.0, 2.0, 88.0, 22.0),
         ];
         let lines = vec![PpOcrLineObservation {
             detector_indices: vec![0, 1],
@@ -2308,19 +2465,77 @@ mod tests {
         );
 
         let select = |observed| {
-            select_chinese_target_from_observation(
-                "科学\n选鞋稳步成长",
-                observed,
-                [0, 0, 100, 50],
-                100,
-                50,
-            )
-            .unwrap()
-            .0
+            select_chinese_target_from_observation("科學\n选鞋", observed, [0, 0, 100, 50], 100, 50)
+                .unwrap()
+                .0
         };
 
         assert_eq!(select(&ordered), select(&reversed));
         assert_eq!(select(&ordered).targets.len(), 2);
+        let selection = select(&ordered);
+        assert_eq!(
+            selection
+                .targets
+                .iter()
+                .find(|target| target.bbox[0] < 45.0)
+                .unwrap()
+                .text,
+            "科學"
+        );
+        assert_eq!(
+            selection
+                .targets
+                .iter()
+                .find(|target| target.bbox[0] > 45.0)
+                .unwrap()
+                .text,
+            "选鞋"
+        );
+    }
+
+    #[test]
+    fn scalar_count_mismatch_with_pp_han_stays_fail_closed() {
+        let observed = observation_from_words(vec![word("安全", 0, 12.0, 8.0, 72.0, 28.0)]);
+        let reason = select_chinese_target_from_observation_with_layout(
+            "安全规范",
+            &observed,
+            [10, 20, 110, 70],
+            [20.25, 25.5, 100.75, 60.5],
+            200,
+            100,
+        )
+        .unwrap_err();
+
+        assert_eq!(reason, SourceGateRejectReason::PpVlIncompleteCoverage);
+    }
+
+    #[test]
+    fn numeric_pp_fallback_requires_one_complete_detector() {
+        let observed = observation(
+            vec![
+                detector(0, 2.0, 3.0, 42.0, 23.0),
+                detector(1, 48.0, 3.0, 88.0, 23.0),
+            ],
+            vec![PpOcrLineObservation {
+                detector_indices: vec![0, 1],
+                recognition: Some("360".into()),
+            }],
+            vec![
+                word("3", 0, 4.0, 4.0, 40.0, 22.0),
+                word("60", 0, 50.0, 4.0, 86.0, 22.0),
+            ],
+        );
+
+        let reason = select_chinese_target_from_observation(
+            "360度呵护",
+            &observed,
+            [0, 0, 100, 50],
+            100,
+            50,
+        )
+        .unwrap_err();
+
+        assert_eq!(reason, SourceGateRejectReason::PpVlIncompleteCoverage);
     }
 
     #[test]
@@ -3258,12 +3473,11 @@ mod tests {
         let candidate_id = NodeId::new();
         let (scene, page) = scene_with_nodes(vec![candidate(
             candidate_id,
-            [20.0, 20.0, 120.0, 50.0],
+            [20.25, 20.5, 120.75, 50.5],
             false,
             "detector",
         )]);
         let image = DynamicImage::ImageRgb8(RgbImage::new(200, 100));
-        let _policy = SourceGateCropPolicyGuard::set(SourceGateCropPolicy::S25L4);
         let (candidates, invalid) = source_gate_candidates(&image, &scene, page).unwrap();
         assert!(invalid.is_empty());
         let crop = candidates
@@ -3272,12 +3486,12 @@ mod tests {
             .unwrap()
             .crop_bounds;
         let observed = observation(
-            vec![detector(0, 2.0, 3.0, 82.0, 23.0)],
+            vec![detector(0, 9.0, 8.0, 100.0, 30.0)],
             vec![PpOcrLineObservation {
                 detector_indices: vec![0],
                 recognition: Some("360".into()),
             }],
-            vec![word("360", 0, 4.0, 4.0, 80.0, 22.0)],
+            vec![word("360", 0, 11.0, 9.0, 98.0, 29.0)],
         );
 
         let ops = dispatch_source_gate(
@@ -3285,7 +3499,11 @@ mod tests {
             &scene,
             page,
             |_, _| Ok(observed.clone()),
-            |_| std::future::ready(Ok(vec!["360度呵护".into()])),
+            |crops| {
+                assert_eq!(crops.len(), 1);
+                assert_eq!((crops[0].width(), crops[0].height()), (101, 31));
+                std::future::ready(Ok(vec!["360度呵护".into()]))
+            },
         )
         .await
         .unwrap();
@@ -3309,14 +3527,110 @@ mod tests {
             image.height(),
             &selected,
         );
-        let expected = [crop[0] + 2, crop[1] + 3, crop[0] + 82, crop[1] + 23];
-        for y in 0..image.height() {
-            for x in 0..image.width() {
-                let inside = (expected[0]..expected[2]).contains(&x)
-                    && (expected[1]..expected[3]).contains(&y);
-                assert_eq!(mask.get_pixel(x, y).0[0] != 0, inside, "pixel {x},{y}");
-            }
-        }
+        let expected: [f32; 4] = [20.25, 20.5, 120.75, 50.5];
+        assert_ne!(
+            crop,
+            [
+                expected[0].floor() as u32,
+                expected[1].floor() as u32,
+                expected[2].ceil() as u32,
+                expected[3].ceil() as u32,
+            ]
+        );
+        let target = scene.node(page, candidate_id).unwrap();
+        assert_eq!(
+            [
+                target.transform.x,
+                target.transform.y,
+                target.transform.x + target.transform.width,
+                target.transform.y + target.transform.height,
+            ],
+            expected
+        );
+        assert_eq!(selected.len(), 1);
+        assert_eq!(
+            selected[0].region.line_polygons,
+            Some(vec![bbox_quad(expected)])
+        );
+        let expected_mask = crate::pipeline::engines::support::line_support_mask(
+            image.width(),
+            image.height(),
+            &[selected[0].clone()],
+        );
+        assert_eq!(mask, expected_mask);
+    }
+
+    #[tokio::test]
+    async fn invalid_layout_is_rejected_before_pp_and_vl() {
+        let candidate_id = NodeId::new();
+        let (scene, page) = scene_with_nodes(vec![candidate(
+            candidate_id,
+            [-1.0, 10.0, 80.0, 40.0],
+            false,
+            "detector",
+        )]);
+        let image = DynamicImage::ImageRgb8(RgbImage::new(200, 100));
+        let pp_calls = AtomicUsize::new(0);
+        let vl_calls = AtomicUsize::new(0);
+
+        let ops = dispatch_source_gate(
+            &image,
+            &scene,
+            page,
+            |_, _| {
+                pp_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(observation_from_words(vec![word(
+                    "中文", 0, 0.0, 0.0, 40.0, 20.0,
+                )]))
+            },
+            |crops| {
+                vl_calls.fetch_add(crops.len(), Ordering::Relaxed);
+                std::future::ready(Ok(vec!["中文".into()]))
+            },
+        )
+        .await
+        .unwrap();
+
+        let scene = apply_ops(scene, ops);
+        assert_eq!(pp_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(vl_calls.load(Ordering::Relaxed), 0);
+        assert!(scene.node(page, candidate_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn padding_detector_never_becomes_an_accepted_target() {
+        let candidate_id = NodeId::new();
+        let (scene, page) = scene_with_nodes(vec![candidate(
+            candidate_id,
+            [20.0, 20.0, 120.0, 50.0],
+            false,
+            "detector",
+        )]);
+        let image = DynamicImage::ImageRgb8(RgbImage::new(200, 100));
+
+        let ops = dispatch_source_gate(
+            &image,
+            &scene,
+            page,
+            |_, _| {
+                Ok(observation_from_words(vec![word(
+                    "邻字", 0, 2.0, 3.0, 10.0, 12.0,
+                )]))
+            },
+            |_| std::future::ready(Ok(vec!["正文".into()])),
+        )
+        .await
+        .unwrap();
+
+        let scene = apply_ops(scene, ops);
+        assert!(scene.node(page, candidate_id).is_none());
+        assert!(
+            crate::pipeline::engines::support::text_nodes(&scene, page)
+                .into_iter()
+                .all(|(_, _, text)| {
+                    text.detector.as_deref() != Some(SOURCE_GATE_TARGET_DETECTOR)
+                })
+        );
     }
 
     #[tokio::test]
@@ -3341,8 +3655,8 @@ mod tests {
                     )]))
                 } else {
                     Ok(observation_from_words(vec![
-                        word("Peach", 0, 0.0, 0.0, 40.0, 20.0),
-                        word("蜜桃臀", 0, 45.0, 0.0, 100.0, 20.0),
+                        word("Peach", 0, 5.0, 5.0, 45.0, 25.0),
+                        word("蜜桃臀", 0, 50.0, 5.0, 105.0, 25.0),
                     ]))
                 }
             },
@@ -3405,19 +3719,18 @@ mod tests {
             "detector",
         )]);
         let image = DynamicImage::ImageRgb8(RgbImage::new(200, 100));
-
         let ops = dispatch_source_gate(
             &image,
             &scene,
             page,
             |_, _| {
                 Ok(observation_from_words(vec![
-                    word("PEACH", 0, 2.0, 2.0, 35.0, 18.0),
-                    word("HIp", 0, 43.0, 2.0, 68.0, 18.0),
-                    word("蜜桃臀", 1, 2.0, 25.0, 40.0, 45.0),
+                    word("PEACH", 0, 12.0, 12.0, 45.0, 28.0),
+                    word("HIp", 0, 53.0, 12.0, 78.0, 28.0),
+                    word("蜜桃臀", 1, 12.0, 35.0, 50.0, 55.0),
                 ]))
             },
-            |_| std::future::ready(Ok(vec!["PEACH HIP\n蜜桃臀".into()])),
+            |_| std::future::ready(Ok(vec!["PEACH HIp\n蜜桃臀".into()])),
         )
         .await
         .unwrap();
@@ -3446,7 +3759,7 @@ mod tests {
         for y in 0..image.height() {
             for x in 0..image.width() {
                 let expected =
-                    ((2..35).contains(&x) || (43..68).contains(&x)) && (2..18).contains(&y);
+                    ((12..45).contains(&x) || (53..78).contains(&x)) && (12..28).contains(&y);
                 assert_eq!(mask.get_pixel(x, y).0[0] != 0, expected, "pixel {x},{y}");
             }
         }

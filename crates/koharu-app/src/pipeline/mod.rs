@@ -1022,9 +1022,33 @@ mod tests {
 
     fn install_production_gate(
         fixture: &PipelineFixture,
-        word_boxes: HashMap<NodeId, Vec<PpOcrWordBox>>,
+        mut word_boxes: HashMap<NodeId, Vec<PpOcrWordBox>>,
         vl_texts: Vec<String>,
     ) -> (Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let scene = fixture.session.scene_snapshot();
+        let page = scene.page(fixture.page).expect("fixture page");
+        for (node_id, words) in &mut word_boxes {
+            let transform = &page
+                .nodes
+                .get(node_id)
+                .expect("fixture candidate")
+                .transform;
+            let [crop_left, crop_top, _, _] =
+                engines::source_language_gate::primary_crop_bounds_for_test(
+                    transform,
+                    page.width,
+                    page.height,
+                )
+                .expect("fixture primary crop");
+            let offset_x = transform.x - crop_left as f32;
+            let offset_y = transform.y - crop_top as f32;
+            for word in words {
+                word.bbox[0] += offset_x;
+                word.bbox[1] += offset_y;
+                word.bbox[2] += offset_x;
+                word.bbox[3] += offset_y;
+            }
+        }
         let calls = Arc::new(AtomicUsize::new(0));
         let pp_calls = Arc::new(AtomicUsize::new(0));
         let vl_calls = Arc::new(AtomicUsize::new(0));
@@ -2141,6 +2165,8 @@ mod tests {
         layout_bbox_bits: [u32; 4],
         crop_bounds: Option<[u32; 4]>,
         crop_rgba_blake3: Option<String>,
+        vl_crop_bounds: Option<[u32; 4]>,
+        vl_crop_rgba_blake3: Option<String>,
         pp_words: Vec<MatrixPpWord>,
         vl_summary: Option<MatrixVlSummary>,
         decision: MatrixDecision,
@@ -2334,6 +2360,8 @@ mod tests {
                             candidate.layout_bbox_bits,
                             candidate.crop_bounds,
                             candidate.crop_rgba_blake3.as_deref(),
+                            candidate.vl_crop_bounds,
+                            candidate.vl_crop_rgba_blake3.as_deref(),
                         )
                     })
                     .collect::<Vec<_>>(),
@@ -2465,6 +2493,8 @@ mod tests {
         bbox: Option<[f32; 4]>,
         crop_bounds: Option<[u32; 4]>,
         crop_hash: Option<String>,
+        vl_crop_bounds: Option<[u32; 4]>,
+        vl_crop_hash: Option<String>,
         pp_words: Option<Vec<MatrixPpWord>>,
         vl_summary: Option<MatrixVlSummary>,
         decision: Option<engines::source_language_gate::SourceGateDecision>,
@@ -2499,11 +2529,15 @@ mod tests {
                     node_id,
                     bounds,
                     crop_rgba_hash,
+                    vl_bounds,
+                    vl_crop_rgba_hash,
                     ..
                 } => {
                     let item = builders.entry(node_id).or_default();
                     item.crop_bounds = Some(bounds);
                     item.crop_hash = Some(crop_rgba_hash);
+                    item.vl_crop_bounds = Some(vl_bounds);
+                    item.vl_crop_hash = Some(vl_crop_rgba_hash);
                 }
                 SourceGateDiagnosticEvent::PpSummary { node_id, words, .. } => {
                     builders.entry(node_id).or_default().pp_words = Some(
@@ -2560,6 +2594,8 @@ mod tests {
                     layout_bbox_bits: f32_bits(bbox),
                     crop_bounds: builder.crop_bounds,
                     crop_rgba_blake3: builder.crop_hash,
+                    vl_crop_bounds: builder.vl_crop_bounds,
+                    vl_crop_rgba_blake3: builder.vl_crop_hash,
                     pp_words: builder.pp_words.unwrap_or_default(),
                     vl_summary: builder.vl_summary,
                     decision: MatrixDecision { decision },
@@ -3008,7 +3044,11 @@ mod tests {
                 SourceGateDecision::AcceptedPrimary {
                     target_count,
                     protected_count,
-                } if candidate_key != 4 => (target_count, protected_count),
+                } if candidate_key != 2 && candidate_key != 4 => (target_count, protected_count),
+                SourceGateDecision::AcceptedDetectorFallback {
+                    target_count,
+                    protected_count,
+                } if candidate_key == 2 => (target_count, protected_count),
                 SourceGateDecision::AcceptedIsolatedProtectedLatinGeometry {
                     target_count,
                     protected_count,
@@ -3134,6 +3174,10 @@ mod tests {
                     target_count,
                     protected_count,
                 },
+                "accepted_detector_fallback" => SourceGateDecision::AcceptedDetectorFallback {
+                    target_count,
+                    protected_count,
+                },
                 "accepted_isolated_protected_latin_geometry" => {
                     SourceGateDecision::AcceptedIsolatedProtectedLatinGeometry {
                         target_count,
@@ -3157,6 +3201,8 @@ mod tests {
                 layout_bbox_bits: [0; 4],
                 crop_bounds: None,
                 crop_rgba_blake3: None,
+                vl_crop_bounds: None,
+                vl_crop_rgba_blake3: None,
                 pp_words: Vec::new(),
                 vl_summary: None,
                 decision: MatrixDecision { decision },
@@ -3185,7 +3231,7 @@ mod tests {
                     0,
                     0,
                 ),
-                candidate(2, "accepted_primary", None, 1, 0, 1),
+                candidate(2, "accepted_detector_fallback", None, 1, 0, 1),
                 candidate(3, "accepted_primary", None, 1, 1, 1),
                 candidate(
                     4,
@@ -3263,7 +3309,7 @@ mod tests {
                     target_count: 2,
                     protected_count: 0,
                 },
-                2 => SourceGateDecision::AcceptedPrimary {
+                2 => SourceGateDecision::AcceptedDetectorFallback {
                     target_count: 1,
                     protected_count: 0,
                 },
@@ -3274,6 +3320,10 @@ mod tests {
             };
             let (target_count, protected_count) = match &decision {
                 SourceGateDecision::AcceptedPrimary {
+                    target_count,
+                    protected_count,
+                }
+                | SourceGateDecision::AcceptedDetectorFallback {
                     target_count,
                     protected_count,
                 }
@@ -3289,6 +3339,8 @@ mod tests {
                 layout_bbox_bits: [0.0_f32.to_bits(); 4],
                 crop_bounds: Some(crop),
                 crop_rgba_blake3: Some(format!("crop-{candidate_key}")),
+                vl_crop_bounds: Some(crop),
+                vl_crop_rgba_blake3: Some(format!("vl-crop-{candidate_key}")),
                 pp_words: Vec::new(),
                 vl_summary: None,
                 decision: MatrixDecision { decision },
@@ -3375,6 +3427,8 @@ mod tests {
                 ],
                 crop_bounds: Some([x as u32, 0, x as u32 + 10, 10]),
                 crop_rgba_blake3: Some(format!("crop-{x}")),
+                vl_crop_bounds: Some([x as u32, 0, x as u32 + 10, 10]),
+                vl_crop_rgba_blake3: Some(format!("vl-crop-{x}")),
                 pp_words: Vec::new(),
                 vl_summary: None,
                 decision: MatrixDecision { decision },
@@ -3398,6 +3452,13 @@ mod tests {
             elapsed_ms: 1,
         };
         reference_run.refresh_fingerprints().unwrap();
+        let mut vl_crop_drift = reference_run.clone();
+        vl_crop_drift.candidates[0].vl_crop_rgba_blake3 = Some("different-vl-crop".into());
+        vl_crop_drift.refresh_fingerprints().unwrap();
+        assert_ne!(
+            reference_run.input_fingerprint,
+            vl_crop_drift.input_fingerprint
+        );
         let mut current_run = MatrixRun {
             policy: "C1".into(),
             candidates: vec![candidate(0, 100.0, second), candidate(1, 0.0, first)],
