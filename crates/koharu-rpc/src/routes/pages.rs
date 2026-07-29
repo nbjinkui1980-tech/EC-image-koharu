@@ -18,7 +18,7 @@ use koharu_app::AppConfig;
 use koharu_app::pipeline::{self, EngineCtx, PipelineRunOptions};
 use koharu_core::{
     BlobRef, ImageData, ImageRole, MaskRole, Node, NodeDataPatch, NodeId, NodeKind, Op, Page,
-    PageId, ReadingOrder, Region, Scene, Transform,
+    PageId, ReadingOrder, Region, Transform,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -334,11 +334,6 @@ async fn create_pages_from_paths(
     .map_err(ApiError::internal)?;
 
     Ok(Json(CreatePagesResponse { pages: created_ids }))
-}
-
-#[allow(dead_code)]
-fn scene_contains_page(scene: &Scene, id: PageId) -> bool {
-    scene.pages.contains_key(&id)
 }
 
 // ---------------------------------------------------------------------------

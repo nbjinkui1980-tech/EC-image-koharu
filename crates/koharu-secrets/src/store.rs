@@ -19,38 +19,26 @@ impl SecretStore {
 
     /// Load a secret by key, returning `None` when no credential exists.
     pub fn get(&self, key: &str) -> anyhow::Result<Option<String>> {
-        get_secret(&self.service, key)
+        let entry = secret_entry(&self.service, key)?;
+        match entry.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Store a secret by key. Use `delete` to clear an existing credential.
     pub fn set(&self, key: &str, secret: &str) -> anyhow::Result<()> {
-        set_secret(&self.service, key, secret)
+        secret_entry(&self.service, key)?.set_password(secret)?;
+        Ok(())
     }
 
     /// Clear a secret by key. Missing credentials are treated as success.
     pub fn delete(&self, key: &str) -> anyhow::Result<()> {
-        delete_secret(&self.service, key)
-    }
-}
-
-pub fn get_secret(service: &str, key: &str) -> anyhow::Result<Option<String>> {
-    let entry = secret_entry(service, key)?;
-    match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(err.into()),
-    }
-}
-
-pub fn set_secret(service: &str, key: &str, secret: &str) -> anyhow::Result<()> {
-    secret_entry(service, key)?.set_password(secret)?;
-    Ok(())
-}
-
-pub fn delete_secret(service: &str, key: &str) -> anyhow::Result<()> {
-    match secret_entry(service, key)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(err) => Err(err.into()),
+        match secret_entry(&self.service, key)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(err) => Err(err.into()),
+        }
     }
 }
 
