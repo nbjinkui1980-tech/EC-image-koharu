@@ -1565,14 +1565,25 @@ class R51EvidenceTests(unittest.TestCase):
         os.chmod(path, 0o600)
         return path
 
-    def calibration_fixture(self):
+    def calibration_manifest_bytes(self, entry_ids):
+        return ledger._r51_canonical_json(
+            {
+                "entries": [
+                    {"id": entry_id, "role": "calibration"}
+                    for entry_id in entry_ids
+                ]
+            }
+        )
+
+    def calibration_fixture(self, entry_ids=None):
+        entry_ids = entry_ids or ledger.R51_CALIBRATION_IDS
         value = b0_artifact()
         processes = [
             process
             for process in value["process_evidence"]
             if process["phase"] == "calibration"
         ]
-        id_map = dict(zip(value["calibration_entry_ids"], ledger.R51_CALIBRATION_IDS))
+        id_map = dict(zip(value["calibration_entry_ids"], entry_ids))
         results = value["calibration_results"]
         for result in results:
             result["entry_id"] = id_map[result["entry_id"]]
@@ -1590,29 +1601,66 @@ class R51EvidenceTests(unittest.TestCase):
             "selected_candidate_id": ledger.B0_CANDIDATES[0]["id"],
         }
         calibration_ledger = {
-            "calibration_entry_ids": ledger.R51_CALIBRATION_IDS,
+            "calibration_entry_ids": entry_ids,
             "candidates": ledger.B0_CANDIDATES,
             "calibration_results": results,
             "selected_candidate_id": ledger.B0_CANDIDATES[0]["id"],
             "process_evidence": processes,
         }
-        return payload, calibration_ledger
+        expected = ledger._r51_calibration_manifest_entry_ids(
+            self.calibration_manifest_bytes(entry_ids)
+        )
+        return payload, calibration_ledger, expected
 
     def test_calibration_selects_only_the_first_complete_all_pass_candidate(self):
-        payload, calibration_ledger = self.calibration_fixture()
-        ledger._r51_validate_calibration(payload, calibration_ledger, str(self.root))
+        payload, calibration_ledger, expected = self.calibration_fixture()
+        ledger._r51_validate_calibration(
+            payload, calibration_ledger, expected, str(self.root)
+        )
         payload["selected_candidate_id"] = ledger.B0_CANDIDATES[1]["id"]
         calibration_ledger["selected_candidate_id"] = payload["selected_candidate_id"]
         with self.assertRaises(ledger.LedgerError):
             ledger._r51_validate_calibration(
-                payload, calibration_ledger, str(self.root)
+                payload, calibration_ledger, expected, str(self.root)
             )
+
+    def test_calibration_accepts_manifest_derived_revision_ids(self):
+        r56_ids = [f"r56-c0{index}" for index in range(1, 5)]
+        payload, calibration_ledger, expected = self.calibration_fixture(r56_ids)
+        self.assertEqual(expected, r56_ids)
+        ledger._r51_validate_calibration(
+            payload, calibration_ledger, expected, str(self.root)
+        )
+
+    def test_calibration_rejects_manifest_and_ledger_id_mismatch(self):
+        r55_ids = [f"r55-c0{index}" for index in range(1, 5)]
+        r56_ids = [f"r56-c0{index}" for index in range(1, 5)]
+        payload, calibration_ledger, _ = self.calibration_fixture(r55_ids)
+        expected = ledger._r51_calibration_manifest_entry_ids(
+            self.calibration_manifest_bytes(r56_ids)
+        )
+        with self.assertRaises(ledger.LedgerError):
+            ledger._r51_validate_calibration(
+                payload, calibration_ledger, expected, str(self.root)
+            )
+
+    def test_calibration_rejects_matched_spoof_manifest(self):
+        for entry_ids in (
+            ["r56-c01", "r56-c02", "r56-c03", "r56-h01"],
+            ["r56-c01", "r56-c02", "r56-c03", "r55-c04"],
+            ["r56-c01", "r56-c01", "r56-c03", "r56-c04"],
+        ):
+            with self.subTest(entry_ids=entry_ids):
+                with self.assertRaises(ledger.LedgerError):
+                    ledger._r51_calibration_manifest_entry_ids(
+                        self.calibration_manifest_bytes(entry_ids)
+                    )
 
     def test_calibration_rejects_metal_log_and_terminal_evidence_drift(self):
         mutations = ("metal-device", "load-log", "bare-bool")
         for mutation in mutations:
             with self.subTest(mutation=mutation):
-                payload, calibration_ledger = self.calibration_fixture()
+                payload, calibration_ledger, expected = self.calibration_fixture()
                 if mutation == "metal-device":
                     metal = calibration_ledger["process_evidence"][1]["load_evidence"]
                     metal["mtmd_backend"] = "CPU"
@@ -1624,7 +1672,7 @@ class R51EvidenceTests(unittest.TestCase):
                     payload["calibration_results"][0]["derived"]["passed"] = False
                 with self.assertRaises(ledger.LedgerError):
                     ledger._r51_validate_calibration(
-                        payload, calibration_ledger, str(self.root)
+                        payload, calibration_ledger, expected, str(self.root)
                     )
 
     def test_approved_contract_paths_are_fixed_before_read(self):

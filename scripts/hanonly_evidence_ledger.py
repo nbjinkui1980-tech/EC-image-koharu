@@ -298,6 +298,7 @@ EXPECTED_GREEN_C_RED_IDS = [
 ]
 R51_CALIBRATION_IDS = [f"r51-c0{index}" for index in range(1, 5)]
 R51_HOLDOUT_IDS = [f"r51-h0{index}" for index in range(1, 5)]
+CALIBRATION_SLOT_RE = re.compile(r"\A(.+)-c(0[1-4])\Z")
 R51_PREFLIGHT_KEYS = {
     "contract",
     "plan_revision",
@@ -2738,21 +2739,55 @@ def _r51_validate_process_evidence(process, phase, device, evidence_root):
             raise LedgerError("R51 actual Metal process evidence drift")
         _validate_backend_map(model_map, "R51 Metal model map", "Metal")
 
+def _r51_calibration_manifest_entry_ids(manifest_bytes):
+    manifest = _parse_json(manifest_bytes, "R51 calibration manifest")
+    _require_keys(manifest, {"entries"}, "R51 calibration manifest")
+    entries = manifest["entries"]
+    if not isinstance(entries, list) or len(entries) != 4:
+        raise LedgerError("R51 calibration manifest must contain exactly four entries")
+    prefix = None
+    slots = {}
+    for entry in entries:
+        _require_keys(entry, {"id", "role"}, "R51 calibration manifest entry")
+        if entry["role"] != "calibration" or not isinstance(entry["id"], str):
+            raise LedgerError("R51 calibration manifest entry role drift")
+        match = CALIBRATION_SLOT_RE.fullmatch(entry["id"])
+        if match is None:
+            raise LedgerError("R51 calibration manifest entry slot drift")
+        if prefix is None:
+            prefix = match.group(1)
+        elif prefix != match.group(1):
+            raise LedgerError("R51 calibration manifest revision prefix drift")
+        slot = match.group(2)
+        if slot in slots:
+            raise LedgerError("R51 calibration manifest duplicate slot")
+        slots[slot] = entry["id"]
+    expected = [slots.get(f"0{index}") for index in range(1, 5)]
+    if any(value is None for value in expected):
+        raise LedgerError("R51 calibration manifest missing slot")
+    return expected
 
-def _r51_validate_calibration(payload, calibration_ledger, evidence_root=None):
+
+def _r51_validate_calibration(
+    payload, calibration_ledger, expected_calibration_entry_ids, evidence_root=None
+):
     results = payload["calibration_results"]
     if not isinstance(results, list) or len(results) != 32:
         raise LedgerError("R51 calibration must contain exactly 32 terminal cells")
     if not isinstance(calibration_ledger, dict):
         raise LedgerError("R51 calibration ledger must be an object")
     if (
-        calibration_ledger.get("calibration_entry_ids") != R51_CALIBRATION_IDS
+        calibration_ledger.get("calibration_entry_ids") != expected_calibration_entry_ids
         or calibration_ledger.get("candidates") != B0_CANDIDATES
         or calibration_ledger.get("calibration_results") != results
         or calibration_ledger.get("selected_candidate_id")
         != payload["selected_candidate_id"]
     ):
         raise LedgerError("R51 calibration ledger binding drift")
+    if sorted({result.get("entry_id") for result in results if isinstance(result, dict)}) != sorted(
+        expected_calibration_entry_ids
+    ):
+        raise LedgerError("R51 calibration result entry binding drift")
     process_list = calibration_ledger.get("process_evidence")
     if not isinstance(process_list, list) or len(process_list) != 2:
         raise LedgerError("R51 calibration requires exact CPU and Metal processes")
@@ -2781,7 +2816,7 @@ def _r51_validate_calibration(payload, calibration_ledger, evidence_root=None):
         device = process.get("requested_device") if process else None
         cell = (entry_id, device, candidate_id)
         if (
-            entry_id not in R51_CALIBRATION_IDS
+            entry_id not in expected_calibration_entry_ids
             or device not in {"cpu", "metal"}
             or candidate_id not in pass_by_candidate
             or cell in seen
@@ -2790,7 +2825,7 @@ def _r51_validate_calibration(payload, calibration_ledger, evidence_root=None):
         _validate_result(
             result,
             processes,
-            R51_CALIBRATION_IDS,
+            expected_calibration_entry_ids,
             {candidate["id"] for candidate in B0_CANDIDATES},
             "calibration",
             evidence_root,
@@ -2800,7 +2835,7 @@ def _r51_validate_calibration(payload, calibration_ledger, evidence_root=None):
         pass_by_candidate[candidate_id] &= result["derived"]["passed"]
     expected = {
         (entry, device, candidate["id"])
-        for entry in R51_CALIBRATION_IDS
+        for entry in expected_calibration_entry_ids
         for device in ("cpu", "metal")
         for candidate in B0_CANDIDATES
     }
@@ -3672,6 +3707,9 @@ def _r51_validate_authorization(arguments):
     calibration_manifest_path, calibration_manifest_bytes = _r51_read(
         arguments.calibration_manifest, "R51 calibration manifest", mode=0o600
     )
+    calibration_entry_ids = _r51_calibration_manifest_entry_ids(
+        calibration_manifest_bytes
+    )
     calibration_ledger_path, calibration_ledger_bytes, calibration_ledger = _r51_json(
         arguments.calibration_ledger,
         "R51 calibration ledger",
@@ -3852,6 +3890,7 @@ def _r51_validate_authorization(arguments):
     _r51_validate_calibration(
         payload,
         calibration_ledger,
+        calibration_entry_ids,
         os.path.dirname(calibration_ledger_path),
     )
     record = {

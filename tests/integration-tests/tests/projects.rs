@@ -127,8 +127,9 @@ async fn export_empty_project_as_khr() -> anyhow::Result<()> {
     )
     .await?;
 
-    let client = reqwest::Client::new();
-    let res = client
+    let res = app
+        .client_config
+        .client
         .post(format!("{}/projects/current/export", app.base_url))
         .json(&serde_json::json!({ "format": "khr" }))
         .send()
@@ -160,8 +161,9 @@ async fn import_khr_round_trips() -> anyhow::Result<()> {
     )
     .await?;
 
-    let client = reqwest::Client::new();
-    let res = client
+    let res = app
+        .client_config
+        .client
         .post(format!("{}/projects/current/export", app.base_url))
         .json(&serde_json::json!({ "format": "khr" }))
         .send()
@@ -171,7 +173,9 @@ async fn import_khr_round_trips() -> anyhow::Result<()> {
 
     api::delete_current_project(&app.client_config).await?;
 
-    let res = client
+    let res = app
+        .client_config
+        .client
         .post(format!("{}/projects/import", app.base_url))
         .header("Content-Type", "application/zip")
         .body(archive_bytes)
@@ -208,8 +212,9 @@ async fn delete_project_by_id() -> anyhow::Result<()> {
     assert!(app.app.current_session().is_some());
 
     // Call DELETE /projects/delete-me
-    let client = reqwest::Client::new();
-    let res = client
+    let res = app
+        .client_config
+        .client
         .delete(format!("{}/projects/delete-me", app.base_url))
         .send()
         .await?;

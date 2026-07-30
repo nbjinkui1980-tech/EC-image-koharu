@@ -681,7 +681,7 @@ mod source_gate_selection {
                 )?;
                 let manifest: SelectionManifest = serde_json::from_slice(&manifest_bytes)
                     .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
-                let calibration_entry_ids = manifest
+                let mut calibration_entry_ids = manifest
                     .entries
                     .iter()
                     .filter(|entry| entry.role == EntryRole::Calibration)
@@ -694,9 +694,14 @@ mod source_gate_selection {
                     .map(|entry| entry.id.clone())
                     .collect::<Vec<_>>();
                 let phase_partition_valid = if r51_formal_custody.is_some() {
-                    manifest.entries.len() == 4
-                        && calibration_entry_ids == r51_entry_ids('c')
-                        && holdout_entry_ids.is_empty()
+                    if phase == Phase::CalibrationFreeze {
+                        calibration_entry_ids = calibration_slot_entry_ids(&manifest.entries)?;
+                        holdout_entry_ids.is_empty()
+                    } else {
+                        manifest.entries.len() == 4
+                            && holdout_entry_ids == r51_entry_ids('h')
+                            && calibration_entry_ids.is_empty()
+                    }
                 } else {
                     match phase {
                         Phase::CalibrationFreeze => {
@@ -1358,6 +1363,53 @@ mod source_gate_selection {
         (1..=4)
             .map(|index| format!("r51-{kind}{index:02}"))
             .collect()
+    }
+
+    fn calibration_slot_entry_ids(entries: &[SelectionManifestEntry]) -> io::Result<Vec<String>> {
+        require(
+            entries.len() == 4,
+            "visual manifest calibration partition must contain four entries",
+        )?;
+        let mut prefix = None::<&str>;
+        let mut ids = [const { None::<String> }; 4];
+        for entry in entries {
+            require(
+                entry.role == EntryRole::Calibration,
+                "visual manifest calibration partition contains non-calibration entry",
+            )?;
+            let (entry_prefix, slot) = calibration_slot(&entry.id)?;
+            if let Some(prefix) = prefix {
+                require(
+                    prefix == entry_prefix,
+                    "visual manifest calibration slots use mixed revision prefixes",
+                )?;
+            } else {
+                require(
+                    !entry_prefix.is_empty(),
+                    "visual manifest calibration revision prefix is empty",
+                )?;
+                prefix = Some(entry_prefix);
+            }
+            require(
+                ids[slot].is_none(),
+                "visual manifest calibration slot is duplicated",
+            )?;
+            ids[slot] = Some(entry.id.clone());
+        }
+        ids.into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| invalid_data("visual manifest calibration slot is missing"))
+    }
+
+    fn calibration_slot(id: &str) -> io::Result<(&str, usize)> {
+        let (prefix, suffix) = id
+            .rsplit_once("-c")
+            .ok_or_else(|| invalid_data("visual manifest calibration id slot is invalid"))?;
+        require(
+            matches!(suffix, "01" | "02" | "03" | "04"),
+            "visual manifest calibration id slot is invalid",
+        )?;
+        Ok((prefix, suffix[1..].parse::<usize>().unwrap() - 1))
     }
 
     fn require_future_path_below(root: &Path, path: &Path) -> io::Result<()> {
@@ -4113,7 +4165,7 @@ mod source_gate_selection {
             .into_iter()
             .flat_map(|candidate| {
                 ["cpu", "metal"].into_iter().flat_map(move |device| {
-                    r51_entry_ids('c').into_iter().map({
+                    environment.calibration_entry_ids.clone().into_iter().map({
                         let candidate = candidate.id.clone();
                         move |entry| format!("calibration-freeze/{candidate}/{device}/{entry}")
                     })
@@ -5398,6 +5450,24 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         values
     }
 
+    fn set_selection_manifest(
+        values: &mut HashMap<&'static str, String>,
+        root: &Path,
+        entries: Vec<serde_json::Value>,
+    ) {
+        let manifest = root.join("visual-manifest.json");
+        let manifest_bytes = serde_json::to_vec(&serde_json::json!({"entries": entries})).unwrap();
+        fs::write(&manifest, &manifest_bytes).unwrap();
+        let manifest_sha256 = sha256_hex(&manifest_bytes);
+        values.insert(VISUAL_MANIFEST_SHA256_ENV, manifest_sha256.clone());
+        if values.get(R51_FORMAL_CUSTODY_ENV).map(String::as_str) == Some("1")
+            && values.get(PHASE_ENV).map(String::as_str) == Some("calibration-freeze")
+        {
+            values.insert(R51_CALIBRATION_MANIFEST_SHA256_ENV, manifest_sha256);
+        }
+        set_required_check(values, root, Phase::CalibrationFreeze);
+    }
+
     fn write_required_check(
         root: &Path,
         phase: Phase,
@@ -6351,6 +6421,67 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let mut invalid = holdout;
         invalid.insert(R51_FORMAL_CUSTODY_ENV, "yes".into());
         assert!(SelectionEnvironment::parse(|name| invalid.get(name).cloned()).is_err());
+    }
+
+    #[test]
+    fn r56_formal_calibration_accepts_manifest_slot_ids_without_r51_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let mut values = formal_environment(&root, Phase::CalibrationFreeze);
+        set_selection_manifest(
+            &mut values,
+            &root,
+            (1..=4)
+                .map(|index| serde_json::json!({"id": format!("r56-c{index:02}"), "role": "calibration"}))
+                .collect(),
+        );
+
+        let parsed = SelectionEnvironment::parse(|name| values.get(name).cloned()).unwrap();
+        assert_eq!(
+            parsed.calibration_entry_ids,
+            ["r56-c01", "r56-c02", "r56-c03", "r56-c04"]
+        );
+    }
+
+    #[test]
+    fn r56_formal_calibration_rejects_non_closed_slot_manifests() {
+        for entries in [
+            vec![
+                serde_json::json!({"id": "r56-c01", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c02", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c03", "role": "calibration"}),
+            ],
+            vec![
+                serde_json::json!({"id": "r56-c01", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c01", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c03", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c04", "role": "calibration"}),
+            ],
+            vec![
+                serde_json::json!({"id": "r56-c01", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c02", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c03", "role": "calibration"}),
+                serde_json::json!({"id": "r56-h01", "role": "holdout"}),
+            ],
+            vec![
+                serde_json::json!({"id": "r56-c01", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c02", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c03", "role": "calibration"}),
+                serde_json::json!({"id": "r55-c04", "role": "calibration"}),
+            ],
+            vec![
+                serde_json::json!({"id": "r56-h01", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c02", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c03", "role": "calibration"}),
+                serde_json::json!({"id": "r56-c04", "role": "calibration"}),
+            ],
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = fs::canonicalize(temp.path()).unwrap();
+            let mut values = formal_environment(&root, Phase::CalibrationFreeze);
+            set_selection_manifest(&mut values, &root, entries);
+            assert!(SelectionEnvironment::parse(|name| values.get(name).cloned()).is_err());
+        }
     }
 
     #[test]
