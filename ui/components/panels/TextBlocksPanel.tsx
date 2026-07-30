@@ -1,7 +1,6 @@
 'use client'
 
 import { Languages, LoaderCircleIcon, Trash2Icon } from 'lucide-react'
-import { motion } from 'motion/react'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -134,7 +133,7 @@ export function TextBlocksPanel() {
       targetLanguage: editor.selectedLanguage,
       systemPrompt: prefs.customSystemPrompt,
       defaultFont: prefs.defaultFont,
-      readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
+      readingOrder: editor.readingOrder,
     })
   }
 
@@ -148,14 +147,9 @@ export function TextBlocksPanel() {
           <span className='font-normal uppercase opacity-50'>{t('textBlocks.readingOrder')}:</span>
           <Select
             value={readingOrder}
-            onValueChange={async (val: 'rtl' | 'ltr' | 'custom') => {
+            onValueChange={async (val: 'rtl' | 'ltr') => {
               if (process.env.NODE_ENV !== 'production') {
                 console.debug('[reorder] Changing reading order to:', val)
-              }
-
-              if (val === 'custom') {
-                setReadingOrder(val)
-                return
               }
 
               try {
@@ -179,9 +173,6 @@ export function TextBlocksPanel() {
               </SelectItem>
               <SelectItem value='ltr' className='text-[10px] font-semibold'>
                 {t('textBlocks.readingOrderLtr')}
-              </SelectItem>
-              <SelectItem value='custom' className='text-[10px] font-semibold'>
-                {t('textBlocks.readingOrderCustom')}
               </SelectItem>
             </SelectContent>
           </Select>
@@ -270,12 +261,7 @@ function BlockCard({
   const preview = data.translation?.trim() || data.text?.trim()
 
   return (
-    <motion.div
-      data-testid={`textblock-card-${index}`}
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.2, delay: index * 0.03 }}
-    >
+    <div data-testid={`textblock-card-${index}`}>
       <AccordionItem
         value={index.toString()}
         data-selected={selected}
@@ -411,6 +397,6 @@ function BlockCard({
           </div>
         </AccordionContent>
       </AccordionItem>
-    </motion.div>
+    </div>
   )
 }

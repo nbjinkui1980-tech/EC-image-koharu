@@ -8,7 +8,6 @@ import {
   ContrastIcon,
   BandageIcon,
 } from 'lucide-react'
-import { motion } from 'motion/react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -107,16 +106,14 @@ function LayerItem({ layer }: { layer: Layer }) {
   const isActive = layer.hasContent && layer.visible
 
   return (
-    <motion.div
+    <div
       data-testid={`layer-${layer.id}`}
       data-has-content={layer.hasContent ? 'true' : 'false'}
       data-visible={layer.visible ? 'true' : 'false'}
       className={cn(
-        'group flex items-center gap-2 px-2 py-1.5',
+        'group flex items-center gap-2 px-2 py-1.5 transition-colors hover:bg-black/[0.03]',
         !layer.hasContent && !isLocked && 'opacity-40',
       )}
-      whileHover={{ backgroundColor: 'rgba(0,0,0,0.03)' }}
-      transition={{ duration: 0.15 }}
     >
       {/* Visibility toggle */}
       <Button
@@ -175,6 +172,6 @@ function LayerItem({ layer }: { layer: Layer }) {
           layer.hasContent ? 'bg-rose-500' : 'bg-muted-foreground/20',
         )}
       />
-    </motion.div>
+    </div>
   )
 }

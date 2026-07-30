@@ -236,7 +236,6 @@
     "readingOrder": "読み順",
     "readingOrderRtl": "右から左 (RTL)",
     "readingOrderLtr": "左から右 (LTR)",
-    "readingOrderCustom": "カスタム",
     "mixedGeometryWarning": "中国語のみモードでは、英単語と中国語を安全に分離できる座標がないため、このテキストボックスをスキップしました。英語は消去されません。PaddleOCR-VL を再実行して PP-OCRv5 の単語ボックスを生成するか、言語ごとに別のテキストボックスへ分割してください。"
   },
   "workspace": {

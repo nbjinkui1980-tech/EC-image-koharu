@@ -50,7 +50,7 @@ nav = [
 
 [project.extra]
 generator = false
-og_image = "assets/koharu-screenshot-zh-CN.png"
+og_image = "../assets/koharu-screenshot-zh-CN.png"
 og_image_alt = "Koharu 中文界面截图"
 twitter_card = "summary_large_image"
 
@@ -89,8 +89,8 @@ link = "https://discord.gg/mHvHkxGnUY"
 [project.theme]
 language = "zh"
 custom_dir = "overrides"
-logo = "assets/Koharu_Halo.png"
-favicon = "assets/Koharu_Halo.png"
+logo = "../assets/Koharu_Halo.png"
+favicon = "../assets/Koharu_Halo.png"
 font.text = "Noto Sans SC"
 font.code = "Noto Sans Mono"
 features = [

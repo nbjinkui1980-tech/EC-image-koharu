@@ -1,7 +1,6 @@
 'use client'
 
 import { create } from 'zustand'
-import { immer } from 'zustand/middleware/immer'
 
 import type { JobSummary, JobWarningEvent, PipelineProgress } from '@/lib/api/schemas'
 
@@ -27,50 +26,47 @@ type JobsState = {
   byStatus: (status: JobSummary['status']) => JobEntry[]
 }
 
-export const useJobsStore = create<JobsState>()(
-  immer((set, get) => ({
-    jobs: {},
-    setSnapshot: (jobs) =>
-      set((s) => {
-        s.jobs = {}
-        for (const j of jobs) s.jobs[j.id] = j
-      }),
-    started: (id, kind) =>
-      set((s) => {
-        s.jobs[id] = { id, kind, status: 'running' }
-      }),
-    progress: (p) =>
-      set((s) => {
-        const existing = s.jobs[p.jobId] ?? {
-          id: p.jobId,
-          kind: 'pipeline',
-          status: 'running' as JobSummary['status'],
-        }
-        s.jobs[p.jobId] = { ...existing, progress: p }
-      }),
-    warning: (w) =>
-      set((s) => {
-        const existing = s.jobs[w.jobId] ?? {
-          id: w.jobId,
-          kind: 'pipeline',
-          status: 'running' as JobSummary['status'],
-        }
-        const warnings = existing.warnings ?? []
-        s.jobs[w.jobId] = { ...existing, warnings: [...warnings, w] }
-      }),
-    finished: (id, status, error) =>
-      set((s) => {
-        const existing = s.jobs[id] ?? { id, kind: 'pipeline', status }
-        s.jobs[id] = {
-          ...existing,
-          status,
-          error: error ?? null,
-        }
-      }),
-    clear: () =>
-      set((s) => {
-        s.jobs = {}
-      }),
-    byStatus: (status) => Object.values(get().jobs).filter((j) => j.status === status),
-  })),
-)
+export const useJobsStore = create<JobsState>()((set, get) => ({
+  jobs: {},
+  setSnapshot: (jobs) => {
+    const next: Record<string, JobEntry> = {}
+    for (const job of jobs) next[job.id] = job
+    set({ jobs: next })
+  },
+  started: (id, kind) =>
+    set((s) => ({
+      jobs: { ...s.jobs, [id]: { id, kind, status: 'running' } },
+    })),
+  progress: (p) =>
+    set((s) => {
+      const existing = s.jobs[p.jobId] ?? {
+        id: p.jobId,
+        kind: 'pipeline',
+        status: 'running' as JobSummary['status'],
+      }
+      return {
+        jobs: { ...s.jobs, [p.jobId]: { ...existing, progress: p } },
+      }
+    }),
+  warning: (w) =>
+    set((s) => {
+      const existing = s.jobs[w.jobId] ?? {
+        id: w.jobId,
+        kind: 'pipeline',
+        status: 'running' as JobSummary['status'],
+      }
+      const warnings = existing.warnings ?? []
+      return {
+        jobs: { ...s.jobs, [w.jobId]: { ...existing, warnings: [...warnings, w] } },
+      }
+    }),
+  finished: (id, status, error) =>
+    set((s) => {
+      const existing = s.jobs[id] ?? { id, kind: 'pipeline', status }
+      return {
+        jobs: { ...s.jobs, [id]: { ...existing, status, error: error ?? null } },
+      }
+    }),
+  clear: () => set({ jobs: {} }),
+  byStatus: (status) => Object.values(get().jobs).filter((j) => j.status === status),
+}))

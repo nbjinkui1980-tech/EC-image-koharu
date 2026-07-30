@@ -8,7 +8,6 @@ import {
   TypeIcon,
   Wand2Icon,
 } from 'lucide-react'
-import { motion } from 'motion/react'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -138,7 +137,7 @@ function WorkflowButtons() {
       targetLanguage: editor.selectedLanguage,
       systemPrompt: prefs.customSystemPrompt,
       defaultFont: prefs.defaultFont,
-      readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
+      readingOrder: editor.readingOrder,
     })
   }
 
@@ -349,22 +348,10 @@ function LlmStatusPopover() {
                 : 'bg-muted text-muted-foreground ring-1 ring-border/50'
           }`}
         >
-          <motion.span
+          <span
             className={`size-1.5 rounded-full ${
-              llmReady ? 'bg-white' : indicatorBusy ? 'bg-white' : 'bg-muted-foreground/40'
+              llmReady || indicatorBusy ? 'animate-pulse bg-white' : 'bg-muted-foreground/40'
             }`}
-            animate={
-              llmReady
-                ? { opacity: [1, 0.5, 1] }
-                : indicatorBusy
-                  ? { opacity: [1, 0.4, 1] }
-                  : { opacity: 1 }
-            }
-            transition={
-              llmReady || indicatorBusy
-                ? { duration: indicatorBusy ? 1 : 2, repeat: Infinity, ease: 'easeInOut' }
-                : {}
-            }
           />
           LLM
         </button>

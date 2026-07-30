@@ -258,7 +258,6 @@
     "readingOrder": "읽기 순서",
     "readingOrderRtl": "우에서 좌 (RTL)",
     "readingOrderLtr": "좌에서 우 (LTR)",
-    "readingOrderCustom": "사용자 정의",
     "mixedGeometryWarning": "중국어 전용 모드에서 영어 단어와 중국어를 안전하게 분리할 좌표가 없어 이 텍스트 상자를 건너뛰었습니다. 영어는 지워지지 않습니다. PaddleOCR-VL을 다시 실행해 PP-OCRv5 단어 상자를 생성하거나 언어별 텍스트 상자로 분리하세요."
   },
   "workspace": {

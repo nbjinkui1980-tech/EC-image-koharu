@@ -501,7 +501,7 @@ hide:
     <div class="kh-shot">
       <div class="kh-shell">
         <div class="kh-shot__frame">
-          <img src="assets/koharu-screenshot-ja.png" alt="Koharu のローカル漫画翻訳アプリケーションのスクリーンショット" />
+          <img src="../assets/koharu-screenshot-ja.png" alt="Koharu のローカル漫画翻訳アプリケーションのスクリーンショット" />
         </div>
       </div>
     </div>
@@ -580,7 +580,7 @@ koharu.exe --port 4000 --headless</code></pre>
   <section class="kh-dev">
     <div class="kh-shell">
       <div class="kh-dev__lead">
-        <img src="assets/Koharu_Halo.png" alt="Koharu" />
+        <img src="../assets/Koharu_Halo.png" alt="Koharu" />
         <div class="kh-kicker">開発者向け</div>
         <h2>ローカルでビルドし、同じデスクトップランタイムを自分のツールに組み込めます。</h2>
         <p>

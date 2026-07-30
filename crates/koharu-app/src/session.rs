@@ -363,7 +363,8 @@ mod tests {
     use camino::Utf8PathBuf;
     use koharu_core::{
         BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeId, NodeKind, Op, Page,
-        PageId, ProjectMetaPatch, TextData, TextShaderEffect, TextStyle, Transform,
+        PageId, ProjectMetaPatch, TextAlign, TextData, TextShaderEffect, TextStrokeStyle,
+        TextStyle, Transform,
     };
     use std::sync::{Arc, Barrier, mpsc};
     use std::time::Duration;
@@ -402,6 +403,24 @@ mod tests {
         text
     }
 
+    fn planner_owned_style() -> TextStyle {
+        TextStyle {
+            font_families: vec!["Planner Sans".into()],
+            font_size: Some(24.0),
+            color: [12, 34, 56, 255],
+            stroke: Some(TextStrokeStyle {
+                enabled: true,
+                color: [78, 90, 123, 255],
+                width_px: Some(2.0),
+            }),
+            effect: Some(TextShaderEffect {
+                italic: true,
+                bold: true,
+            }),
+            text_align: Some(TextAlign::Center),
+        }
+    }
+
     fn project_with_verified_text(path: &Utf8Path) -> (PageId, NodeId) {
         let session = ProjectSession::create(path, "verified").unwrap();
         let mut page = Page::new("p1", 320, 240);
@@ -416,6 +435,7 @@ mod tests {
                 kind: NodeKind::Text(TextData {
                     text: Some("source".into()),
                     translation: Some("planned".into()),
+                    style: Some(planner_owned_style()),
                     typography_plan_verified: true,
                     ..Default::default()
                 }),
@@ -425,6 +445,31 @@ mod tests {
         session.compact().unwrap();
         drop(session);
         (page_id, node_id)
+    }
+
+    fn stage_untrusted_history(path: &Utf8Path) -> (PageId, NodeId) {
+        let (page, node) = project_with_verified_text(path);
+        let session = ProjectSession::open(path).unwrap();
+        session
+            .apply(Op::UpdateNode {
+                page,
+                id: node,
+                patch: koharu_core::NodePatch {
+                    data: Some(koharu_core::NodeDataPatch::Text(
+                        koharu_core::TextDataPatch {
+                            translation: Some(Some("history value".into())),
+                            style: Some(Some(planner_owned_style())),
+                            typography_plan_verified: Some(true),
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                },
+                prev: koharu_core::NodePatch::default(),
+            })
+            .unwrap();
+        drop(session);
+        (page, node)
     }
 
     #[test]
@@ -512,26 +557,7 @@ mod tests {
     #[test]
     fn untrusted_project_open_clears_marker_and_compacts_history() {
         let (_tmp, path) = tmp_dir();
-        let (page, node) = project_with_verified_text(&path);
-        let session = ProjectSession::open(&path).unwrap();
-        session
-            .apply(Op::UpdateNode {
-                page,
-                id: node,
-                patch: koharu_core::NodePatch {
-                    data: Some(koharu_core::NodeDataPatch::Text(
-                        koharu_core::TextDataPatch {
-                            translation: Some(Some("history value".into())),
-                            typography_plan_verified: Some(true),
-                            ..Default::default()
-                        },
-                    )),
-                    ..Default::default()
-                },
-                prev: koharu_core::NodePatch::default(),
-            })
-            .unwrap();
-        drop(session);
+        stage_untrusted_history(&path);
 
         let untrusted = ProjectSession::open_untrusted(&path).unwrap();
         let scene = untrusted.scene_snapshot();
@@ -547,6 +573,67 @@ mod tests {
                 .starts_with(SNAPSHOT_V2_PREFIX)
         );
         assert_eq!(std::fs::metadata(path.join(LOG_FILE)).unwrap().len(), 0);
+    }
+
+    #[test]
+    #[ignore = "MEDIUM baseline running1 RED"]
+    fn staged_untrusted_lifecycle_direct_open_clears_planner_owned_style() {
+        let (_tmp, path) = tmp_dir();
+        let (page, node) = stage_untrusted_history(&path);
+
+        let untrusted = ProjectSession::open_untrusted(&path).unwrap();
+        let scene = untrusted.scene_snapshot();
+        let text = match &scene.node(page, node).expect("staged text ID").kind {
+            NodeKind::Text(text) => text,
+            _ => panic!("expected staged text"),
+        };
+        assert_eq!(text.translation.as_deref(), Some("history value"));
+        assert!(!text.typography_plan_verified);
+        assert!(text.style.is_none());
+        assert_eq!(untrusted.epoch(), 2);
+        drop(untrusted);
+
+        assert!(
+            std::fs::read(path.join(SCENE_FILE))
+                .unwrap()
+                .starts_with(SNAPSHOT_V2_PREFIX)
+        );
+        assert_eq!(std::fs::metadata(path.join(LOG_FILE)).unwrap().len(), 0);
+    }
+
+    #[test]
+    #[ignore = "MEDIUM baseline running1 RED"]
+    fn staged_untrusted_lifecycle_external_route_cannot_restore_planner_owned_style() {
+        let (_tmp, path) = tmp_dir();
+        let (page, node) = stage_untrusted_history(&path);
+        let untrusted = ProjectSession::open_untrusted(&path).unwrap();
+
+        // This marker-free patch is accepted by the external route contract.
+        untrusted
+            .apply(Op::UpdateNode {
+                page,
+                id: node,
+                patch: koharu_core::NodePatch {
+                    data: Some(koharu_core::NodeDataPatch::Text(
+                        koharu_core::TextDataPatch {
+                            style: Some(Some(planner_owned_style())),
+                            ..Default::default()
+                        },
+                    )),
+                    ..Default::default()
+                },
+                prev: koharu_core::NodePatch::default(),
+            })
+            .unwrap();
+
+        let scene = untrusted.scene_snapshot();
+        let text = match &scene.node(page, node).expect("staged text ID").kind {
+            NodeKind::Text(text) => text,
+            _ => panic!("expected staged text"),
+        };
+        assert_eq!(text.translation.as_deref(), Some("history value"));
+        assert!(!text.typography_plan_verified);
+        assert!(text.style.is_none());
     }
 
     #[test]

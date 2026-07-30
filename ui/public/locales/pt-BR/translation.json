@@ -237,7 +237,6 @@
     "readingOrder": "Ordem de leitura",
     "readingOrderRtl": "Direita para esquerda (RTL)",
     "readingOrderLtr": "Esquerda para direita (LTR)",
-    "readingOrderCustom": "Personalizado",
     "mixedGeometryWarning": "O modo somente chinês ignorou esta caixa porque não há coordenadas confiáveis para separar palavras em inglês do chinês. O inglês não será apagado. Execute o PaddleOCR-VL novamente para o PP-OCRv5 gerar caixas de palavras ou separe os idiomas em caixas distintas."
   },
   "workspace": {

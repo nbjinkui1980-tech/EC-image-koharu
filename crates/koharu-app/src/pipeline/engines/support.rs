@@ -939,16 +939,12 @@ pub fn clear_text_nodes_ops(
 // detector that emits text blocks (CTD, comic-text-bubble, PP-DocLayout).
 // ---------------------------------------------------------------------------
 
-/// Sort `(bbox, data)` pairs in a reading order (RTL, LTR, or Custom).
+/// Sort `(bbox, data)` pairs in a reading order (RTL or LTR).
 pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingOrder) {
     #[derive(Debug, PartialEq, Clone, Copy)]
     enum Axis {
         X,
         Y,
-    }
-
-    if order == ReadingOrder::Custom {
-        return;
     }
 
     if blocks.len() <= 1 {
@@ -987,7 +983,6 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
                     .then_with(|| match order {
                         ReadingOrder::Rtl => b.0[0].partial_cmp(&a.0[0]).unwrap_or(Ordering::Equal),
                         ReadingOrder::Ltr => a.0[0].partial_cmp(&b.0[0]).unwrap_or(Ordering::Equal),
-                        _ => Ordering::Equal,
                     })
             });
             return;
@@ -1000,7 +995,6 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
                 match order {
                     ReadingOrder::Rtl => center_x < cut_coord, // Right first
                     ReadingOrder::Ltr => center_x > cut_coord, // Left first
-                    _ => false,
                 }
             } else {
                 // Top partition first: items whose center is BELOW cut go second.
@@ -1016,7 +1010,6 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
                     match order {
                         ReadingOrder::Rtl => center_x >= cut_coord,
                         ReadingOrder::Ltr => center_x <= cut_coord,
-                        _ => true,
                     }
                 } else {
                     (b[1] + (b[3] - b[1]) * 0.5) <= cut_coord
@@ -1028,7 +1021,6 @@ pub fn sort_manga_reading_order<T>(blocks: &mut [([f32; 4], T)], order: ReadingO
             blocks.sort_by(|a, b| match order {
                 ReadingOrder::Rtl => b.0[0].partial_cmp(&a.0[0]).unwrap_or(Ordering::Equal),
                 ReadingOrder::Ltr => a.0[0].partial_cmp(&b.0[0]).unwrap_or(Ordering::Equal),
-                _ => Ordering::Equal,
             });
             return;
         }

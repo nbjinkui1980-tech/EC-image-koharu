@@ -516,10 +516,6 @@ async fn reorder_text_nodes(
     Path(page_id): Path<PageId>,
     Json(order): Json<ReadingOrder>,
 ) -> ApiResult<axum::http::StatusCode> {
-    if order == ReadingOrder::Custom {
-        return Ok(axum::http::StatusCode::OK);
-    }
-
     tracing::debug!(
         "Reordering text nodes for page {} with order {:?}",
         page_id,

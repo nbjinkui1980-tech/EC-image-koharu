@@ -1,24 +1,11 @@
 import { screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { SubToolRail } from '@/components/canvas/SubToolRail'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
 import { renderWithQuery } from '../helpers'
-
-// Mock framer-motion to avoid animation issues in tests
-vi.mock('motion/react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('motion/react')>()
-  return {
-    ...actual,
-    motion: {
-      ...actual.motion,
-      div: ({ children, ...props }: any) => <div {...props}>{children}</div>,
-    },
-    AnimatePresence: ({ children }: any) => <>{children}</>,
-  }
-})
 
 describe('SubToolRail', () => {
   beforeEach(() => {

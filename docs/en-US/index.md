@@ -501,7 +501,7 @@ hide:
     <div class="kh-shot">
       <div class="kh-shell">
         <div class="kh-shot__frame">
-          <img src="assets/koharu-screenshot-en.png" alt="Screenshot of the Koharu local manga translation application" />
+          <img src="../assets/koharu-screenshot-en.png" alt="Screenshot of the Koharu local manga translation application" />
         </div>
       </div>
     </div>
@@ -583,7 +583,7 @@ koharu.exe --port 4000 --headless</code></pre>
   <section class="kh-dev">
     <div class="kh-shell">
       <div class="kh-dev__lead">
-        <img src="assets/Koharu_Halo.png" alt="Koharu" />
+        <img src="../assets/Koharu_Halo.png" alt="Koharu" />
         <div class="kh-kicker">Developer Friendly</div>
         <h2>Build from source and reuse the same runtime in your own tooling.</h2>
         <p>

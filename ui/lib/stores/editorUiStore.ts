@@ -68,8 +68,8 @@ type EditorUiState = {
   setShowNavigator: (show: boolean) => void
 
   // reading order
-  readingOrder: 'rtl' | 'ltr' | 'custom'
-  setReadingOrder: (order: 'rtl' | 'ltr' | 'custom') => void
+  readingOrder: 'rtl' | 'ltr'
+  setReadingOrder: (order: 'rtl' | 'ltr') => void
 }
 
 const initialState = {

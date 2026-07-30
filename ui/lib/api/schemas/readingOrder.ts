@@ -8,5 +8,4 @@ export type ReadingOrder = (typeof ReadingOrder)[keyof typeof ReadingOrder]
 export const ReadingOrder = {
   rtl: 'rtl',
   ltr: 'ltr',
-  custom: 'custom',
 } as const

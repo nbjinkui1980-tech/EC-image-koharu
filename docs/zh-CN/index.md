@@ -501,7 +501,7 @@ hide:
     <div class="kh-shot">
       <div class="kh-shell">
         <div class="kh-shot__frame">
-          <img src="assets/koharu-screenshot-zh-CN.png" alt="Koharu 本地漫画翻译应用截图" />
+          <img src="../assets/koharu-screenshot-zh-CN.png" alt="Koharu 本地漫画翻译应用截图" />
         </div>
       </div>
     </div>
@@ -579,7 +579,7 @@ koharu.exe --port 4000 --headless</code></pre>
   <section class="kh-dev">
     <div class="kh-shell">
       <div class="kh-dev__lead">
-        <img src="assets/Koharu_Halo.png" alt="Koharu" />
+        <img src="../assets/Koharu_Halo.png" alt="Koharu" />
         <div class="kh-kicker">对开发者友好</div>
         <h2>在本地构建，并把同一套桌面运行时接入你自己的工具链。</h2>
         <p>

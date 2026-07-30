@@ -2877,7 +2877,7 @@
       },
       "ReadingOrder": {
         "type": "string",
-        "enum": ["rtl", "ltr", "custom"]
+        "enum": ["rtl", "ltr"]
       },
       "Region": {
         "type": "object",

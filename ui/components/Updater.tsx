@@ -12,15 +12,13 @@ import {
   type ReactNode,
 } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
-import { isTauri, openExternalUrl } from '@/lib/backend'
+import { isTauri } from '@/lib/backend'
 
 export type UpdaterStatus = 'idle' | 'loading' | 'latest' | 'outdated' | 'error'
 
@@ -45,10 +43,6 @@ const UpdaterContext = createContext<UpdaterContextValue>({
   checkForUpdates: async () => {},
   installUpdate: async () => {},
 })
-
-function isExternalUrl(href: string): boolean {
-  return /^https?:\/\//i.test(href)
-}
 
 export function useUpdater(): UpdaterContextValue {
   return useContext(UpdaterContext)
@@ -224,30 +218,9 @@ function PromptView({
       <Separator />
       {update.body ? (
         <ScrollArea className='h-64'>
-          <div className='prose prose-sm dark:prose-invert max-w-none px-6 py-4 [&_a]:text-primary [&_h2]:mt-4 [&_h2]:mb-2 [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:mt-3 [&_h3]:mb-1 [&_h3]:text-xs [&_h3]:font-semibold [&_h3]:tracking-wide [&_h3]:text-muted-foreground [&_h3]:uppercase [&_li]:my-0.5 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ul]:list-disc [&_ul]:pl-5'>
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                a({ node: _node, href, children, ...props }) {
-                  return (
-                    <a
-                      {...props}
-                      href={href}
-                      onClick={(event) => {
-                        if (!href || !isExternalUrl(href)) return
-                        event.preventDefault()
-                        void openExternalUrl(href)
-                      }}
-                    >
-                      {children}
-                    </a>
-                  )
-                },
-              }}
-            >
-              {update.body}
-            </ReactMarkdown>
-          </div>
+          <pre className='px-6 py-4 text-sm leading-relaxed break-words whitespace-pre-wrap text-muted-foreground'>
+            {update.body}
+          </pre>
         </ScrollArea>
       ) : (
         <div className='px-6 py-6 text-sm text-muted-foreground'>{t('updater.noNotes')}</div>

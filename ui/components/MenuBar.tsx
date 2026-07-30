@@ -92,7 +92,7 @@ export function MenuBar() {
       targetLanguage: editor.selectedLanguage,
       systemPrompt: prefs.customSystemPrompt,
       defaultFont: prefs.defaultFont,
-      readingOrder: editor.readingOrder === 'custom' ? undefined : editor.readingOrder,
+      readingOrder: editor.readingOrder,
     })
   }
 

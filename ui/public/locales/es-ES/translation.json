@@ -236,7 +236,6 @@
     "readingOrder": "Orden de lectura",
     "readingOrderRtl": "Derecha a izquierda (RTL)",
     "readingOrderLtr": "Izquierda a derecha (LTR)",
-    "readingOrderCustom": "Personalizado",
     "mixedGeometryWarning": "El modo solo chino omitió este cuadro porque no hay coordenadas fiables para separar las palabras en inglés del chino. El inglés no se borrará. Ejecuta PaddleOCR-VL de nuevo para que PP-OCRv5 genere cuadros de palabras o separa los idiomas en cuadros distintos."
   },
   "workspace": {

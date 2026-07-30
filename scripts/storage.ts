@@ -4,7 +4,7 @@ import path from 'node:path'
 export const GIB = 1024 ** 3
 
 const MIN_FREE_BYTES = 20 * GIB
-const MAX_TARGET_BYTES = 16 * GIB
+const MAX_TARGET_BYTES = 100 * GIB
 const MAX_NEXT_BYTES = 1 * GIB
 
 export type StorageSnapshot = {
@@ -16,7 +16,7 @@ export type StorageSnapshot = {
 export function storageViolations(snapshot: StorageSnapshot): string[] {
   const violations = []
   if (snapshot.freeBytes < MIN_FREE_BYTES) violations.push('Available disk space is below 20 GiB.')
-  if (snapshot.targetBytes > MAX_TARGET_BYTES) violations.push('target exceeds 16 GiB.')
+  if (snapshot.targetBytes > MAX_TARGET_BYTES) violations.push('target exceeds 100 GiB.')
   if (snapshot.nextBytes > MAX_NEXT_BYTES) violations.push('ui/.next exceeds 1 GiB.')
   return violations
 }

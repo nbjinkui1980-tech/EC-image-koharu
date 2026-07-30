@@ -236,7 +236,6 @@
     "readingOrder": "Okuma Sırası",
     "readingOrderRtl": "Sağdan Sola (RTL)",
     "readingOrderLtr": "Soldan Sağa (LTR)",
-    "readingOrderCustom": "Özel",
     "mixedGeometryWarning": "Yalnızca Çince modu, İngilizce kelimeleri Çince metinden güvenle ayıracak koordinatlar olmadığı için bu metin kutusunu atladı. İngilizce silinmez. PP-OCRv5'in kelime kutuları oluşturması için PaddleOCR-VL'yi yeniden çalıştırın veya dilleri ayrı metin kutularına bölün."
   },
   "workspace": {

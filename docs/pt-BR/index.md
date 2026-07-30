@@ -585,7 +585,7 @@ koharu.exe --port 4000 --headless</code></pre>
   <section class="kh-dev">
     <div class="kh-shell">
       <div class="kh-dev__lead">
-        <img src="assets/Koharu_Halo.png" alt="Koharu" />
+        <img src="../assets/Koharu_Halo.png" alt="Koharu" />
         <div class="kh-kicker">Amigável para desenvolvedores</div>
         <h2>Compile a partir do código-fonte e reutilize o mesmo runtime nas suas próprias ferramentas.</h2>
         <p>

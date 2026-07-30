@@ -7,12 +7,12 @@ describe('storageViolations', () => {
     expect(
       storageViolations({
         freeBytes: 19 * GIB,
-        targetBytes: 17 * GIB,
+        targetBytes: 101 * GIB,
         nextBytes: 2 * GIB,
       }),
     ).toEqual([
       'Available disk space is below 20 GiB.',
-      'target exceeds 16 GiB.',
+      'target exceeds 100 GiB.',
       'ui/.next exceeds 1 GiB.',
     ])
   })
@@ -21,7 +21,7 @@ describe('storageViolations', () => {
     expect(
       storageViolations({
         freeBytes: 20 * GIB,
-        targetBytes: 16 * GIB,
+        targetBytes: 100 * GIB,
         nextBytes: 1 * GIB,
       }),
     ).toEqual([])
