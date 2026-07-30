@@ -1925,6 +1925,13 @@ where
     Validate: FnMut(Vec<DynamicImage>) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<String>>>,
 {
+    #[cfg(test)]
+    record_diagnostic(SourceGateDiagnosticEvent::Input {
+        backend: "dispatch",
+        width: image.width(),
+        height: image.height(),
+        decoded_rgba_hash: rgba_fingerprint(image),
+    });
     let (candidates, invalid) = source_gate_candidates(image, scene, page)?;
     for node_id in &invalid {
         trace_decision(*node_id, &SourceGateDecision::InvalidCandidateGeometry);
@@ -2137,13 +2144,6 @@ pub struct Model {
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
         let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
-        #[cfg(test)]
-        record_diagnostic(SourceGateDiagnosticEvent::Input {
-            backend: if self.cpu { "cpu" } else { "prefer_gpu" },
-            width: image.width(),
-            height: image.height(),
-            decoded_rgba_hash: rgba_fingerprint(&image),
-        });
         if tracing::enabled!(target: "koharu::source_gate", tracing::Level::DEBUG) {
             let decoded_rgba_hash = rgba_fingerprint(&image);
             tracing::debug!(
@@ -3558,6 +3558,49 @@ mod tests {
             &[selected[0].clone()],
         );
         assert_eq!(mask, expected_mask);
+    }
+
+    #[tokio::test]
+    async fn dispatch_records_single_input_diagnostic() {
+        let candidate_id = NodeId::new();
+        let (scene, page) = scene_with_nodes(vec![candidate(
+            candidate_id,
+            [20.0, 20.0, 120.0, 50.0],
+            false,
+            "detector",
+        )]);
+        let image = DynamicImage::ImageRgb8(RgbImage::new(200, 100));
+        let expected_hash = rgba_fingerprint(&image);
+        let diagnostics = SourceGateDiagnosticCapture::start();
+
+        let _ops = dispatch_source_gate(
+            &image,
+            &scene,
+            page,
+            |_, _| {
+                Ok(observation_from_words(vec![word(
+                    "中文", 0, 0.0, 0.0, 80.0, 20.0,
+                )]))
+            },
+            |_| std::future::ready(Ok(vec!["中文".into()])),
+        )
+        .await
+        .unwrap();
+
+        let input_events = diagnostics
+            .take()
+            .into_iter()
+            .filter_map(|event| match event {
+                SourceGateDiagnosticEvent::Input {
+                    width,
+                    height,
+                    decoded_rgba_hash,
+                    ..
+                } => Some((width, height, decoded_rgba_hash)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(input_events, vec![(200, 100, expected_hash)]);
     }
 
     #[tokio::test]
