@@ -1486,8 +1486,11 @@ mod source_gate_selection {
         held.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
         let attestation: RequiredCheckAttestation = serde_json::from_slice(held.bytes())
             .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        let mut canonical = canonical_json(&attestation)?;
+        let canonical_without_lf = canonical == held.bytes();
+        canonical.push(b'\n');
         require(
-            canonical_json(&attestation)? == held.bytes(),
+            canonical_without_lf || canonical == held.bytes(),
             "required-check attestation must be canonical JSON",
         )?;
         require(
