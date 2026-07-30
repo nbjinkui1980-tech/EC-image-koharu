@@ -769,6 +769,7 @@ async function writeB0ArtifactFixture(root: string): Promise<{
   }
   const child = Bun.spawn(['python3', '-', artifact, preCalibrationCheck, preHoldoutCheck], {
     cwd: repoRoot,
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
@@ -1319,6 +1320,7 @@ describe('CLI contract', () => {
         `#!${process.execPath}
 import { appendFileSync } from 'node:fs'
 appendFileSync(process.env.HANONLY_R51_SPAWN_LOG, ${JSON.stringify(name)} + "\\n")
+if (${JSON.stringify(name)} === 'python3' && process.env.PYTHONDONTWRITEBYTECODE !== '1') process.exit(3)
 process.exit(${exitCode})
 `,
         { mode: 0o700 },

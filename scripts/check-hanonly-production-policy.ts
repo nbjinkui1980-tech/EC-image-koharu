@@ -1537,6 +1537,7 @@ export async function validateB0Authorization(
       fixtureManifestSha256,
     ],
     cwd: root,
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
     stdout: 'pipe',
     stderr: 'pipe',
   })
@@ -1584,6 +1585,7 @@ function r51Python(
   const result = Bun.spawnSync({
     cmd: ['python3', 'scripts/hanonly_evidence_ledger.py', command, '--repo-root', root, ...args],
     cwd: root,
+    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
     stdout: 'pipe',
     stderr: 'pipe',
   })
