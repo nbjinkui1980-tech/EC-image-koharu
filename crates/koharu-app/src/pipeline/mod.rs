@@ -1505,7 +1505,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn single_latin_label_with_han_is_one_translation_target() -> anyhow::Result<()> {
+    async fn single_latin_label_and_han_keep_independent_detector_targets() -> anyhow::Result<()> {
         let fixture = PipelineFixture::new("S型曲线", "unused")?;
         make_legacy_candidate(&fixture, "S型曲线")?;
         install_production_gate(
@@ -1525,7 +1525,7 @@ mod tests {
         run_fixture_steps(&fixture, &["koharu-renderer"]).await?;
 
         let scene = fixture.session.scene_snapshot();
-        assert_eq!(visible_texts(&scene, fixture.page), ["S型曲线"]);
+        assert_eq!(visible_texts(&scene, fixture.page), ["S", "型曲线"]);
         assert!(protected_texts(&scene, fixture.page).is_empty());
         assert_eq!(renderer_calls.load(Ordering::Relaxed), 1);
         Ok(())

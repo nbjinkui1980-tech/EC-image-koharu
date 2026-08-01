@@ -1,4 +1,5 @@
 import contextlib
+import base64
 import hashlib
 import io
 import json
@@ -440,6 +441,9 @@ class Case:
 
 
 class ImageDimensionTests(unittest.TestCase):
+    def test_explicit_input_size_is_not_locked_to_regression_dimensions(self):
+        self.assertEqual(ledger._parse_size("800x800"), (800, 800))
+
     def test_reads_baseline_and_progressive_jpeg_dimensions(self):
         for marker in (0xC0, 0xC2):
             with self.subTest(marker=marker):
@@ -538,6 +542,24 @@ class LedgerContractTests(unittest.TestCase):
         values = output[:-1].split(b"\0")
         self.assertEqual(len(values), 6)
         return [value.decode("utf-8") for value in values]
+
+    def test_manifest_accepts_one_frozen_calibration_input(self):
+        selected_path = "/tmp/r55-c01.jpg"
+        selected_hash = "1" * 64
+        manifest = {
+            "entries": [
+                {
+                    "id": f"r55-c{index:02}",
+                    "role": "calibration",
+                    "path": selected_path if index == 1 else f"/tmp/r55-c{index:02}.jpg",
+                    "sha256": selected_hash if index == 1 else str(index) * 64,
+                }
+                for index in range(1, 5)
+            ]
+        }
+        ledger._validate_manifest_regression(
+            json.dumps(manifest).encode(), selected_path, selected_hash
+        )
 
     def test_create_writes_canonical_closed_ledger_and_six_nul_values(self):
         status, output, error = self.case.cli(self.case.create_args())
@@ -1675,6 +1697,99 @@ class R51EvidenceTests(unittest.TestCase):
                         payload, calibration_ledger, expected, str(self.root)
                     )
 
+    def test_cell_diagnostic_closes_protected_overlap_fail_closed_state(self):
+        device = self.write_private("cell/device.json", b"{}")
+        log = self.write_private("cell/inference.log", b"log")
+        recall = {"target_total": 1, "selected": 1, "covered": 1, "uncovered": 0}
+        bindings = {
+            "b0_sha": "b" * 40,
+            "calibration_manifest_sha256": "1" * 64,
+            "fixture_manifest_sha256": "2" * 64,
+            "manifest_sha256": "3" * 64,
+            "bundle_sha256": "4" * 64,
+        }
+        diagnostic = {
+            "contract": "hanonly-r50-cell-diagnostic-v1",
+            "plan_revision": 51,
+            "b0_sha": bindings["b0_sha"],
+            "calibration_manifest_sha256": bindings["calibration_manifest_sha256"],
+            "holdout_manifest_sha256": None,
+            "fixture_manifest_sha256": bindings["fixture_manifest_sha256"],
+            "phase": "calibration-freeze",
+            "entry_id": "r51-c01",
+            "device": "cpu",
+            "candidate_id": "S25L4",
+            "state": "passed",
+            "selection_result": "selected",
+            "target_recall": recall,
+            "pp_han_count": 1,
+            "vl_han_count": 1,
+            "rejection_reason": None,
+            "raw_detector_outputs": [],
+            "canonical_lines": [],
+            "raw_detector_count": 0,
+            "raw_detector_f32_bits_multiset_sha256": hashlib.sha256(
+                ledger._r51_canonical_json([])
+            ).hexdigest(),
+            "detector_support_records": [],
+            "detector_geometry_passed": True,
+            "selected_scene_rotations_zero": True,
+            "runtime_inpainter_id": "lama-manga",
+            "bubble_segmenter_id": "speech-bubble-segmentation",
+            "bubble_support_sha256": "5" * 64,
+            "runtime_removal_support_sha256": "6" * 64,
+            "protected_overlap_pixels": 0,
+            "device_evidence_sha256": hashlib.sha256(device.read_bytes()).hexdigest(),
+            "device_evidence_byte_length": device.stat().st_size,
+            "log_sha256": hashlib.sha256(log.read_bytes()).hexdigest(),
+            "log_byte_length": log.stat().st_size,
+            "terminal_reason": None,
+            "bundle_validation_receipt_sha256": None,
+            "target_coverage_index_sha256": None,
+        }
+        record = {
+            "phase": diagnostic["phase"],
+            "entry_id": diagnostic["entry_id"],
+            "device": diagnostic["device"],
+            "candidate_id": diagnostic["candidate_id"],
+            "state": diagnostic["state"],
+            "selection_result": diagnostic["selection_result"],
+            "target_recall": recall,
+            "pp_han_count": 1,
+            "vl_han_count": 1,
+            "rejection_reason": None,
+            "terminal_reason": None,
+            "target_coverage_index_path": None,
+            "target_coverage_index_sha256": None,
+            "target_coverage_index_byte_length": None,
+            "device_evidence_path": "cell/device.json",
+            "device_evidence_sha256": diagnostic["device_evidence_sha256"],
+            "device_evidence_byte_length": diagnostic["device_evidence_byte_length"],
+            "log_path": "cell/inference.log",
+            "log_sha256": diagnostic["log_sha256"],
+            "log_byte_length": diagnostic["log_byte_length"],
+        }
+
+        def validate():
+            payload = ledger._r51_canonical_json(diagnostic)
+            path = self.write_private("cell/cell-diagnostic.json", payload)
+            record.update(
+                diagnostic_path="cell/cell-diagnostic.json",
+                diagnostic_sha256=hashlib.sha256(payload).hexdigest(),
+                diagnostic_byte_length=path.stat().st_size,
+            )
+            ledger._r51_validate_cell_diagnostic(
+                str(self.root), record, bindings, set(), holdout=False
+            )
+
+        validate()
+        diagnostic["protected_overlap_pixels"] = 1
+        with self.assertRaisesRegex(ledger.LedgerError, "protected overlap"):
+            validate()
+        diagnostic["state"] = record["state"] = "failed"
+        diagnostic["terminal_reason"] = record["terminal_reason"] = "protected_overlap"
+        validate()
+
     def test_approved_contract_paths_are_fixed_before_read(self):
         arguments = mock.Mock(repo_root=str(self.root))
         for name, path in ledger.R51_APPROVED_PUBLIC_FILES.items():
@@ -1804,42 +1919,140 @@ class R51EvidenceTests(unittest.TestCase):
                 65, [*calibration, {**first_holdout, "state": "passed"}]
             )
 
-    def test_coverage_index_recomputes_binary_rasters_and_rejects_path_reuse(self):
-        selected = b"\x01\x00\x01\x00"
-        downstream = b"\x01\x01\x01\x00"
-        self.write_private("selected.bin", selected)
-        self.write_private("downstream.bin", downstream)
+    def test_r57_spatial_validator_rejects_shift_overlap_and_invalid_framing(self):
+        def payload(runtime, protected=()):
+            oracle = b"\x01\x00\x01\x00"
+            protected = list(protected)
+            value = {
+                "contract": "hanonly-r57-source-ink-validation-input-v1",
+                "b0_sha": "b" * 40,
+                "cell_key": "holdout/S25L4/cpu/r51-h01",
+                "entry_id": "r51-h01",
+                "target_id": "opaque-target-1",
+                "page_width": 2,
+                "page_height": 2,
+                "support_stride_bytes": 2,
+                "oracle_mask_base64": base64.b64encode(oracle).decode(),
+                "oracle_mask_raw_sha256": "4" * 64,
+                "oracle_mask_normalized_sha256": hashlib.sha256(
+                    b"hanonly-r51-binary-mask-v1\0"
+                    + struct.pack(">II", 2, 2)
+                    + oracle
+                ).hexdigest(),
+                "protected_rois": protected,
+                "protected_geometry_sha256": hashlib.sha256(
+                    ledger._r51_canonical_json(protected)
+                ).hexdigest(),
+                "runtime_inpainter_id": "lama-manga",
+                "bubble_segmenter_id": "speech-bubble-segmentation",
+                "bubble_support_sha256": "5" * 64,
+                "runtime_removal_support_base64": base64.b64encode(runtime).decode(),
+                "runtime_removal_support_sha256": hashlib.sha256(runtime).hexdigest(),
+            }
+            return ledger._r51_canonical_json(value)
+
+        passed = json.loads(
+            ledger._r57_validate_source_ink(payload(b"\x01\x00\x01\x00"))
+        )
+        self.assertEqual(passed["result"], "pass")
+        shifted = json.loads(
+            ledger._r57_validate_source_ink(payload(b"\x00\x01\x01\x00"))
+        )
+        self.assertEqual(shifted["result"], "fail-closed")
+        protected = json.loads(
+            ledger._r57_validate_source_ink(
+                payload(b"\x01\x00\x01\x00", ([0, 0, 1, 1],))
+            )
+        )
+        self.assertEqual(protected["result"], "fail-closed")
+        with self.assertRaises(ledger.LedgerError):
+            ledger._r57_validate_source_ink(payload(b"\x01\x00\x01"))
+        with self.assertRaises(ledger.LedgerError):
+            ledger._r57_validate_source_ink(
+                payload(b"\x01\x00\x01\x00") + b"\n"
+            )
+        for width, height in ((1, 4), (4, 1)):
+            changed = json.loads(payload(b"\x01\x00\x01\x00"))
+            changed["page_width"] = width
+            changed["page_height"] = height
+            changed["support_stride_bytes"] = width
+            with self.assertRaises(ledger.LedgerError):
+                ledger._r57_validate_source_ink(
+                    ledger._r51_canonical_json(changed)
+                )
+
+    def test_coverage_index_recomputes_runtime_removal_raster(self):
+        runtime_removal = b"\x01\x01\x01\x00"
+        self.write_private("runtime-removal.bin", runtime_removal)
         bindings = {
             "b0_sha": "b" * 40,
             "manifest_sha256": "1" * 64,
             "oracle_sha256": "2" * 64,
             "hashes_sha256": "3" * 64,
         }
+        oracle = b"\x01\x00\x01\x00"
+        oracle_normalized_sha256 = hashlib.sha256(
+            b"hanonly-r51-binary-mask-v1\0" + struct.pack(">II", 2, 2) + oracle
+        ).hexdigest()
+        protected_geometry_sha256 = hashlib.sha256(
+            ledger._r51_canonical_json([])
+        ).hexdigest()
+        receipt = {
+            "contract": "hanonly-r57-source-ink-validation-receipt-v1",
+            "b0_sha": bindings["b0_sha"],
+            "cell_key": "holdout/S25L4/cpu/r51-h01",
+            "entry_id": "r51-h01",
+            "target_id": "opaque-target-1",
+            "page_width": 2,
+            "page_height": 2,
+            "support_stride_bytes": 2,
+            "oracle_mask_raw_sha256": "4" * 64,
+            "oracle_mask_normalized_sha256": oracle_normalized_sha256,
+            "protected_geometry_sha256": protected_geometry_sha256,
+            "runtime_inpainter_id": "lama-manga",
+            "bubble_segmenter_id": "speech-bubble-segmentation",
+            "bubble_support_sha256": "5" * 64,
+            "runtime_removal_support_sha256": hashlib.sha256(
+                runtime_removal
+            ).hexdigest(),
+            "oracle_foreground_pixels": 2,
+            "runtime_removal_covered_pixels": 2,
+            "missing_runtime_removal_pixels": 0,
+            "protected_overlap_pixels": 0,
+            "result": "pass",
+        }
+        receipt_bytes = ledger._r51_canonical_json(receipt)
+        self.write_private("spatial-validation.json", receipt_bytes)
         proof = {
-            "contract": "hanonly-r51-target-coverage-proof-v1",
+            "contract": "hanonly-r57-source-ink-coverage-proof-v1",
             "plan_revision": 51,
             "b0_sha": bindings["b0_sha"],
             "cell_key": "holdout/S25L4/cpu/r51-h01",
             "entry_id": "r51-h01",
             "target_id": "opaque-target-1",
             "oracle_mask_raw_sha256": "4" * 64,
-            "oracle_mask_normalized_sha256": "5" * 64,
+            "oracle_mask_normalized_sha256": oracle_normalized_sha256,
             "page_width": 2,
             "page_height": 2,
             "support_stride_bytes": 2,
-            "selected_support_relpath": "selected.bin",
-            "selected_support_byte_length": len(selected),
-            "selected_support_sha256": hashlib.sha256(selected).hexdigest(),
-            "downstream_support_relpath": "downstream.bin",
-            "downstream_support_byte_length": len(downstream),
-            "downstream_support_sha256": hashlib.sha256(downstream).hexdigest(),
+            "runtime_removal_support_relpath": "runtime-removal.bin",
+            "runtime_removal_support_byte_length": len(runtime_removal),
+            "runtime_removal_support_sha256": hashlib.sha256(
+                runtime_removal
+            ).hexdigest(),
+            "spatial_validation_receipt_relpath": "spatial-validation.json",
+            "spatial_validation_receipt_byte_length": len(receipt_bytes),
+            "spatial_validation_receipt_sha256": hashlib.sha256(
+                receipt_bytes
+            ).hexdigest(),
+            "protected_geometry_sha256": protected_geometry_sha256,
+            "runtime_inpainter_id": "lama-manga",
+            "bubble_segmenter_id": "speech-bubble-segmentation",
+            "bubble_support_sha256": "5" * 64,
             "oracle_foreground_pixels": 2,
-            "selected_support_foreground_pixels": 2,
-            "downstream_support_foreground_pixels": 3,
-            "selected_covered_pixels": 2,
-            "downstream_covered_pixels": 2,
-            "missing_selected_pixels": 0,
-            "missing_downstream_pixels": 0,
+            "runtime_removal_support_foreground_pixels": 3,
+            "runtime_removal_covered_pixels": 2,
+            "missing_runtime_removal_pixels": 0,
             "protected_overlap_pixels": 0,
             "target_selected": True,
             "result": "pass",
@@ -1847,7 +2060,7 @@ class R51EvidenceTests(unittest.TestCase):
         proof_bytes = ledger._r51_canonical_json(proof)
         self.write_private("proof.json", proof_bytes)
         index = {
-            "contract": "hanonly-r51-target-coverage-index-v1",
+            "contract": "hanonly-r57-source-ink-coverage-index-v1",
             "plan_revision": 51,
             "b0_sha": bindings["b0_sha"],
             "cell_key": proof["cell_key"],
@@ -1874,20 +2087,18 @@ class R51EvidenceTests(unittest.TestCase):
             "target_coverage_index_byte_length": len(index_bytes),
         }
         ledger._r51_validate_coverage_index(str(self.root), record, bindings, 1, set())
-        proof["downstream_support_relpath"] = proof["selected_support_relpath"]
-        proof["downstream_support_sha256"] = proof["selected_support_sha256"]
-        proof["downstream_support_foreground_pixels"] = 2
+        proof["runtime_removal_support_foreground_pixels"] = 2
         proof_bytes = ledger._r51_canonical_json(proof)
-        self.write_private("proof-reused.json", proof_bytes)
-        index["records"][0]["proof_path"] = "proof-reused.json"
+        self.write_private("proof-invalid.json", proof_bytes)
+        index["records"][0]["proof_path"] = "proof-invalid.json"
         index["records"][0]["proof_sha256"] = hashlib.sha256(proof_bytes).hexdigest()
         index["records"][0]["proof_byte_length"] = len(proof_bytes)
         index_bytes = ledger._r51_canonical_json(index)
-        self.write_private("coverage-reused.json", index_bytes)
-        record["target_coverage_index_path"] = "coverage-reused.json"
+        self.write_private("coverage-invalid.json", index_bytes)
+        record["target_coverage_index_path"] = "coverage-invalid.json"
         record["target_coverage_index_sha256"] = hashlib.sha256(index_bytes).hexdigest()
         record["target_coverage_index_byte_length"] = len(index_bytes)
-        with self.assertRaisesRegex(ledger.LedgerError, "reuses"):
+        with self.assertRaisesRegex(ledger.LedgerError, "did not pass"):
             ledger._r51_validate_coverage_index(
                 str(self.root), record, bindings, 1, set()
             )

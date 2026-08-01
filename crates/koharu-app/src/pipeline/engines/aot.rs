@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn aot_han_final_mask_is_a_full_pixel_subset_of_canonical_support() {
+    fn aot_han_final_mask_preserves_backend_expansion_beyond_detector_support() {
         let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(24, 12, Rgb([1, 2, 3])));
         let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(24, 12, |x, y| {
             Luma([if (5..=9).contains(&x) && y == 6 {
@@ -273,8 +273,9 @@ mod tests {
             None,
             |frame, final_mask, _| {
                 let final_mask = final_mask.to_luma8();
-                assert!(final_mask.enumerate_pixels().all(|(x, y, pixel)| {
-                    pixel.0[0] == 0 || ((5..10).contains(&x) && (4..9).contains(&y))
+                assert_ne!(final_mask.get_pixel(5, 6).0[0], 0);
+                assert!(final_mask.enumerate_pixels().any(|(x, y, pixel)| {
+                    pixel.0[0] != 0 && !((5..10).contains(&x) && (4..9).contains(&y))
                 }));
                 Ok(frame.clone())
             },

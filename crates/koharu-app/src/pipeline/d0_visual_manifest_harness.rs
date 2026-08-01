@@ -435,6 +435,8 @@ mod source_gate_selection {
         Aspect, Background, DimensionBin, Effect, EntryRole, Expected, Position, TranslationLength,
         VisualManifestEntry, VisualManifestTarget, Writing,
     };
+    use super::super::engines::bubble_segmentation::bubble_mask_from_result;
+    use super::super::engines::ctd_segment::dispatch_segment;
     use super::super::engines::source_language_gate::{
         PpCanonicalLineDiagnostic, PpCanonicalOccurrenceDiagnostic, PpDetectorDiagnostic,
         PpRecognitionDiagnostic, SourceGateCropPolicy, SourceGateCropPolicyGuard,
@@ -444,16 +446,23 @@ mod source_gate_selection {
         dispatch_source_gate, rgba_fingerprint,
     };
     use super::super::engines::support::{
-        SOURCE_GATE_TARGET_DETECTOR, eligible_text_lines, line_support_mask,
+        EraseDiagnosticBranch, EraseDiagnosticCapture, EraseDiagnosticStage, EraseStageMask,
+        PreparedInpaintMask, SOURCE_GATE_TARGET_DETECTOR, build_han_only_translation_ops,
+        eligible_lines_for_page, eligible_text_lines, line_support_mask, prepare_inpaint_mask,
+        protected_source_lines_for_page,
     };
     use super::*;
+    use base64::Engine as _;
     use chrono::{SecondsFormat, Utc};
-    use image::{DynamicImage, RgbaImage};
+    use image::{DynamicImage, GrayImage, RgbaImage};
     use koharu_core::{Node, NodeId, NodeKind, Page, Scene, TextData, Transform};
     use koharu_llm::NativeLogCaptureGuard;
     use koharu_llm::paddleocr_vl::{PaddleOcrVl, PaddleOcrVlTask};
     use koharu_llm::safe::{LlamaBackendDeviceType, list_llama_ggml_backend_devices};
-    use koharu_ml::pp_ocr_v5::PpOcrV5;
+    use koharu_ml::{
+        comic_text_detector::ComicTextDetector, inpainting::expand_mask_for_inpainting,
+        pp_ocr_v5::PpOcrV5, speech_bubble_segmentation::SpeechBubbleSegmentation,
+    };
     use koharu_runtime::{ComputePolicy, RuntimeManager, default_app_data_root};
     use rustix::fs::{
         AtFlags, Dir, FileType, Mode, OFlags, fstat, fsync, linkat, mkdirat, open, openat, statat,
@@ -467,6 +476,9 @@ mod source_gate_selection {
     use std::io::{Read, Write};
     use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::process::Stdio;
+
+    use crate::config::{PipelineConfig, SourceTextPolicy};
 
     const PHASE_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_PHASE";
     const R51_FORMAL_CUSTODY_ENV: &str = "HANONLY_R51_FORMAL_CUSTODY";
@@ -972,6 +984,44 @@ mod source_gate_selection {
         r51_formal: Option<R51FormalRunEvidence>,
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum RealModelRunMode {
+        Matrix,
+        EraseStageProbe,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct EraseStageTargetMetric {
+        target_id: String,
+        oracle_pixels: u64,
+        intersection_pixels: u64,
+        missing_pixels: u64,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct EraseStageMetric {
+        stage: EraseDiagnosticStage,
+        branch: EraseDiagnosticBranch,
+        grayscale_blake3: String,
+        nonzero_pixels: u64,
+        protected_overlap_pixels: u64,
+        targets: Vec<EraseStageTargetMetric>,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct EraseStageProbeReport {
+        version: u8,
+        entry_id: String,
+        candidate_id: String,
+        device: String,
+        width: u32,
+        height: u32,
+        stages: Vec<EraseStageMetric>,
+    }
+
     #[derive(Clone, Debug, PartialEq)]
     struct R51FormalRunEvidence {
         bundle_validation_receipt: Option<PublishedArtifact>,
@@ -1043,8 +1093,18 @@ mod source_gate_selection {
     struct CellSupportEvidence {
         width: u32,
         height: u32,
-        selected_by_target: BTreeMap<String, Vec<u8>>,
-        downstream_by_target: BTreeMap<String, Vec<u8>>,
+        scene_by_target: BTreeMap<String, Vec<SceneSupportEvidence>>,
+        selected_scene_rotations_zero: bool,
+        runtime_inpainter_id: String,
+        bubble_segmenter_id: String,
+        bubble_support_sha256: String,
+        removal_support: Vec<u8>,
+    }
+
+    struct SceneSupportEvidence {
+        rect: [i64; 4],
+        mask: Vec<u8>,
+        downstream_mask: Vec<u8>,
     }
 
     #[derive(Serialize)]
@@ -1110,7 +1170,7 @@ mod source_gate_selection {
 
     #[derive(Serialize)]
     #[serde(deny_unknown_fields)]
-    struct R51TargetCoverageProof<'a> {
+    struct R57SourceInkCoverageProof<'a> {
         contract: &'static str,
         plan_revision: u32,
         b0_sha: &'a str,
@@ -1122,19 +1182,20 @@ mod source_gate_selection {
         page_width: u32,
         page_height: u32,
         support_stride_bytes: u32,
-        selected_support_relpath: String,
-        selected_support_byte_length: u64,
-        selected_support_sha256: String,
-        downstream_support_relpath: String,
-        downstream_support_byte_length: u64,
-        downstream_support_sha256: String,
+        runtime_removal_support_relpath: String,
+        runtime_removal_support_byte_length: u64,
+        runtime_removal_support_sha256: String,
+        spatial_validation_receipt_relpath: String,
+        spatial_validation_receipt_byte_length: u64,
+        spatial_validation_receipt_sha256: String,
+        protected_geometry_sha256: String,
+        runtime_inpainter_id: &'a str,
+        bubble_segmenter_id: &'a str,
+        bubble_support_sha256: &'a str,
         oracle_foreground_pixels: u64,
-        selected_support_foreground_pixels: u64,
-        downstream_support_foreground_pixels: u64,
-        selected_covered_pixels: u64,
-        downstream_covered_pixels: u64,
-        missing_selected_pixels: u64,
-        missing_downstream_pixels: u64,
+        runtime_removal_support_foreground_pixels: u64,
+        runtime_removal_covered_pixels: u64,
+        missing_runtime_removal_pixels: u64,
         protected_overlap_pixels: u64,
         target_selected: bool,
         result: &'static str,
@@ -1753,7 +1814,27 @@ mod source_gate_selection {
     }
 
     fn run_real_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
+        run_real_model_with_mode(environment, RealModelRunMode::Matrix)
+    }
+
+    fn run_erase_stage_probe(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
+        require(
+            environment.phase == Phase::CalibrationFreeze
+                && environment.r51_formal_custody.is_none(),
+            "erase-stage probe only accepts public calibration input",
+        )?;
+        run_real_model_with_mode(environment, RealModelRunMode::EraseStageProbe)
+    }
+
+    fn run_real_model_with_mode(
+        environment: &SelectionEnvironment,
+        mode: RealModelRunMode,
+    ) -> io::Result<RunnerEvidence> {
         if environment.r51_formal_custody.is_some() && environment.phase == Phase::Holdout {
+            require(
+                mode == RealModelRunMode::Matrix,
+                "erase-stage probe cannot enter formal holdout",
+            )?;
             return run_r51_real_model(environment);
         }
         let selected_input = HeldInput::open_bounded(&environment.visual_input, BYTE_CEILING)?;
@@ -1791,6 +1872,17 @@ mod source_gate_selection {
                     schema,
                     source: &decoded.source,
                     oracle,
+                    source_ink_masks: decoded
+                        .targets
+                        .iter()
+                        .map(|target| {
+                            SourceInkMask::page(
+                                &target.agreed_mask,
+                                decoded.source.width(),
+                                decoded.source.height(),
+                            )
+                        })
+                        .collect(),
                 })
                 .collect::<Vec<_>>();
             runtime.block_on(run_real_model_async(
@@ -1798,6 +1890,7 @@ mod source_gate_selection {
                 &entries,
                 executable_sha256,
                 None,
+                mode,
             ))
         })
     }
@@ -1806,6 +1899,46 @@ mod source_gate_selection {
         schema: &'a VisualManifestEntry,
         source: &'a RgbaImage,
         oracle: &'a OracleValidatedEntry,
+        source_ink_masks: Vec<SourceInkMask<'a>>,
+    }
+
+    #[derive(Clone, Copy)]
+    struct SourceInkMask<'a> {
+        bytes: &'a [u8],
+        origin: [u32; 2],
+        width: u32,
+        height: u32,
+    }
+
+    impl<'a> SourceInkMask<'a> {
+        fn page(bytes: &'a [u8], width: u32, height: u32) -> Self {
+            Self {
+                bytes,
+                origin: [0, 0],
+                width,
+                height,
+            }
+        }
+
+        fn edit_roi(bytes: &'a [u8], rect: ValidatedHalfOpenRect) -> Self {
+            Self {
+                bytes,
+                origin: [rect.left, rect.top],
+                width: rect.right - rect.left,
+                height: rect.bottom - rect.top,
+            }
+        }
+
+        fn get(self, x: u32, y: u32) -> Option<u8> {
+            let x = x.checked_sub(self.origin[0])?;
+            let y = y.checked_sub(self.origin[1])?;
+            if x >= self.width || y >= self.height {
+                return None;
+            }
+            self.bytes
+                .get(y as usize * self.width as usize + x as usize)
+                .copied()
+        }
     }
 
     fn run_r51_real_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
@@ -1833,6 +1966,11 @@ mod source_gate_selection {
                 schema,
                 source,
                 oracle,
+                source_ink_masks: oracle
+                    .targets
+                    .iter()
+                    .map(|target| SourceInkMask::edit_roi(&target.delta_mask, target.edit_roi))
+                    .collect(),
             })
             .collect::<Vec<_>>();
         let executable_sha256 = sha256_file(&std::env::current_exe()?)?;
@@ -1849,6 +1987,7 @@ mod source_gate_selection {
             &entries,
             executable_sha256,
             Some(bundle_validation_receipt),
+            RealModelRunMode::Matrix,
         ))
     }
 
@@ -2030,6 +2169,7 @@ mod source_gate_selection {
         entries: &[RealModelEntry<'_>],
         executable_sha256: String,
         bundle_validation_receipt: Option<PublishedArtifact>,
+        mode: RealModelRunMode,
     ) -> io::Result<RunnerEvidence> {
         create_secure_report_dir(&environment.report_dir)?;
         let runtime = RuntimeManager::new(
@@ -2050,7 +2190,18 @@ mod source_gate_selection {
         let pp = PpOcrV5::load(&runtime).await.map_err(io::Error::other)?;
         let runtime_library_sha256 = runtime_library_hashes(&runtime)?;
         let phase = phase_name(environment.phase);
-        let selected = selected_candidates(environment)?;
+        let selected = match mode {
+            RealModelRunMode::Matrix => selected_candidates(environment)?,
+            RealModelRunMode::EraseStageProbe => {
+                vec![("S25L4".into(), SourceGateCropPolicy::S25L4)]
+            }
+        };
+        let pipeline_config = PipelineConfig::default();
+        require(
+            pipeline_config.inpainter == "lama-manga"
+                && pipeline_config.bubble_segmenter == "speech-bubble-segmentation",
+            "R57 frozen runtime removal configuration drift",
+        )?;
         let mut process_evidence = Vec::with_capacity(2);
         let mut results = Vec::new();
         let mut formal_cells = Vec::new();
@@ -2106,7 +2257,20 @@ mod source_gate_selection {
                     mtmd_backend: parsed_load.mtmd_backend,
                 },
             };
-            runners.push((device, vl, vl_evidence, process));
+            let segmenter = ComicTextDetector::load_segmentation_only(&runtime, cpu)
+                .await
+                .map_err(io::Error::other)?;
+            let bubble_segmenter = SpeechBubbleSegmentation::load(&runtime, cpu)
+                .await
+                .map_err(io::Error::other)?;
+            runners.push((
+                device,
+                vl,
+                vl_evidence,
+                segmenter,
+                bubble_segmenter,
+                process,
+            ));
         }
 
         for entry in entries
@@ -2115,7 +2279,12 @@ mod source_gate_selection {
         {
             let schema_entry = entry.schema;
             let oracle_entry = entry.oracle;
-            for (device, vl, vl_evidence, process) in &mut runners {
+            for (device, vl, vl_evidence, segmenter, bubble_segmenter, process) in &mut runners {
+                let image = DynamicImage::ImageRgba8(entry.source.clone());
+                let bubble_result = bubble_segmenter
+                    .inference(&image)
+                    .map_err(io::Error::other)?;
+                let bubble_support = bubble_mask_from_result(&bubble_result);
                 for (candidate_id, policy) in &selected {
                     let mut logs = NativeLogCaptureGuard::start();
                     let mut scene = scene_for_entry(
@@ -2125,7 +2294,6 @@ mod source_gate_selection {
                         entry.source.height(),
                     );
                     let page = *scene.pages.keys().next().expect("scene page");
-                    let image = DynamicImage::ImageRgba8(entry.source.clone());
                     let _policy = SourceGateCropPolicyGuard::set(*policy);
                     let source_gate_diagnostics = SourceGateDiagnosticCapture::start();
                     let ops = dispatch_source_gate(
@@ -2152,6 +2320,62 @@ mod source_gate_selection {
                     for mut op in ops {
                         op.apply(&mut scene).map_err(io::Error::other)?;
                     }
+                    let eligible_lines = eligible_lines_for_page(&scene, page).0;
+                    let readiness = vec!["translation-ready".into(); eligible_lines.len()];
+                    for mut op in build_han_only_translation_ops(
+                        &scene,
+                        page,
+                        None,
+                        &eligible_lines,
+                        &readiness,
+                    )
+                    .map_err(io::Error::other)?
+                    {
+                        op.apply(&mut scene).map_err(io::Error::other)?;
+                    }
+                    let erase_diagnostics = if mode == RealModelRunMode::EraseStageProbe {
+                        Some(EraseDiagnosticCapture::start().map_err(|_| {
+                            invalid_data("erase-stage diagnostic capture is already active")
+                        })?)
+                    } else {
+                        None
+                    };
+                    let segment_support = dispatch_segment(
+                        &image,
+                        &scene,
+                        page,
+                        SourceTextPolicy::HanOnly,
+                        |image| segmenter.inference_segmentation(image),
+                    )
+                    .map_err(io::Error::other)?;
+                    let protected_lines = protected_source_lines_for_page(&scene, page);
+                    let removal_support = removal_support_from_prepared(
+                        prepare_inpaint_mask(
+                            &DynamicImage::ImageLuma8(segment_support),
+                            &DynamicImage::ImageLuma8(bubble_support.clone()),
+                            &[],
+                            &eligible_lines,
+                            &protected_lines,
+                            SourceTextPolicy::HanOnly,
+                            None,
+                            expand_mask_for_inpainting,
+                        )
+                        .map_err(io::Error::other)?,
+                        image.width(),
+                        image.height(),
+                    );
+                    if let Some(capture) = erase_diagnostics.as_ref() {
+                        write_erase_stage_probe(
+                            environment,
+                            schema_entry,
+                            oracle_entry,
+                            &entry.source_ink_masks,
+                            device,
+                            candidate_id,
+                            capture.take_stage_masks(),
+                            &removal_support,
+                        )?;
+                    }
                     let inference_bytes = logs.take();
                     let parsed_inference = parse_native_inference_log(&inference_bytes)?;
                     let inference_log = write_raw_log(
@@ -2176,6 +2400,11 @@ mod source_gate_selection {
                         page,
                         schema_entry,
                         oracle_entry,
+                        &entry.source_ink_masks,
+                        &removal_support,
+                        &pipeline_config.inpainter,
+                        &pipeline_config.bubble_segmenter,
+                        &sha256_hex(bubble_support.as_raw()),
                         &source_gate_events,
                     )?;
                     let mut result = SelectionResult {
@@ -2208,6 +2437,7 @@ mod source_gate_selection {
                                 schema_entry,
                                 oracle_entry,
                                 &source_gate_events,
+                                &supports,
                             )?,
                             Phase::Holdout => write_r51_cell_evidence(
                                 environment,
@@ -2243,11 +2473,13 @@ mod source_gate_selection {
                 break;
             }
         }
-        process_evidence.extend(runners.into_iter().map(|(_, _, _, process)| process));
-        let selected_candidate_id = if environment.phase == Phase::CalibrationFreeze {
-            select_or_write_calibration_diagnostic(environment, &process_evidence, &results)?
-        } else {
-            selected[0].0.clone()
+        process_evidence.extend(runners.into_iter().map(|(_, _, _, _, _, process)| process));
+        let selected_candidate_id = match mode {
+            RealModelRunMode::EraseStageProbe => selected[0].0.clone(),
+            RealModelRunMode::Matrix if environment.phase == Phase::CalibrationFreeze => {
+                select_or_write_calibration_diagnostic(environment, &process_evidence, &results)?
+            }
+            RealModelRunMode::Matrix => selected[0].0.clone(),
         };
         let r51_formal = environment
             .r51_formal_custody
@@ -2308,6 +2540,19 @@ mod source_gate_selection {
             .find(|(id, _)| *id == artifact.selected_candidate_id)
             .map(|(id, policy)| vec![(id.into(), policy)])
             .ok_or_else(|| invalid_data("frozen candidate is unknown"))
+    }
+
+    fn removal_support_from_prepared(
+        prepared: PreparedInpaintMask,
+        width: u32,
+        height: u32,
+    ) -> GrayImage {
+        match prepared {
+            PreparedInpaintMask::Prepared { mask, .. } => mask.to_luma8(),
+            PreparedInpaintMask::NoEligibleHanTargets | PreparedInpaintMask::EmptyMask => {
+                GrayImage::new(width, height)
+            }
+        }
     }
 
     fn scene_for_entry(
@@ -2458,12 +2703,166 @@ mod source_gate_selection {
         Ok(support_by_target)
     }
 
+    fn source_ink_is_covered(
+        page_width: u32,
+        edit_roi: ValidatedHalfOpenRect,
+        source_ink_mask: SourceInkMask<'_>,
+        support: &[u8],
+    ) -> bool {
+        (edit_roi.top..edit_roi.bottom).all(|y| {
+            (edit_roi.left..edit_roi.right).all(|x| {
+                source_ink_mask.get(x, y).is_some_and(|ink| {
+                    ink == 0
+                        || support
+                            .get(y as usize * page_width as usize + x as usize)
+                            .is_some_and(|pixel| *pixel != 0)
+                })
+            })
+        })
+    }
+
+    fn write_erase_stage_probe(
+        environment: &SelectionEnvironment,
+        schema: &VisualManifestEntry,
+        oracle: &OracleValidatedEntry,
+        source_ink_masks: &[SourceInkMask<'_>],
+        device: &str,
+        candidate_id: &str,
+        stage_masks: Vec<EraseStageMask>,
+        removal_support: &GrayImage,
+    ) -> io::Result<()> {
+        const EXPECTED: [EraseDiagnosticStage; 9] = [
+            EraseDiagnosticStage::SegmentProbability,
+            EraseDiagnosticStage::SegmentRefined,
+            EraseDiagnosticStage::SegmentAllowedSupport,
+            EraseDiagnosticStage::SegmentFinal,
+            EraseDiagnosticStage::InpaintInputSegment,
+            EraseDiagnosticStage::InpaintAllowedSupport,
+            EraseDiagnosticStage::InpaintPreExpandFiltered,
+            EraseDiagnosticStage::InpaintBackendExpanded,
+            EraseDiagnosticStage::InpaintFinal,
+        ];
+        require(
+            stage_masks.len() == EXPECTED.len()
+                && stage_masks.iter().zip(EXPECTED).all(|(snapshot, stage)| {
+                    snapshot.stage == stage && snapshot.branch == EraseDiagnosticBranch::HanOnly
+                }),
+            "erase-stage probe sequence drift",
+        )?;
+        let segment_final = &stage_masks[3].mask;
+        let inpaint_input = &stage_masks[4].mask;
+        let inpaint_final = &stage_masks[8].mask;
+        require(
+            segment_final.as_raw() == inpaint_input.as_raw()
+                && inpaint_final.as_raw() == removal_support.as_raw(),
+            "erase-stage probe boundary bytes drift",
+        )?;
+        let (width, height) = removal_support.dimensions();
+        let stages = stage_masks
+            .into_iter()
+            .map(|snapshot| {
+                require(
+                    snapshot.mask.dimensions() == (width, height),
+                    "erase-stage probe dimensions drift",
+                )?;
+                let targets = schema
+                    .targets
+                    .iter()
+                    .zip(&oracle.targets)
+                    .zip(source_ink_masks)
+                    .map(|((target, geometry), source_ink)| {
+                        let mut oracle_pixels = 0;
+                        let mut intersection_pixels = 0;
+                        for y in geometry.edit_roi.top..geometry.edit_roi.bottom {
+                            for x in geometry.edit_roi.left..geometry.edit_roi.right {
+                                if source_ink.get(x, y).is_some_and(|pixel| pixel != 0) {
+                                    oracle_pixels += 1;
+                                    if snapshot.mask.get_pixel(x, y).0[0] != 0 {
+                                        intersection_pixels += 1;
+                                    }
+                                }
+                            }
+                        }
+                        EraseStageTargetMetric {
+                            target_id: target.id.clone(),
+                            oracle_pixels,
+                            intersection_pixels,
+                            missing_pixels: oracle_pixels - intersection_pixels,
+                        }
+                    })
+                    .collect();
+                Ok(EraseStageMetric {
+                    stage: snapshot.stage,
+                    branch: snapshot.branch,
+                    grayscale_blake3: blake3::hash(snapshot.mask.as_raw()).to_hex().to_string(),
+                    nonzero_pixels: snapshot
+                        .mask
+                        .pixels()
+                        .filter(|pixel| pixel.0[0] != 0)
+                        .count() as u64,
+                    protected_overlap_pixels: protected_overlap_count(
+                        snapshot.mask.as_raw(),
+                        width,
+                        &oracle.protected_rois,
+                    ),
+                    targets,
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        let final_stage = stages
+            .last()
+            .ok_or_else(|| invalid_data("erase-stage probe final stage is missing"))?;
+        require(
+            r57_final_erase_stage_passed(final_stage),
+            "erase-stage probe final coverage failed",
+        )?;
+        let report = EraseStageProbeReport {
+            version: 1,
+            entry_id: schema.id.clone(),
+            candidate_id: candidate_id.into(),
+            device: device.into(),
+            width,
+            height,
+            stages,
+        };
+        write_raw_log(
+            environment,
+            &format!(
+                "erase-stage-probe/{}/{device}/{candidate_id}.erase-stages.json",
+                schema.id
+            ),
+            &canonical_json(&report)?,
+        )?;
+        Ok(())
+    }
+
+    fn r57_final_erase_stage_passed(stage: &EraseStageMetric) -> bool {
+        stage.protected_overlap_pixels == 0
+            && stage
+                .targets
+                .iter()
+                .all(|target| target.missing_pixels == 0)
+    }
+
+    fn r57_cell_passed(
+        derived_passed: bool,
+        detector_geometry_passed: bool,
+        protected_overlap_pixels: u64,
+    ) -> bool {
+        derived_passed && detector_geometry_passed && protected_overlap_pixels == 0
+    }
+
     fn derive_result(
         device: &str,
         scene: &Scene,
         page: koharu_core::PageId,
         schema: &VisualManifestEntry,
         oracle: &OracleValidatedEntry,
+        source_ink_masks: &[SourceInkMask<'_>],
+        removal_support: &GrayImage,
+        runtime_inpainter_id: &str,
+        bubble_segmenter_id: &str,
+        bubble_support_sha256: &str,
         diagnostics: &[SourceGateDiagnosticEvent],
     ) -> io::Result<(Vec<RuntimeNode>, DerivedEvidence, CellSupportEvidence)> {
         let mut pp_han_by_node = HashMap::new();
@@ -2504,6 +2903,8 @@ mod source_gate_selection {
         let mut selected = HashSet::new();
         let mut selected_protected = Vec::new();
         let mut unmatched_selected = Vec::new();
+        let mut scene_by_target = BTreeMap::new();
+        let mut selected_scene_rotations_zero = true;
         let mut pp_han_scalar_count = 0;
         let mut vl_expected_han_scalar_count = 0;
         let mut expected_diagnostic_nodes = 0;
@@ -2540,6 +2941,16 @@ mod source_gate_selection {
                 }
                 if selected_as_han {
                     selected.insert(target.id.clone());
+                    match r57_actual_scene_support(page.width, page.height, &node.transform, text) {
+                        Some((support, rotations_zero)) => {
+                            selected_scene_rotations_zero &= rotations_zero;
+                            scene_by_target
+                                .entry(target.id.clone())
+                                .or_insert_with(Vec::new)
+                                .push(support);
+                        }
+                        None => selected_scene_rotations_zero = false,
+                    }
                 }
             } else if selected_as_han {
                 unmatched_selected.push(node_id.to_string());
@@ -2592,24 +3003,24 @@ mod source_gate_selection {
         unmatched_selected.sort();
         let rotation_targets_excluded = rotation.is_empty();
         let downstream_support_by_target = r51_downstream_support_from_scene(page, schema, oracle)?;
+        require(
+            removal_support.dimensions() == (page.width, page.height),
+            "runtime source-ink support dimensions drift",
+        )?;
         let mut covered_source_roi_ids = schema
             .targets
             .iter()
             .zip(&oracle.targets)
-            .filter(|(target, _)| target.expected != Expected::UnsupportedRotation)
-            .filter_map(|(target, oracle_target)| {
-                let support = downstream_support_by_target.get(&target.id)?;
-                let mut delta_index = 0;
-                let covered =
-                    (oracle_target.edit_roi.top..oracle_target.edit_roi.bottom).all(|y| {
-                        (oracle_target.edit_roi.left..oracle_target.edit_roi.right).all(|x| {
-                            let oracle = oracle_target.delta_mask[delta_index];
-                            delta_index += 1;
-                            let page_index = y as usize * page.width as usize + x as usize;
-                            oracle == 0 || support.as_raw()[page_index] != 0
-                        })
-                    });
-                covered.then(|| target.id.clone())
+            .zip(source_ink_masks)
+            .filter(|((target, _), _)| target.expected != Expected::UnsupportedRotation)
+            .filter_map(|((target, oracle_target), source_ink_mask)| {
+                source_ink_is_covered(
+                    page.width,
+                    oracle_target.edit_roi,
+                    *source_ink_mask,
+                    removal_support.as_raw(),
+                )
+                .then(|| target.id.clone())
             })
             .collect::<Vec<_>>();
         covered_source_roi_ids.sort();
@@ -2618,15 +3029,6 @@ mod source_gate_selection {
         } else {
             covered_source_roi_ids.len() as f64 / expected.len() as f64
         };
-        let pp_vl_complete_coverage = expected_diagnostic_nodes > 0
-            && !rejected_after_vl
-            && !pp_vl_incomplete_coverage
-            && source_text_roi_coverage == 1.0;
-        let source_removal_preflight_passed = recall == 1.0 && pp_vl_complete_coverage;
-        let passed = source_removal_preflight_passed
-            && selected_protected.is_empty()
-            && unmatched_selected.is_empty()
-            && rotation_targets_excluded;
         let downstream_by_target = downstream_support_by_target
             .into_iter()
             .map(|(target, support)| {
@@ -2647,6 +3049,16 @@ mod source_gate_selection {
             oracle,
             diagnostics,
         )?;
+        pp_vl_incomplete_coverage |= selected_by_target != downstream_by_target;
+        let pp_vl_complete_coverage = expected_diagnostic_nodes > 0
+            && !rejected_after_vl
+            && !pp_vl_incomplete_coverage
+            && source_text_roi_coverage == 1.0;
+        let source_removal_preflight_passed = recall == 1.0 && pp_vl_complete_coverage;
+        let passed = source_removal_preflight_passed
+            && selected_protected.is_empty()
+            && unmatched_selected.is_empty()
+            && rotation_targets_excluded;
         Ok((
             runtime_nodes,
             DerivedEvidence {
@@ -2674,8 +3086,16 @@ mod source_gate_selection {
             CellSupportEvidence {
                 width: page.width,
                 height: page.height,
-                downstream_by_target,
-                selected_by_target,
+                scene_by_target,
+                selected_scene_rotations_zero,
+                runtime_inpainter_id: runtime_inpainter_id.to_owned(),
+                bubble_segmenter_id: bubble_segmenter_id.to_owned(),
+                bubble_support_sha256: bubble_support_sha256.to_owned(),
+                removal_support: removal_support
+                    .as_raw()
+                    .iter()
+                    .map(|pixel| u8::from(*pixel != 0))
+                    .collect(),
             },
         ))
     }
@@ -2986,6 +3406,61 @@ mod source_gate_selection {
         [left, top, right, top, right, bottom, left, bottom]
     }
 
+    fn r57_actual_scene_support(
+        width: u32,
+        height: u32,
+        transform: &Transform,
+        text: &TextData,
+    ) -> Option<(SceneSupportEvidence, bool)> {
+        let values = [
+            transform.x,
+            transform.y,
+            transform.x + transform.width,
+            transform.y + transform.height,
+        ];
+        if values
+            .iter()
+            .any(|value| !value.is_finite() || value.fract() != 0.0)
+        {
+            return None;
+        }
+        let rect = values.map(|value| value as i64);
+        if rect[0] < 0
+            || rect[1] < 0
+            || rect[0] >= rect[2]
+            || rect[1] >= rect[3]
+            || rect[2] > i64::from(width)
+            || rect[3] > i64::from(height)
+        {
+            return None;
+        }
+        Some((
+            SceneSupportEvidence {
+                rect,
+                mask: r51_rect_mask(width, height, rect),
+                downstream_mask: line_support_mask(
+                    width,
+                    height,
+                    &eligible_text_lines(transform, text, width, height)?,
+                )
+                .as_raw()
+                .iter()
+                .map(|pixel| u8::from(*pixel != 0))
+                .collect(),
+            },
+            transform.rotation_deg == 0.0 && text.rotation_deg.unwrap_or_default() == 0.0,
+        ))
+    }
+
+    fn r57_detector_supports_equal(
+        detector: &[u8],
+        scene: &[u8],
+        eligible: &[u8],
+        downstream: &[u8],
+    ) -> bool {
+        detector == scene && detector == eligible && detector == downstream
+    }
+
     fn r51_target_id_for_rect(
         schema: &VisualManifestEntry,
         oracle: &OracleValidatedEntry,
@@ -3016,11 +3491,13 @@ mod source_gate_selection {
         oracle: &OracleValidatedEntry,
         diagnostics: &[SourceGateDiagnosticEvent],
         rejection_reason: &Option<String>,
+        supports: Option<&CellSupportEvidence>,
     ) -> io::Result<(
         Vec<serde_json::Value>,
         Vec<serde_json::Value>,
         String,
         Vec<serde_json::Value>,
+        bool,
     )> {
         let mut dimensions = None;
         let mut crop_by_node = HashMap::new();
@@ -3043,6 +3520,10 @@ mod source_gate_selection {
         let mut raw_bits = Vec::<[u32; 8]>::new();
         let mut canonical_lines = Vec::new();
         let mut detector_support_records = Vec::new();
+        let mut selected_target_records = Vec::new();
+        let mut used_scene_supports = BTreeMap::<String, HashSet<usize>>::new();
+        let mut detector_geometry_passed =
+            supports.map_or(true, |supports| supports.selected_scene_rotations_zero);
         let phase = r51_phase_name(environment.phase);
 
         for event in diagnostics {
@@ -3140,9 +3621,7 @@ mod source_gate_selection {
                         "R51 detector canonical-line ownership drift",
                     )?;
                 }
-                let emitted_bits =
-                    ownership.map_or(fallback_scene_bits, |value| value.scene_quad_f32_bits);
-                let emitted_rect = r51_quad_bits_rect(emitted_bits)?;
+                let raw_rect = r51_quad_bits_rect(fallback_scene_bits)?;
                 let recognition = recognition_by_occurrence
                     .get(&detector.occurrence_index)
                     .and_then(Option::as_ref);
@@ -3195,23 +3674,60 @@ mod source_gate_selection {
                         },
                     ),
                 };
-                let detector_mask = r51_rect_mask(width, height, emitted_rect);
+                let detector_mask = r51_rect_mask(width, height, raw_rect);
+                let emitted_scene = target_id.as_ref().and_then(|target_id| {
+                    let candidates = supports?.scene_by_target.get(target_id)?;
+                    let used = used_scene_supports.entry(target_id.clone()).or_default();
+                    let (index, support) =
+                        candidates.iter().enumerate().find(|(index, support)| {
+                            !used.contains(index) && support.mask == detector_mask
+                        })?;
+                    used.insert(index);
+                    Some(support)
+                });
+                let emitted_scene_mask = emitted_scene
+                    .map(|support| support.mask.clone())
+                    .unwrap_or_else(|| vec![0; detector_mask.len()]);
+                let emitted_scene_quad = emitted_scene.map(|support| r51_rect_quad(support.rect));
                 let line_rect = eligible_bits.map(r51_quad_bits_rect).transpose()?;
                 let line_mask = line_rect.map_or_else(
                     || vec![0; detector_mask.len()],
                     |rect| r51_rect_mask(width, height, rect),
                 );
+                let downstream_mask = emitted_scene
+                    .map(|support| support.downstream_mask.clone())
+                    .unwrap_or_else(|| vec![0; detector_mask.len()]);
                 let agreed_mask = detector_mask
                     .iter()
+                    .zip(&emitted_scene_mask)
                     .zip(&line_mask)
-                    .map(|(detector, line)| detector & line)
+                    .zip(&downstream_mask)
+                    .map(|(((detector, scene), line), downstream)| {
+                        detector & scene & line & downstream
+                    })
                     .collect::<Vec<_>>();
-                let line_support_equals_detector = detector_mask == line_mask;
+                let line_support_equals_detector = r57_detector_supports_equal(
+                    &detector_mask,
+                    &emitted_scene_mask,
+                    &line_mask,
+                    &downstream_mask,
+                );
+                if let Some(target_id) = &target_id {
+                    selected_target_records.push(target_id.clone());
+                    detector_geometry_passed &= line_support_equals_detector;
+                }
                 let agreed_mask_subset = agreed_mask
                     .iter()
                     .zip(&detector_mask)
+                    .zip(&emitted_scene_mask)
                     .zip(&line_mask)
-                    .all(|((agreed, detector), line)| *agreed <= *detector && *agreed <= *line);
+                    .zip(&downstream_mask)
+                    .all(|((((agreed, detector), scene), line), downstream)| {
+                        *agreed <= *detector
+                            && *agreed <= *scene
+                            && *agreed <= *line
+                            && *agreed <= *downstream
+                    });
                 let mut protected_mask = vec![0; detector_mask.len()];
                 if let Some((_, protected, _)) = selection_geometry {
                     for geometry in protected {
@@ -3242,15 +3758,17 @@ mod source_gate_selection {
                     "raw_detector": {
                         "index": occurrence_index,
                         "source_scaled_quad_f32_bits": bits,
-                        "rect": emitted_rect,
+                        "rect": raw_rect,
                         "recognition_present": recognition.is_some(),
                         "recognition_class": recognition_class,
                     },
                     "canonical_assignment": canonical_assignment,
-                    "emitted_scene_quad": r51_rect_quad(emitted_rect),
+                    "emitted_scene_quad": emitted_scene_quad,
                     "eligible_text_line_quad": line_rect.map(r51_rect_quad),
                     "detector_support_mask": r51_mask_descriptor(width, height, &detector_mask),
+                    "emitted_scene_support_mask": r51_mask_descriptor(width, height, &emitted_scene_mask),
                     "line_support_mask": r51_mask_descriptor(width, height, &line_mask),
+                    "downstream_line_support_mask": r51_mask_descriptor(width, height, &downstream_mask),
                     "line_support_equals_detector": line_support_equals_detector,
                     "agreed_mask": r51_mask_descriptor(width, height, &agreed_mask),
                     "agreed_mask_subset": agreed_mask_subset,
@@ -3274,11 +3792,24 @@ mod source_gate_selection {
                 && raw_detector_outputs.len() == detector_support_records.len(),
             "R51 detector diagnostic completeness drift",
         )?;
+        selected_target_records.sort();
+        let mut expected_target_records = supports
+            .map(|supports| {
+                supports
+                    .scene_by_target
+                    .iter()
+                    .flat_map(|(target, values)| std::iter::repeat_n(target.clone(), values.len()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| result.derived.selected_target_ids.clone());
+        expected_target_records.sort();
+        detector_geometry_passed &= selected_target_records == expected_target_records;
         Ok((
             raw_detector_outputs,
             canonical_lines,
             sha256_hex(&canonical_json(&raw_bits)?),
             detector_support_records,
+            detector_geometry_passed,
         ))
     }
 
@@ -3289,6 +3820,7 @@ mod source_gate_selection {
         schema: &VisualManifestEntry,
         oracle: &OracleValidatedEntry,
         diagnostics: &[SourceGateDiagnosticEvent],
+        supports: &CellSupportEvidence,
         bundle_validation_receipt: Option<&PublishedArtifact>,
         coverage_index: Option<&PublishedArtifact>,
     ) -> io::Result<R51TerminalCellResult> {
@@ -3328,12 +3860,6 @@ mod source_gate_selection {
         } else {
             Some("preserved".to_owned())
         };
-        let passed = result.derived.passed;
-        let terminal_reason = (!passed).then(|| {
-            rejection_reason
-                .clone()
-                .unwrap_or_else(|| "coverage_failure".into())
-        });
         let device_evidence = publish_r51_artifact(
             environment,
             &format!("{cell_root}/device-evidence.json"),
@@ -3355,15 +3881,40 @@ mod source_gate_selection {
             &format!("{cell_root}/inference.log"),
             &source_log,
         )?;
-        let (raw_detector_outputs, canonical_lines, raw_detector_hash, support_records) =
-            r51_detector_diagnostics(
-                environment,
-                result,
-                schema,
-                oracle,
-                diagnostics,
-                &rejection_reason,
-            )?;
+        let (
+            raw_detector_outputs,
+            canonical_lines,
+            raw_detector_hash,
+            support_records,
+            detector_geometry_passed,
+        ) = r51_detector_diagnostics(
+            environment,
+            result,
+            schema,
+            oracle,
+            diagnostics,
+            &rejection_reason,
+            Some(supports),
+        )?;
+        let protected_overlap_pixels = protected_overlap_count(
+            &supports.removal_support,
+            supports.width,
+            &oracle.protected_rois,
+        );
+        let passed = r57_cell_passed(
+            result.derived.passed,
+            detector_geometry_passed,
+            protected_overlap_pixels,
+        );
+        let terminal_reason = (!passed).then(|| {
+            if protected_overlap_pixels != 0 {
+                "protected_overlap".into()
+            } else {
+                rejection_reason
+                    .clone()
+                    .unwrap_or_else(|| "coverage_failure".into())
+            }
+        });
         let diagnostic = serde_json::json!({
             "contract": "hanonly-r50-cell-diagnostic-v1",
             "plan_revision": PLAN_REVISION,
@@ -3390,6 +3941,13 @@ mod source_gate_selection {
             "raw_detector_count": support_records.len(),
             "raw_detector_f32_bits_multiset_sha256": raw_detector_hash,
             "detector_support_records": support_records,
+            "detector_geometry_passed": detector_geometry_passed,
+            "selected_scene_rotations_zero": supports.selected_scene_rotations_zero,
+            "runtime_inpainter_id": &supports.runtime_inpainter_id,
+            "bubble_segmenter_id": &supports.bubble_segmenter_id,
+            "bubble_support_sha256": &supports.bubble_support_sha256,
+            "runtime_removal_support_sha256": sha256_hex(&supports.removal_support),
+            "protected_overlap_pixels": protected_overlap_pixels,
             "device_evidence_sha256": &device_evidence.sha256,
             "device_evidence_byte_length": device_evidence.byte_length,
             "log_sha256": &log.sha256,
@@ -3444,6 +4002,7 @@ mod source_gate_selection {
         schema: &VisualManifestEntry,
         oracle: &OracleValidatedEntry,
         diagnostics: &[SourceGateDiagnosticEvent],
+        supports: &CellSupportEvidence,
     ) -> io::Result<R51TerminalCellResult> {
         require(
             environment.r51_formal_custody.is_some()
@@ -3458,9 +4017,92 @@ mod source_gate_selection {
             schema,
             oracle,
             diagnostics,
+            supports,
             None,
             None,
         )
+    }
+
+    fn r57_validate_source_ink_with_python(
+        environment: &SelectionEnvironment,
+        cell_root: &str,
+        cell_key: &str,
+        entry_id: &str,
+        target_id: &str,
+        width: u32,
+        height: u32,
+        oracle_mask_raw_sha256: &str,
+        oracle_mask: &[u8],
+        protected_rois: &[ValidatedHalfOpenRect],
+        runtime_support: &[u8],
+        runtime_support_sha256: &str,
+        runtime_inpainter_id: &str,
+        bubble_segmenter_id: &str,
+        bubble_support_sha256: &str,
+    ) -> io::Result<(PublishedArtifact, serde_json::Value)> {
+        let protected = protected_rois
+            .iter()
+            .map(|rect| [rect.left, rect.top, rect.right, rect.bottom])
+            .collect::<Vec<_>>();
+        let protected_geometry_sha256 = sha256_hex(&canonical_json(&protected)?);
+        let payload = serde_json::json!({
+            "contract": "hanonly-r57-source-ink-validation-input-v1",
+            "b0_sha": &environment.b0_sha,
+            "cell_key": cell_key,
+            "entry_id": entry_id,
+            "target_id": target_id,
+            "page_width": width,
+            "page_height": height,
+            "support_stride_bytes": width,
+            "oracle_mask_base64": base64::engine::general_purpose::STANDARD.encode(oracle_mask),
+            "oracle_mask_raw_sha256": oracle_mask_raw_sha256,
+            "oracle_mask_normalized_sha256": r51_binary_mask_sha256(width, height, oracle_mask),
+            "protected_rois": protected,
+            "protected_geometry_sha256": protected_geometry_sha256,
+            "runtime_inpainter_id": runtime_inpainter_id,
+            "bubble_segmenter_id": bubble_segmenter_id,
+            "bubble_support_sha256": bubble_support_sha256,
+            "runtime_removal_support_base64": base64::engine::general_purpose::STANDARD.encode(runtime_support),
+            "runtime_removal_support_sha256": runtime_support_sha256,
+        });
+        let payload = canonical_json(&payload)?;
+        let script = repository_root()?.join("scripts/hanonly_evidence_ledger.py");
+        let mut child = Command::new("/usr/bin/python3")
+            .arg(script)
+            .arg("r57-validate-source-ink")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| invalid_data("R57 validator stdin is unavailable"))?
+            .write_all(&payload)?;
+        let output = child.wait_with_output()?;
+        require(output.status.success(), "R57 source-ink validator failed")?;
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|_| invalid_data("R57 source-ink validator receipt is invalid"))?;
+        require(
+            canonical_json(&receipt)? == output.stdout
+                && receipt["contract"] == "hanonly-r57-source-ink-validation-receipt-v1"
+                && receipt["b0_sha"] == environment.b0_sha
+                && receipt["cell_key"] == cell_key
+                && receipt["entry_id"] == entry_id
+                && receipt["target_id"] == target_id
+                && receipt["protected_geometry_sha256"] == protected_geometry_sha256
+                && receipt["runtime_inpainter_id"] == runtime_inpainter_id
+                && receipt["bubble_segmenter_id"] == bubble_segmenter_id
+                && receipt["bubble_support_sha256"] == bubble_support_sha256
+                && receipt["runtime_removal_support_sha256"] == runtime_support_sha256,
+            "R57 source-ink validator receipt binding drift",
+        )?;
+        let artifact = publish_r51_artifact(
+            environment,
+            &format!("{cell_root}/{target_id}.source-ink-validation.json"),
+            &output.stdout,
+        )?;
+        Ok((artifact, receipt))
     }
 
     fn write_r51_cell_evidence(
@@ -3541,34 +4183,18 @@ mod source_gate_selection {
         let page_len = usize::try_from(u64::from(supports.width) * u64::from(supports.height))
             .map_err(|_| invalid_data("R51 support raster length overflow"))?;
         for (target, oracle_target) in schema.targets.iter().zip(&oracle.targets) {
-            let selected_support = supports
-                .selected_by_target
-                .get(&target.id)
-                .cloned()
-                .unwrap_or_else(|| vec![0; page_len]);
-            let downstream_support = supports
-                .downstream_by_target
-                .get(&target.id)
-                .cloned()
-                .unwrap_or_else(|| vec![0; page_len]);
+            let runtime_removal_support = supports.removal_support.clone();
             require(
-                selected_support.len() == page_len
-                    && downstream_support.len() == page_len
-                    && selected_support.iter().all(|pixel| matches!(pixel, 0 | 1))
-                    && downstream_support
+                runtime_removal_support.len() == page_len
+                    && runtime_removal_support
                         .iter()
                         .all(|pixel| matches!(pixel, 0 | 1)),
                 "R51 support raster is not complete binary page geometry",
             )?;
-            let selected_raster = publish_r51_artifact(
+            let runtime_removal_raster = publish_r51_artifact(
                 environment,
-                &format!("{cell_root}/{}.selected-support.bin", target.id),
-                &selected_support,
-            )?;
-            let downstream_raster = publish_r51_artifact(
-                environment,
-                &format!("{cell_root}/{}.downstream-support.bin", target.id),
-                &downstream_support,
+                &format!("{cell_root}/{}.runtime-removal-support.bin", target.id),
+                &runtime_removal_support,
             )?;
             let oracle_mask = page_oracle_mask(
                 supports.width,
@@ -3576,30 +4202,52 @@ mod source_gate_selection {
                 oracle_target.edit_roi,
                 &oracle_target.delta_mask,
             )?;
+            let (spatial_receipt, spatial_validation) = r57_validate_source_ink_with_python(
+                environment,
+                &cell_root,
+                &cell_key,
+                &result.entry_id,
+                &target.id,
+                supports.width,
+                supports.height,
+                &target.erase_source_ink_mask_sha256,
+                &oracle_mask,
+                &oracle.protected_rois,
+                &runtime_removal_support,
+                &runtime_removal_raster.sha256,
+                &supports.runtime_inpainter_id,
+                &supports.bubble_segmenter_id,
+                &supports.bubble_support_sha256,
+            )?;
             let oracle_foreground_pixels = foreground_count(&oracle_mask);
-            let selected_covered_pixels = intersection_count(&oracle_mask, &selected_support)?;
-            let downstream_covered_pixels = intersection_count(&oracle_mask, &downstream_support)?;
+            let runtime_removal_covered_pixels =
+                intersection_count(&oracle_mask, &runtime_removal_support)?;
             let protected_overlap_pixels = protected_overlap_count(
-                &downstream_support,
+                &runtime_removal_support,
                 supports.width,
                 &oracle.protected_rois,
             );
-            let missing_selected_pixels =
-                oracle_foreground_pixels.saturating_sub(selected_covered_pixels);
-            let missing_downstream_pixels =
-                oracle_foreground_pixels.saturating_sub(downstream_covered_pixels);
+            let missing_runtime_removal_pixels =
+                oracle_foreground_pixels.saturating_sub(runtime_removal_covered_pixels);
             let target_selected = result
                 .derived
                 .selected_target_ids
                 .iter()
                 .any(|id| id == &target.id);
-            let passed = target_selected
-                && missing_selected_pixels == 0
-                && missing_downstream_pixels == 0
+            let python_passed = spatial_validation["result"] == "pass"
+                && spatial_validation["oracle_foreground_pixels"] == oracle_foreground_pixels
+                && spatial_validation["runtime_removal_covered_pixels"]
+                    == runtime_removal_covered_pixels
+                && spatial_validation["missing_runtime_removal_pixels"]
+                    == missing_runtime_removal_pixels
+                && spatial_validation["protected_overlap_pixels"] == protected_overlap_pixels;
+            let passed = python_passed
+                && target_selected
+                && missing_runtime_removal_pixels == 0
                 && protected_overlap_pixels == 0;
             coverage_passed &= passed;
-            let proof = R51TargetCoverageProof {
-                contract: "hanonly-r51-target-coverage-proof-v1",
+            let proof = R57SourceInkCoverageProof {
+                contract: "hanonly-r57-source-ink-coverage-proof-v1",
                 plan_revision: PLAN_REVISION,
                 b0_sha: &environment.b0_sha,
                 cell_key: &cell_key,
@@ -3614,19 +4262,31 @@ mod source_gate_selection {
                 page_width: supports.width,
                 page_height: supports.height,
                 support_stride_bytes: supports.width,
-                selected_support_relpath: r51_contract_path(environment, &selected_raster)?,
-                selected_support_byte_length: selected_raster.byte_length,
-                selected_support_sha256: selected_raster.sha256,
-                downstream_support_relpath: r51_contract_path(environment, &downstream_raster)?,
-                downstream_support_byte_length: downstream_raster.byte_length,
-                downstream_support_sha256: downstream_raster.sha256,
+                runtime_removal_support_relpath: r51_contract_path(
+                    environment,
+                    &runtime_removal_raster,
+                )?,
+                runtime_removal_support_byte_length: runtime_removal_raster.byte_length,
+                runtime_removal_support_sha256: runtime_removal_raster.sha256,
+                spatial_validation_receipt_relpath: r51_contract_path(
+                    environment,
+                    &spatial_receipt,
+                )?,
+                spatial_validation_receipt_byte_length: spatial_receipt.byte_length,
+                spatial_validation_receipt_sha256: spatial_receipt.sha256,
+                protected_geometry_sha256: spatial_validation["protected_geometry_sha256"]
+                    .as_str()
+                    .ok_or_else(|| invalid_data("R57 protected geometry hash is missing"))?
+                    .to_owned(),
+                runtime_inpainter_id: &supports.runtime_inpainter_id,
+                bubble_segmenter_id: &supports.bubble_segmenter_id,
+                bubble_support_sha256: &supports.bubble_support_sha256,
                 oracle_foreground_pixels,
-                selected_support_foreground_pixels: foreground_count(&selected_support),
-                downstream_support_foreground_pixels: foreground_count(&downstream_support),
-                selected_covered_pixels,
-                downstream_covered_pixels,
-                missing_selected_pixels,
-                missing_downstream_pixels,
+                runtime_removal_support_foreground_pixels: foreground_count(
+                    &runtime_removal_support,
+                ),
+                runtime_removal_covered_pixels,
+                missing_runtime_removal_pixels,
                 protected_overlap_pixels,
                 target_selected,
                 result: if passed { "pass" } else { "fail-closed" },
@@ -3648,7 +4308,7 @@ mod source_gate_selection {
             (&left.entry_id, &left.target_id).cmp(&(&right.entry_id, &right.target_id))
         });
         let coverage_index = R51TargetCoverageIndex {
-            contract: "hanonly-r51-target-coverage-index-v1",
+            contract: "hanonly-r57-source-ink-coverage-index-v1",
             plan_revision: PLAN_REVISION,
             b0_sha: &environment.b0_sha,
             cell_key: &cell_key,
@@ -3671,6 +4331,7 @@ mod source_gate_selection {
             schema,
             oracle,
             diagnostics,
+            supports,
             Some(bundle_validation_receipt),
             Some(&coverage_index),
         )
@@ -5221,6 +5882,40 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
     }
 
     #[test]
+    fn source_ink_coverage_requires_every_ink_pixel() {
+        let edit_roi = ValidatedHalfOpenRect {
+            left: 2,
+            top: 2,
+            right: 5,
+            bottom: 5,
+        };
+        let source_ink = [0, 1, 0, 0, 0, 0, 0, 1, 0];
+        let mask = SourceInkMask::edit_roi(&source_ink, edit_roi);
+        let mut support = [0; 64];
+
+        support[2 * 8 + 3] = 1;
+        support[4 * 8 + 3] = 1;
+        assert!(source_ink_is_covered(8, edit_roi, mask, &support));
+
+        support.fill(0);
+        assert!(!source_ink_is_covered(8, edit_roi, mask, &support));
+
+        support[2 * 8 + 3] = 1;
+        assert!(!source_ink_is_covered(8, edit_roi, mask, &support));
+
+        let mut page_source_ink = [0; 64];
+        page_source_ink[2 * 8 + 3] = 1;
+        page_source_ink[4 * 8 + 3] = 1;
+        support[4 * 8 + 3] = 1;
+        assert!(source_ink_is_covered(
+            8,
+            edit_roi,
+            SourceInkMask::page(&page_source_ink, 8, 8),
+            &support,
+        ));
+    }
+
+    #[test]
     fn source_gate_loaded_devices_come_from_enumerated_buffer_backends() {
         let enumerated = vec![
             EnumeratedDevice {
@@ -5733,6 +6428,59 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         (schema, oracle)
     }
 
+    #[test]
+    fn empty_prepared_masks_record_zero_support_and_failed_coverage() {
+        for prepared in [
+            PreparedInpaintMask::NoEligibleHanTargets,
+            PreparedInpaintMask::EmptyMask,
+        ] {
+            let support = removal_support_from_prepared(prepared, 64, 64);
+            assert_eq!(support.dimensions(), (64, 64));
+            assert!(support.pixels().all(|pixel| pixel.0[0] == 0));
+        }
+
+        let mut prepared = GrayImage::new(3, 2);
+        prepared.put_pixel(1, 1, image::Luma([255]));
+        let support = removal_support_from_prepared(
+            PreparedInpaintMask::Prepared {
+                mask: DynamicImage::ImageLuma8(prepared.clone()),
+                blocks: Vec::new(),
+            },
+            64,
+            64,
+        );
+        assert_eq!(support.as_raw(), prepared.as_raw());
+
+        let (schema, oracle) = r51_test_schema_and_oracle();
+        let scene = scene_for_entry(&schema, &oracle, 64, 64);
+        let page = *scene.pages.keys().next().unwrap();
+        let ink = vec![255; 64 * 64];
+        let (_, derived, _) = derive_result(
+            "cpu",
+            &scene,
+            page,
+            &schema,
+            &oracle,
+            &[SourceInkMask::page(&ink, 64, 64)],
+            &GrayImage::new(64, 64),
+            "lama-manga",
+            "speech-bubble-segmentation",
+            &synthetic_hash(90),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            derived.source_coverage_preflight.source_text_roi_coverage,
+            0.0
+        );
+        assert!(
+            !derived
+                .source_coverage_preflight
+                .source_removal_preflight_passed
+        );
+        assert!(!derived.passed);
+    }
+
     fn r51_test_quad_bits(left: f32, top: f32, right: f32, bottom: f32) -> [u32; 8] {
         [
             left.to_bits(),
@@ -5747,6 +6495,98 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
     }
 
     #[test]
+    fn r57_detector_geometry_rejects_each_one_pixel_mutation() {
+        let baseline = vec![0, 1, 1, 0];
+        assert!(r57_detector_supports_equal(
+            &baseline, &baseline, &baseline, &baseline
+        ));
+        for changed in 0..4 {
+            let mut supports = [
+                baseline.clone(),
+                baseline.clone(),
+                baseline.clone(),
+                baseline.clone(),
+            ];
+            supports[changed][0] = 1;
+            assert!(!r57_detector_supports_equal(
+                &supports[0],
+                &supports[1],
+                &supports[2],
+                &supports[3],
+            ));
+        }
+    }
+
+    #[test]
+    fn r57_calibration_and_probe_require_zero_protected_overlap() {
+        assert!(r57_cell_passed(true, true, 0));
+        assert!(!r57_cell_passed(true, true, 1));
+
+        let stage = |missing_pixels, protected_overlap_pixels| EraseStageMetric {
+            stage: EraseDiagnosticStage::InpaintFinal,
+            branch: EraseDiagnosticBranch::HanOnly,
+            grayscale_blake3: synthetic_hash(91),
+            nonzero_pixels: 1,
+            protected_overlap_pixels,
+            targets: vec![EraseStageTargetMetric {
+                target_id: "target".into(),
+                oracle_pixels: 1,
+                intersection_pixels: 1_u64.saturating_sub(missing_pixels),
+                missing_pixels,
+            }],
+        };
+        assert!(r57_final_erase_stage_passed(&stage(0, 0)));
+        assert!(!r57_final_erase_stage_passed(&stage(1, 0)));
+        assert!(!r57_final_erase_stage_passed(&stage(0, 1)));
+    }
+
+    #[test]
+    fn r57_actual_scene_support_rejects_transform_and_rotation_drift() {
+        let baseline = Transform {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 20.0,
+            rotation_deg: 0.0,
+        };
+        let text = TextData::default();
+        let (support, rotations_zero) = r57_actual_scene_support(64, 64, &baseline, &text).unwrap();
+        assert!(rotations_zero);
+
+        let expanded = Transform {
+            width: 21.0,
+            ..baseline.clone()
+        };
+        assert_ne!(
+            support.mask,
+            r57_actual_scene_support(64, 64, &expanded, &text)
+                .unwrap()
+                .0
+                .mask
+        );
+
+        let node_rotated = Transform {
+            rotation_deg: 1.0,
+            ..baseline.clone()
+        };
+        assert!(
+            !r57_actual_scene_support(64, 64, &node_rotated, &text)
+                .unwrap()
+                .1
+        );
+
+        let text_rotated = TextData {
+            rotation_deg: Some(1.0),
+            ..Default::default()
+        };
+        assert!(
+            !r57_actual_scene_support(64, 64, &baseline, &text_rotated)
+                .unwrap()
+                .1
+        );
+    }
+
+    #[test]
     fn r51_selection_geometry_closes_detector_ownership_preimages() {
         let temp = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(temp.path()).unwrap();
@@ -5756,6 +6596,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let result = synthetic_result("calibration", "r51-c01", "cpu", "S25L4");
         let node_id = NodeId::new();
         let target_bits = r51_test_quad_bits(10.0, 10.0, 20.0, 20.0);
+        let second_target_bits = r51_test_quad_bits(25.0, 10.0, 35.0, 20.0);
         let protected_bits = r51_test_quad_bits(52.0, 10.0, 60.0, 20.0);
         let diagnostics = vec![
             SourceGateDiagnosticEvent::Input {
@@ -5782,6 +6623,10 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                     },
                     PpDetectorDiagnostic {
                         occurrence_index: 1,
+                        source_scaled_quad_f32_bits: second_target_bits,
+                    },
+                    PpDetectorDiagnostic {
+                        occurrence_index: 2,
                         source_scaled_quad_f32_bits: protected_bits,
                     },
                 ],
@@ -5802,6 +6647,18 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                         line_index: 1,
                         detector_occurrences: vec![PpCanonicalOccurrenceDiagnostic {
                             occurrence_index: 1,
+                            canonical_corners_f32_bits: second_target_bits,
+                        }],
+                        recognition: Some(PpRecognitionDiagnostic {
+                            present: true,
+                            recognition_class: "han",
+                            segment_count: 1,
+                        }),
+                    },
+                    PpCanonicalLineDiagnostic {
+                        line_index: 2,
+                        detector_occurrences: vec![PpCanonicalOccurrenceDiagnostic {
+                            occurrence_index: 2,
                             canonical_corners_f32_bits: protected_bits,
                         }],
                         recognition: Some(PpRecognitionDiagnostic {
@@ -5814,9 +6671,14 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             },
             SourceGateDiagnosticEvent::SelectionGeometry {
                 node_id,
-                targets: vec![SourceGateTargetGeometryDiagnostic {
-                    scene_quad_f32_bits: target_bits,
-                }],
+                targets: vec![
+                    SourceGateTargetGeometryDiagnostic {
+                        scene_quad_f32_bits: target_bits,
+                    },
+                    SourceGateTargetGeometryDiagnostic {
+                        scene_quad_f32_bits: second_target_bits,
+                    },
+                ],
                 protected_lines: vec![SourceGateTargetGeometryDiagnostic {
                     scene_quad_f32_bits: protected_bits,
                 }],
@@ -5832,6 +6694,14 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                     SourceGateDetectorOwnershipDiagnostic {
                         occurrence_index: 1,
                         canonical_line_index: Some(1),
+                        scene_quad_f32_bits: second_target_bits,
+                        assignment: SourceGateDetectorAssignmentDiagnostic::Target {
+                            target_index: 1,
+                        },
+                    },
+                    SourceGateDetectorOwnershipDiagnostic {
+                        occurrence_index: 2,
+                        canonical_line_index: Some(2),
                         scene_quad_f32_bits: protected_bits,
                         assignment: SourceGateDetectorAssignmentDiagnostic::Protected {
                             protected_index: 0,
@@ -5840,10 +6710,45 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 ],
             },
         ];
-        let (_, _, _, records) =
-            r51_detector_diagnostics(&environment, &result, &schema, &oracle, &diagnostics, &None)
-                .unwrap();
-        assert_eq!(records.len(), 2);
+        let target_support = r51_rect_mask(64, 64, r51_quad_bits_rect(target_bits).unwrap());
+        let second_target_support =
+            r51_rect_mask(64, 64, r51_quad_bits_rect(second_target_bits).unwrap());
+        let supports = CellSupportEvidence {
+            width: 64,
+            height: 64,
+            scene_by_target: BTreeMap::from([(
+                "target".to_owned(),
+                vec![
+                    SceneSupportEvidence {
+                        rect: [10, 10, 20, 20],
+                        mask: target_support.clone(),
+                        downstream_mask: target_support.clone(),
+                    },
+                    SceneSupportEvidence {
+                        rect: [25, 10, 35, 20],
+                        mask: second_target_support.clone(),
+                        downstream_mask: second_target_support,
+                    },
+                ],
+            )]),
+            selected_scene_rotations_zero: true,
+            runtime_inpainter_id: "lama-manga".to_owned(),
+            bubble_segmenter_id: "speech-bubble-segmentation".to_owned(),
+            bubble_support_sha256: synthetic_hash(90),
+            removal_support: vec![0; 64 * 64],
+        };
+        let (_, _, _, records, geometry_passed) = r51_detector_diagnostics(
+            &environment,
+            &result,
+            &schema,
+            &oracle,
+            &diagnostics,
+            &None,
+            Some(&supports),
+        )
+        .unwrap();
+        assert!(geometry_passed);
+        assert_eq!(records.len(), 3);
         assert_eq!(records[0]["preimage"]["target_id"], "target");
         assert_eq!(
             records[0]["preimage"]["canonical_assignment"],
@@ -5851,34 +6756,51 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         );
         assert_eq!(records[0]["preimage"]["ownership_verdict"], "unique");
         assert_eq!(
+            records[0]["preimage"]["emitted_scene_quad"],
+            serde_json::json!([10, 10, 20, 10, 20, 20, 10, 20])
+        );
+        assert_eq!(
             records[0]["preimage"]["detector_support_mask"],
             records[0]["preimage"]["line_support_mask"]
         );
         assert_eq!(
+            records[0]["preimage"]["detector_support_mask"],
+            records[0]["preimage"]["emitted_scene_support_mask"]
+        );
+        assert_eq!(
+            records[0]["preimage"]["detector_support_mask"],
+            records[0]["preimage"]["downstream_line_support_mask"]
+        );
+        assert_eq!(
             records[1]["preimage"]["canonical_assignment"],
+            "selected_han"
+        );
+        assert_eq!(
+            records[2]["preimage"]["canonical_assignment"],
             "preserved_source"
         );
         assert!(
-            records[1]["preimage"]["protected_support_pixels"]
+            records[2]["preimage"]["protected_support_pixels"]
                 .as_u64()
                 .unwrap()
                 > 0
         );
         let rejected_reason = Some("pp_vl_incomplete_coverage".to_owned());
-        let (_, _, _, rejected) = r51_detector_diagnostics(
+        let (_, _, _, rejected, _) = r51_detector_diagnostics(
             &environment,
             &result,
             &schema,
             &oracle,
             &diagnostics[..3],
             &rejected_reason,
+            None,
         )
         .unwrap();
-        assert_eq!(rejected.len(), 2);
+        assert_eq!(rejected.len(), 3);
         assert!(rejected.iter().all(|record| {
             record["preimage"]["ownership_verdict"] == "unassigned"
                 && record["preimage"]["selection_verdict"] == "rejected"
-                && record["preimage"]["emitted_scene_quad"].is_array()
+                && record["preimage"]["emitted_scene_quad"].is_null()
                 && record["preimage"]["detector_support_mask"].is_object()
                 && record["preimage"]["line_support_mask"].is_object()
                 && record["preimage"]["agreed_mask"].is_object()
@@ -6914,6 +7836,22 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             &'a koharu_ml::aot_inpainting::AotInpainting,
         ) -> &'a koharu_ml::Device = koharu_ml::aot_inpainting::AotInpainting::device;
         let _ = accessor;
+    }
+
+    #[test]
+    #[ignore = "requires frozen B0 selection environment and installed Source Gate models"]
+    fn han_only_source_ink_erase_stage_probe() {
+        let environment = SelectionEnvironment::parse(|name| std::env::var(name).ok())
+            .expect("erase-stage probe environment");
+        assert!(!environment.artifact.exists());
+        let evidence = run_erase_stage_probe(&environment).expect("erase-stage probe failed");
+        assert_eq!(evidence.selected_candidate_id, "S25L4");
+        assert_eq!(evidence.results.len(), 8);
+        assert!(evidence.results.iter().all(|result| {
+            environment.calibration_entry_ids.contains(&result.entry_id)
+                && result.candidate_id == "S25L4"
+        }));
+        assert!(!environment.artifact.exists());
     }
 
     #[test]

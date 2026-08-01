@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import contextlib
 import datetime
 import errno
@@ -531,19 +532,20 @@ R51_COVERAGE_PROOF_KEYS = {
     "page_width",
     "page_height",
     "support_stride_bytes",
-    "selected_support_relpath",
-    "selected_support_byte_length",
-    "selected_support_sha256",
-    "downstream_support_relpath",
-    "downstream_support_byte_length",
-    "downstream_support_sha256",
+    "runtime_removal_support_relpath",
+    "runtime_removal_support_byte_length",
+    "runtime_removal_support_sha256",
+    "spatial_validation_receipt_relpath",
+    "spatial_validation_receipt_byte_length",
+    "spatial_validation_receipt_sha256",
+    "protected_geometry_sha256",
+    "runtime_inpainter_id",
+    "bubble_segmenter_id",
+    "bubble_support_sha256",
     "oracle_foreground_pixels",
-    "selected_support_foreground_pixels",
-    "downstream_support_foreground_pixels",
-    "selected_covered_pixels",
-    "downstream_covered_pixels",
-    "missing_selected_pixels",
-    "missing_downstream_pixels",
+    "runtime_removal_support_foreground_pixels",
+    "runtime_removal_covered_pixels",
+    "missing_runtime_removal_pixels",
     "protected_overlap_pixels",
     "target_selected",
     "result",
@@ -570,6 +572,13 @@ R51_CELL_DIAGNOSTIC_KEYS = {
     "raw_detector_count",
     "raw_detector_f32_bits_multiset_sha256",
     "detector_support_records",
+    "detector_geometry_passed",
+    "selected_scene_rotations_zero",
+    "runtime_inpainter_id",
+    "bubble_segmenter_id",
+    "bubble_support_sha256",
+    "runtime_removal_support_sha256",
+    "protected_overlap_pixels",
     "device_evidence_sha256",
     "device_evidence_byte_length",
     "log_sha256",
@@ -597,7 +606,9 @@ R51_DETECTOR_SUPPORT_PREIMAGE_KEYS = {
     "emitted_scene_quad",
     "eligible_text_line_quad",
     "detector_support_mask",
+    "emitted_scene_support_mask",
     "line_support_mask",
+    "downstream_line_support_mask",
     "line_support_equals_detector",
     "agreed_mask",
     "agreed_mask_subset",
@@ -1554,10 +1565,7 @@ def _parse_size(value):
     match = re.fullmatch(r"([1-9]\d*)x([1-9]\d*)", value or "")
     if not match:
         raise LedgerError("expected input size must be WIDTHxHEIGHT")
-    result = (int(match.group(1)), int(match.group(2)))
-    if result != EXPECTED_DIMENSIONS:
-        raise LedgerError("expected input size is not the approved regression size")
-    return result
+    return (int(match.group(1)), int(match.group(2)))
 
 
 def _validate_manifest_regression(value, input_path, input_sha256):
@@ -1569,13 +1577,24 @@ def _validate_manifest_regression(value, input_path, input_sha256):
         for entry in manifest["entries"]
         if isinstance(entry, dict) and entry.get("role") == "regression"
     ]
-    if len(regressions) != 1:
-        raise LedgerError("visual manifest must contain exactly one regression entry")
-    regression = regressions[0]
-    if regression.get("path") != input_path:
-        raise LedgerError("selected input does not match the regression manifest path")
-    if regression.get("sha256") != input_sha256:
-        raise LedgerError("selected input hash does not match the regression manifest")
+    if regressions:
+        if len(regressions) != 1:
+            raise LedgerError("visual manifest must contain exactly one regression entry")
+        selected = regressions[0]
+    else:
+        calibration = [
+            entry
+            for entry in manifest["entries"]
+            if isinstance(entry, dict) and entry.get("role") == "calibration"
+        ]
+        matches = [entry for entry in calibration if entry.get("path") == input_path]
+        if len(calibration) != 4 or len(matches) != 1:
+            raise LedgerError("visual manifest calibration input is not uniquely frozen")
+        selected = matches[0]
+    if selected.get("path") != input_path:
+        raise LedgerError("selected input does not match the visual manifest path")
+    if selected.get("sha256") != input_sha256:
+        raise LedgerError("selected input hash does not match the visual manifest")
 
 
 def _require_owned_mode(path, value, expected_mode):
@@ -2952,6 +2971,132 @@ def _r51_validate_support_raster(
     return sum(data)
 
 
+def _r57_validate_source_ink(payload_bytes):
+    payload = _parse_json(payload_bytes, "R57 source-ink validation input")
+    keys = {
+        "contract",
+        "b0_sha",
+        "cell_key",
+        "entry_id",
+        "target_id",
+        "page_width",
+        "page_height",
+        "support_stride_bytes",
+        "oracle_mask_base64",
+        "oracle_mask_raw_sha256",
+        "oracle_mask_normalized_sha256",
+        "protected_rois",
+        "protected_geometry_sha256",
+        "runtime_inpainter_id",
+        "bubble_segmenter_id",
+        "bubble_support_sha256",
+        "runtime_removal_support_base64",
+        "runtime_removal_support_sha256",
+    }
+    _require_keys(payload, keys, "R57 source-ink validation input")
+    if _r51_canonical_json(payload) != payload_bytes:
+        raise LedgerError("R57 source-ink validation input is not canonical")
+    width = payload["page_width"]
+    height = payload["page_height"]
+    if (
+        payload["contract"] != "hanonly-r57-source-ink-validation-input-v1"
+        or not isinstance(payload["b0_sha"], str)
+        or len(payload["b0_sha"]) != 40
+        or type(width) is not int
+        or type(height) is not int
+        or width <= 0
+        or height <= 0
+        or payload["support_stride_bytes"] != width
+        or payload["runtime_inpainter_id"] != "lama-manga"
+        or payload["bubble_segmenter_id"] != "speech-bubble-segmentation"
+    ):
+        raise LedgerError("R57 source-ink validation input binding drift")
+    try:
+        oracle = base64.b64decode(payload["oracle_mask_base64"], validate=True)
+        runtime = base64.b64decode(
+            payload["runtime_removal_support_base64"], validate=True
+        )
+    except (TypeError, ValueError) as error:
+        raise LedgerError("R57 source-ink validation base64 is invalid") from error
+    expected_length = width * height
+    if (
+        len(oracle) != expected_length
+        or len(runtime) != expected_length
+        or any(value not in (0, 1) for value in oracle)
+        or any(value not in (0, 1) for value in runtime)
+    ):
+        raise LedgerError("R57 source-ink validation raster is invalid")
+    for key in (
+        "oracle_mask_raw_sha256",
+        "oracle_mask_normalized_sha256",
+        "protected_geometry_sha256",
+        "bubble_support_sha256",
+        "runtime_removal_support_sha256",
+    ):
+        _validate_hash(payload[key], f"R57 source-ink validation {key}")
+    protected = payload["protected_rois"]
+    if (
+        not isinstance(protected, list)
+        or any(
+            not isinstance(rect, list)
+            or len(rect) != 4
+            or any(type(value) is not int for value in rect)
+            or not (0 <= rect[0] < rect[2] <= width)
+            or not (0 <= rect[1] < rect[3] <= height)
+            for rect in protected
+        )
+        or _sha256(_r51_canonical_json(protected))
+        != payload["protected_geometry_sha256"]
+        or _sha256(
+            b"hanonly-r51-binary-mask-v1\0"
+            + struct.pack(">II", width, height)
+            + oracle
+        )
+        != payload["oracle_mask_normalized_sha256"]
+        or _sha256(runtime) != payload["runtime_removal_support_sha256"]
+    ):
+        raise LedgerError("R57 source-ink validation commitment drift")
+    oracle_foreground = sum(oracle)
+    covered = sum(left & right for left, right in zip(oracle, runtime))
+    protected_overlap = 0
+    for left, top, right, bottom in protected:
+        protected_overlap += sum(
+            runtime[y * width + x]
+            for y in range(top, bottom)
+            for x in range(left, right)
+        )
+    missing = oracle_foreground - covered
+    passed = oracle_foreground > 0 and missing == 0 and protected_overlap == 0
+    return _r51_canonical_json(
+        {
+            "contract": "hanonly-r57-source-ink-validation-receipt-v1",
+            "b0_sha": payload["b0_sha"],
+            "cell_key": payload["cell_key"],
+            "entry_id": payload["entry_id"],
+            "target_id": payload["target_id"],
+            "page_width": width,
+            "page_height": height,
+            "support_stride_bytes": width,
+            "oracle_mask_raw_sha256": payload["oracle_mask_raw_sha256"],
+            "oracle_mask_normalized_sha256": payload[
+                "oracle_mask_normalized_sha256"
+            ],
+            "protected_geometry_sha256": payload["protected_geometry_sha256"],
+            "runtime_inpainter_id": payload["runtime_inpainter_id"],
+            "bubble_segmenter_id": payload["bubble_segmenter_id"],
+            "bubble_support_sha256": payload["bubble_support_sha256"],
+            "runtime_removal_support_sha256": payload[
+                "runtime_removal_support_sha256"
+            ],
+            "oracle_foreground_pixels": oracle_foreground,
+            "runtime_removal_covered_pixels": covered,
+            "missing_runtime_removal_pixels": missing,
+            "protected_overlap_pixels": protected_overlap,
+            "result": "pass" if passed else "fail-closed",
+        }
+    )
+
+
 def _r51_register_bound_path(seen_paths, path, label):
     if path in seen_paths:
         raise LedgerError(f"{label} reuses an already bound diagnostic path")
@@ -2975,7 +3120,7 @@ def _r51_validate_coverage_index(root, record, bindings, target_total, seen_path
         raise LedgerError("R51 target coverage index is not canonical")
     records = index["records"]
     if (
-        index["contract"] != "hanonly-r51-target-coverage-index-v1"
+        index["contract"] != "hanonly-r57-source-ink-coverage-index-v1"
         or index["plan_revision"] != R51_PLAN_REVISION
         or index["b0_sha"] != bindings["b0_sha"]
         or index["cell_key"] != record["cell_key"]
@@ -3013,7 +3158,7 @@ def _r51_validate_coverage_index(root, record, bindings, target_total, seen_path
         width = proof["page_width"]
         height = proof["page_height"]
         if (
-            proof["contract"] != "hanonly-r51-target-coverage-proof-v1"
+            proof["contract"] != "hanonly-r57-source-ink-coverage-proof-v1"
             or proof["plan_revision"] != R51_PLAN_REVISION
             or proof["b0_sha"] != bindings["b0_sha"]
             or proof["cell_key"] != record["cell_key"]
@@ -3024,59 +3169,113 @@ def _r51_validate_coverage_index(root, record, bindings, target_total, seen_path
             raise LedgerError("R51 target coverage proof binding drift")
         for key in ("oracle_mask_raw_sha256", "oracle_mask_normalized_sha256"):
             _validate_hash(proof[key], f"R51 target coverage proof {key}")
-        selected_foreground = _r51_validate_support_raster(
+        runtime_removal_foreground = _r51_validate_support_raster(
             root,
-            proof["selected_support_relpath"],
-            proof["selected_support_sha256"],
-            proof["selected_support_byte_length"],
+            proof["runtime_removal_support_relpath"],
+            proof["runtime_removal_support_sha256"],
+            proof["runtime_removal_support_byte_length"],
             width,
             height,
-            "R51 selected support",
+            "R57 runtime removal support",
         )
         _r51_register_bound_path(
             seen_paths,
-            proof["selected_support_relpath"],
-            "R51 selected support",
+            proof["runtime_removal_support_relpath"],
+            "R57 runtime removal support",
         )
-        downstream_foreground = _r51_validate_support_raster(
+        _, receipt_bytes = _r51_bound_relative(
             root,
-            proof["downstream_support_relpath"],
-            proof["downstream_support_sha256"],
-            proof["downstream_support_byte_length"],
-            width,
-            height,
-            "R51 downstream support",
+            proof["spatial_validation_receipt_relpath"],
+            proof["spatial_validation_receipt_sha256"],
+            proof["spatial_validation_receipt_byte_length"],
+            "R57 source-ink spatial validation receipt",
         )
         _r51_register_bound_path(
             seen_paths,
-            proof["downstream_support_relpath"],
-            "R51 downstream support",
+            proof["spatial_validation_receipt_relpath"],
+            "R57 source-ink spatial validation receipt",
         )
+        receipt = _parse_json(
+            receipt_bytes, "R57 source-ink spatial validation receipt"
+        )
+        _require_keys(
+            receipt,
+            {
+                "contract",
+                "b0_sha",
+                "cell_key",
+                "entry_id",
+                "target_id",
+                "page_width",
+                "page_height",
+                "support_stride_bytes",
+                "oracle_mask_raw_sha256",
+                "oracle_mask_normalized_sha256",
+                "protected_geometry_sha256",
+                "runtime_inpainter_id",
+                "bubble_segmenter_id",
+                "bubble_support_sha256",
+                "runtime_removal_support_sha256",
+                "oracle_foreground_pixels",
+                "runtime_removal_covered_pixels",
+                "missing_runtime_removal_pixels",
+                "protected_overlap_pixels",
+                "result",
+            },
+            "R57 source-ink spatial validation receipt",
+        )
+        if (
+            _r51_canonical_json(receipt) != receipt_bytes
+            or receipt["contract"]
+            != "hanonly-r57-source-ink-validation-receipt-v1"
+            or receipt["b0_sha"] != proof["b0_sha"]
+            or receipt["cell_key"] != proof["cell_key"]
+            or receipt["entry_id"] != proof["entry_id"]
+            or receipt["target_id"] != proof["target_id"]
+            or receipt["page_width"] != width
+            or receipt["page_height"] != height
+            or receipt["support_stride_bytes"] != width
+            or receipt["oracle_mask_raw_sha256"]
+            != proof["oracle_mask_raw_sha256"]
+            or receipt["oracle_mask_normalized_sha256"]
+            != proof["oracle_mask_normalized_sha256"]
+            or receipt["protected_geometry_sha256"]
+            != proof["protected_geometry_sha256"]
+            or receipt["runtime_inpainter_id"] != proof["runtime_inpainter_id"]
+            or receipt["bubble_segmenter_id"] != proof["bubble_segmenter_id"]
+            or receipt["bubble_support_sha256"] != proof["bubble_support_sha256"]
+            or receipt["runtime_removal_support_sha256"]
+            != proof["runtime_removal_support_sha256"]
+            or receipt["oracle_foreground_pixels"]
+            != proof["oracle_foreground_pixels"]
+            or receipt["runtime_removal_covered_pixels"]
+            != proof["runtime_removal_covered_pixels"]
+            or receipt["missing_runtime_removal_pixels"]
+            != proof["missing_runtime_removal_pixels"]
+            or receipt["protected_overlap_pixels"]
+            != proof["protected_overlap_pixels"]
+            or receipt["result"] != "pass"
+        ):
+            raise LedgerError("R57 source-ink spatial validation receipt drift")
         oracle_foreground = proof["oracle_foreground_pixels"]
         if (
             any(
                 type(proof[key]) is not int or proof[key] < 0
                 for key in (
                     "oracle_foreground_pixels",
-                    "selected_support_foreground_pixels",
-                    "downstream_support_foreground_pixels",
-                    "selected_covered_pixels",
-                    "downstream_covered_pixels",
-                    "missing_selected_pixels",
-                    "missing_downstream_pixels",
+                    "runtime_removal_support_foreground_pixels",
+                    "runtime_removal_covered_pixels",
+                    "missing_runtime_removal_pixels",
                     "protected_overlap_pixels",
                 )
             )
             or oracle_foreground <= 0
             or oracle_foreground > width * height
-            or proof["selected_support_foreground_pixels"] != selected_foreground
-            or proof["downstream_support_foreground_pixels"] != downstream_foreground
-            or selected_foreground < oracle_foreground
-            or downstream_foreground < oracle_foreground
-            or proof["selected_covered_pixels"] != oracle_foreground
-            or proof["downstream_covered_pixels"] != oracle_foreground
-            or proof["missing_selected_pixels"] != 0
-            or proof["missing_downstream_pixels"] != 0
+            or proof["runtime_removal_support_foreground_pixels"]
+            != runtime_removal_foreground
+            or runtime_removal_foreground < oracle_foreground
+            or proof["runtime_removal_covered_pixels"] != oracle_foreground
+            or proof["missing_runtime_removal_pixels"] != 0
             or proof["protected_overlap_pixels"] != 0
             or proof["target_selected"] is not True
             or proof["result"] != "pass"
@@ -3131,8 +3330,27 @@ def _r51_validate_cell_diagnostic(root, record, bindings, seen_paths, *, holdout
         or diagnostic["pp_han_count"] < 0
         or type(diagnostic["vl_han_count"]) is not int
         or diagnostic["vl_han_count"] < 0
+        or type(diagnostic["detector_geometry_passed"]) is not bool
+        or type(diagnostic["selected_scene_rotations_zero"]) is not bool
+        or diagnostic["runtime_inpainter_id"] != "lama-manga"
+        or diagnostic["bubble_segmenter_id"] != "speech-bubble-segmentation"
+        or type(diagnostic["protected_overlap_pixels"]) is not int
+        or diagnostic["protected_overlap_pixels"] < 0
     ):
         raise LedgerError("R51 cell diagnostic binding drift")
+    protected_overlap = diagnostic["protected_overlap_pixels"]
+    if protected_overlap != 0 and (
+        record["state"] != "failed"
+        or record["terminal_reason"] != "protected_overlap"
+    ):
+        raise LedgerError("R51 protected overlap did not fail closed")
+    if record["state"] == "passed" and protected_overlap != 0:
+        raise LedgerError("R51 passed cell has protected overlap")
+    _validate_hash(diagnostic["bubble_support_sha256"], "R51 bubble support hash")
+    _validate_hash(
+        diagnostic["runtime_removal_support_sha256"],
+        "R51 runtime removal support hash",
+    )
     if holdout:
         if (
             record["state"] != "passed"
@@ -3143,6 +3361,9 @@ def _r51_validate_cell_diagnostic(root, record, bindings, seen_paths, *, holdout
             or recall["covered"] != recall["target_total"]
             or recall["uncovered"] != 0
             or recall["target_total"] <= 0
+            or diagnostic["detector_geometry_passed"] is not True
+            or diagnostic["selected_scene_rotations_zero"] is not True
+            or protected_overlap != 0
         ):
             raise LedgerError("R51 holdout cell diagnostic did not pass")
     elif any(
@@ -3255,6 +3476,39 @@ def _r51_validate_cell_diagnostic(root, record, bindings, seen_paths, *, holdout
             or raw_detector["source_scaled_quad_f32_bits"] != raw_bits[detector_index]
         ):
             raise LedgerError("R51 detector support preimage binding drift")
+        assignment = preimage["canonical_assignment"]
+        detector_rect = raw_detector["rect"]
+        expected_scene_quad = (
+            [
+                detector_rect[0],
+                detector_rect[1],
+                detector_rect[2],
+                detector_rect[1],
+                detector_rect[2],
+                detector_rect[3],
+                detector_rect[0],
+                detector_rect[3],
+            ]
+            if isinstance(detector_rect, list)
+            and len(detector_rect) == 4
+            and all(type(value) is int for value in detector_rect)
+            else None
+        )
+        if assignment == "selected_han":
+            if (
+                preimage["emitted_scene_quad"] != expected_scene_quad
+                or preimage["line_support_equals_detector"] is not True
+                or preimage["detector_support_mask"]
+                != preimage["emitted_scene_support_mask"]
+                or preimage["detector_support_mask"] != preimage["line_support_mask"]
+                or preimage["detector_support_mask"]
+                != preimage["downstream_line_support_mask"]
+                or preimage["detector_support_mask"] != preimage["agreed_mask"]
+                or preimage["agreed_mask_subset"] is not True
+            ):
+                raise LedgerError("R57 detector selection geometry did not pass")
+        elif preimage["emitted_scene_quad"] is not None:
+            raise LedgerError("R57 non-selected detector has emitted Scene geometry")
         support_indices.append(detector_index)
     if support_indices != list(range(raw_count)):
         raise LedgerError("R51 detector support record order drift")
@@ -4014,6 +4268,7 @@ def _parse_arguments(argv):
     r51_snapshot.add_argument("--freeze-receipt", required=True)
     r51_snapshot.add_argument("--historical-inventory", required=True)
     r51_snapshot.add_argument("--ciphertext", required=True)
+    subparsers.add_parser("r57-validate-source-ink")
     r51_authorization = subparsers.add_parser("validate-r51-b0-authorization")
     r51_authorization.add_argument("--repo-root", required=True)
     r51_authorization.add_argument("--b0-sha", required=True)
@@ -4052,6 +4307,8 @@ def execute(argv):
         return _r51_write_preflight(arguments)
     if arguments.command == "snapshot-r51-preflight-custody":
         return _r51_canonical_json(_r51_preflight_custody_snapshot(arguments)) + b"\n"
+    if arguments.command == "r57-validate-source-ink":
+        return _r57_validate_source_ink(sys.stdin.buffer.read())
     return _r51_validate_authorization(arguments)
 
 

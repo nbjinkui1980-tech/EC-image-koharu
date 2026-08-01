@@ -5,7 +5,9 @@ use anyhow::{Result, bail};
 use async_trait::async_trait;
 use image::{DynamicImage, GrayImage};
 use koharu_core::{MaskRole, NodeId, Op, PageId, Scene};
-use koharu_ml::comic_text_detector::{ComicTextDetector, refine_segmentation_mask};
+use koharu_ml::comic_text_detector::{
+    ComicTextDetector, refine_segmentation_candidate_mask, refine_segmentation_mask,
+};
 use koharu_ml::types::TextRegion;
 
 use crate::config::SourceTextPolicy;
@@ -103,7 +105,11 @@ fn finalize_segment_mask(
         Some(probability),
         None,
     );
-    let refined = refine_segmentation_mask(image, probability, regions);
+    let refined = if policy == SourceTextPolicy::HanOnly {
+        refine_segmentation_candidate_mask(probability, regions)
+    } else {
+        refine_segmentation_mask(image, probability, regions)
+    };
     #[cfg(test)]
     record_erase_diagnostic(
         EraseDiagnosticStage::SegmentRefined,
@@ -143,7 +149,7 @@ fn finalize_segment_mask(
     Ok(final_mask)
 }
 
-fn dispatch_segment<Inference>(
+pub(in crate::pipeline) fn dispatch_segment<Inference>(
     image: &DynamicImage,
     scene: &Scene,
     page: PageId,
@@ -242,6 +248,24 @@ mod tests {
         }
     }
 
+    fn owned_line(node_id: NodeId, bounds: [f32; 4]) -> (NodeId, EligibleTextLine) {
+        (
+            node_id,
+            EligibleTextLine {
+                line_index: 0,
+                text: "中文".into(),
+                region: TextRegion {
+                    x: bounds[0],
+                    y: bounds[1],
+                    width: bounds[2] - bounds[0],
+                    height: bounds[3] - bounds[1],
+                    detected_font_size_px: Some(bounds[3] - bounds[1]),
+                    ..Default::default()
+                },
+            },
+        )
+    }
+
     #[test]
     fn segment_dispatch_zero_text_is_noop_before_inference() {
         let (scene, page) = scene_with_texts(vec![]);
@@ -318,11 +342,78 @@ mod tests {
         assert_eq!(calls.get(), 1);
         assert_eq!(mask.get_pixel(10, 4).0[0], 0);
         assert_ne!(mask.get_pixel(10, 11).0[0], 0);
-        assert_eq!(mask.get_pixel(31, 11).0[0], 0);
+        assert_ne!(mask.get_pixel(31, 11).0[0], 0);
     }
 
     #[test]
-    fn ctd_segment_erase_diagnostics_lock_order_and_clipping_without_pixel_drift() {
+    fn han_refinement_keeps_complete_owned_component_outside_region_without_filling_box() {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(32, 16, Rgb([1, 2, 3])));
+        let owner = owned_line(NodeId::new(), [10.0, 6.0, 14.0, 10.0]);
+        let probability = GrayImage::from_fn(32, 16, |x, y| {
+            Luma([if y == 8 && (7..18).contains(&x) {
+                255
+            } else {
+                0
+            }])
+        });
+
+        let mask = finalize_segment_mask(
+            &image,
+            &probability,
+            std::slice::from_ref(&owner.1.region),
+            std::slice::from_ref(&owner),
+            &[],
+            SourceTextPolicy::HanOnly,
+        )
+        .unwrap();
+
+        assert_ne!(mask.get_pixel(5, 8).0[0], 0);
+        assert_ne!(mask.get_pixel(19, 8).0[0], 0);
+        assert_eq!(mask.get_pixel(10, 5).0[0], 0);
+    }
+
+    #[test]
+    fn han_refinement_drops_unowned_noise_and_rejects_multi_owner_components() {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(32, 16, Rgb([1, 2, 3])));
+        let first = owned_line(NodeId::new(), [10.0, 6.0, 13.0, 10.0]);
+        let second = owned_line(NodeId::new(), [16.0, 6.0, 19.0, 10.0]);
+        let unowned = GrayImage::from_fn(32, 16, |x, y| {
+            Luma([u8::from(y == 8 && (1..4).contains(&x)) * 255])
+        });
+        assert!(
+            finalize_segment_mask(
+                &image,
+                &unowned,
+                std::slice::from_ref(&first.1.region),
+                std::slice::from_ref(&first),
+                &[],
+                SourceTextPolicy::HanOnly,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("eligible target has no allowed ink")
+        );
+
+        let bridged = GrayImage::from_fn(32, 16, |x, y| {
+            Luma([u8::from(y == 8 && (11..18).contains(&x)) * 255])
+        });
+        assert!(
+            finalize_segment_mask(
+                &image,
+                &bridged,
+                &[first.1.region.clone(), second.1.region.clone()],
+                &[first, second],
+                &[],
+                SourceTextPolicy::HanOnly,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("multiple eligible owners")
+        );
+    }
+
+    #[test]
+    fn ctd_segment_erase_diagnostics_lock_order_and_owned_component_support() {
         fn signature(
             event: &crate::pipeline::engines::support::EraseDiagnosticEvent,
         ) -> Option<(u32, u32, u64, &str)> {
@@ -411,20 +502,20 @@ mod tests {
                 Some((
                     32,
                     16,
-                    288,
-                    "da387faf229412ba39d10f2261d183a4415b28056aaac81243df359a3f1f0e3f"
+                    512,
+                    "6a76f663f0a95a2f733ab79724659a1661ccd223c309cc27f30a56c94f860845"
                 )),
                 Some((
                     32,
                     16,
-                    168,
-                    "0d6aff272656ae31b46fef27fb25340533aba75505a75b4dab0c9f4b4f6880e2"
+                    344,
+                    "212c771e619d14c0765dfec3793dc16c1f9342c705507adb2b5f30b8787bbd7b"
                 )),
                 Some((
                     32,
                     16,
-                    168,
-                    "0d6aff272656ae31b46fef27fb25340533aba75505a75b4dab0c9f4b4f6880e2"
+                    344,
+                    "212c771e619d14c0765dfec3793dc16c1f9342c705507adb2b5f30b8787bbd7b"
                 )),
             ]
         );

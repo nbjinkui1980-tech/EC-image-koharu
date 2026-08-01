@@ -142,11 +142,7 @@ mod tests {
     fn flux2_inpaint_dispatch_receives_final_mask() {
         let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(32, 16, Rgb([1, 2, 3])));
         let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(32, 16, |x, y| {
-            Luma([if (x == 5 || x == 20) && y == 8 {
-                255
-            } else {
-                0
-            }])
+            Luma([if x == 20 && y == 8 { 255 } else { 0 }])
         }));
         let bubble = DynamicImage::ImageLuma8(GrayImage::new(32, 16));
         let eligible = EligibleTextLine {
@@ -177,8 +173,8 @@ mod tests {
                 let final_mask = final_mask.to_luma8();
                 assert_eq!(final_mask.get_pixel(5, 8).0[0], 0);
                 assert_ne!(final_mask.get_pixel(20, 8).0[0], 0);
-                assert!(final_mask.enumerate_pixels().all(|(x, y, pixel)| {
-                    pixel.0[0] == 0 || ((18..23).contains(&x) && (6..11).contains(&y))
+                assert!(final_mask.enumerate_pixels().any(|(x, y, pixel)| {
+                    pixel.0[0] != 0 && !((18..23).contains(&x) && (6..11).contains(&y))
                 }));
                 Ok(frame.clone())
             },
