@@ -1775,9 +1775,9 @@ async function runR51PreflightGates(
       '--',
       '--nocapture',
     ],
+    generated: ['bun', 'run', 'check:generated'],
     default_workspace_tests: ['bun', 'cargo', 'test', '--workspace', '--tests'],
     workspace_all_targets_check: ['bun', 'cargo', 'check', '--workspace', '--all-targets'],
-    generated: ['bun', 'run', 'check:generated'],
     format: ['bun', 'run', 'format:check'],
     policy: ['bun', 'test', 'scripts/check-hanonly-production-policy.test.ts'],
     anti_fixture: [
