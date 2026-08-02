@@ -346,9 +346,10 @@ impl VisualManifestSchema {
             "visual manifest version must be 1",
         )?;
         require(
-            self.entries.len() == VISUAL_MANIFEST_ENTRY_COUNT,
-            "visual manifest must contain exactly 9 entries",
+            matches!(self.entries.len(), 4 | VISUAL_MANIFEST_ENTRY_COUNT),
+            "visual manifest must contain exactly 4 or 9 entries",
         )?;
+        let formal_phase_manifest = self.entries.len() == 4;
 
         let mut entry_ids = HashSet::new();
         let mut source_decoded_hashes = HashSet::new();
@@ -451,8 +452,12 @@ impl VisualManifestSchema {
         }
 
         require(
-            role_counts == [1, 4, 4],
-            "visual manifest roles must be exactly 1 regression, 4 calibration, and 4 holdout",
+            if formal_phase_manifest {
+                matches!(role_counts, [0, 4, 0] | [0, 0, 4])
+            } else {
+                role_counts == [1, 4, 4]
+            },
+            "visual manifest roles do not match a closed legacy or formal phase partition",
         )?;
         require(
             calibration_hashes.is_disjoint(&holdout_hashes),
@@ -466,10 +471,14 @@ impl VisualManifestSchema {
             clean_decoded_hashes.len() == self.entries.len(),
             "duplicate clean decoded rgba blake3",
         )?;
-        let regression = regression.ok_or_else(|| invalid_data("regression entry is missing"))?;
         let selected_regression_path = selected_regression_path
             .to_str()
             .ok_or_else(|| invalid_data("selected regression path is not UTF-8"))?;
+        let regression = if formal_phase_manifest {
+            &self.entries[0]
+        } else {
+            regression.ok_or_else(|| invalid_data("regression entry is missing"))?
+        };
         require(
             regression.path == selected_regression_path,
             "selected regression path mismatch",
@@ -483,7 +492,7 @@ impl VisualManifestSchema {
             "selected regression raw sha256 mismatch",
         )?;
         require(
-            has_holdout_strict_stroke,
+            formal_phase_manifest || has_holdout_strict_stroke,
             "holdout automatic_strict stroke target is missing",
         )
     }
@@ -933,8 +942,37 @@ mod tests {
         assert_error(
             fixture.load(&expected),
             MANIFEST_VALIDATION_ERROR,
-            "visual manifest roles must be exactly 1 regression, 4 calibration, and 4 holdout",
+            "visual manifest roles do not match a closed legacy or formal phase partition",
         );
+    }
+
+    #[test]
+    fn d0_visual_manifest_schema_accepts_exact_four_entry_phase_manifest() {
+        let mut fixture = Fixture::new();
+        let entries = fixture.value["entries"].as_array().unwrap()[1..=4].to_vec();
+        fixture.value["entries"] = Value::Array(entries);
+        fixture.approved_regression_decoded = fixture.value["entries"][0]["decoded_rgba_blake3"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        fixture.selected_regression_raw = fixture.value["entries"][0]["sha256"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let selected = fixture.selected_regression_path();
+        let expected = fixture.store();
+
+        fixture
+            .load_with_selected_path(&expected, &selected)
+            .unwrap();
+
+        for entry in fixture.value["entries"].as_array_mut().unwrap() {
+            entry["role"] = "holdout".into();
+        }
+        let expected = fixture.store();
+        fixture
+            .load_with_selected_path(&expected, &selected)
+            .unwrap();
     }
 
     #[test]

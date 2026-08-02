@@ -38,6 +38,7 @@ objc2-metal-performance-shaders-graph = { workspace = true, optional = true }
 objc2-foundation = { workspace = true, optional = true }
 
 [features]
+hanonly-test-evidence = []
 cuda = [
     "candle-core/cuda",
     "candle-core/cudnn",

@@ -4,7 +4,7 @@
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use image::{DynamicImage, GrayImage};
-use koharu_core::{MaskRole, Op, PageId, Scene};
+use koharu_core::{MaskRole, NodeId, Op, PageId, Scene};
 use koharu_ml::comic_text_detector::{ComicTextDetector, refine_segmentation_mask};
 use koharu_ml::types::TextRegion;
 
@@ -12,7 +12,7 @@ use crate::config::SourceTextPolicy;
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
 use crate::pipeline::engines::support::{
-    EligibleTextLine, eligible_lines_for_page, intersect_gray_masks, line_support_mask,
+    EligibleTextLine, canonical_han_mask, eligible_lines_for_page, forbidden_han_lines_for_page,
     load_source_image, text_node_to_region, text_nodes, upsert_mask_blob,
 };
 #[cfg(test)]
@@ -48,10 +48,14 @@ fn segment_regions(
     scene: &Scene,
     page: PageId,
     policy: SourceTextPolicy,
-) -> Result<(Vec<TextRegion>, Vec<EligibleTextLine>)> {
+) -> Result<(
+    Vec<TextRegion>,
+    Vec<(NodeId, EligibleTextLine)>,
+    Vec<(NodeId, EligibleTextLine)>,
+)> {
     let nodes = text_nodes(scene, page);
     if nodes.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     }
     if nodes.iter().any(|(_, _, text)| {
         text.text
@@ -66,28 +70,26 @@ fn segment_regions(
             .into_iter()
             .map(|(_, transform, text)| text_node_to_region(transform, text))
             .collect();
-        return Ok((regions, Vec::new()));
+        return Ok((regions, Vec::new(), Vec::new()));
     }
 
-    let eligible_lines = eligible_lines_for_page(scene, page)
-        .0
-        .into_iter()
-        .map(|(_, line)| line)
-        .collect::<Vec<_>>();
+    let eligible_lines = eligible_lines_for_page(scene, page).0;
     let regions = eligible_lines
         .iter()
-        .map(|line| line.region.clone())
+        .map(|(_, line)| line.region.clone())
         .collect();
-    Ok((regions, eligible_lines))
+    let protected_lines = forbidden_han_lines_for_page(scene, page);
+    Ok((regions, eligible_lines, protected_lines))
 }
 
 fn finalize_segment_mask(
     image: &DynamicImage,
     probability: &GrayImage,
     regions: &[TextRegion],
-    eligible_lines: &[EligibleTextLine],
+    eligible_lines: &[(NodeId, EligibleTextLine)],
+    protected_lines: &[(NodeId, EligibleTextLine)],
     policy: SourceTextPolicy,
-) -> GrayImage {
+) -> Result<GrayImage> {
     #[cfg(test)]
     let diagnostic_branch = if policy == SourceTextPolicy::HanOnly {
         EraseDiagnosticBranch::HanOnly
@@ -110,7 +112,9 @@ fn finalize_segment_mask(
         None,
     );
     let final_mask = if policy == SourceTextPolicy::HanOnly {
-        let allowed = line_support_mask(refined.width(), refined.height(), eligible_lines);
+        let (retained, allowed) = canonical_han_mask(&refined, eligible_lines, protected_lines)?;
+        #[cfg(not(test))]
+        let _ = allowed;
         #[cfg(test)]
         record_erase_diagnostic(
             EraseDiagnosticStage::SegmentAllowedSupport,
@@ -118,7 +122,7 @@ fn finalize_segment_mask(
             Some(&allowed),
             None,
         );
-        intersect_gray_masks(&refined, &allowed)
+        retained
     } else {
         #[cfg(test)]
         record_erase_diagnostic(
@@ -136,7 +140,7 @@ fn finalize_segment_mask(
         Some(&final_mask),
         None,
     );
-    final_mask
+    Ok(final_mask)
 }
 
 fn dispatch_segment<Inference>(
@@ -149,18 +153,19 @@ fn dispatch_segment<Inference>(
 where
     Inference: FnOnce(&DynamicImage) -> Result<GrayImage>,
 {
-    let (regions, eligible_lines) = segment_regions(scene, page, policy)?;
+    let (regions, eligible_lines, protected_lines) = segment_regions(scene, page, policy)?;
     if regions.is_empty() {
         return Ok(GrayImage::new(image.width(), image.height()));
     }
     let probability = inference(image)?;
-    Ok(finalize_segment_mask(
+    finalize_segment_mask(
         image,
         &probability,
         &regions,
         &eligible_lines,
+        &protected_lines,
         policy,
-    ))
+    )
 }
 
 inventory::submit! {
@@ -341,24 +346,28 @@ mod tests {
         )]);
         let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(32, 16, Rgb([1, 2, 3])));
         let probability = GrayImage::from_pixel(32, 16, Luma([255]));
-        let (han_regions, eligible) =
+        let (han_regions, eligible, protected) =
             segment_regions(&scene, page, SourceTextPolicy::HanOnly).unwrap();
-        let (all_regions, _) = segment_regions(&scene, page, SourceTextPolicy::AllText).unwrap();
+        let (all_regions, _, _) = segment_regions(&scene, page, SourceTextPolicy::AllText).unwrap();
 
         let inactive_han = finalize_segment_mask(
             &image,
             &probability,
             &han_regions,
             &eligible,
+            &protected,
             SourceTextPolicy::HanOnly,
-        );
+        )
+        .unwrap();
         let inactive_all = finalize_segment_mask(
             &image,
             &probability,
             &all_regions,
             &[],
+            &[],
             SourceTextPolicy::AllText,
-        );
+        )
+        .unwrap();
 
         let capture = start_erase_capture();
         let active_han = finalize_segment_mask(
@@ -366,8 +375,10 @@ mod tests {
             &probability,
             &han_regions,
             &eligible,
+            &protected,
             SourceTextPolicy::HanOnly,
-        );
+        )
+        .unwrap();
         let han_events = capture.take();
         assert_eq!(active_han.as_raw(), inactive_han.as_raw());
         assert_eq!(
@@ -388,10 +399,6 @@ mod tests {
                 .all(|event| event.branch == EraseDiagnosticBranch::HanOnly)
         );
         assert_eq!(han_events[0].mask.as_ref().unwrap().nonzero_pixels, 512);
-        assert!(
-            han_events[1].mask.as_ref().unwrap().nonzero_pixels
-                > han_events[3].mask.as_ref().unwrap().nonzero_pixels
-        );
         assert_eq!(
             han_events.iter().map(signature).collect::<Vec<_>>(),
             [
@@ -427,10 +434,13 @@ mod tests {
             &probability,
             &all_regions,
             &[],
+            &[],
             SourceTextPolicy::AllText,
-        );
+        )
+        .unwrap();
         let all_events = capture.take();
         assert_eq!(active_all.as_raw(), inactive_all.as_raw());
+        assert_ne!(active_han.as_raw(), active_all.as_raw());
         assert_eq!(all_events.len(), 4);
         assert!(
             all_events

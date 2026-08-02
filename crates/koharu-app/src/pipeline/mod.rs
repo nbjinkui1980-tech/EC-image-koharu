@@ -762,6 +762,9 @@ mod d0_revision_46_contract;
 ))]
 mod d0_held_input;
 
+#[cfg(all(test, feature = "hanonly-test-evidence"))]
+mod d0_r51_holdout_bundle;
+
 #[cfg(all(
     test,
     target_pointer_width = "64",
@@ -820,7 +823,9 @@ pub(crate) mod tests {
         BlobRef, FontSource, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId,
         NodeKind, NodePatch, Page, Scene, TextData, TextDataPatch, TextStyle, Transform,
     };
-    use koharu_ml::pp_ocr_v5::PpOcrWordBox;
+    use koharu_ml::pp_ocr_v5::{
+        PpOcrDetectorOccurrence, PpOcrLineObservation, PpOcrV5Observation, PpOcrWordBox,
+    };
     use koharu_runtime::{ComputePolicy, RuntimeManager, default_app_data_root};
     use serde::ser::SerializeStruct;
     use serde::{Deserialize, Serialize};
@@ -1147,6 +1152,54 @@ pub(crate) mod tests {
         vl_texts: Vec<String>,
     }
 
+    fn pp_observation(mut words: Vec<PpOcrWordBox>) -> PpOcrV5Observation {
+        let line_indices = words
+            .iter()
+            .map(|word| word.line_index)
+            .collect::<std::collections::BTreeSet<_>>();
+        for word in &mut words {
+            word.line_index = line_indices
+                .iter()
+                .position(|line_index| *line_index == word.line_index)
+                .expect("word line index is present");
+        }
+        let detectors = words
+            .iter()
+            .enumerate()
+            .map(|(occurrence_index, word)| PpOcrDetectorOccurrence {
+                occurrence_index,
+                corners: [
+                    [word.bbox[0], word.bbox[1]],
+                    [word.bbox[2], word.bbox[1]],
+                    [word.bbox[2], word.bbox[3]],
+                    [word.bbox[0], word.bbox[3]],
+                ],
+            })
+            .collect();
+        let mut by_line = BTreeMap::<usize, Vec<usize>>::new();
+        for (index, word) in words.iter().enumerate() {
+            by_line.entry(word.line_index).or_default().push(index);
+        }
+        let lines = by_line
+            .into_values()
+            .map(|detector_indices| {
+                let recognition = detector_indices
+                    .iter()
+                    .map(|index| words[*index].text.as_str())
+                    .collect::<String>();
+                PpOcrLineObservation {
+                    detector_indices,
+                    recognition: Some(recognition),
+                }
+            })
+            .collect();
+        PpOcrV5Observation {
+            detectors,
+            lines,
+            word_boxes: words,
+        }
+    }
+
     #[async_trait]
     impl Engine for CountingEngine {
         async fn run(&self, ctx: EngineCtx<'_>) -> anyhow::Result<Vec<Op>> {
@@ -1209,7 +1262,9 @@ pub(crate) mod tests {
                 ctx.page,
                 |node_id, _| {
                     self.pp_calls.fetch_add(1, Ordering::Relaxed);
-                    Ok(self.word_boxes.get(&node_id).cloned().unwrap_or_default())
+                    Ok(pp_observation(
+                        self.word_boxes.get(&node_id).cloned().unwrap_or_default(),
+                    ))
                 },
                 |crops| {
                     self.vl_calls.fetch_add(crops.len(), Ordering::Relaxed);
@@ -2011,7 +2066,7 @@ pub(crate) mod tests {
 
         let scene = fixture.session.scene_snapshot();
         assert!(visible_texts(&scene, fixture.page).is_empty());
-        assert_eq!(pp_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(pp_calls.load(Ordering::Relaxed), 4);
         assert_eq!(vl_calls.load(Ordering::Relaxed), 0);
         assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
         assert_eq!(
@@ -2180,8 +2235,8 @@ pub(crate) mod tests {
 
         let scene = fixture.session.scene_snapshot();
         assert!(visible_texts(&scene, fixture.page).is_empty());
-        assert_eq!(pp_calls.load(Ordering::Relaxed), 1);
-        assert_eq!(vl_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(pp_calls.load(Ordering::Relaxed), 4);
+        assert_eq!(vl_calls.load(Ordering::Relaxed), 4);
         assert_eq!(renderer_calls.load(Ordering::Relaxed), 0);
         Ok(())
     }
@@ -3223,7 +3278,7 @@ pub(crate) mod tests {
                     item.crop_bounds = Some(bounds);
                     item.crop_hash = Some(crop_rgba_hash);
                 }
-                SourceGateDiagnosticEvent::PpSummary { node_id, words } => {
+                SourceGateDiagnosticEvent::PpSummary { node_id, words, .. } => {
                     builders.entry(node_id).or_default().pp_words = Some(
                         words
                             .into_iter()
@@ -3242,6 +3297,7 @@ pub(crate) mod tests {
                     contains_han,
                     character_count,
                     line_count,
+                    ..
                 } => {
                     builders.entry(node_id).or_default().vl_summary = Some(MatrixVlSummary {
                         contains_han,
@@ -3249,6 +3305,7 @@ pub(crate) mod tests {
                         line_count,
                     });
                 }
+                SourceGateDiagnosticEvent::SelectionGeometry { .. } => {}
                 SourceGateDiagnosticEvent::Decision { node_id, decision } => {
                     builders.entry(node_id).or_default().decision = Some(decision);
                 }
@@ -4241,7 +4298,13 @@ pub(crate) mod tests {
             Some("C2") => SourceGateCropPolicy::C2,
             Some("C4") => SourceGateCropPolicy::C4,
             Some("Q2") => SourceGateCropPolicy::Q2,
-            Some(_) => anyhow::bail!("SOURCE_GATE_MATRIX_POLICY must be C0, C1, C2, C4, or Q2"),
+            Some("S25L4") => SourceGateCropPolicy::S25L4,
+            Some("S25L5") => SourceGateCropPolicy::S25L5,
+            Some("S25L6") => SourceGateCropPolicy::S25L6,
+            Some("S25L7") => SourceGateCropPolicy::S25L7,
+            Some(_) => anyhow::bail!(
+                "SOURCE_GATE_MATRIX_POLICY must be C0, C1, C2, C4, Q2, S25L4, S25L5, S25L6, or S25L7"
+            ),
             None => SourceGateCropPolicy::production(),
         };
 
@@ -4286,13 +4349,24 @@ pub(crate) mod tests {
         let run_policy_probes =
             std::env::var("SOURCE_GATE_MATRIX_RUN_POLICY_PROBES").as_deref() == Ok("1");
         if run_policy_probes {
-            for policy in [
-                SourceGateCropPolicy::C0,
-                SourceGateCropPolicy::C1,
-                SourceGateCropPolicy::C2,
-                SourceGateCropPolicy::C4,
-                SourceGateCropPolicy::Q2,
-            ] {
+            let policies =
+                if std::env::var("SOURCE_GATE_MATRIX_RUN_RATIO_PROBES").as_deref() == Ok("1") {
+                    vec![
+                        SourceGateCropPolicy::S25L4,
+                        SourceGateCropPolicy::S25L5,
+                        SourceGateCropPolicy::S25L6,
+                        SourceGateCropPolicy::S25L7,
+                    ]
+                } else {
+                    vec![
+                        SourceGateCropPolicy::C0,
+                        SourceGateCropPolicy::C1,
+                        SourceGateCropPolicy::C2,
+                        SourceGateCropPolicy::C4,
+                        SourceGateCropPolicy::Q2,
+                    ]
+                };
+            for policy in policies {
                 let probe = if policy == primary_policy {
                     reference_run.clone()
                 } else {

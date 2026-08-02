@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, VecDeque};
+
 use anyhow::{Context, Result, ensure};
 use image::DynamicImage;
 use koharu_runtime::RuntimeManager;
@@ -41,6 +43,35 @@ pub struct PpOcrWordBox {
     pub confidence: f32,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PpOcrDetectorOccurrence {
+    pub occurrence_index: usize,
+    /// Crop-local source-space corners in the detector's original order.
+    pub corners: [[f32; 2]; 4],
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PpOcrLineObservation {
+    pub detector_indices: Vec<usize>,
+    pub recognition: Option<String>,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct PpOcrV5Observation {
+    pub detectors: Vec<PpOcrDetectorOccurrence>,
+    pub lines: Vec<PpOcrLineObservation>,
+    pub word_boxes: Vec<PpOcrWordBox>,
+}
+
+impl PpOcrV5Observation {
+    pub fn word_boxes(&self) -> &[PpOcrWordBox] {
+        &self.word_boxes
+    }
+}
+
 pub struct PpOcrV5 {
     engine: OcrEngine,
 }
@@ -55,7 +86,64 @@ fn word_box_inference_scale(width: u32, height: u32) -> u32 {
 
 fn word_box_source_bbox(bbox: [f32; 4], scale: u32) -> [f32; 4] {
     let scale = scale.max(1) as f32;
-    bbox.map(|coordinate| coordinate / scale)
+    [
+        (bbox[0] / scale).floor(),
+        (bbox[1] / scale).floor(),
+        (bbox[2] / scale).ceil(),
+        (bbox[3] / scale).ceil(),
+    ]
+}
+
+fn source_corners(corners: [[f32; 2]; 4], scale: u32) -> [[f32; 2]; 4] {
+    let scale = scale.max(1) as f32;
+    corners.map(|[x, y]| [x / scale, y / scale])
+}
+
+fn corner_bits(corners: [[f32; 2]; 4]) -> [u32; 8] {
+    let mut bits = [0; 8];
+    for (index, [x, y]) in corners.into_iter().enumerate() {
+        bits[index * 2] = x.to_bits();
+        bits[index * 2 + 1] = y.to_bits();
+    }
+    bits
+}
+
+fn canonicalize_detection_topology(
+    detector_corners: Vec<[[f32; 2]; 4]>,
+    line_corners: Vec<Vec<[[f32; 2]; 4]>>,
+) -> Result<(Vec<PpOcrDetectorOccurrence>, Vec<Vec<usize>>)> {
+    let detectors = detector_corners
+        .iter()
+        .enumerate()
+        .map(|(occurrence_index, corners)| PpOcrDetectorOccurrence {
+            occurrence_index,
+            corners: *corners,
+        })
+        .collect::<Vec<_>>();
+    let mut available = BTreeMap::<[u32; 8], VecDeque<usize>>::new();
+    for detector in &detectors {
+        available
+            .entry(corner_bits(detector.corners))
+            .or_default()
+            .push_back(detector.occurrence_index);
+    }
+    let mut canonical_lines = Vec::with_capacity(line_corners.len());
+    for line in line_corners {
+        let mut detector_indices = Vec::with_capacity(line.len());
+        for corners in line {
+            let occurrence_index = available
+                .get_mut(&corner_bits(corners))
+                .and_then(VecDeque::pop_front)
+                .context("canonical PP-OCRv5 line contains an unknown detector occurrence")?;
+            detector_indices.push(occurrence_index);
+        }
+        canonical_lines.push(detector_indices);
+    }
+    ensure!(
+        available.values().all(VecDeque::is_empty),
+        "PP-OCRv5 canonical lines omit detector occurrences"
+    );
+    Ok((detectors, canonical_lines))
 }
 
 impl PpOcrV5 {
@@ -91,9 +179,18 @@ impl PpOcrV5 {
     }
 
     pub fn word_boxes(&self, image: &DynamicImage) -> Result<Vec<PpOcrWordBox>> {
+        Ok(self.observe(image)?.word_boxes)
+    }
+
+    #[doc(hidden)]
+    pub fn observe(&self, image: &DynamicImage) -> Result<PpOcrV5Observation> {
         let (width, height) = (image.width(), image.height());
         if width == 0 || height == 0 {
-            return Ok(Vec::new());
+            return Ok(PpOcrV5Observation {
+                detectors: Vec::new(),
+                lines: Vec::new(),
+                word_boxes: Vec::new(),
+            });
         }
         let scale = word_box_inference_scale(width, height);
         let resized = (scale > 1).then(|| {
@@ -110,43 +207,84 @@ impl PpOcrV5 {
         let input = self.engine.prepare_input(source)?;
         let detected = self.engine.detect_words(&input)?;
         if detected.is_empty() {
-            return Ok(Vec::new());
+            return Ok(PpOcrV5Observation {
+                detectors: Vec::new(),
+                lines: Vec::new(),
+                word_boxes: Vec::new(),
+            });
         }
         let lines = self.engine.find_text_lines(&input, &detected);
         let recognized = self.engine.recognize_text(&input, &lines)?;
+        ensure!(
+            recognized.len() == lines.len(),
+            "PP-OCRv5 recognition count differs from canonical line count"
+        );
+
+        let detector_corners = detected
+            .iter()
+            .map(|detector| {
+                source_corners(detector.corners().map(|point| [point.x, point.y]), scale)
+            })
+            .collect::<Vec<_>>();
+        let line_corners = lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|detector| {
+                        source_corners(detector.corners().map(|point| [point.x, point.y]), scale)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let (detectors, canonical_lines) =
+            canonicalize_detection_topology(detector_corners, line_corners)?;
+
         let mut words = Vec::new();
-        for (line_index, line) in recognized.into_iter().enumerate() {
-            let Some(line) = line else { continue };
-            for segment in line.segments() {
-                let bbox = segment.bounding_rect();
-                let bbox = word_box_source_bbox(
-                    [
-                        bbox.left() as f32,
-                        bbox.top() as f32,
-                        bbox.right() as f32,
-                        bbox.bottom() as f32,
-                    ],
-                    scale,
-                );
-                let confidence = segment.confidence();
-                if bbox[0] < bbox[2]
-                    && bbox[1] < bbox[3]
-                    && bbox[0] >= 0.0
-                    && bbox[1] >= 0.0
-                    && bbox[2] <= width as f32
-                    && bbox[3] <= height as f32
-                    && confidence.is_finite()
-                {
-                    words.push(PpOcrWordBox {
-                        line_index,
-                        text: segment.to_string(),
-                        bbox,
-                        confidence,
-                    });
+        let mut observed_lines = Vec::with_capacity(lines.len());
+        for (line_index, (detector_indices, recognition)) in
+            canonical_lines.into_iter().zip(recognized).enumerate()
+        {
+            let recognition_text = recognition.as_ref().map(ToString::to_string);
+            if let Some(line) = recognition {
+                for segment in line.segments() {
+                    let bbox = segment.bounding_rect();
+                    let bbox = word_box_source_bbox(
+                        [
+                            bbox.left() as f32,
+                            bbox.top() as f32,
+                            bbox.right() as f32,
+                            bbox.bottom() as f32,
+                        ],
+                        scale,
+                    );
+                    let confidence = segment.confidence();
+                    if bbox[0] < bbox[2]
+                        && bbox[1] < bbox[3]
+                        && bbox[0] >= 0.0
+                        && bbox[1] >= 0.0
+                        && bbox[2] <= width as f32
+                        && bbox[3] <= height as f32
+                        && confidence.is_finite()
+                    {
+                        words.push(PpOcrWordBox {
+                            line_index,
+                            text: segment.to_string(),
+                            bbox,
+                            confidence,
+                        });
+                    }
                 }
             }
+            observed_lines.push(PpOcrLineObservation {
+                detector_indices,
+                recognition: recognition_text,
+            });
         }
-        Ok(words)
+        Ok(PpOcrV5Observation {
+            detectors,
+            lines: observed_lines,
+            word_boxes: words,
+        })
     }
 }
 
@@ -183,7 +321,14 @@ fn parse_character_dict(config: &str) -> Result<Vec<char>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_character_dict, word_box_inference_scale, word_box_source_bbox};
+    use super::{
+        canonicalize_detection_topology, parse_character_dict, word_box_inference_scale,
+        word_box_source_bbox,
+    };
+
+    fn rect(left: f32, top: f32, right: f32, bottom: f32) -> [[f32; 2]; 4] {
+        [[left, top], [right, top], [right, bottom], [left, bottom]]
+    }
 
     #[test]
     fn parses_ppocr_dictionary_without_shifting_multiscalar_labels() {
@@ -206,7 +351,38 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-b1-red"]
+    fn observation_retains_raw_detector_order_and_duplicate_occurrences() {
+        let first = rect(0.0, 0.0, 8.0, 10.0);
+        let second = rect(12.0, 0.0, 20.0, 10.0);
+        let lines = vec![vec![first, first], vec![second]];
+
+        let forward =
+            canonicalize_detection_topology(vec![first, second, first], lines.clone()).unwrap();
+        let reversed = canonicalize_detection_topology(vec![second, first, first], lines).unwrap();
+
+        assert_eq!(
+            forward
+                .0
+                .iter()
+                .map(|detector| detector.corners)
+                .collect::<Vec<_>>(),
+            vec![first, second, first]
+        );
+        assert_eq!(
+            reversed
+                .0
+                .iter()
+                .map(|detector| detector.corners)
+                .collect::<Vec<_>>(),
+            vec![second, first, first]
+        );
+        assert_eq!(forward.0.len(), 3);
+        assert_eq!(forward.1, vec![vec![0, 2], vec![1]]);
+        assert_eq!(reversed.1, vec![vec![1, 2], vec![0]]);
+        assert!(canonicalize_detection_topology(vec![first, second], vec![vec![first]]).is_err());
+    }
+
+    #[test]
     fn hanonly_pre_b1_red_t2_crop_local_ppocr_contract() {
         const CROP_LOCAL_MIN_INFERENCE_HEIGHT: u32 = 320;
         const CROP_LOCAL_INFERENCE_PIXEL_BUDGET: u64 = 1024 * 1024;

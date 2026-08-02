@@ -2,6 +2,8 @@ use std::ffi::CString;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "hanonly-test-evidence")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -34,6 +36,8 @@ const MAX_UBATCH: u32 = 512;
 const OCR_REPEAT_MAX_UNIT_CHARS: usize = 12;
 const OCR_REPEAT_MIN_REPETITIONS: usize = 4;
 const OCR_REPEAT_MIN_TOTAL_CHARS: usize = 12;
+#[cfg(feature = "hanonly-test-evidence")]
+static INSTANCE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 koharu_runtime::declare_hf_model_package!(
     id: "model:paddleocr-vl-1.6:weights",
@@ -127,6 +131,41 @@ enum PromptContent {
     Text { text: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DevicePolicy {
+    requested_cpu: bool,
+    model_n_gpu_layers: u32,
+    mtmd_use_gpu: bool,
+    context_offload_kqv: bool,
+    context_op_offload: bool,
+}
+
+impl DevicePolicy {
+    fn new(requested_cpu: bool, supports_gpu_offload: bool) -> Self {
+        let use_gpu = !requested_cpu && supports_gpu_offload;
+        Self {
+            requested_cpu,
+            model_n_gpu_layers: if use_gpu { DEFAULT_GPU_LAYERS } else { 0 },
+            mtmd_use_gpu: use_gpu,
+            context_offload_kqv: use_gpu,
+            context_op_offload: use_gpu,
+        }
+    }
+}
+
+#[cfg(feature = "hanonly-test-evidence")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaddleOcrVlDeviceEvidence {
+    pub instance_id: String,
+    pub model_path: PathBuf,
+    pub mmproj_path: PathBuf,
+    pub requested_cpu: bool,
+    pub model_n_gpu_layers: u32,
+    pub mtmd_use_gpu: bool,
+    pub context_offload_kqv: bool,
+    pub context_op_offload: bool,
+}
+
 pub struct PaddleOcrVl {
     backend: Arc<LlamaBackend>,
     model: LlamaModel,
@@ -135,6 +174,13 @@ pub struct PaddleOcrVl {
     eos_token_text: String,
     mtmd: MtmdContext,
     eos_token: LlamaToken,
+    device_policy: DevicePolicy,
+    #[cfg(feature = "hanonly-test-evidence")]
+    instance_id: String,
+    #[cfg(feature = "hanonly-test-evidence")]
+    model_path: PathBuf,
+    #[cfg(feature = "hanonly-test-evidence")]
+    mmproj_path: PathBuf,
 }
 
 impl PaddleOcrVl {
@@ -169,7 +215,14 @@ impl PaddleOcrVl {
         crate::sys::initialize(runtime)
             .context("failed to initialize llama.cpp runtime bindings")?;
 
-        let model_params = model_params(cpu, backend.as_ref());
+        #[cfg(feature = "hanonly-test-evidence")]
+        let instance_id = next_instance_id();
+        #[cfg(feature = "hanonly-test-evidence")]
+        let model_path = files.model.clone();
+        #[cfg(feature = "hanonly-test-evidence")]
+        let mmproj_path = files.mmproj.clone();
+        let device_policy = DevicePolicy::new(cpu, backend.supports_gpu_offload());
+        let model_params = model_params(device_policy);
         let model = LlamaModel::load_from_file(backend.as_ref(), &files.model, &model_params)
             .with_context(|| format!("unable to load model from `{}`", files.model.display()))?;
         let eos_token = model.token_eos();
@@ -179,15 +232,15 @@ impl PaddleOcrVl {
             .context("missing embedded PaddleOCR-VL chat template")?;
         let bos_token = token_text(&model, model.token_bos());
         let eos_token_text = token_text(&model, eos_token);
-        let mmproj_path = files
+        let mmproj_path_str = files
             .mmproj
             .to_str()
             .with_context(|| format!("invalid mmproj path `{}`", files.mmproj.display()))?;
         let mtmd = MtmdContext::init_from_file(
-            mmproj_path,
+            mmproj_path_str,
             &model,
             &MtmdContextParams {
-                use_gpu: !cpu && backend.as_ref().supports_gpu_offload(),
+                use_gpu: device_policy.mtmd_use_gpu,
                 print_timings: false,
                 n_threads: koharu_runtime::host_parallelism()
                     .try_into()
@@ -217,7 +270,28 @@ impl PaddleOcrVl {
             eos_token_text,
             mtmd,
             eos_token,
+            device_policy,
+            #[cfg(feature = "hanonly-test-evidence")]
+            instance_id,
+            #[cfg(feature = "hanonly-test-evidence")]
+            model_path,
+            #[cfg(feature = "hanonly-test-evidence")]
+            mmproj_path,
         })
+    }
+
+    #[cfg(feature = "hanonly-test-evidence")]
+    pub fn device_evidence(&self) -> PaddleOcrVlDeviceEvidence {
+        PaddleOcrVlDeviceEvidence {
+            instance_id: self.instance_id.clone(),
+            model_path: self.model_path.clone(),
+            mmproj_path: self.mmproj_path.clone(),
+            requested_cpu: self.device_policy.requested_cpu,
+            model_n_gpu_layers: self.device_policy.model_n_gpu_layers,
+            mtmd_use_gpu: self.device_policy.mtmd_use_gpu,
+            context_offload_kqv: self.device_policy.context_offload_kqv,
+            context_op_offload: self.device_policy.context_op_offload,
+        }
     }
 
     pub fn inference(
@@ -279,6 +353,7 @@ impl PaddleOcrVl {
         let num_image_tokens = image_chunk_tokens(&chunks);
         let ctx_params = context_params(
             &self.mtmd,
+            self.device_policy,
             prompt_positions,
             prompt_total_tokens,
             batch_tokens,
@@ -452,6 +527,14 @@ impl PaddleOcrVl {
     }
 }
 
+#[cfg(feature = "hanonly-test-evidence")]
+fn next_instance_id() -> String {
+    let sequence = INSTANCE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let process_identity =
+        u64::from(std::process::id()).rotate_left(32) ^ (&INSTANCE_SEQUENCE as *const _ as u64);
+    format!("{process_identity:016x}{sequence:016x}")
+}
+
 pub async fn prefetch(runtime: &RuntimeManager) -> Result<()> {
     download_model_files(runtime).await?;
     Ok(())
@@ -521,13 +604,9 @@ fn resolve_local_model_files(dir: &Path) -> Result<ModelFiles> {
     })
 }
 
-fn model_params(cpu: bool, backend: &LlamaBackend) -> LlamaModelParams {
-    if !cpu && backend.supports_gpu_offload() {
-        LlamaModelParams::default().with_n_gpu_layers(DEFAULT_GPU_LAYERS)
-    } else {
-        // Issue #309: default n_gpu_layers is -1 (auto), which may still offload to GPU.
-        LlamaModelParams::default().with_n_gpu_layers(0)
-    }
+fn model_params(policy: DevicePolicy) -> LlamaModelParams {
+    // Issue #309: default n_gpu_layers is -1 (auto), which may still offload to GPU.
+    LlamaModelParams::default().with_n_gpu_layers(policy.model_n_gpu_layers)
 }
 
 fn validate_generate_options(options: &PaddleOcrVlGenerateOptions) -> Result<()> {
@@ -556,6 +635,7 @@ fn build_sampler(options: &PaddleOcrVlGenerateOptions) -> LlamaSampler {
 
 fn context_params(
     mtmd: &MtmdContext,
+    policy: DevicePolicy,
     prompt_positions: usize,
     prompt_total_tokens: usize,
     batch_tokens: usize,
@@ -582,7 +662,9 @@ fn context_params(
     let mut params = LlamaContextParams::default()
         .with_n_ctx(Some(n_ctx))
         .with_n_batch(n_batch)
-        .with_n_ubatch(n_ubatch);
+        .with_n_ubatch(n_ubatch)
+        .with_offload_kqv(policy.context_offload_kqv)
+        .with_op_offload(policy.context_op_offload);
     if mtmd.decode_use_non_causal() {
         params = params.with_attention_type(LlamaAttentionType::NonCausal);
     }
@@ -705,11 +787,55 @@ fn repeated_ocr_suffix_start(text: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "hanonly-test-evidence")]
+    use super::next_instance_id;
     use super::{
-        DEFAULT_MAX_NEW_TOKENS, DEFAULT_REPETITION_PENALTY, PADDLEOCR_IMAGE_MARKER,
-        PaddleOcrVlGenerateOptions, PaddleOcrVlTask, PromptContent, build_user_message_content,
-        render_chat_prompt, repeated_ocr_suffix_start, validate_generate_options,
+        DEFAULT_GPU_LAYERS, DEFAULT_MAX_NEW_TOKENS, DEFAULT_REPETITION_PENALTY, DevicePolicy,
+        PADDLEOCR_IMAGE_MARKER, PaddleOcrVlGenerateOptions, PaddleOcrVlTask, PromptContent,
+        build_user_message_content, render_chat_prompt, repeated_ocr_suffix_start,
+        validate_generate_options,
     };
+
+    #[test]
+    fn cpu_device_policy_disables_all_gpu_offload() {
+        let policy = DevicePolicy::new(true, true);
+
+        assert_eq!(policy.model_n_gpu_layers, 0);
+        assert!(!policy.mtmd_use_gpu);
+        assert!(!policy.context_offload_kqv);
+        assert!(!policy.context_op_offload);
+    }
+
+    #[test]
+    fn gpu_device_policy_enables_all_supported_gpu_offload() {
+        let policy = DevicePolicy::new(false, true);
+
+        assert_eq!(policy.model_n_gpu_layers, DEFAULT_GPU_LAYERS);
+        assert!(policy.mtmd_use_gpu);
+        assert!(policy.context_offload_kqv);
+        assert!(policy.context_op_offload);
+    }
+
+    #[cfg(feature = "hanonly-test-evidence")]
+    #[test]
+    fn instance_ids_are_non_empty_lowercase_hex_and_unique() {
+        let first = next_instance_id();
+        let second = next_instance_id();
+
+        assert_eq!(first.len(), 32);
+        assert_eq!(second.len(), 32);
+        assert!(
+            first
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+        assert!(
+            second
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+        assert_ne!(first, second);
+    }
 
     #[test]
     fn user_message_places_image_before_task() {
