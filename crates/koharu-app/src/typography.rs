@@ -18,11 +18,306 @@ use crate::config::AppConfig;
 use crate::config::SourceTextPolicy;
 use crate::pipeline::{eligible_lines_for_page, support::text_nodes};
 
+#[cfg(test)]
+use std::{
+    sync::{Mutex, OnceLock},
+    thread::ThreadId,
+};
+
 const PRODUCTION_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_IMAGE_DIMENSION: u32 = 1536;
 const MAX_FONT_SIZE_PX: f32 = 300.0;
 const MAX_STROKE_WIDTH_PX: f32 = 24.0;
 const MAX_FONT_CANDIDATES: usize = 64;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TypographyDiagnosticOutcome {
+    SkippedNoTargets,
+    TimedOut,
+    SenderFailed,
+    ResponseRejected,
+    Accepted,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TypographyFieldOutcome {
+    Applied,
+    ManualOverride,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TypographyAlignDiagnostic {
+    Left,
+    Center,
+    Right,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TypographyEffectDiagnostic {
+    pub(crate) italic: bool,
+    pub(crate) bold: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TypographyTargetDiagnostic {
+    pub(crate) node_id: NodeId,
+    pub(crate) preserve_lines: bool,
+    pub(crate) safe_region_count: usize,
+    pub(crate) planner_line_count: usize,
+    pub(crate) translation_exactly_preserved: bool,
+    pub(crate) line_outcome: TypographyFieldOutcome,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) current_font_size: Option<f32>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) manual_font_size: Option<f32>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) proposed_font_size: Option<f32>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) resolved_font_size: Option<f32>,
+    pub(crate) font_size_outcome: TypographyFieldOutcome,
+    pub(crate) font_family_outcome: TypographyFieldOutcome,
+    pub(crate) resolved_family_in_allowlist: bool,
+    pub(crate) resolved_family_changed_current_first: bool,
+    pub(crate) current_fill_rgba: [u8; 4],
+    pub(crate) proposed_fill_rgba: [u8; 4],
+    pub(crate) resolved_fill_rgba: [u8; 4],
+    pub(crate) color_outcome: TypographyFieldOutcome,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) current_stroke_enabled: Option<bool>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) current_stroke_rgba: Option<[u8; 4]>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) current_stroke_width: Option<f32>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) proposed_stroke_enabled: Option<bool>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) proposed_stroke_rgba: Option<[u8; 4]>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) proposed_stroke_width: Option<f32>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) resolved_stroke_enabled: Option<bool>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) resolved_stroke_rgba: Option<[u8; 4]>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) resolved_stroke_width: Option<f32>,
+    pub(crate) stroke_outcome: TypographyFieldOutcome,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) proposed_effect: Option<TypographyEffectDiagnostic>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) resolved_effect: Option<TypographyEffectDiagnostic>,
+    pub(crate) effect_outcome: TypographyFieldOutcome,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) proposed_align: Option<TypographyAlignDiagnostic>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) resolved_align: Option<TypographyAlignDiagnostic>,
+    pub(crate) align_outcome: TypographyFieldOutcome,
+    pub(crate) typography_plan_verified: bool,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TypographyDiagnosticEvent {
+    pub(crate) outcome: TypographyDiagnosticOutcome,
+    pub(crate) target_count: usize,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) accepted_op_count: Option<usize>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub(crate) target_field_outcomes: Option<Vec<TypographyTargetDiagnostic>>,
+}
+
+#[cfg(test)]
+fn deserialize_required_option<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
+
+#[cfg(test)]
+type TypographyDiagnosticEvents = Arc<Mutex<Vec<TypographyDiagnosticEvent>>>;
+
+#[cfg(test)]
+#[derive(Clone)]
+struct TypographyDiagnosticSinkToken {
+    events: TypographyDiagnosticEvents,
+}
+
+#[cfg(test)]
+struct ActiveTypographyDiagnosticSink {
+    owner: ThreadId,
+    events: TypographyDiagnosticEvents,
+}
+
+#[cfg(test)]
+static TYPOGRAPHY_DIAGNOSTIC_SINK: OnceLock<Mutex<Option<ActiveTypographyDiagnosticSink>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TypographyDiagnosticCaptureActive;
+
+#[cfg(test)]
+pub(crate) struct TypographyDiagnosticCapture {
+    owner: ThreadId,
+    events: TypographyDiagnosticEvents,
+}
+
+#[cfg(test)]
+impl TypographyDiagnosticCapture {
+    pub(crate) fn start() -> std::result::Result<Self, TypographyDiagnosticCaptureActive> {
+        let owner = std::thread::current().id();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut active = TYPOGRAPHY_DIAGNOSTIC_SINK
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active.is_some() {
+            return Err(TypographyDiagnosticCaptureActive);
+        }
+        *active = Some(ActiveTypographyDiagnosticSink {
+            owner,
+            events: events.clone(),
+        });
+        Ok(Self { owner, events })
+    }
+
+    pub(crate) fn take(&self) -> Vec<TypographyDiagnosticEvent> {
+        std::mem::take(
+            &mut *self
+                .events
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
+#[cfg(test)]
+impl Drop for TypographyDiagnosticCapture {
+    fn drop(&mut self) {
+        let mut active = TYPOGRAPHY_DIAGNOSTIC_SINK
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active
+            .as_ref()
+            .is_some_and(|sink| sink.owner == self.owner && Arc::ptr_eq(&sink.events, &self.events))
+        {
+            *active = None;
+        }
+    }
+}
+
+#[cfg(test)]
+fn current_typography_diagnostic_sink() -> Option<TypographyDiagnosticSinkToken> {
+    let owner = std::thread::current().id();
+    TYPOGRAPHY_DIAGNOSTIC_SINK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|sink| sink.owner == owner)
+        .map(|sink| TypographyDiagnosticSinkToken {
+            events: sink.events.clone(),
+        })
+}
+
+#[cfg(test)]
+fn record_typography_diagnostic_with(
+    sink: Option<&TypographyDiagnosticSinkToken>,
+    event: TypographyDiagnosticEvent,
+) {
+    if let Some(sink) = sink {
+        sink.events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+    }
+}
+
+#[cfg(test)]
+fn record_typography_outcome_with(
+    sink: Option<&TypographyDiagnosticSinkToken>,
+    outcome: TypographyDiagnosticOutcome,
+    target_count: usize,
+) {
+    record_typography_diagnostic_with(
+        sink,
+        TypographyDiagnosticEvent {
+            outcome,
+            target_count,
+            accepted_op_count: None,
+            target_field_outcomes: None,
+        },
+    );
+}
+
+#[cfg(test)]
+fn record_typography_outcome(outcome: TypographyDiagnosticOutcome, target_count: usize) {
+    let sink = current_typography_diagnostic_sink();
+    record_typography_outcome_with(sink.as_ref(), outcome, target_count);
+}
+
+#[cfg(test)]
+struct TypographyResponseDiagnosticGuard {
+    target_count: usize,
+    sink: Option<TypographyDiagnosticSinkToken>,
+    accepted: bool,
+}
+
+#[cfg(test)]
+impl TypographyResponseDiagnosticGuard {
+    fn new(target_count: usize, sink: Option<&TypographyDiagnosticSinkToken>) -> Self {
+        Self {
+            target_count,
+            sink: sink.cloned(),
+            accepted: false,
+        }
+    }
+
+    fn accept(
+        &mut self,
+        accepted_op_count: usize,
+        target_field_outcomes: Vec<TypographyTargetDiagnostic>,
+    ) {
+        record_typography_diagnostic_with(
+            self.sink.as_ref(),
+            TypographyDiagnosticEvent {
+                outcome: TypographyDiagnosticOutcome::Accepted,
+                target_count: self.target_count,
+                accepted_op_count: Some(accepted_op_count),
+                target_field_outcomes: Some(target_field_outcomes),
+            },
+        );
+        self.accepted = true;
+    }
+}
+
+#[cfg(test)]
+impl Drop for TypographyResponseDiagnosticGuard {
+    fn drop(&mut self) {
+        if !self.accepted {
+            record_typography_outcome_with(
+                self.sink.as_ref(),
+                TypographyDiagnosticOutcome::ResponseRejected,
+                self.target_count,
+            );
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -151,6 +446,8 @@ impl TypographyPlanner {
     /// without rebuilding the independently loaded translator.
     pub async fn plan_page(&self, request: &TypographyPageRequest) -> Result<Vec<Op>> {
         if request.targets.is_empty() {
+            #[cfg(test)]
+            record_typography_outcome(TypographyDiagnosticOutcome::SkippedNoTargets, 0);
             return Ok(Vec::new());
         }
         #[cfg(test)]
@@ -250,12 +547,17 @@ impl TypographyPlanner {
         SendFuture: Future<Output = Result<String>>,
     {
         if request.targets.is_empty() {
+            #[cfg(test)]
+            record_typography_outcome(TypographyDiagnosticOutcome::SkippedNoTargets, 0);
             return Ok(Vec::new());
         }
+        #[cfg(test)]
+        let diagnostic_sink = current_typography_diagnostic_sink();
         let payload = serde_json::to_string(request)?;
         let prompt = format!(
             "Return only this strict JSON shape with exactly one result per input node and no extra fields: {{\"nodes\":[{{\"nodeId\":\"uuid\",\"lines\":[\"text\"],\"style\":{{\"fontFamily\":\"allowed PostScript name\",\"fontSize\":null,\"color\":[0,0,0,255],\"stroke\":null,\"effect\":null,\"textAlign\":null}}}}]}}. For targets with preserveLines=true, lines must exactly equal the explicit input lines and fontSize must be null. Otherwise preserve every character and whitespace; a boundary between lines may only insert a line break or replace one existing ASCII space/newline. Input: {payload}"
         );
+        #[cfg(not(test))]
         let response =
             tokio::time::timeout(timeout, sender(prompt, request.image_data_url.clone()))
                 .await
@@ -265,7 +567,40 @@ impl TypographyPlanner {
                         timeout.as_secs()
                     )
                 })??;
-        build_typography_ops(request, &response)
+        #[cfg(test)]
+        let response =
+            match tokio::time::timeout(timeout, sender(prompt, request.image_data_url.clone()))
+                .await
+            {
+                Err(_) => {
+                    record_typography_outcome_with(
+                        diagnostic_sink.as_ref(),
+                        TypographyDiagnosticOutcome::TimedOut,
+                        request.targets.len(),
+                    );
+                    return Err(anyhow::anyhow!(
+                        "typography planner request timed out after {} seconds",
+                        timeout.as_secs()
+                    ));
+                }
+                Ok(Err(error)) => {
+                    record_typography_outcome_with(
+                        diagnostic_sink.as_ref(),
+                        TypographyDiagnosticOutcome::SenderFailed,
+                        request.targets.len(),
+                    );
+                    return Err(error);
+                }
+                Ok(Ok(response)) => response,
+            };
+        #[cfg(test)]
+        {
+            build_typography_ops_inner(request, &response, diagnostic_sink.as_ref())
+        }
+        #[cfg(not(test))]
+        {
+            build_typography_ops(request, &response)
+        }
     }
 }
 
@@ -479,6 +814,24 @@ fn image_data_url(image: &DynamicImage) -> Result<String> {
 }
 
 pub fn build_typography_ops(request: &TypographyPageRequest, response: &str) -> Result<Vec<Op>> {
+    #[cfg(test)]
+    let diagnostic_sink = current_typography_diagnostic_sink();
+    build_typography_ops_inner(
+        request,
+        response,
+        #[cfg(test)]
+        diagnostic_sink.as_ref(),
+    )
+}
+
+fn build_typography_ops_inner(
+    request: &TypographyPageRequest,
+    response: &str,
+    #[cfg(test)] diagnostic_sink: Option<&TypographyDiagnosticSinkToken>,
+) -> Result<Vec<Op>> {
+    #[cfg(test)]
+    let mut diagnostic_guard =
+        TypographyResponseDiagnosticGuard::new(request.targets.len(), diagnostic_sink);
     let plan: TypographyPlan =
         serde_json::from_str(response).context("invalid strict Typography Planner response")?;
     anyhow::ensure!(
@@ -511,16 +864,20 @@ pub fn build_typography_ops(request: &TypographyPageRequest, response: &str) -> 
     let min_font_size =
         crate::renderer::min_font_size_for_image(request.image_width, request.image_height);
     let mut validated = Vec::with_capacity(request.targets.len());
+    #[cfg(test)]
+    let mut target_diagnostics = Vec::with_capacity(request.targets.len());
     for target in &request.targets {
         let node = planned
             .remove(&target.node_id)
             .ok_or_else(|| anyhow::anyhow!("missing Typography response node"))?;
-        let translation = if target.preserve_lines {
-            target.translation.clone()
-        } else {
-            validate_lines(target, &node.lines)?;
-            node.lines.join("\n")
-        };
+        #[cfg(test)]
+        let proposed = ProposedTypographyDiagnostic::from_node(&node);
+        validate_lines(target, &node.lines)?;
+        anyhow::ensure!(
+            !target.preserve_lines || node.style.font_size.is_none(),
+            "Typography font size is not allowed for fixed lines"
+        );
+        let translation = node.lines.join("\n");
         let font_family = font_lookup
             .get(&node.style.font_family.trim().to_lowercase())
             .ok_or_else(|| anyhow::anyhow!("unknown Typography font"))?
@@ -564,6 +921,14 @@ pub fn build_typography_ops(request: &TypographyPageRequest, response: &str) -> 
             }),
             text_align: node.style.text_align,
         };
+        #[cfg(test)]
+        target_diagnostics.push(typography_target_diagnostic(
+            request,
+            target,
+            &translation,
+            &style,
+            proposed,
+        ));
         validated.push((
             target.node_id,
             translation,
@@ -573,7 +938,7 @@ pub fn build_typography_ops(request: &TypographyPageRequest, response: &str) -> 
     }
     anyhow::ensure!(planned.is_empty(), "unknown Typography response node");
 
-    Ok(validated
+    let ops = validated
         .into_iter()
         .map(
             |(node_id, translation, style, typography_plan_verified)| Op::UpdateNode {
@@ -593,7 +958,131 @@ pub fn build_typography_ops(request: &TypographyPageRequest, response: &str) -> 
                 prev: NodePatch::default(),
             },
         )
-        .collect())
+        .collect::<Vec<_>>();
+    #[cfg(test)]
+    diagnostic_guard.accept(ops.len(), target_diagnostics);
+    Ok(ops)
+}
+
+#[cfg(test)]
+struct ProposedTypographyDiagnostic {
+    planner_line_count: usize,
+    font_size: Option<f32>,
+    fill_rgba: [u8; 4],
+    stroke_enabled: Option<bool>,
+    stroke_rgba: Option<[u8; 4]>,
+    stroke_width: Option<f32>,
+    effect: Option<TypographyEffectDiagnostic>,
+    align: Option<TypographyAlignDiagnostic>,
+}
+
+#[cfg(test)]
+impl ProposedTypographyDiagnostic {
+    fn from_node(node: &PlannedNode) -> Self {
+        Self {
+            planner_line_count: node.lines.len(),
+            font_size: finite_typography_number(node.style.font_size),
+            fill_rgba: node.style.color,
+            stroke_enabled: node.style.stroke.as_ref().map(|stroke| stroke.enabled),
+            stroke_rgba: node.style.stroke.as_ref().map(|stroke| stroke.color),
+            stroke_width: finite_typography_number(
+                node.style
+                    .stroke
+                    .as_ref()
+                    .and_then(|stroke| stroke.width_px),
+            ),
+            effect: node
+                .style
+                .effect
+                .as_ref()
+                .map(|effect| TypographyEffectDiagnostic {
+                    italic: effect.italic,
+                    bold: effect.bold,
+                }),
+            align: node.style.text_align.map(typography_align_diagnostic),
+        }
+    }
+}
+
+#[cfg(test)]
+fn typography_target_diagnostic(
+    request: &TypographyPageRequest,
+    target: &TypographyTarget,
+    translation: &str,
+    resolved: &TextStyle,
+    proposed: ProposedTypographyDiagnostic,
+) -> TypographyTargetDiagnostic {
+    let current_stroke = target.current_style.stroke.as_ref();
+    let resolved_stroke = resolved.stroke.as_ref();
+    let line_outcome = TypographyFieldOutcome::Applied;
+    let font_size_outcome = if target.manual_font_size.is_some() {
+        TypographyFieldOutcome::ManualOverride
+    } else {
+        TypographyFieldOutcome::Applied
+    };
+    let resolved_family = resolved
+        .font_families
+        .first()
+        .expect("validated Typography style has one font family");
+    TypographyTargetDiagnostic {
+        node_id: target.node_id,
+        preserve_lines: target.preserve_lines,
+        safe_region_count: target.safe_regions.len(),
+        planner_line_count: proposed.planner_line_count,
+        translation_exactly_preserved: translation == target.translation,
+        line_outcome,
+        current_font_size: finite_typography_number(target.current_style.font_size),
+        manual_font_size: finite_typography_number(target.manual_font_size),
+        proposed_font_size: proposed.font_size,
+        resolved_font_size: finite_typography_number(resolved.font_size),
+        font_size_outcome,
+        font_family_outcome: TypographyFieldOutcome::Applied,
+        resolved_family_in_allowlist: request.fonts.iter().any(|font| font == resolved_family),
+        resolved_family_changed_current_first: target.current_style.font_families.first()
+            != Some(resolved_family),
+        current_fill_rgba: target.current_style.color,
+        proposed_fill_rgba: proposed.fill_rgba,
+        resolved_fill_rgba: resolved.color,
+        color_outcome: TypographyFieldOutcome::Applied,
+        current_stroke_enabled: current_stroke.map(|stroke| stroke.enabled),
+        current_stroke_rgba: current_stroke.map(|stroke| stroke.color),
+        current_stroke_width: finite_typography_number(
+            current_stroke.and_then(|stroke| stroke.width_px),
+        ),
+        proposed_stroke_enabled: proposed.stroke_enabled,
+        proposed_stroke_rgba: proposed.stroke_rgba,
+        proposed_stroke_width: proposed.stroke_width,
+        resolved_stroke_enabled: resolved_stroke.map(|stroke| stroke.enabled),
+        resolved_stroke_rgba: resolved_stroke.map(|stroke| stroke.color),
+        resolved_stroke_width: finite_typography_number(
+            resolved_stroke.and_then(|stroke| stroke.width_px),
+        ),
+        stroke_outcome: TypographyFieldOutcome::Applied,
+        proposed_effect: proposed.effect,
+        resolved_effect: resolved.effect.map(|effect| TypographyEffectDiagnostic {
+            italic: effect.italic,
+            bold: effect.bold,
+        }),
+        effect_outcome: TypographyFieldOutcome::Applied,
+        proposed_align: proposed.align,
+        resolved_align: resolved.text_align.map(typography_align_diagnostic),
+        align_outcome: TypographyFieldOutcome::Applied,
+        typography_plan_verified: target.manual_font_size.is_none(),
+    }
+}
+
+#[cfg(test)]
+fn finite_typography_number(value: Option<f32>) -> Option<f32> {
+    value.filter(|value| value.is_finite())
+}
+
+#[cfg(test)]
+fn typography_align_diagnostic(value: TextAlign) -> TypographyAlignDiagnostic {
+    match value {
+        TextAlign::Left => TypographyAlignDiagnostic::Left,
+        TextAlign::Center => TypographyAlignDiagnostic::Center,
+        TextAlign::Right => TypographyAlignDiagnostic::Right,
+    }
 }
 
 fn validate_lines(target: &TypographyTarget, lines: &[String]) -> Result<()> {
@@ -666,8 +1155,8 @@ fn lines_preserve_text(original: &str, lines: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
     use anyhow::Result;
@@ -772,6 +1261,685 @@ mod tests {
                 "textAlign": "center"
             }
         })
+    }
+
+    fn start_typography_diagnostic_capture() -> TypographyDiagnosticCapture {
+        loop {
+            match TypographyDiagnosticCapture::start() {
+                Ok(capture) => return capture,
+                Err(TypographyDiagnosticCaptureActive) => std::thread::yield_now(),
+            }
+        }
+    }
+
+    fn build_with_typography_diagnostics(
+        request: &TypographyPageRequest,
+        response: &str,
+    ) -> Result<(Vec<Op>, TypographyDiagnosticEvent)> {
+        let capture = start_typography_diagnostic_capture();
+        let ops = build_typography_ops(request, response)?;
+        let events = capture.take();
+        assert_eq!(events.len(), 1);
+        Ok((ops, events.into_iter().next().unwrap()))
+    }
+
+    fn apply_ops(mut scene: Scene, ops: &[Op]) -> Result<Scene> {
+        for mut op in ops.iter().cloned() {
+            op.apply(&mut scene)?;
+        }
+        Ok(scene)
+    }
+
+    fn text_patch(op: &Op) -> (&str, &TextStyle, bool) {
+        let Op::UpdateNode { patch, .. } = op else {
+            panic!("expected update")
+        };
+        let Some(NodeDataPatch::Text(patch)) = &patch.data else {
+            panic!("expected text patch")
+        };
+        (
+            patch
+                .translation
+                .as_ref()
+                .expect("translation patch")
+                .as_deref()
+                .expect("translation"),
+            patch
+                .style
+                .as_ref()
+                .expect("style patch")
+                .as_ref()
+                .expect("style"),
+            patch.typography_plan_verified.expect("typography marker"),
+        )
+    }
+
+    fn planned_node_with_style(
+        target: &TypographyTarget,
+        lines: Vec<String>,
+        font_size: f32,
+    ) -> Value {
+        let mut node = response_node(target, lines);
+        node["style"]["fontSize"] = json!(font_size);
+        node["style"]["color"] = json!([240, 241, 242, 255]);
+        node["style"]["stroke"] = json!({
+            "enabled": true,
+            "color": [12, 13, 14, 255],
+            "widthPx": 3.0
+        });
+        node["style"]["effect"] = json!({ "italic": true, "bold": true });
+        node["style"]["textAlign"] = json!("right");
+        node
+    }
+
+    fn json_contains_key(value: &Value, needle: &str) -> bool {
+        match value {
+            Value::Object(fields) => {
+                fields.contains_key(needle)
+                    || fields
+                        .values()
+                        .any(|value| json_contains_key(value, needle))
+            }
+            Value::Array(values) => values.iter().any(|value| json_contains_key(value, needle)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn typography_diagnostics_match_accepted_han_and_all_text_ops_without_drift() -> Result<()> {
+        let mut automatic = text_node("中文", Some("automatic"));
+        let NodeKind::Text(automatic_text) = &mut automatic.kind else {
+            unreachable!()
+        };
+        automatic_text.style = Some(TextStyle {
+            font_families: vec!["NotoSansSC-Regular".into()],
+            color: [10, 11, 12, 255],
+            stroke: Some(TextStrokeStyle {
+                enabled: false,
+                color: [20, 21, 22, 255],
+                width_px: None,
+            }),
+            ..Default::default()
+        });
+        let mut manual = text_node("汉字", Some("manual"));
+        let NodeKind::Text(manual_text) = &mut manual.kind else {
+            unreachable!()
+        };
+        manual_text.style = Some(TextStyle {
+            font_families: vec!["ArialMT".into()],
+            font_size: Some(72.0),
+            color: [30, 31, 32, 255],
+            ..Default::default()
+        });
+        manual_text.typography_plan_verified = false;
+        let (han_scene, han_page) = scene(vec![automatic, manual]);
+        let han_request = request(&han_scene, han_page, SourceTextPolicy::HanOnly, None)?;
+        let han_response = serde_json::to_string(&json!({
+            "nodes": han_request
+                .targets
+                .iter()
+                .map(|target| {
+                    let mut node = planned_node_with_style(
+                        target,
+                        target.translation.split('\n').map(str::to_string).collect(),
+                        19.0,
+                    );
+                    node["style"]["fontSize"] = Value::Null;
+                    node
+                })
+                .collect::<Vec<_>>()
+        }))?;
+
+        let inactive_han = build_typography_ops(&han_request, &han_response)?;
+        let (active_han, han_event) =
+            build_with_typography_diagnostics(&han_request, &han_response)?;
+        assert_eq!(
+            serde_json::to_value(&inactive_han)?,
+            serde_json::to_value(&active_han)?
+        );
+        assert_eq!(
+            serde_json::to_value(apply_ops(han_scene.clone(), &inactive_han)?)?,
+            serde_json::to_value(apply_ops(han_scene, &active_han)?)?
+        );
+        assert_eq!(han_event.outcome, TypographyDiagnosticOutcome::Accepted);
+        assert_eq!(han_event.target_count, 2);
+        assert_eq!(han_event.accepted_op_count, Some(2));
+        let han_targets = han_event.target_field_outcomes.as_ref().unwrap();
+        assert_eq!(
+            han_targets
+                .iter()
+                .map(|target| target.node_id)
+                .collect::<Vec<_>>(),
+            han_request
+                .targets
+                .iter()
+                .map(|target| target.node_id)
+                .collect::<Vec<_>>()
+        );
+        let expected_current_fills = han_request
+            .targets
+            .iter()
+            .map(|target| target.current_style.color)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            han_targets
+                .iter()
+                .map(|target| target.current_fill_rgba)
+                .collect::<Vec<_>>(),
+            expected_current_fills
+        );
+        for target in han_targets {
+            assert!(target.preserve_lines);
+            assert_eq!(target.line_outcome, TypographyFieldOutcome::Applied);
+            assert!(target.translation_exactly_preserved);
+            assert_eq!(target.planner_line_count, 1);
+            assert!(target.safe_region_count >= 1);
+            assert_eq!(target.proposed_font_size, None);
+            assert_eq!(target.font_family_outcome, TypographyFieldOutcome::Applied);
+            assert!(target.resolved_family_in_allowlist);
+            assert_eq!(target.color_outcome, TypographyFieldOutcome::Applied);
+            assert_eq!(target.stroke_outcome, TypographyFieldOutcome::Applied);
+            assert_eq!(target.effect_outcome, TypographyFieldOutcome::Applied);
+            assert_eq!(target.align_outcome, TypographyFieldOutcome::Applied);
+            assert_eq!(target.proposed_fill_rgba, [240, 241, 242, 255]);
+            assert_eq!(target.resolved_fill_rgba, [240, 241, 242, 255]);
+            assert_eq!(target.proposed_stroke_rgba, Some([12, 13, 14, 255]));
+            assert_eq!(target.resolved_stroke_rgba, Some([12, 13, 14, 255]));
+        }
+        let automatic_target = han_targets
+            .iter()
+            .find(|target| target.manual_font_size.is_none())
+            .expect("automatic HanOnly target");
+        assert_eq!(
+            automatic_target.font_size_outcome,
+            TypographyFieldOutcome::Applied
+        );
+        assert_eq!(automatic_target.resolved_font_size, None);
+        assert!(automatic_target.typography_plan_verified);
+        assert!(automatic_target.resolved_family_changed_current_first);
+        let manual_target = han_targets
+            .iter()
+            .find(|target| target.manual_font_size.is_some())
+            .expect("manual HanOnly target");
+        assert_eq!(
+            manual_target.font_size_outcome,
+            TypographyFieldOutcome::ManualOverride
+        );
+        assert_eq!(manual_target.current_font_size, Some(72.0));
+        assert_eq!(manual_target.manual_font_size, Some(72.0));
+        assert_eq!(manual_target.resolved_font_size, Some(72.0));
+        assert!(!manual_target.typography_plan_verified);
+        assert!(!manual_target.resolved_family_changed_current_first);
+        for (event, op) in han_targets.iter().zip(&active_han) {
+            let (_, style, marker) = text_patch(op);
+            assert_eq!(event.resolved_font_size, style.font_size);
+            assert_eq!(event.resolved_fill_rgba, style.color);
+            assert_eq!(
+                event.resolved_stroke_enabled,
+                style.stroke.as_ref().map(|stroke| stroke.enabled)
+            );
+            assert_eq!(
+                event.resolved_stroke_rgba,
+                style.stroke.as_ref().map(|stroke| stroke.color)
+            );
+            assert_eq!(
+                event.resolved_stroke_width,
+                style.stroke.as_ref().and_then(|stroke| stroke.width_px)
+            );
+            assert_eq!(
+                event.resolved_effect,
+                style.effect.map(|effect| TypographyEffectDiagnostic {
+                    italic: effect.italic,
+                    bold: effect.bold,
+                })
+            );
+            assert_eq!(
+                event.resolved_align,
+                style.text_align.map(typography_align_diagnostic)
+            );
+            assert_eq!(event.typography_plan_verified, marker);
+        }
+        assert_eq!(automatic_target.current_stroke_enabled, Some(false));
+        assert_eq!(
+            automatic_target.current_stroke_rgba,
+            Some([20, 21, 22, 255])
+        );
+        assert_eq!(automatic_target.current_stroke_width, None);
+        assert_eq!(automatic_target.proposed_stroke_enabled, Some(true));
+        assert_eq!(automatic_target.proposed_stroke_width, Some(3.0));
+        assert_eq!(
+            automatic_target.proposed_effect,
+            Some(TypographyEffectDiagnostic {
+                italic: true,
+                bold: true,
+            })
+        );
+        assert_eq!(
+            automatic_target.resolved_effect,
+            automatic_target.proposed_effect
+        );
+        assert_eq!(
+            automatic_target.proposed_align,
+            Some(TypographyAlignDiagnostic::Right)
+        );
+        assert_eq!(
+            automatic_target.resolved_align,
+            automatic_target.proposed_align
+        );
+
+        let mut all_text = text_node("PRIVATE_SOURCE", Some("a b"));
+        let NodeKind::Text(text) = &mut all_text.kind else {
+            unreachable!()
+        };
+        text.style = Some(TextStyle {
+            font_families: vec!["NotoSansSC-Regular".into()],
+            font_size: Some(72.0),
+            color: [40, 41, 42, 255],
+            ..Default::default()
+        });
+        text.typography_plan_verified = false;
+        let (all_scene, all_page) = scene(vec![all_text]);
+        let all_request = request(&all_scene, all_page, SourceTextPolicy::AllText, None)?;
+        let all_response = serde_json::to_string(&json!({
+            "nodes": [planned_node_with_style(
+                &all_request.targets[0],
+                vec!["a".into(), "b".into()],
+                18.0
+            )]
+        }))?;
+        let inactive_all = build_typography_ops(&all_request, &all_response)?;
+        let (active_all, all_event) =
+            build_with_typography_diagnostics(&all_request, &all_response)?;
+        assert_eq!(
+            serde_json::to_value(&inactive_all)?,
+            serde_json::to_value(&active_all)?
+        );
+        assert_eq!(
+            serde_json::to_value(apply_ops(all_scene.clone(), &inactive_all)?)?,
+            serde_json::to_value(apply_ops(all_scene, &active_all)?)?
+        );
+        let all_target = &all_event.target_field_outcomes.as_ref().unwrap()[0];
+        assert_eq!(all_event.outcome, TypographyDiagnosticOutcome::Accepted);
+        assert_eq!(all_target.node_id, all_request.targets[0].node_id);
+        assert_eq!(all_target.line_outcome, TypographyFieldOutcome::Applied);
+        assert!(!all_target.translation_exactly_preserved);
+        assert_eq!(all_target.current_font_size, Some(72.0));
+        assert_eq!(all_target.manual_font_size, None);
+        assert_eq!(all_target.proposed_font_size, Some(18.0));
+        assert_eq!(all_target.resolved_font_size, Some(18.0));
+        assert_eq!(
+            all_target.font_size_outcome,
+            TypographyFieldOutcome::Applied
+        );
+        assert!(all_target.typography_plan_verified);
+        let (translation, style, marker) = text_patch(&active_all[0]);
+        assert_eq!(translation, "a\nb");
+        assert_eq!(style.font_size, all_target.resolved_font_size);
+        assert_eq!(style.color, all_target.resolved_fill_rgba);
+        assert_eq!(
+            style.stroke.as_ref().map(|stroke| stroke.color),
+            all_target.resolved_stroke_rgba
+        );
+        assert!(marker);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn typography_diagnostics_failures_are_atomic_and_path_free() -> Result<()> {
+        let (empty_scene, empty_page) = scene(vec![text_node("English", Some("English"))]);
+        let empty_request = request(&empty_scene, empty_page, SourceTextPolicy::HanOnly, None)?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let sender_calls = calls.clone();
+        let capture = start_typography_diagnostic_capture();
+        let empty_ops = TypographyPlanner::default()
+            .plan(&empty_request, move |_, _| async move {
+                sender_calls.fetch_add(1, Ordering::Relaxed);
+                Ok(String::new())
+            })
+            .await?;
+        let events = capture.take();
+        assert!(empty_ops.is_empty());
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].outcome,
+            TypographyDiagnosticOutcome::SkippedNoTargets
+        );
+        assert_eq!(events[0].accepted_op_count, None);
+        assert_eq!(events[0].target_field_outcomes, None);
+        drop(capture);
+
+        let (scene, page) = scene(vec![
+            text_node("中文", Some("PRIVATE_TRANSLATION")),
+            text_node("汉字", Some("PRIVATE_SECOND_TRANSLATION")),
+        ]);
+        let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        let mut invalid_second = response_node(
+            &request.targets[1],
+            vec![request.targets[1].translation.clone()],
+        );
+        invalid_second["style"]["fontFamily"] = json!("PRIVATE_UNKNOWN_FONT");
+        let invalid_response = serde_json::to_string(&json!({
+            "nodes": [
+                response_node(
+                    &request.targets[0],
+                    vec![request.targets[0].translation.clone()]
+                ),
+                invalid_second
+            ]
+        }))?;
+        for expected in [
+            TypographyDiagnosticOutcome::TimedOut,
+            TypographyDiagnosticOutcome::SenderFailed,
+            TypographyDiagnosticOutcome::ResponseRejected,
+        ] {
+            let capture = start_typography_diagnostic_capture();
+            let result = match expected {
+                TypographyDiagnosticOutcome::TimedOut => {
+                    TypographyPlanner::default()
+                        .plan_with_timeout(
+                            &request,
+                            |_, _| std::future::pending::<Result<String>>(),
+                            Duration::from_millis(5),
+                        )
+                        .await
+                }
+                TypographyDiagnosticOutcome::SenderFailed => {
+                    TypographyPlanner::default()
+                        .plan_with_timeout(
+                            &request,
+                            |_, _| async { Err(anyhow::anyhow!("PRIVATE_SENDER_ERROR")) },
+                            Duration::from_secs(1),
+                        )
+                        .await
+                }
+                TypographyDiagnosticOutcome::ResponseRejected => {
+                    let invalid_response = invalid_response.clone();
+                    TypographyPlanner::default()
+                        .plan_with_timeout(
+                            &request,
+                            move |_, _| async move { Ok(invalid_response) },
+                            Duration::from_secs(1),
+                        )
+                        .await
+                }
+                _ => unreachable!(),
+            };
+            assert!(result.is_err());
+            let events = capture.take();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].outcome, expected);
+            assert_eq!(events[0].target_count, request.targets.len());
+            assert_eq!(events[0].accepted_op_count, None);
+            assert_eq!(events[0].target_field_outcomes, None);
+            let serialized = serde_json::to_string(&events[0])?;
+            assert!(!serialized.contains("PRIVATE"));
+            drop(capture);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn typography_diagnostic_schema_is_closed_required_and_private() -> Result<()> {
+        let (scene, page) = scene(vec![text_node(
+            "PRIVATE_SOURCE_TEXT",
+            Some("PRIVATE_TRANSLATION_TEXT"),
+        )]);
+        let request = request(&scene, page, SourceTextPolicy::AllText, None)?;
+        let node_id = request.targets[0].node_id.to_string();
+        let page_id = request.page.to_string();
+        let response = serde_json::to_string(&json!({
+            "nodes": [planned_node_with_style(
+                &request.targets[0],
+                vec!["PRIVATE_TRANSLATION_TEXT".into()],
+                18.0
+            )]
+        }))?;
+        let (_, event) = build_with_typography_diagnostics(&request, &response)?;
+        let value = serde_json::to_value(&event)?;
+        assert_eq!(
+            value["target_field_outcomes"][0]["node_id"],
+            json!(request.targets[0].node_id)
+        );
+        assert_eq!(
+            serde_json::from_value::<TypographyDiagnosticEvent>(value.clone())?,
+            event
+        );
+        for field in ["accepted_op_count", "target_field_outcomes"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<TypographyDiagnosticEvent>(missing).is_err());
+            let mut explicit_null = value.clone();
+            explicit_null[field] = Value::Null;
+            assert!(serde_json::from_value::<TypographyDiagnosticEvent>(explicit_null).is_ok());
+        }
+        for field in [
+            "current_font_size",
+            "manual_font_size",
+            "proposed_font_size",
+            "resolved_font_size",
+            "current_stroke_enabled",
+            "current_stroke_rgba",
+            "current_stroke_width",
+            "proposed_stroke_enabled",
+            "proposed_stroke_rgba",
+            "proposed_stroke_width",
+            "resolved_stroke_enabled",
+            "resolved_stroke_rgba",
+            "resolved_stroke_width",
+            "proposed_effect",
+            "resolved_effect",
+            "proposed_align",
+            "resolved_align",
+        ] {
+            let mut missing = value.clone();
+            missing["target_field_outcomes"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(
+                serde_json::from_value::<TypographyDiagnosticEvent>(missing).is_err(),
+                "missing required option field {field}"
+            );
+            let mut explicit_null = value.clone();
+            explicit_null["target_field_outcomes"][0][field] = Value::Null;
+            assert!(
+                serde_json::from_value::<TypographyDiagnosticEvent>(explicit_null).is_ok(),
+                "explicit null option field {field}"
+            );
+        }
+        let mut nested_unknown = value.clone();
+        nested_unknown["target_field_outcomes"][0]["proposed_effect"]["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<TypographyDiagnosticEvent>(nested_unknown).is_err());
+        let mut target_unknown = value.clone();
+        target_unknown["target_field_outcomes"][0]["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<TypographyDiagnosticEvent>(target_unknown).is_err());
+        let mut event_unknown = value;
+        event_unknown["unexpected"] = json!(true);
+        assert!(serde_json::from_value::<TypographyDiagnosticEvent>(event_unknown).is_err());
+
+        let serialized = serde_json::to_string(&event)?;
+        let serialized_value = serde_json::to_value(&event)?;
+        for forbidden_key in [
+            "page_id",
+            "translation",
+            "source_text",
+            "font_family",
+            "font_name",
+            "prompt",
+            "response",
+            "model",
+            "base_url",
+            "api_key",
+            "path",
+            "elapsed",
+            "timeout",
+            "timestamp",
+        ] {
+            assert!(!json_contains_key(&serialized_value, forbidden_key));
+        }
+        for forbidden_value in [
+            "PRIVATE_SOURCE_TEXT",
+            "PRIVATE_TRANSLATION_TEXT",
+            "ArialMT",
+            page_id.as_str(),
+        ] {
+            assert!(!serialized.contains(forbidden_value));
+        }
+        assert!(serialized.contains(node_id.as_str()));
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typography_diagnostic_token_survives_cross_thread_await_without_foreign_leak()
+    -> Result<()> {
+        let (scene, page) = scene(vec![text_node("中文", Some("owner"))]);
+        let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
+        let response = serde_json::to_string(&json!({
+            "nodes": [response_node(&request.targets[0], vec!["owner".into()])]
+        }))?;
+        let mut extra = response_node(&request.targets[0], vec!["owner".into()]);
+        extra["nodeId"] = json!(NodeId::new());
+        let rejected_response = serde_json::to_string(&json!({
+            "nodes": [
+                response_node(&request.targets[0], vec!["owner".into()]),
+                extra
+            ]
+        }))?;
+
+        let capture = start_typography_diagnostic_capture();
+        let token = current_typography_diagnostic_sink().expect("owner sink token");
+        let owner_thread = std::thread::current().id();
+
+        let accepted_request = request.clone();
+        let accepted_token = token.clone();
+        let accepted = tokio::task::spawn_blocking(move || -> Result<Vec<Op>> {
+            assert_ne!(std::thread::current().id(), owner_thread);
+            build_typography_ops_inner(&accepted_request, &response, Some(&accepted_token))
+        })
+        .await??;
+        assert_eq!(accepted.len(), 1);
+
+        let rejected_request = request.clone();
+        let rejected_token = token.clone();
+        let rejected = tokio::task::spawn_blocking(move || {
+            build_typography_ops_inner(&rejected_request, &rejected_response, Some(&rejected_token))
+        })
+        .await?;
+        assert!(rejected.is_err());
+
+        let foreign_request = request;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            assert!(current_typography_diagnostic_sink().is_none());
+            build_typography_ops(
+                &foreign_request,
+                &serde_json::to_string(&json!({
+                    "nodes": [response_node(
+                        &foreign_request.targets[0],
+                        vec!["owner".into()]
+                    )]
+                }))?,
+            )?;
+            Ok(())
+        })
+        .await??;
+
+        let events = capture.take();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].outcome, TypographyDiagnosticOutcome::Accepted);
+        assert_eq!(events[0].accepted_op_count, Some(1));
+        assert_eq!(
+            events[0].target_field_outcomes.as_ref().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            events[1].outcome,
+            TypographyDiagnosticOutcome::ResponseRejected
+        );
+        assert_eq!(events[1].accepted_op_count, None);
+        assert_eq!(events[1].target_field_outcomes, None);
+        Ok(())
+    }
+
+    #[test]
+    fn typography_diagnostic_capture_is_thread_isolated_and_recovers() -> Result<()> {
+        let (owner_scene, owner_page) = scene(vec![text_node("中文", Some("owner"))]);
+        let owner_request = request(&owner_scene, owner_page, SourceTextPolicy::HanOnly, None)?;
+        let response = serde_json::to_string(&json!({
+            "nodes": [response_node(&owner_request.targets[0], vec!["owner".into()])]
+        }))?;
+        let capture = start_typography_diagnostic_capture();
+        assert!(matches!(
+            TypographyDiagnosticCapture::start(),
+            Err(TypographyDiagnosticCaptureActive)
+        ));
+        build_typography_ops(&owner_request, &response)?;
+
+        let barrier = Arc::new(Barrier::new(2));
+        let foreign_barrier = barrier.clone();
+        let foreign = std::thread::spawn(move || -> Result<()> {
+            let (scene, page) = scene(vec![
+                text_node("汉字", Some("foreign one")),
+                text_node("中文", Some("foreign two")),
+            ]);
+            let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
+            let response = serde_json::to_string(&json!({
+                "nodes": request
+                    .targets
+                    .iter()
+                    .map(|target| response_node(target, vec![target.translation.clone()]))
+                    .collect::<Vec<_>>()
+            }))?;
+            foreign_barrier.wait();
+            build_typography_ops(&request, &response)?;
+            foreign_barrier.wait();
+            Ok(())
+        });
+        barrier.wait();
+        barrier.wait();
+        foreign.join().unwrap()?;
+        build_typography_ops(&owner_request, &response)?;
+        let events = capture.take();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| {
+            event.outcome == TypographyDiagnosticOutcome::Accepted && event.target_count == 1
+        }));
+        drop(capture);
+
+        let unwind = std::panic::catch_unwind(|| {
+            let _capture = start_typography_diagnostic_capture();
+            panic!("intentional typography diagnostic unwind");
+        });
+        assert!(unwind.is_err());
+        let restarted = start_typography_diagnostic_capture();
+        let coordination = TYPOGRAPHY_DIAGNOSTIC_SINK.get().unwrap();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = coordination
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                panic!("intentional typography coordination poison");
+            })
+            .join()
+            .is_err()
+        );
+        let events = restarted.events.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                panic!("intentional typography event poison");
+            })
+            .join()
+            .is_err()
+        );
+        build_typography_ops(&owner_request, &response)?;
+        assert_eq!(restarted.take().len(), 1);
+        drop(restarted);
+        let final_restart = start_typography_diagnostic_capture();
+        assert!(final_restart.take().is_empty());
+        Ok(())
     }
 
     #[test]
@@ -888,7 +2056,7 @@ mod tests {
     }
 
     #[test]
-    fn han_only_typography_ignores_planner_lines_and_preserves_translation() -> Result<()> {
+    fn han_only_typography_rejects_changed_or_invalid_lines_atomically() -> Result<()> {
         let (scene, page) = scene(vec![text_node("中文", Some("中文"))]);
         let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
         for lines in [
@@ -900,18 +2068,7 @@ mod tests {
             let response = serde_json::to_string(&json!({
                 "nodes": [response_node(&request.targets[0], lines)]
             }))?;
-            let ops = build_typography_ops(&request, &response)?;
-            let koharu_core::Op::UpdateNode { patch, .. } = &ops[0] else {
-                panic!("expected update")
-            };
-            let Some(NodeDataPatch::Text(patch)) = &patch.data else {
-                panic!("expected text patch")
-            };
-            assert_eq!(patch.translation.as_ref().unwrap().as_deref(), Some("中文"));
-            assert_eq!(
-                patch.style.as_ref().unwrap().as_ref().unwrap().font_size,
-                None
-            );
+            assert!(build_typography_ops(&request, &response).is_err());
         }
         Ok(())
     }
@@ -940,7 +2097,7 @@ mod tests {
     }
 
     #[test]
-    fn han_only_typography_ignores_planner_reflow_across_multiple_safe_regions() -> Result<()> {
+    fn han_only_typography_rejects_reflow_across_multiple_safe_regions() -> Result<()> {
         let (scene, page) = scene(vec![text_node("第一行\n第二行", Some("first\nsecond"))]);
         let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
         assert_eq!(request.targets[0].safe_regions.len(), 2);
@@ -948,18 +2105,15 @@ mod tests {
             "nodes": [response_node(&request.targets[0], vec!["second first".into()])]
         }))?;
 
-        let ops = build_typography_ops(&request, &response)?;
-        let koharu_core::Op::UpdateNode { patch, .. } = &ops[0] else {
-            panic!("expected update")
-        };
-        let Some(NodeDataPatch::Text(patch)) = &patch.data else {
-            panic!("expected text patch")
-        };
-        assert_eq!(
-            patch.translation.as_ref().unwrap().as_deref(),
-            Some("first\nsecond")
-        );
+        assert!(build_typography_ops(&request, &response).is_err());
         Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "hanonly-pre-greenc-red"]
+    async fn hanonly_pre_greenc_red_t3_transient_planner_hint_contract() -> Result<()> {
+        let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
+        crate::pipeline::tests::assert_transient_planner_hint_pipeline_contract().await
     }
 
     #[test]
@@ -1078,26 +2232,14 @@ mod tests {
     }
 
     #[test]
-    fn han_only_typography_ignores_planner_font_size_suggestions() -> Result<()> {
+    fn han_only_typography_rejects_planner_font_size_suggestions() -> Result<()> {
         let (scene, page) = scene(vec![text_node("中文", Some("中文"))]);
         let request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
         for font_size in [-1.0, 11.0, 18.0, 301.0] {
-            let mut node = response_node(&request.targets[0], vec!["changed".into()]);
+            let mut node = response_node(&request.targets[0], vec!["中文".into()]);
             node["style"]["fontSize"] = json!(font_size);
             let response = serde_json::to_string(&json!({ "nodes": [node] }))?;
-            let ops = build_typography_ops(&request, &response)?;
-            let koharu_core::Op::UpdateNode { patch, .. } = &ops[0] else {
-                panic!("expected update")
-            };
-            let Some(NodeDataPatch::Text(patch)) = &patch.data else {
-                panic!("expected text patch")
-            };
-            assert_eq!(patch.translation.as_ref().unwrap().as_deref(), Some("中文"));
-            assert_eq!(
-                patch.style.as_ref().unwrap().as_ref().unwrap().font_size,
-                None
-            );
-            assert_eq!(patch.typography_plan_verified, Some(true));
+            assert!(build_typography_ops(&request, &response).is_err());
         }
         Ok(())
     }

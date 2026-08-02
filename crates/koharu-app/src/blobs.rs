@@ -11,6 +11,9 @@ use std::io::Cursor;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 use anyhow::{Context, Result};
 use image::{DynamicImage, RgbaImage};
 use koharu_core::BlobRef;
@@ -19,6 +22,38 @@ use parking_lot::Mutex;
 
 const IMAGE_CACHE_CAPACITY: usize = 64;
 const RAW_MAGIC: &[u8; 4] = b"RGBA";
+
+#[cfg(test)]
+thread_local! {
+    static DECODE_TEST_EVENTS: RefCell<Vec<DecodeTestEvent>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DecodeTestEvent {
+    CacheMiss(BlobRef),
+    Sniffed(Option<image::ImageFormat>),
+    RawLayout {
+        width: u32,
+        height: u32,
+    },
+    PixelConstructionStarted,
+    Decoded {
+        width: u32,
+        height: u32,
+        has_alpha: bool,
+    },
+}
+
+#[cfg(test)]
+fn record_decode_test_event(event: DecodeTestEvent) {
+    DECODE_TEST_EVENTS.with_borrow_mut(|events| events.push(event));
+}
+
+#[cfg(test)]
+fn take_decode_test_events() -> Vec<DecodeTestEvent> {
+    DECODE_TEST_EVENTS.take()
+}
 
 /// Content-addressed blob store + decoded-image LRU.
 pub struct BlobStore {
@@ -78,6 +113,8 @@ impl BlobStore {
         if let Some(img) = self.cache.lock().get(r).cloned() {
             return Ok(img);
         }
+        #[cfg(test)]
+        record_decode_test_event(DecodeTestEvent::CacheMiss(r.clone()));
         let bytes = self.get_bytes(r)?;
         let img = decode_blob(&bytes)?;
         self.cache.lock().put(r.clone(), img.clone());
@@ -125,14 +162,37 @@ impl BlobStore {
 }
 
 fn decode_blob(bytes: &[u8]) -> Result<DynamicImage> {
+    #[cfg(test)]
+    record_decode_test_event(DecodeTestEvent::Sniffed(image::guess_format(bytes).ok()));
     if bytes.len() >= 12 && &bytes[..4] == RAW_MAGIC {
         let w = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
         let h = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        #[cfg(test)]
+        {
+            record_decode_test_event(DecodeTestEvent::RawLayout {
+                width: w,
+                height: h,
+            });
+            record_decode_test_event(DecodeTestEvent::PixelConstructionStarted);
+        }
         let pixels = bytes[12..].to_vec();
         let img = RgbaImage::from_raw(w, h, pixels).context("invalid raw RGBA blob dimensions")?;
+        #[cfg(test)]
+        record_decode_test_event(DecodeTestEvent::Decoded {
+            width: img.width(),
+            height: img.height(),
+            has_alpha: true,
+        });
         return Ok(DynamicImage::ImageRgba8(img));
     }
-    Ok(image::load_from_memory(bytes)?)
+    let img = image::load_from_memory(bytes)?;
+    #[cfg(test)]
+    record_decode_test_event(DecodeTestEvent::Decoded {
+        width: img.width(),
+        height: img.height(),
+        has_alpha: img.color().has_alpha(),
+    });
+    Ok(img)
 }
 
 #[cfg(test)]
@@ -158,5 +218,198 @@ mod tests {
         let a = store.put_bytes(b"x").unwrap();
         let b = store.put_bytes(b"x").unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    #[ignore = "hanonly-pre-b1-red"]
+    fn hanonly_pre_b1_red_t2_blob_decode_budget_contract() {
+        const DECODED_RGBA_LIMIT: u64 = 512 * 1024 * 1024;
+        const DECODED_IMAGE_CACHE_BUDGET: usize = 512 * 1024 * 1024;
+        let dir = tempdir().unwrap();
+        let store = BlobStore::open(dir.path()).unwrap();
+        let mut violations = Vec::new();
+        let rgba = DynamicImage::ImageRgba8(
+            RgbaImage::from_raw(2, 1, vec![255, 0, 0, 0, 0, 255, 0, 255]).unwrap(),
+        );
+
+        for format in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::WebP,
+        ] {
+            let mut encoded = Cursor::new(Vec::new());
+            rgba.write_to(&mut encoded, format).unwrap();
+            let blob = store.put_bytes(&encoded.into_inner()).unwrap();
+            take_decode_test_events();
+            let loaded = store.load_image(&blob);
+            let events = take_decode_test_events();
+            if loaded.is_err()
+                || !events.contains(&DecodeTestEvent::Sniffed(Some(format)))
+                || !events.iter().any(|e| {
+                    matches!(
+                        e,
+                        DecodeTestEvent::Decoded {
+                            width: 2,
+                            height: 1,
+                            ..
+                        }
+                    )
+                })
+            {
+                violations.push(format!(
+                    "{format:?} must be sniffed and decoded through load_image"
+                ));
+            }
+            if format == image::ImageFormat::Png
+                && !events.iter().any(|e| {
+                    matches!(
+                        e,
+                        DecodeTestEvent::Decoded {
+                            has_alpha: true,
+                            ..
+                        }
+                    )
+                })
+            {
+                violations.push("PNG alpha must survive decode".into());
+            }
+        }
+
+        let mut raw = Vec::from(RAW_MAGIC);
+        raw.extend_from_slice(&2_u32.to_le_bytes());
+        raw.extend_from_slice(&1_u32.to_le_bytes());
+        raw.extend_from_slice(rgba.as_bytes());
+        let blob = store.put_bytes(&raw).unwrap();
+        take_decode_test_events();
+        if store.load_image(&blob).is_err()
+            || !take_decode_test_events().iter().any(|e| {
+                matches!(
+                    e,
+                    DecodeTestEvent::RawLayout {
+                        width: 2,
+                        height: 1,
+                        ..
+                    }
+                )
+            })
+        {
+            violations.push("raw RGBA must use the production raw decode branch".into());
+        }
+
+        for format in [image::ImageFormat::Gif, image::ImageFormat::Bmp] {
+            let mut encoded = Cursor::new(Vec::new());
+            rgba.write_to(&mut encoded, format).unwrap();
+            let blob = store.put_bytes(&encoded.into_inner()).unwrap();
+            take_decode_test_events();
+            if store.load_image(&blob).is_ok() {
+                violations.push(format!(
+                    "{format:?} must be rejected regardless of extension"
+                ));
+            }
+            take_decode_test_events();
+        }
+
+        let mut jpeg = Cursor::new(Vec::new());
+        rgba.write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        let mut jpeg = jpeg.into_inner();
+        let exif = [
+            b'E', b'x', b'i', b'f', 0, 0, b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1,
+            0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let mut oriented = vec![0xff, 0xd8, 0xff, 0xe1, 0, (exif.len() + 2) as u8];
+        oriented.extend_from_slice(&exif);
+        oriented.extend_from_slice(&jpeg.split_off(2));
+        let blob = store.put_bytes(&oriented).unwrap();
+        take_decode_test_events();
+        let loaded = store.load_image(&blob);
+        let events = take_decode_test_events();
+        if loaded.as_ref().map(|i| (i.width(), i.height())).ok() != Some((1, 2))
+            || !events.contains(&DecodeTestEvent::Sniffed(Some(image::ImageFormat::Jpeg)))
+        {
+            violations.push("JPEG EXIF orientation must be applied after byte sniffing".into());
+        }
+
+        for (name, bytes, expected) in [
+            ("exact", Some(DECODED_RGBA_LIMIT), true),
+            ("plus-one", DECODED_RGBA_LIMIT.checked_add(1), false),
+            ("overflow", u64::MAX.checked_add(1), false),
+        ] {
+            let approved = bytes.is_some_and(|bytes| {
+                let mut limits = image::Limits::default();
+                limits.reserve(bytes).is_ok()
+            });
+            if approved != expected {
+                violations.push(format!(
+                    "{name} decoded RGBA reservation: expected {expected}, got {approved}"
+                ));
+            }
+        }
+
+        let probe_raw_layout = |width, height| {
+            let mut raw = Vec::from(RAW_MAGIC);
+            raw.extend_from_slice(&u32::to_le_bytes(width));
+            raw.extend_from_slice(&u32::to_le_bytes(height));
+            let blob = store.put_bytes(&raw).unwrap();
+            take_decode_test_events();
+            let _ = store.load_image(&blob);
+            take_decode_test_events()
+        };
+        for (name, events, construction_expected) in [
+            ("exact", probe_raw_layout(16_384, 8_192), true),
+            ("above-budget", probe_raw_layout(16_385, 8_192), false),
+            ("overflow", probe_raw_layout(u32::MAX, u32::MAX), false),
+        ] {
+            let construction_started = events.contains(&DecodeTestEvent::PixelConstructionStarted);
+            if construction_started != construction_expected {
+                violations.push(format!(
+                    "{name} raw layout pixel construction: expected {construction_expected}, got {construction_started}"
+                ));
+            }
+        }
+
+        let cache_image = DynamicImage::new_rgba8(2048, 2048);
+        let decoded_bytes = cache_image.as_bytes().len();
+        let image_count = DECODED_IMAGE_CACHE_BUDGET / decoded_bytes + 1;
+        let mut encoded = Cursor::new(Vec::new());
+        cache_image
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let encoded = encoded.into_inner();
+        let mut refs = Vec::with_capacity(image_count);
+        for value in 0..image_count {
+            let mut bytes = encoded.clone();
+            bytes.extend_from_slice(&(value as u64).to_le_bytes());
+            refs.push(store.put_bytes(&bytes).unwrap());
+        }
+        take_decode_test_events();
+        for blob in &refs {
+            store.load_image(blob).unwrap();
+        }
+        take_decode_test_events();
+        store.load_image(&refs[0]).unwrap();
+        let reload = take_decode_test_events();
+        if !reload.contains(&DecodeTestEvent::CacheMiss(refs[0].clone()))
+            || !reload.iter().any(|event| {
+                matches!(
+                    event,
+                    DecodeTestEvent::Decoded {
+                        width: 2048,
+                        height: 2048,
+                        ..
+                    }
+                )
+            })
+        {
+            violations.push(format!(
+                "decoded-image cache must miss and re-decode after {} bytes exceed its {DECODED_IMAGE_CACHE_BUDGET}-byte budget",
+                image_count * decoded_bytes
+            ));
+        }
+
+        assert!(
+            violations.is_empty(),
+            "G002 blob contract violations:\n{}",
+            violations.join("\n")
+        );
     }
 }

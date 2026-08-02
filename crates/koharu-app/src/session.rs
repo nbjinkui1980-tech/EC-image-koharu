@@ -576,11 +576,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "MEDIUM baseline running1 RED"]
-    fn staged_untrusted_lifecycle_direct_open_clears_planner_owned_style() {
+    #[ignore = "hanonly-pre-greenc-red"]
+    fn hanonly_pre_greenc_red_t3_untrusted_marker_lifecycle_contract() {
         let (_tmp, path) = tmp_dir();
         let (page, node) = stage_untrusted_history(&path);
-
         let untrusted = ProjectSession::open_untrusted(&path).unwrap();
         let scene = untrusted.scene_snapshot();
         let text = match &scene.node(page, node).expect("staged text ID").kind {
@@ -591,41 +590,35 @@ mod tests {
         assert!(!text.typography_plan_verified);
         assert!(text.style.is_none());
         assert_eq!(untrusted.epoch(), 2);
-        drop(untrusted);
-
         assert!(
             std::fs::read(path.join(SCENE_FILE))
                 .unwrap()
                 .starts_with(SNAPSHOT_V2_PREFIX)
         );
         assert_eq!(std::fs::metadata(path.join(LOG_FILE)).unwrap().len(), 0);
-    }
-
-    #[test]
-    #[ignore = "MEDIUM baseline running1 RED"]
-    fn staged_untrusted_lifecycle_external_route_cannot_restore_planner_owned_style() {
-        let (_tmp, path) = tmp_dir();
-        let (page, node) = stage_untrusted_history(&path);
-        let untrusted = ProjectSession::open_untrusted(&path).unwrap();
+        let epoch = untrusted.epoch();
 
         // This marker-free patch is accepted by the external route contract.
-        untrusted
-            .apply(Op::UpdateNode {
-                page,
-                id: node,
-                patch: koharu_core::NodePatch {
-                    data: Some(koharu_core::NodeDataPatch::Text(
-                        koharu_core::TextDataPatch {
-                            style: Some(Some(planner_owned_style())),
-                            ..Default::default()
-                        },
-                    )),
-                    ..Default::default()
-                },
-                prev: koharu_core::NodePatch::default(),
-            })
-            .unwrap();
+        let result = untrusted.apply(Op::UpdateNode {
+            page,
+            id: node,
+            patch: koharu_core::NodePatch {
+                data: Some(koharu_core::NodeDataPatch::Text(
+                    koharu_core::TextDataPatch {
+                        style: Some(Some(planner_owned_style())),
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            prev: koharu_core::NodePatch::default(),
+        });
 
+        assert!(
+            result.is_err(),
+            "an untrusted session must reject Planner-owned style reintroduction"
+        );
+        assert_eq!(untrusted.epoch(), epoch);
         let scene = untrusted.scene_snapshot();
         let text = match &scene.node(page, node).expect("staged text ID").kind {
             NodeKind::Text(text) => text,

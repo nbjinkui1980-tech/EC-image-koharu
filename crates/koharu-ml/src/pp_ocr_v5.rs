@@ -204,4 +204,94 @@ mod tests {
             [29.0, 20.0, 237.0, 58.0]
         );
     }
+
+    #[test]
+    #[ignore = "hanonly-pre-b1-red"]
+    fn hanonly_pre_b1_red_t2_crop_local_ppocr_contract() {
+        const CROP_LOCAL_MIN_INFERENCE_HEIGHT: u32 = 320;
+        const CROP_LOCAL_INFERENCE_PIXEL_BUDGET: u64 = 1024 * 1024;
+        const CROP_LOCAL_MAX_SCALE: u32 = 4;
+
+        fn crop_local_model_scale(width: u32, height: u32) -> u32 {
+            let scale = CROP_LOCAL_MIN_INFERENCE_HEIGHT
+                .div_ceil(height.max(1))
+                .clamp(1, CROP_LOCAL_MAX_SCALE);
+            (1..=scale)
+                .rev()
+                .find(|scale| {
+                    u64::from(width)
+                        .checked_mul(u64::from(height))
+                        .and_then(|pixels| pixels.checked_mul(u64::from(*scale)))
+                        .and_then(|pixels| pixels.checked_mul(u64::from(*scale)))
+                        .is_some_and(|pixels| pixels <= CROP_LOCAL_INFERENCE_PIXEL_BUDGET)
+                })
+                .unwrap_or(1)
+        }
+
+        let mut violations = Vec::new();
+        for factor in [0.5_f32, 1.0, 2.0, 4.0] {
+            let width = (400.0 * factor) as u32;
+            let height = (160.0 * factor) as u32;
+            let expected = crop_local_model_scale(width, height);
+            let actual = word_box_inference_scale(width, height);
+            if actual != expected {
+                violations.push(format!(
+                    "{factor}x crop-local scale {width}x{height}: expected {expected}, got {actual}"
+                ));
+            }
+        }
+        for (label, width, height) in [
+            ("former-height-below", 1024, 159),
+            ("former-height-at", 1024, 160),
+            ("former-width-at", 1024, 159),
+            ("former-width-above", 1025, 159),
+            ("pixel-budget", 1000, 300),
+            ("checked-overflow", u32::MAX, u32::MAX),
+        ] {
+            let expected = crop_local_model_scale(width, height);
+            let actual = word_box_inference_scale(width, height);
+            if actual != expected {
+                violations.push(format!(
+                    "{label} crop-local scale {width}x{height}: expected {expected}, got {actual}"
+                ));
+            }
+        }
+        for (bbox, scale, source_size) in [
+            ([0.5, 0.5, 1.0, 1.0], 1, [2.0, 2.0]),
+            ([1.0, 1.0, 3.0, 3.0], 2, [2.0, 2.0]),
+            ([2.0, 2.0, 6.0, 6.0], 4, [2.0, 2.0]),
+            ([59.0, 41.0, 473.0, 115.0], 2, [300.0, 100.0]),
+        ] {
+            let scale_f32 = scale as f32;
+            let expected = [
+                (bbox[0] / scale_f32).floor(),
+                (bbox[1] / scale_f32).floor(),
+                (bbox[2] / scale_f32).ceil(),
+                (bbox[3] / scale_f32).ceil(),
+            ];
+            let actual = word_box_source_bbox(bbox, scale);
+            if actual != expected {
+                violations.push(format!(
+                    "half-open inverse {bbox:?} / {scale}: expected {expected:?}, got {actual:?}"
+                ));
+            }
+            for axis in 0..4 {
+                let source_extent = source_size[axis % 2];
+                let inference_extent = source_extent * scale_f32;
+                let normalized = bbox[axis] / inference_extent;
+                let normalized_floor_or_ceil = actual[axis] / source_extent;
+                let tolerance = 1.0 / source_extent;
+                if (normalized - normalized_floor_or_ceil).abs() > tolerance {
+                    violations.push(format!(
+                        "normalized half-open coordinate changed beyond one source pixel at axis {axis}: {normalized} -> {normalized_floor_or_ceil}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "G002 PP-OCR contract violations:\n{}",
+            violations.join("\n")
+        );
+    }
 }

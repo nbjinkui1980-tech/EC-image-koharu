@@ -387,6 +387,60 @@ mod tests {
         assert!(crate::routes::history::validate_external_op(&op).is_err());
     }
 
+    #[tokio::test]
+    #[ignore = "hanonly-pre-greenc-red"]
+    async fn hanonly_pre_greenc_red_t3_mcp_marker_rejection_contract() {
+        let app = in_memory_app();
+        let (root, session, page_id) = typography_session();
+        let node_id = session
+            .scene
+            .read()
+            .pages
+            .get(&page_id)
+            .unwrap()
+            .nodes
+            .values()
+            .find(|node| matches!(node.kind, koharu_core::NodeKind::Text(_)))
+            .unwrap()
+            .id;
+        let page = session.scene.read().pages.get(&page_id).unwrap().clone();
+        app.session.store(Some(session.clone()));
+        let state = crate::BootstrapManager::new(app.runtime.clone());
+        assert!(state.set_app(app).is_ok(), "set app");
+        let server = KoharuServer::new(state);
+
+        for case in crate::routes::history::tests::t3_marker_cases(&page, node_id) {
+            let before = crate::routes::history::tests::mutation_state(&session);
+            let result = server.apply(Parameters(ApplyInput { op: case.raw })).await;
+            if case.reject {
+                let error = result.err().expect(case.name);
+                assert_eq!(
+                    error.message,
+                    crate::routes::history::tests::MARKER_ERROR,
+                    "{}",
+                    case.name
+                );
+                assert_eq!(
+                    crate::routes::history::tests::mutation_state(&session),
+                    before,
+                    "{}",
+                    case.name
+                );
+            } else {
+                assert!(result.is_ok(), "{}", case.name);
+                assert_eq!(session.epoch(), before.1 + 1, "{}", case.name);
+                assert!(
+                    !crate::routes::history::tests::has_verified_marker(&session),
+                    "{}",
+                    case.name
+                );
+            }
+        }
+        drop(server);
+        drop(session);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn mcp_existing_path_open_clears_forged_typography_marker_before_activation() {
         let root = std::env::temp_dir().join(format!("koharu-mcp-open-{}", Uuid::new_v4()));
