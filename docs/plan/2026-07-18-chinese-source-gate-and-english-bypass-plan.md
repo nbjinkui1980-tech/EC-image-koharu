@@ -81,7 +81,7 @@
 - Modify: `ui/public/locales/zh-CN/translation.json`
 - Modify: `ui/public/locales/{es-ES,ja-JP,ko-KR,pt-BR,ru-RU,tr-TR,zh-TW}/translation.json`
 
-- [ ] **Step 1: 写 Rust 配置补丁失败测试**
+- [x] **Step 1: 写 Rust 配置补丁失败测试**
 
 在 `crates/koharu-app/src/config.rs` 测试模块增加：
 
@@ -107,7 +107,7 @@ fn config_patch_updates_source_text_policy_without_changing_engines() {
 }
 ```
 
-- [ ] **Step 2: 写 UI 保存失败测试**
+- [x] **Step 2: 写 UI 保存失败测试**
 
 在 `ui/tests/components/SourceTextPolicySettings.test.tsx` 通过 MSW 返回带完整 engine catalog 的 `AppConfig`，打开 `SettingsDialog` 的 `engines` tab，选择“全部文字”，断言请求体严格为：
 
@@ -118,7 +118,7 @@ expect(patches.at(-1)?.pipeline?.detector).toBe('pp-doclayout-v3')
 
 再把服务端响应切回 `han_only`，重新渲染并断言选择器显示“中文（推荐）”。
 
-- [ ] **Step 3: 运行测试并确认 FAIL**
+- [x] **Step 3: 运行测试并确认 FAIL**
 
 Run:
 
@@ -129,7 +129,7 @@ bun run --filter ui test -- tests/components/SourceTextPolicySettings.test.tsx
 
 Expected: Rust 因 `PipelineConfigPatch::source_text_policy` 不存在而编译失败；UI 因缺少选择器或 PATCH 字段失败。
 
-- [ ] **Step 4: 把策略类型移动到共享协议层并支持 PATCH**
+- [x] **Step 4: 把策略类型移动到共享协议层并支持 PATCH**
 
 在 `crates/koharu-core/src/protocol.rs` 定义共享类型并加入补丁：
 
@@ -174,7 +174,7 @@ if let Some(v) = p.source_text_policy {
 }
 ```
 
-- [ ] **Step 5: 直接在现有 EnginesPane 增加选择器**
+- [x] **Step 5: 直接在现有 EnginesPane 增加选择器**
 
 `appConfigToPatch()` 的 pipeline 对象加入：
 
@@ -210,7 +210,7 @@ sourceTextPolicy: cfg.pipeline.source_text_policy ?? 'han_only',
 
 文案含义固定为：中文模式只将中文目标交给完整 OCR 和后续阶段，并要求选择 box-only detector；`comic-text-detector` 会同时运行 segmentation，因此仅支持“全部文字”。全部文字保持兼容行为。
 
-- [ ] **Step 6: 立即生成 API 类型并检查唯一预期差异**
+- [x] **Step 6: 立即生成 API 类型并检查唯一预期差异**
 
 ```bash
 bun run generate:api
@@ -219,7 +219,7 @@ git diff -- ui/openapi.json ui/lib/api/schemas/pipelineConfigPatch.ts ui/lib/api
 
 Expected: `PipelineConfigPatch` 只增加 `sourceTextPolicy?: SourceTextPolicy | null` 及必要 import；`StartPipelineRequest`、HTTP 路径和其他请求 JSON 不变。
 
-- [ ] **Step 7: 运行定向回归并确认 PASS**
+- [x] **Step 7: 运行定向回归并确认 PASS**
 
 ```bash
 bun cargo test -p koharu-app config::tests --lib
@@ -229,7 +229,7 @@ bun run --filter ui build
 
 Expected: PASS；旧 TOML 仍默认 `han_only`，`all_text` 可往返，Task 1 提交点可独立完成 TypeScript 构建。
 
-- [ ] **Step 8: 提交 Task 1**
+- [x] **Step 8: 提交 Task 1**
 
 ```bash
 git add crates/koharu-core/src/protocol.rs crates/koharu-core/src/lib.rs crates/koharu-app/src/config.rs ui/components/SettingsDialog.tsx ui/tests/components/SourceTextPolicySettings.test.tsx ui/public/locales ui/openapi.json ui/lib/api/schemas/pipelineConfigPatch.ts ui/lib/api/schemas/index.ts
@@ -247,7 +247,7 @@ git commit -m "feat: expose source text policy setting"
 - Reuse: `crates/koharu-app/src/pipeline/engines/support.rs`
 - Reuse: `crates/koharu-ml/src/pp_ocr_v5.rs`
 
-- [ ] **Step 1: 写纯函数失败测试**
+- [x] **Step 1: 写纯函数失败测试**
 
 在新模块增加以下内存测试；`word()` 的 `top/bottom` 参数用于验证多行几何：
 
@@ -395,7 +395,7 @@ fn gate_splits_han_lines_around_an_english_line() {
 }
 ```
 
-- [ ] **Step 2: 运行测试并确认 FAIL**
+- [x] **Step 2: 运行测试并确认 FAIL**
 
 ```bash
 bun cargo test -p koharu-app pipeline::engines::source_language_gate::tests --lib
@@ -403,7 +403,7 @@ bun cargo test -p koharu-app pipeline::engines::source_language_gate::tests --li
 
 Expected: FAIL，因为模块、PP 预筛和带 VL 正文的严格分类函数尚不存在。
 
-- [ ] **Step 3: 移动并收紧现有严格校验**
+- [x] **Step 3: 移动并收紧现有严格校验**
 
 从 `paddle_ocr.rs::build_pp_ocr_word_box_update()` 只抽取共享的字符对齐、置信度和坐标校验为 `pub(super) fn validate_pp_vl_alignment(...)`，不要在 Task 2 删除 Paddle 的现有 wrapper。`paddle_ocr.rs` 暂时调用该共享函数维持当前行为和独立编译；Task 4 删除旧 PP 分支后，共享函数只由 Gate 使用。生产决策类型固定为：
 
@@ -455,7 +455,7 @@ fn bbox_quad([left, top, right, bottom]: [f32; 4]) -> [[f32; 2]; 4] {
 
 不要新增第二个 validator、trait 或通用 geometry 模块。`intersect_bbox()` 和 bbox union 保持为该文件私有小函数。
 
-- [ ] **Step 4: 运行测试并确认 PASS**
+- [x] **Step 4: 运行测试并确认 PASS**
 
 ```bash
 bun cargo test -p koharu-app pipeline::engines::source_language_gate::tests --lib
@@ -464,7 +464,7 @@ bun cargo test -p koharu-app pipeline::engines::paddle_ocr::tests --lib
 
 Expected: 新测试 PASS；`paddle_ocr` 通过共享 `validate_pp_vl_alignment()` 保持现有测试和独立编译，AllText 的节点级 OCR 测试仍 PASS；不加载模型。
 
-- [ ] **Step 5: 提交 Task 2**
+- [x] **Step 5: 提交 Task 2**
 
 ```bash
 git add crates/koharu-app/src/pipeline/engines/source_language_gate.rs crates/koharu-app/src/pipeline/engines/paddle_ocr.rs crates/koharu-app/src/pipeline/engines/mod.rs
@@ -486,7 +486,7 @@ git commit -m "feat: validate Chinese source targets"
 - Modify: `ui/hooks/useCurrentPage.ts`
 - Modify: `ui/tests/hooks/useCurrentPage.test.tsx`
 
-- [ ] **Step 1: 写生产 dispatch 失败测试**
+- [x] **Step 1: 写生产 dispatch 失败测试**
 
 在 `source_language_gate.rs` 增加不加载模型的双 closure seam 测试；PP closure 记录所有候选，VL closure 只接收 PP 判定含 Han 的 crop：
 
@@ -567,7 +567,7 @@ async fn production_gate_is_idempotent_for_already_accepted_nodes() {
 
 同一步先在 `yuzumarker_font.rs` 写 `font_crops_exclude_english_between_han_targets`：用独特颜色标记 `中文一\nEnglish\n中文二` 的英文行，构造两个预期紧 bbox 的 visible Gate target，调用尚不存在的 `text_crops()`，断言两个 crop 均不含英文颜色。该测试只使用内存图片。
 
-- [ ] **Step 2: 写 UI provisional 隐藏失败测试**
+- [x] **Step 2: 写 UI provisional 隐藏失败测试**
 
 在 `ui/tests/hooks/useCurrentPage.test.tsx`：
 
@@ -581,7 +581,7 @@ it('omits invisible provisional text nodes', () => {
 
 同时在 `support.rs` 先写 `detector_cleanup_clears_empty_han_only_but_preserves_empty_all_text`：同一个含旧 Text 的 Scene 分别调用计划中的四参数 `clear_text_nodes_ops(..., 0, true/false)`，断言 HanOnly 分支产生 RemoveNode、AllText 分支为空。
 
-- [ ] **Step 3: 运行测试并确认 FAIL**
+- [x] **Step 3: 运行测试并确认 FAIL**
 
 ```bash
 bun cargo test -p koharu-app production_gate_ --lib
@@ -592,7 +592,7 @@ bun run --filter ui test -- tests/hooks/useCurrentPage.test.tsx
 
 Expected: Rust dispatch、四参数 cleanup 和 `text_crops()` 不存在；UI 仍返回 invisible 节点。
 
-- [ ] **Step 4: 实现生产门禁 seam**
+- [x] **Step 4: 实现生产门禁 seam**
 
 生产与测试必须共用以下唯一入口：
 
@@ -756,11 +756,11 @@ Op::UpdateNode {
 
 设置 gate detector 名称可阻止 `expanded_text_block_crop_bounds()` 再按旧 CTD metadata 扩张回英文区域；Gate 已写入 VL 权威中文 OCR，HanOnly 不再运行第二次 OCR。
 
-- [ ] **Step 5: 锁定 Font crop 只覆盖紧边界中文节点**
+- [x] **Step 5: 锁定 Font crop 只覆盖紧边界中文节点**
 
 把 `yuzumarker_font.rs` 当前内联的 crop map 原样提取为私有 `text_crops(image, texts)`，生产 `run()` 调用该函数，使 Step 1 的内存测试得到两个 crop 且都不包含英文行。不要增加 Font inference trait 或 fake model。
 
-- [ ] **Step 6: Detector 根据策略创建 provisional 节点**
+- [x] **Step 6: Detector 根据策略创建 provisional 节点**
 
 把 `new_text_node()` 改成：
 
@@ -798,7 +798,7 @@ let node = new_text_node(bbox, text, visible);
 if (node.visible === false) continue
 ```
 
-- [ ] **Step 7: 运行定向测试并确认 PASS**
+- [x] **Step 7: 运行定向测试并确认 PASS**
 
 ```bash
 bun cargo test -p koharu-app pipeline::engines::source_language_gate::tests --lib
@@ -809,7 +809,7 @@ bun run --filter ui test -- tests/hooks/useCurrentPage.test.tsx
 
 Expected: PASS；纯英文 VL closure 调用数为 0；已验收节点重跑时 PP/VL 均为 0；混排只对可能含 Han 的原始 crop 调用 VL；Font crop 不包含英文行；Brush 的 Inpainted 结果保留；测试只使用内存图片和 closure，不加载模型。
 
-- [ ] **Step 8: 提交 Task 3**
+- [x] **Step 8: 提交 Task 3**
 
 ```bash
 git add crates/koharu-app/src/pipeline/engines/source_language_gate.rs crates/koharu-app/src/pipeline/engines/support.rs crates/koharu-app/src/pipeline/engines/pp_doclayout.rs crates/koharu-app/src/pipeline/engines/anime_text.rs crates/koharu-app/src/pipeline/engines/ctd_full.rs crates/koharu-app/src/pipeline/engines/comic_text_bubble.rs crates/koharu-app/src/pipeline/engines/yuzumarker_font.rs ui/hooks/useCurrentPage.ts ui/tests/hooks/useCurrentPage.test.tsx
@@ -830,7 +830,7 @@ git commit -m "feat: gate visible text nodes by Chinese source"
 - Modify: `crates/koharu-app/src/pipeline/engines/bubble_segmentation.rs`
 - Modify one-line `needs`: `crates/koharu-app/src/pipeline/engines/{ctd_segment.rs,llm_translate.rs,typography.rs,lama.rs,aot.rs,flux2_klein.rs,renderer.rs}`
 
-- [ ] **Step 1: 写 DAG 与整页短路失败测试**
+- [x] **Step 1: 写 DAG 与整页短路失败测试**
 
 在 `pipeline/engine.rs` 增加：
 
@@ -891,7 +891,7 @@ async fn han_only_empty_source_gate_stops_every_downstream_engine() {
 - `han_only_detect_then_ocr_reuses_accepted_targets_without_rerunning_gate_models`：先运行 Detector+Gate，再运行 OCR+Segment；第二次 PP=0、VL=0、保护节点数量不变、Segment=1。
 - `han_only_rejects_ctd_full_before_registry_load`：选择 `comic-text-detector` 时 `infos_for_spec()` 返回包含可选 box-only detector ID 的明确错误，Registry load/run 计数均为 0；AllText 仍解析并运行原 CTD Full。
 
-- [ ] **Step 2: 运行测试并确认 FAIL**
+- [x] **Step 2: 运行测试并确认 FAIL**
 
 ```bash
 bun cargo test -p koharu-app orders_source_gate_after_detector_and_before_every_downstream_stage --lib
@@ -900,7 +900,7 @@ bun cargo test -p koharu-app pipeline::tests --lib
 
 Expected: FAIL；第一个命令因 artifact edge 不存在而失败，第二个命令命中本 Task 的全部新增 driver 测试，并因 CTD 拒绝、自动注入、幂等跳过或短路尚不存在而至少失败一项。
 
-- [ ] **Step 3: 增加 DAG-only artifact 并修改依赖**
+- [x] **Step 3: 增加 DAG-only artifact 并修改依赖**
 
 在 `Artifact` 增加：
 
@@ -935,7 +935,7 @@ Gate load 只加载 PP-OCRv5；PaddleOCR-VL 使用 Task 3 的 `OnceCell`，仅�
 
 Font Detector、Segment、Translator、Typography、三个 Inpainter、Renderer 的现有 `needs` 各追加 `Artifact::SourceTextBoxes`。Bubble Segmenter 当前 `needs: &[]`，明确改成 `needs: &[Artifact::TextBoxes, Artifact::SourceTextBoxes]`：AllText 由 `TextBoxes` 保持 Detector → Bubble，HanOnly 再增加 Gate → Bubble。OcrText/Translations 等原 edge 不变；不得声称 Bubble 原来已有 TextBoxes edge。
 
-- [ ] **Step 4: 中文模式自动注入内部 gate**
+- [x] **Step 4: 中文模式自动注入内部 gate**
 
 在 `pipeline/mod.rs` 提取：
 
@@ -997,7 +997,7 @@ fn infos_for_spec(spec: &PipelineSpec) -> Result<ResolvedInfos> {
 
 `run()` 使用它替换当前直接映射 `spec.steps` 的代码。CTD Full 拒绝发生在 `Registry::get()` 前，因此 HanOnly 不加载或执行它的内置 segmentation，且不静默改变用户配置。HanOnly Gate 已完成 PaddleOCR-VL，所以移除所有所选 `OcrText` producer，避免重复 OCR；AllText 和 `region: Some(_)` 完全不改 infos。不得修改 HTTP `StartPipelineRequest`。
 
-- [ ] **Step 5: 在 gate 后、加载下游 engine 前短路**
+- [x] **Step 5: 在 gate 后、加载下游 engine 前短路**
 
 在 `source_language_gate.rs` 暴露一个 `pub(crate) fn has_gate_candidates(scene, page) -> bool`，直接遍历 raw page nodes并复用 Task 3 的候选 marker 判定：必须看到 Detector 刚写入的 `visible:false` provisional/旧项目节点，但忽略 accepted/protected marker；不得使用已经过滤 invisible 的 `support::text_nodes()`。
 
@@ -1030,7 +1030,7 @@ if info.id == "pp-ocr-v5-source-gate"
 
 不要为一次调用提取 `apply_step_ops()`；只用 `if !ops.is_empty()` 包住当前 Batch/apply 原代码，并把 Gate post-check 放到该分支之后。HanOnly Detector 本轮零候选时仍运行 Gate 的轻量空候选分支，以执行 `zero_target_cleanup()`，但不会调用 `word_boxes()` 或 PaddleOCR-VL，随后整页短路；仅 OCR/Segment 的第二次手动运行会复用已验收节点并继续下游，不重复 PP/VL；零 Text standalone Renderer 在 `Registry::get()` 前跳过 Gate；已有 legacy Text 的 downstream-only 路径先运行 Gate，再按结果决定是否短路。
 
-- [ ] **Step 6: 删除 PaddleOCR-VL 内重复 PP-OCRv5 分支**
+- [x] **Step 6: 删除 PaddleOCR-VL 内重复 PP-OCRv5 分支**
 
 从 `paddle_ocr.rs` 删除已经移动到 Gate 的 `word_boxes: AsyncMutex<Option<PpOcrV5>>`、`dispatch_inline_word_boxes()`、`build_pp_ocr_word_box_update()` 和重复测试。`Model` 恢复只持有：
 
@@ -1040,7 +1040,7 @@ pub struct Model(Mutex<PaddleOcrVl>);
 
 `run()` 保持普通节点级 `inference_images()`。HanOnly 的 resolved infos 已移除该 engine；AllText 不注入 Gate，仍对所有 detector 节点执行用户选择的原有 OCR。
 
-- [ ] **Step 7: 运行定向回归并确认 PASS**
+- [x] **Step 7: 运行定向回归并确认 PASS**
 
 ```bash
 bun cargo test -p koharu-app pipeline::engine::tests --lib
@@ -1051,7 +1051,7 @@ bun cargo test -p koharu-app pipeline::engines::paddle_ocr::tests --lib
 
 Expected: PASS；纯英文 full pipeline 只有 box-only Detector + PP Gate 调用且 VL=0；CTD Full 在 HanOnly 下 Registry load/run=0 并返回明确配置错误；已有纯英文节点的 renderer-only 路径 Renderer=0；零 Text standalone Renderer=1；Repair Brush Gate=0；AllText 保留原 OCR 和完整 CTD。
 
-- [ ] **Step 8: 提交 Task 4**
+- [x] **Step 8: 提交 Task 4**
 
 ```bash
 git add crates/koharu-app/src/pipeline/artifacts.rs crates/koharu-app/src/pipeline/engine.rs crates/koharu-app/src/pipeline/mod.rs crates/koharu-app/src/pipeline/engines/source_language_gate.rs crates/koharu-app/src/pipeline/engines/paddle_ocr.rs crates/koharu-app/src/pipeline/engines/yuzumarker_font.rs crates/koharu-app/src/pipeline/engines/bubble_segmentation.rs crates/koharu-app/src/pipeline/engines/ctd_segment.rs crates/koharu-app/src/pipeline/engines/llm_translate.rs crates/koharu-app/src/pipeline/engines/typography.rs crates/koharu-app/src/pipeline/engines/lama.rs crates/koharu-app/src/pipeline/engines/aot.rs crates/koharu-app/src/pipeline/engines/flux2_klein.rs crates/koharu-app/src/pipeline/engines/renderer.rs
@@ -1068,7 +1068,7 @@ git commit -m "feat: stop Chinese pipelines after empty source gate"
 - Modify: `crates/koharu-app/src/pipeline/engines/support.rs`
 - Modify: `ui/tests/components/TextBlocksPanel.test.tsx`
 
-- [ ] **Step 1: 增加端到端、无模型验收测试**
+- [x] **Step 1: 增加端到端、无模型验收测试**
 
 使用 fake Detector/Source Gate/下游 engines 与内存 Source 图片覆盖以下测试名和断言：
 
@@ -1087,7 +1087,7 @@ git commit -m "feat: stop Chinese pipelines after empty source gate"
 
 像素断言使用不同颜色标记英文 ROI、中文 ROI 和背景；最终图必须满足：英文 ROI 与 Source 逐像素相等，只有中文 ROI 允许变化。
 
-- [ ] **Step 2: 运行验收测试并确认 FAIL**
+- [x] **Step 2: 运行验收测试并确认 FAIL**
 
 ```bash
 bun cargo test -p koharu-app pipeline::tests --lib
@@ -1095,7 +1095,7 @@ bun cargo test -p koharu-app pipeline::tests --lib
 
 Expected: 至少一个新增验收测试暴露尚未接线的生产路径；该过滤器必须命中本 Task 列出的全部端到端测试。如果全部提前 PASS，先确认测试确实调用 `run()` 和生产 gate dispatch，而不是只测纯函数。
 
-- [ ] **Step 3: 只修验收暴露的生产接线缺口**
+- [x] **Step 3: 只修验收暴露的生产接线缺口**
 
 不再增加新类型。允许的修正仅包括：Source Gate 决策、保护节点生成、ops 顺序、driver 短路、Segment 最终 support intersection、Renderer Source 像素恢复和 stale layer 清理。先运行现有生产 seam 测试，只有失败时才修改对应 engine：
 
@@ -1118,7 +1118,7 @@ bun cargo test -p koharu-app pipeline::tests --lib
 
 Expected: 本 Task 列出的全部测试 PASS 后才允许提交。
 
-- [ ] **Step 4: UI 验收**
+- [x] **Step 4: UI 验收**
 
 在 `TextBlocksPanel.test.tsx` 增加 Scene 中同时存在 `visible:false` 英文 provisional node 与 `visible:true` 中文 node 的 fixture，断言面板只显示中文节点，英文没有 Generate 按钮或编号框。
 
@@ -1128,7 +1128,7 @@ bun run --filter ui test -- tests/components/TextBlocksPanel.test.tsx tests/hook
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交 Task 5**
+- [x] **Step 5: 提交 Task 5**
 
 ```bash
 git add crates/koharu-app/src/pipeline/mod.rs crates/koharu-app/src/pipeline/engines/source_language_gate.rs crates/koharu-app/src/pipeline/engines/support.rs ui/tests/components/TextBlocksPanel.test.tsx
@@ -1142,7 +1142,7 @@ git commit -m "test: lock Chinese-only source pipeline behavior"
 **Files:**
 - Modify: `docs/zh-CN/reference/settings.md`
 
-- [ ] **Step 1: 更新中文使用文档**
+- [x] **Step 1: 更新中文使用文档**
 
 文档必须说明：
 
@@ -1156,7 +1156,7 @@ git commit -m "test: lock Chinese-only source pipeline behavior"
 - 纯汉字日文与中文不能仅凭脚本绝对区分；
 - `all_text` 是兼容模式。
 
-- [ ] **Step 2: 在 Task 1 生成物已经提交后运行完整质量门禁**
+- [x] **Step 2: 在 Task 1 生成物已经提交后运行完整质量门禁**
 
 ```bash
 bun cargo fmt --all -- --check
@@ -1175,7 +1175,7 @@ git status --short
 
 Expected: 全部退出码 0；默认测试不下载模型；lint 只允许仓库已有且未触及的 warning；`check:generated` 重新生成后看到已提交的 Task 1 生成物，退出码 0 且不留下 diff。
 
-- [ ] **Step 3: 人工验收当前电商样例**
+- [x] **Step 3: 人工验收当前电商样例**
 
 用当前问题图片运行中文 Full Pipeline：
 
@@ -1189,7 +1189,7 @@ Expected: 全部退出码 0；默认测试不下载模型；lint 只允许仓库
 - 可分框 `AI` + `智能塑形` 只处理中文，单框不可分时整块安全跳过；
 - HanOnly 选择 `comic-text-detector` 时在模型加载前出现明确配置错误；切换到 box-only detector 后，Activity/计数证明纯英文页没有 PaddleOCR-VL、Font、Bubble、Segment、Translator、Typography、Inpainter 或 Renderer 调用。
 
-- [ ] **Step 4: 提交 Task 6**
+- [x] **Step 4: 提交 Task 6**
 
 ```bash
 git add docs/zh-CN/reference/settings.md
