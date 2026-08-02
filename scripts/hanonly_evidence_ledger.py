@@ -626,6 +626,126 @@ R51_RAW_DETECTOR_KEYS = {
     "recognition_present",
     "recognition_class",
 }
+R59_PLAN_REVISION = 59
+R59_ORIGINAL_PUBLIC_COMMITMENT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-public-commitment.json"
+)
+R59_SUCCESSOR_COMMITMENT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-successor-commitment.json"
+)
+R59_START_MARKER_PATH = "/Users/Shared/hanonly-r59-public/r59-holdout-start.json"
+R59_TERMINAL_RECEIPT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-holdout-terminal.json"
+)
+R59_CLEANUP_RECEIPT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-cleanup-receipt.json"
+)
+R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256 = (
+    "d1ec5a35d01d716663df99cf8c4b153fd33b2934008c231813bd73b8f59aa927"
+)
+R59_ORIGINAL_B0_SHA = "4c0e0d25d4de3be2809e8c749a6858a1bb724fa4"
+R59_CONTRACT_SHA256 = (
+    "47ee4a1f63cb75f3782f21b2f9d3d2b73bc48865a9969a728b242fdc7d24924e"
+)
+R59_TEST_SPEC_SHA256 = (
+    "55a6e2307ec48cbbbaf6aed7b1944f42a5f310eb0f42e8d229cfe025b2749592"
+)
+R59_CALIBRATION_ARTIFACT_SHA256 = (
+    "7006eecae1aab6a7f178fc64c0979db0ec155ce3239122c280db750b8f90a3dc"
+)
+R59_SELECTED_CANDIDATE_ID = "S25L4"
+R59_ENTRY_IDS = [f"r59-h0{index}" for index in range(1, 5)]
+R59_CELLS = [
+    f"{entry_id}/{device}"
+    for entry_id in R59_ENTRY_IDS
+    for device in ("cpu", "metal")
+]
+R59_ORIGINAL_KEYS = {
+    "B0_SHA",
+    "age_public_recipient",
+    "ciphertext_sha256",
+    "created_at",
+    "opaque_ids",
+    "plaintext_cleanup",
+    "private_manifest_commitment_sha256",
+    "restricted_content_disclosed",
+    "schema",
+    "start_marker_absent",
+}
+R59_SUCCESSOR_KEYS = {
+    "schema",
+    "original_public_commitment_sha256",
+    "original_b0_sha",
+    "successor_b0_sha",
+    "contract_sha256",
+    "test_spec_sha256",
+    "calibration_artifact_sha256",
+    "selected_candidate_id",
+    "ciphertext_sha256",
+    "private_manifest_commitment_sha256",
+    "runtime_manifest_sha256",
+    "runtime_oracle_sha256",
+    "runtime_hashes_sha256",
+    "runtime_archive_sha256",
+    "private_schema_receipt_sha256",
+    "entry_ids",
+    "package_unchanged",
+    "start_marker_absent",
+}
+R59_START_KEYS = {
+    "schema",
+    "plan_revision",
+    "b0_sha",
+    "selected_candidate_id",
+    "original_public_commitment_sha256",
+    "successor_commitment_sha256",
+    "ciphertext_sha256",
+    "pre_holdout_attestation_sha256",
+    "nonce_hex",
+    "state",
+}
+R59_TERMINAL_KEYS = {
+    "schema",
+    "plan_revision",
+    "b0_sha",
+    "start_marker_sha256",
+    "successor_commitment_sha256",
+    "selected_candidate_id",
+    "cell_results",
+    "first_failed_cell",
+    "unexecuted_cells",
+    "cleanup_receipt_sha256",
+    "bundle_validation_receipt_sha256",
+    "artifact_payload_sha256",
+    "state",
+}
+R59_TERMINAL_CELL_KEYS = {"cell", "result"}
+R59_CLEANUP_KEYS = {
+    "schema",
+    "plaintext_root",
+    "runner_process_exited",
+    "descriptors_closed",
+    "plaintext_root_absent",
+    "cleanup_pass",
+}
+R59_AUTHORIZATION_KEYS = {
+    "schema",
+    "plan_revision",
+    "b0_sha",
+    "contract_sha256",
+    "test_spec_sha256",
+    "original_public_commitment_sha256",
+    "successor_commitment_sha256",
+    "calibration_artifact_sha256",
+    "selected_candidate_id",
+    "pre_holdout_attestation_sha256",
+    "start_marker_sha256",
+    "bundle_validation_receipt_sha256",
+    "terminal_receipt_sha256",
+    "cleanup_receipt_sha256",
+    "artifact_payload_sha256",
+    "result",
+}
 JPEG_SOF_MARKERS = {
     0xC0,
     0xC1,
@@ -909,6 +1029,15 @@ def canonical_json(value):
 
 
 def _r51_canonical_json(value):
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def _r59_canonical_json(value):
     return json.dumps(
         value,
         sort_keys=True,
@@ -4217,6 +4346,312 @@ def _r51_validate_authorization(arguments):
     )
 
 
+def _r59_read_public_json(path, expected_path, label):
+    if path != expected_path:
+        raise LedgerError(f"{label} path drift")
+    with contextlib.ExitStack() as stack:
+        held = _open_absolute(path, directory=False, stack=stack)
+        if _mode(held.stat) != 0o600:
+            raise LedgerError(f"{label} mode must be 0600")
+        before = os.fstat(held.fd)
+        data = _read_all(held.fd)
+        after = os.fstat(held.fd)
+        if (
+            _identity(before) != _identity(after)
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
+        ):
+            raise LedgerError(f"{label} changed while being read")
+    return data, _parse_json(data, label)
+
+
+def _r59_validate_original(data, value):
+    _require_keys(value, R59_ORIGINAL_KEYS, "R59 original public commitment")
+    if _sha256(data) != R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256:
+        raise LedgerError("R59 original public commitment SHA drift")
+    if (
+        value["schema"] != "hanonly.r59.public-commitment.v1"
+        or value["B0_SHA"] != R59_ORIGINAL_B0_SHA
+        or value["opaque_ids"] != R59_ENTRY_IDS
+        or value["plaintext_cleanup"] is not True
+        or value["restricted_content_disclosed"] is not False
+        or value["start_marker_absent"] is not True
+    ):
+        raise LedgerError("R59 original public commitment drift")
+    _validate_hash(value["ciphertext_sha256"], "R59 ciphertext")
+    _validate_hash(
+        value["private_manifest_commitment_sha256"],
+        "R59 private manifest commitment",
+    )
+    return value
+
+
+def _r59_validate_successor(data, value, original, requested_b0_sha):
+    _require_keys(value, R59_SUCCESSOR_KEYS, "R59 successor commitment")
+    if value["schema"] != "hanonly.r59.successor-commitment.v1":
+        raise LedgerError("R59 successor commitment schema drift")
+    if value["successor_b0_sha"] != requested_b0_sha:
+        raise LedgerError("R59 successor B0 does not equal requested B0")
+    if (
+        value["original_public_commitment_sha256"]
+        != R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256
+        or value["original_b0_sha"] != R59_ORIGINAL_B0_SHA
+        or value["contract_sha256"] != R59_CONTRACT_SHA256
+        or value["test_spec_sha256"] != R59_TEST_SPEC_SHA256
+        or value["calibration_artifact_sha256"]
+        != R59_CALIBRATION_ARTIFACT_SHA256
+        or value["selected_candidate_id"] != R59_SELECTED_CANDIDATE_ID
+        or value["ciphertext_sha256"] != original["ciphertext_sha256"]
+        or value["private_manifest_commitment_sha256"]
+        != original["private_manifest_commitment_sha256"]
+        or value["entry_ids"] != R59_ENTRY_IDS
+        or value["package_unchanged"] is not True
+        or value["start_marker_absent"] is not True
+    ):
+        raise LedgerError("R59 successor commitment binding drift")
+    for key in (
+        "runtime_manifest_sha256",
+        "runtime_oracle_sha256",
+        "runtime_hashes_sha256",
+        "runtime_archive_sha256",
+        "private_schema_receipt_sha256",
+    ):
+        _validate_hash(value[key], f"R59 successor {key}")
+    if _r59_canonical_json(value) != data:
+        raise LedgerError("R59 successor commitment is not canonical JSON")
+    return _sha256(data)
+
+
+def _r59_validate_clean_detached_head(repo_root, requested_b0_sha):
+    if not B0_SHA_RE.fullmatch(requested_b0_sha):
+        raise LedgerError("R59 requested B0 SHA is invalid")
+    head = _git(repo_root, "rev-parse", "HEAD").decode().strip()
+    if head != requested_b0_sha:
+        raise LedgerError("R59 successor B0 does not equal HEAD")
+    symbolic = subprocess.run(
+        ["git", "-C", repo_root, "symbolic-ref", "-q", "HEAD"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if symbolic.returncode != 1:
+        raise LedgerError("R59 B0 requires detached HEAD")
+    if _git(repo_root, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise LedgerError("R59 B0 worktree must be clean")
+
+
+def _r59_validate_protocol_files(repo_root):
+    for relative, expected, label in (
+        (
+            ".omx/plans/hanonly-r59-b0-custody-contract.json",
+            R59_CONTRACT_SHA256,
+            "R59 custody contract",
+        ),
+        (
+            ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+            R59_TEST_SPEC_SHA256,
+            "R59 custody test spec",
+        ),
+    ):
+        _, data = _r51_read(os.path.join(repo_root, relative), label, mode=None)
+        if _sha256(data) != expected:
+            raise LedgerError(f"{label} SHA drift")
+
+
+def _r59_validate_preflight_values(
+    original_data,
+    original,
+    successor_data,
+    successor,
+    requested_b0_sha,
+    *,
+    marker_exists,
+):
+    original = _r59_validate_original(original_data, original)
+    successor_sha256 = _r59_validate_successor(
+        successor_data, successor, original, requested_b0_sha
+    )
+    if marker_exists:
+        raise LedgerError("R59 start marker already exists; retry is forbidden")
+    return successor_sha256
+
+
+def _r59_path_exists_fail_closed(path, label):
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise LedgerError(f"cannot prove {label} absence") from error
+    return True
+
+
+def _r59_validate_preflight(arguments):
+    repo_root = _canonical_existing_path(arguments.repo_root, "repository root")
+    _r59_validate_clean_detached_head(repo_root, arguments.requested_b0_sha)
+    _r59_validate_protocol_files(repo_root)
+    original_data, original = _r59_read_public_json(
+        R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
+        R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
+        "R59 original public commitment",
+    )
+    successor_data, successor = _r59_read_public_json(
+        R59_SUCCESSOR_COMMITMENT_PATH,
+        R59_SUCCESSOR_COMMITMENT_PATH,
+        "R59 successor commitment",
+    )
+    successor_sha256 = _r59_validate_preflight_values(
+        original_data,
+        original,
+        successor_data,
+        successor,
+        arguments.requested_b0_sha,
+        marker_exists=_r59_path_exists_fail_closed(
+            R59_START_MARKER_PATH, "R59 start marker"
+        ),
+    )
+    return _r59_canonical_json(
+        {"result": "pass", "successor_commitment_sha256": successor_sha256}
+    ) + b"\n"
+
+
+def _r59_validate_authorization_values(
+    original_data,
+    original,
+    successor_data,
+    successor,
+    start_data,
+    start,
+    terminal_data,
+    terminal,
+    cleanup_data,
+    cleanup,
+    requested_b0_sha,
+):
+    original = _r59_validate_original(original_data, original)
+    successor_sha256 = _r59_validate_successor(
+        successor_data, successor, original, requested_b0_sha
+    )
+    _require_keys(start, R59_START_KEYS, "R59 start marker")
+    _require_keys(terminal, R59_TERMINAL_KEYS, "R59 terminal receipt")
+    _require_keys(cleanup, R59_CLEANUP_KEYS, "R59 cleanup receipt")
+    if (
+        _r59_canonical_json(start) != start_data
+        or _r59_canonical_json(terminal) != terminal_data
+        or _r59_canonical_json(cleanup) != cleanup_data
+    ):
+        raise LedgerError("R59 receipt JSON is not canonical")
+    start_sha256 = _sha256(start_data)
+    cleanup_sha256 = _sha256(cleanup_data)
+    if (
+        start["schema"] != "hanonly-r59-holdout-start-v1"
+        or start["plan_revision"] != R59_PLAN_REVISION
+        or start["b0_sha"] != requested_b0_sha
+        or start["selected_candidate_id"] != R59_SELECTED_CANDIDATE_ID
+        or start["original_public_commitment_sha256"]
+        != R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256
+        or start["successor_commitment_sha256"] != successor_sha256
+        or start["ciphertext_sha256"] != original["ciphertext_sha256"]
+        or start["state"] != "started"
+        or not isinstance(start["nonce_hex"], str)
+        or re.fullmatch(r"[0-9a-f]{32,}", start["nonce_hex"]) is None
+    ):
+        raise LedgerError("R59 start marker binding or state drift")
+    _validate_hash(
+        start["pre_holdout_attestation_sha256"],
+        "R59 pre-holdout attestation",
+    )
+    cells = terminal["cell_results"]
+    if not isinstance(cells, list) or len(cells) != len(R59_CELLS):
+        raise LedgerError("R59 terminal receipt must contain all eight cells")
+    for cell in cells:
+        _require_keys(cell, R59_TERMINAL_CELL_KEYS, "R59 terminal cell")
+    if [cell["cell"] for cell in cells] != R59_CELLS or any(
+        cell["result"] != "pass" for cell in cells
+    ):
+        raise LedgerError("R59 terminal cells are incomplete, reordered, or failed")
+    if (
+        terminal["schema"] != "hanonly-r59-holdout-terminal-v1"
+        or terminal["plan_revision"] != R59_PLAN_REVISION
+        or terminal["b0_sha"] != requested_b0_sha
+        or terminal["start_marker_sha256"] != start_sha256
+        or terminal["successor_commitment_sha256"] != successor_sha256
+        or terminal["selected_candidate_id"] != R59_SELECTED_CANDIDATE_ID
+        or terminal["first_failed_cell"] is not None
+        or terminal["unexecuted_cells"] != []
+        or terminal["cleanup_receipt_sha256"] != cleanup_sha256
+        or terminal["state"] != "completed_pass"
+    ):
+        raise LedgerError("R59 terminal receipt binding or state drift")
+    if (
+        cleanup["schema"] != "hanonly-r59-cleanup-v1"
+        or cleanup["plaintext_root"] != "/Users/koharu-custody/r59-plaintext"
+        or cleanup["runner_process_exited"] is not True
+        or cleanup["descriptors_closed"] is not True
+        or cleanup["plaintext_root_absent"] is not True
+        or cleanup["cleanup_pass"] is not True
+    ):
+        raise LedgerError("R59 cleanup receipt is non-authorizing")
+    _validate_hash(
+        terminal["bundle_validation_receipt_sha256"],
+        "R59 bundle validation receipt",
+    )
+    _validate_hash(terminal["artifact_payload_sha256"], "R59 artifact payload")
+    record = {
+        "schema": "hanonly-r59-b0-authorization-v1",
+        "plan_revision": R59_PLAN_REVISION,
+        "b0_sha": requested_b0_sha,
+        "contract_sha256": R59_CONTRACT_SHA256,
+        "test_spec_sha256": R59_TEST_SPEC_SHA256,
+        "original_public_commitment_sha256": R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256,
+        "successor_commitment_sha256": successor_sha256,
+        "calibration_artifact_sha256": R59_CALIBRATION_ARTIFACT_SHA256,
+        "selected_candidate_id": R59_SELECTED_CANDIDATE_ID,
+        "pre_holdout_attestation_sha256": start[
+            "pre_holdout_attestation_sha256"
+        ],
+        "start_marker_sha256": start_sha256,
+        "bundle_validation_receipt_sha256": terminal[
+            "bundle_validation_receipt_sha256"
+        ],
+        "terminal_receipt_sha256": _sha256(terminal_data),
+        "cleanup_receipt_sha256": cleanup_sha256,
+        "artifact_payload_sha256": terminal["artifact_payload_sha256"],
+        "result": "authorized",
+    }
+    _require_keys(record, R59_AUTHORIZATION_KEYS, "R59 authorization record")
+    return record
+
+
+def _r59_validate_authorization(arguments):
+    repo_root = _canonical_existing_path(arguments.repo_root, "repository root")
+    _r59_validate_clean_detached_head(repo_root, arguments.requested_b0_sha)
+    inputs = []
+    for path, label in (
+        (R59_ORIGINAL_PUBLIC_COMMITMENT_PATH, "R59 original public commitment"),
+        (R59_SUCCESSOR_COMMITMENT_PATH, "R59 successor commitment"),
+        (R59_START_MARKER_PATH, "R59 start marker"),
+        (R59_TERMINAL_RECEIPT_PATH, "R59 terminal receipt"),
+        (R59_CLEANUP_RECEIPT_PATH, "R59 cleanup receipt"),
+    ):
+        inputs.append(_r59_read_public_json(path, path, label))
+    record = _r59_validate_authorization_values(
+        inputs[0][0],
+        inputs[0][1],
+        inputs[1][0],
+        inputs[1][1],
+        inputs[2][0],
+        inputs[2][1],
+        inputs[3][0],
+        inputs[3][1],
+        inputs[4][0],
+        inputs[4][1],
+        arguments.requested_b0_sha,
+    )
+    return _r59_canonical_json(record) + b"\n"
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message):
         raise LedgerError(message)
@@ -4243,55 +4678,13 @@ def _parse_arguments(argv):
     validate_b0.add_argument("--b0-sha", required=True)
     validate_b0.add_argument("--visual-manifest-sha256", required=True)
     validate_b0.add_argument("--source-gate-fixture-manifest-sha256", required=True)
-    r51_preflight = subparsers.add_parser("write-r51-b0-preflight-attestation")
-    r51_preflight.add_argument("--repo-root", required=True)
-    r51_preflight.add_argument("--output", required=True)
-    r51_preflight.add_argument("--b0-sha", required=True)
-    r51_preflight.add_argument("--implementation-thread-id", required=True)
-    r51_preflight.add_argument("--r51-contract", required=True)
-    r51_preflight.add_argument("--operative-plan", required=True)
-    r51_preflight.add_argument("--r51-test-spec", required=True)
-    r51_preflight.add_argument("--base-production-contract", required=True)
-    r51_preflight.add_argument("--freeze-receipt", required=True)
-    r51_preflight.add_argument("--historical-inventory", required=True)
-    r51_preflight.add_argument("--ciphertext", required=True)
-    r51_preflight.add_argument("--gate-results", required=True)
-    r51_preflight.add_argument("--staged-red-log", required=True)
-    r51_preflight.add_argument("--evidence-test-executable", required=True)
-    r51_preflight.add_argument("--cargo-target-dir", required=True)
-    r51_snapshot = subparsers.add_parser("snapshot-r51-preflight-custody")
-    r51_snapshot.add_argument("--repo-root", required=True)
-    r51_snapshot.add_argument("--r51-contract", required=True)
-    r51_snapshot.add_argument("--operative-plan", required=True)
-    r51_snapshot.add_argument("--r51-test-spec", required=True)
-    r51_snapshot.add_argument("--base-production-contract", required=True)
-    r51_snapshot.add_argument("--freeze-receipt", required=True)
-    r51_snapshot.add_argument("--historical-inventory", required=True)
-    r51_snapshot.add_argument("--ciphertext", required=True)
     subparsers.add_parser("r57-validate-source-ink")
-    r51_authorization = subparsers.add_parser("validate-r51-b0-authorization")
-    r51_authorization.add_argument("--repo-root", required=True)
-    r51_authorization.add_argument("--b0-sha", required=True)
-    r51_authorization.add_argument("--r51-contract", required=True)
-    r51_authorization.add_argument("--operative-plan", required=True)
-    r51_authorization.add_argument("--r51-test-spec", required=True)
-    r51_authorization.add_argument("--base-production-contract", required=True)
-    r51_authorization.add_argument("--b0-preflight-attestation", required=True)
-    r51_authorization.add_argument("--calibration-manifest", required=True)
-    r51_authorization.add_argument("--calibration-ledger", required=True)
-    r51_authorization.add_argument("--freeze-receipt", required=True)
-    r51_authorization.add_argument("--historical-inventory", required=True)
-    r51_authorization.add_argument("--ciphertext", required=True)
-    r51_authorization.add_argument("--pre-calibration-attestation", required=True)
-    r51_authorization.add_argument("--pre-holdout-attestation", required=True)
-    r51_authorization.add_argument("--frozen-recall-contract", required=True)
-    r51_authorization.add_argument("--open-marker", required=True)
-    r51_authorization.add_argument("--bundle-validation-receipt", required=True)
-    r51_authorization.add_argument("--terminal-receipt", required=True)
-    r51_authorization.add_argument("--terminal-diagnostic-index", required=True)
-    r51_authorization.add_argument("--artifact-payload", required=True)
-    r51_authorization.add_argument("--authorization-record-out", required=True)
-    r51_authorization.add_argument("--artifact-out", required=True)
+    r59_preflight = subparsers.add_parser("validate-r59-b0-preflight")
+    r59_preflight.add_argument("--repo-root", required=True)
+    r59_preflight.add_argument("--requested-b0-sha", required=True)
+    r59_authorization = subparsers.add_parser("validate-r59-b0-authorization")
+    r59_authorization.add_argument("--repo-root", required=True)
+    r59_authorization.add_argument("--requested-b0-sha", required=True)
     return parser.parse_args(argv)
 
 
@@ -4303,13 +4696,13 @@ def execute(argv):
         return _rehydrate(arguments)
     if arguments.command == "validate-b0-artifact":
         return _validate_b0_artifact(arguments)
-    if arguments.command == "write-r51-b0-preflight-attestation":
-        return _r51_write_preflight(arguments)
-    if arguments.command == "snapshot-r51-preflight-custody":
-        return _r51_canonical_json(_r51_preflight_custody_snapshot(arguments)) + b"\n"
     if arguments.command == "r57-validate-source-ink":
         return _r57_validate_source_ink(sys.stdin.buffer.read())
-    return _r51_validate_authorization(arguments)
+    if arguments.command == "validate-r59-b0-preflight":
+        return _r59_validate_preflight(arguments)
+    if arguments.command == "validate-r59-b0-authorization":
+        return _r59_validate_authorization(arguments)
+    raise LedgerError("unknown ledger command")
 
 
 def main(argv=None, *, stdout=None, stderr=None):

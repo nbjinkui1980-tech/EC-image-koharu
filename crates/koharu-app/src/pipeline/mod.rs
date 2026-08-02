@@ -507,7 +507,7 @@ mod d0_revision_46_contract;
 mod d0_held_input;
 
 #[cfg(all(test, feature = "hanonly-test-evidence"))]
-mod d0_r51_holdout_bundle;
+mod d0_r59_holdout_bundle;
 
 #[cfg(all(
     test,

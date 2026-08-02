@@ -25,8 +25,6 @@ import {
   readRepoText,
   readStableFile,
   repoRoot,
-  r51EvidenceExecutable,
-  r51MarkerInventoryCommand,
   validateB0Authorization,
   validateB0SourceGateAntiFixture,
   validateDependencyInventory,
@@ -1215,58 +1213,6 @@ describe('generated Rust policy', () => {
   })
 })
 
-describe('R51 evidence executable selection', () => {
-  const artifact = {
-    reason: 'compiler-artifact',
-    package_id: 'path+file:///repo/crates/koharu-app#0.61.2',
-    target: { kind: ['lib'], name: 'koharu_app' },
-    profile: { test: true },
-    features: ['hanonly-test-evidence'],
-    executable: '/target/debug/deps/koharu_app-test',
-  }
-
-  test('selects exactly one evidence lib-test executable', () => {
-    expect(
-      r51EvidenceExecutable(
-        `Storage: 33.6 GiB free, target 4.3 GiB, ui/.next 0.0 GiB\n${JSON.stringify(artifact)}\n`,
-      ),
-    ).toBe(artifact.executable)
-    expect(() => r51EvidenceExecutable(`unexpected output\n${JSON.stringify(artifact)}\n`)).toThrow(
-      PolicyError,
-    )
-  })
-
-  test('uses the executable RED-state CLI contract', () => {
-    expect(r51MarkerInventoryCommand).toEqual([
-      'bun',
-      'scripts/check-hanonly-production-policy.ts',
-      '--validate-red-test-state',
-      'b0',
-    ])
-  })
-
-  test('rejects duplicate artifacts and feature drift', () => {
-    expect(() =>
-      r51EvidenceExecutable(`${JSON.stringify(artifact)}\n${JSON.stringify(artifact)}\n`),
-    ).toThrow(PolicyError)
-    expect(() =>
-      r51EvidenceExecutable(
-        `${JSON.stringify({ ...artifact, features: ['hanonly-test-evidence', 'metal'] })}\n`,
-      ),
-    ).toThrow(PolicyError)
-    expect(() =>
-      r51EvidenceExecutable(
-        `${JSON.stringify({ ...artifact, target: { kind: ['lib', 'rlib'], name: 'koharu_app' } })}\n`,
-      ),
-    ).toThrow(PolicyError)
-    expect(() =>
-      r51EvidenceExecutable(
-        `${JSON.stringify({ ...artifact, package_id: 'path+file:///repo/not-koharu-app#0.61.2' })}\n`,
-      ),
-    ).toThrow(PolicyError)
-  })
-})
-
 describe('CLI contract', () => {
   test('imports without running the CLI', async () => {
     const moduleUrl = pathToFileURL(checkerPath).href
@@ -1281,13 +1227,7 @@ describe('CLI contract', () => {
     expect(stdout).toBe('IMPORTED\n')
   })
 
-  test('executes the R51 marker argv and rejects the obsolete --state form', async () => {
-    const valid = await runCli(['--validate-red-test-state', 'b0'])
-    expect(valid).toEqual({
-      exitCode: 0,
-      stdout: 'PASS: hanonly b0 red test state\n',
-      stderr: '',
-    })
+  test('rejects the obsolete marker --state form', async () => {
     const obsolete = await runCli(['--validate-red-test-state', '--state', 'b0'])
     expect(obsolete.exitCode).not.toBe(0)
     expect(obsolete.stdout).toBe('')
@@ -1302,60 +1242,35 @@ describe('CLI contract', () => {
     })
   })
 
-  test('does not start a build when the preflight custody snapshot fails', async () => {
-    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-r51-')))
+  test('exposes only the R59 custody endpoints', async () => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-r59-')))
     temporaryRoots.push(temporaryRoot)
     const bin = path.join(temporaryRoot, 'bin')
-    const spawnLog = path.join(temporaryRoot, 'spawn.log')
-    const target = path.join(temporaryRoot, 'target')
     await mkdir(bin)
-    await mkdir(target)
-    for (const [name, exitCode] of [
-      ['python3', 2],
-      ['bun', 99],
-    ] as const) {
-      const shim = path.join(bin, name)
-      await writeFile(
-        shim,
-        `#!${process.execPath}
-import { appendFileSync } from 'node:fs'
-appendFileSync(process.env.HANONLY_R51_SPAWN_LOG, ${JSON.stringify(name)} + "\\n")
-if (${JSON.stringify(name)} === 'python3' && process.env.PYTHONDONTWRITEBYTECODE !== '1') process.exit(3)
-process.exit(${exitCode})
+    const python = path.join(bin, 'python3')
+    await writeFile(
+      python,
+      `#!${process.execPath}
+if (process.env.PYTHONDONTWRITEBYTECODE !== '1') process.exit(3)
+process.stdout.write('{"result":"pass"}\\n')
 `,
-        { mode: 0o700 },
-      )
-      await chmod(shim, 0o700)
-    }
-    const result = await runCli(
-      [
-        '--write-r51-b0-preflight-attestation',
-        '--output',
-        path.join(temporaryRoot, 'r51-b0-preflight.json'),
-        '--r51-contract',
-        path.join(repoRoot, '.omx/plans/hanonly-r51-b0-custody-contract.json'),
-        '--operative-plan',
-        path.join(repoRoot, '.omx/plans/2026-07-23-hanonly-visual-rendering-remediation-plan.md'),
-        '--r51-test-spec',
-        path.join(repoRoot, '.omx/plans/test-spec-hanonly-r51-b0-custody.md'),
-        '--base-production-contract',
-        path.join(repoRoot, '.omx/plans/hanonly-r50-b0-evidence-contract.json'),
-        '--freeze-receipt',
-        path.join(temporaryRoot, 'holdout-freeze-receipt.json'),
-        '--historical-inventory',
-        path.join(temporaryRoot, 'historical-inventory.json'),
-        '--ciphertext',
-        path.join(temporaryRoot, 'holdout.enc'),
-      ],
-      {
-        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-        CARGO_TARGET_DIR: target,
-        HANONLY_R51_SPAWN_LOG: spawnLog,
-      },
+      { mode: 0o700 },
     )
-    expect(result.exitCode).not.toBe(0)
-    expect(result.stdout).toBe('')
-    expect(await readFile(spawnLog, 'utf8')).toBe('python3\n')
+    await chmod(python, 0o700)
+    const env = { PATH: `${bin}${path.delimiter}${process.env.PATH}` }
+    expect(
+      await runCli(['--validate-r59-b0-preflight', '--requested-b0-sha', 'a'.repeat(40)], env),
+    ).toEqual({ exitCode: 0, stdout: '{"result":"pass"}\n', stderr: '' })
+    expect(
+      await runCli(['--validate-r59-b0-authorization', '--requested-b0-sha', 'a'.repeat(40)], env),
+    ).toEqual({ exitCode: 0, stdout: '{"result":"pass"}\n', stderr: '' })
+
+    const retired = await runCli(
+      ['--write-r51-b0-preflight-attestation', '--b0-sha', 'a'.repeat(40)],
+      env,
+    )
+    expect(retired.exitCode).not.toBe(0)
+    expect(retired.stderr).toStartWith('FAIL [argv]:')
   })
 
   test('uses the exact cargo metadata argv and prints only PASS on success', async () => {

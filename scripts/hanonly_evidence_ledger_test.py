@@ -2208,5 +2208,195 @@ class R51EvidenceTests(unittest.TestCase):
                 )
 
 
+class R59CustodyBoundaryTests(unittest.TestCase):
+    ORIGINAL_BYTES = (
+        b'{"B0_SHA":"4c0e0d25d4de3be2809e8c749a6858a1bb724fa4",'
+        b'"age_public_recipient":"age1pzaxrtkwu424yrz2s4kck0avakx5y57u2qm2u2h30ya7s4fxaanqst09sw",'
+        b'"ciphertext_sha256":"1985675aae9ec857f97e42e3942cd9d0d717563cd384b5d2f642222701376b72",'
+        b'"created_at":"2026-08-02T10:25:51.592320Z",'
+        b'"opaque_ids":["r59-h01","r59-h02","r59-h03","r59-h04"],'
+        b'"plaintext_cleanup":true,'
+        b'"private_manifest_commitment_sha256":"b9bf0d416d38e4adcd8d34e07666d365e4652582437979d986cdb68bae7e764d",'
+        b'"restricted_content_disclosed":false,'
+        b'"schema":"hanonly.r59.public-commitment.v1",'
+        b'"start_marker_absent":true}\n'
+    )
+    SUCCESSOR_B0 = "a" * 40
+
+    def setUp(self):
+        self.original = json.loads(self.ORIGINAL_BYTES)
+        self.successor = {
+            "schema": "hanonly.r59.successor-commitment.v1",
+            "original_public_commitment_sha256": ledger.R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256,
+            "original_b0_sha": ledger.R59_ORIGINAL_B0_SHA,
+            "successor_b0_sha": self.SUCCESSOR_B0,
+            "contract_sha256": ledger.R59_CONTRACT_SHA256,
+            "test_spec_sha256": ledger.R59_TEST_SPEC_SHA256,
+            "calibration_artifact_sha256": ledger.R59_CALIBRATION_ARTIFACT_SHA256,
+            "selected_candidate_id": ledger.R59_SELECTED_CANDIDATE_ID,
+            "ciphertext_sha256": self.original["ciphertext_sha256"],
+            "private_manifest_commitment_sha256": self.original[
+                "private_manifest_commitment_sha256"
+            ],
+            "runtime_manifest_sha256": "1" * 64,
+            "runtime_oracle_sha256": "2" * 64,
+            "runtime_hashes_sha256": "3" * 64,
+            "runtime_archive_sha256": "4" * 64,
+            "private_schema_receipt_sha256": "5" * 64,
+            "entry_ids": ledger.R59_ENTRY_IDS,
+            "package_unchanged": True,
+            "start_marker_absent": True,
+        }
+
+    def clone(self, value):
+        return json.loads(json.dumps(value))
+
+    def successor_bytes(self, value=None):
+        return ledger._r59_canonical_json(value or self.successor)
+
+    def preflight(self, successor=None, requested_b0=None, marker_exists=False):
+        successor = successor or self.successor
+        return ledger._r59_validate_preflight_values(
+            self.ORIGINAL_BYTES,
+            self.original,
+            self.successor_bytes(successor),
+            successor,
+            requested_b0 or self.SUCCESSOR_B0,
+            marker_exists=marker_exists,
+        )
+
+    def receipts(self):
+        successor_sha256 = self.preflight()
+        start = {
+            "schema": "hanonly-r59-holdout-start-v1",
+            "plan_revision": 59,
+            "b0_sha": self.SUCCESSOR_B0,
+            "selected_candidate_id": "S25L4",
+            "original_public_commitment_sha256": ledger.R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256,
+            "successor_commitment_sha256": successor_sha256,
+            "ciphertext_sha256": self.original["ciphertext_sha256"],
+            "pre_holdout_attestation_sha256": "6" * 64,
+            "nonce_hex": "7" * 32,
+            "state": "started",
+        }
+        cleanup = {
+            "schema": "hanonly-r59-cleanup-v1",
+            "plaintext_root": "/Users/koharu-custody/r59-plaintext",
+            "runner_process_exited": True,
+            "descriptors_closed": True,
+            "plaintext_root_absent": True,
+            "cleanup_pass": True,
+        }
+        start_bytes = ledger._r59_canonical_json(start)
+        cleanup_bytes = ledger._r59_canonical_json(cleanup)
+        terminal = {
+            "schema": "hanonly-r59-holdout-terminal-v1",
+            "plan_revision": 59,
+            "b0_sha": self.SUCCESSOR_B0,
+            "start_marker_sha256": hashlib.sha256(start_bytes).hexdigest(),
+            "successor_commitment_sha256": successor_sha256,
+            "selected_candidate_id": "S25L4",
+            "cell_results": [
+                {"cell": cell, "result": "pass"} for cell in ledger.R59_CELLS
+            ],
+            "first_failed_cell": None,
+            "unexecuted_cells": [],
+            "cleanup_receipt_sha256": hashlib.sha256(cleanup_bytes).hexdigest(),
+            "bundle_validation_receipt_sha256": "8" * 64,
+            "artifact_payload_sha256": "9" * 64,
+            "state": "completed_pass",
+        }
+        return start, cleanup, terminal
+
+    def authorize(self, start=None, cleanup=None, terminal=None):
+        default_start, default_cleanup, default_terminal = self.receipts()
+        start = start or default_start
+        cleanup = cleanup or default_cleanup
+        terminal = terminal or default_terminal
+        return ledger._r59_validate_authorization_values(
+            self.ORIGINAL_BYTES,
+            self.original,
+            self.successor_bytes(),
+            self.successor,
+            ledger._r59_canonical_json(start),
+            start,
+            ledger._r59_canonical_json(terminal),
+            terminal,
+            ledger._r59_canonical_json(cleanup),
+            cleanup,
+            self.SUCCESSOR_B0,
+        )
+
+    def test_rejects_successor_b0_mismatch(self):
+        with self.assertRaisesRegex(ledger.LedgerError, "B0"):
+            self.preflight(requested_b0="b" * 40)
+
+    def test_rejects_protocol_file_byte_drift(self):
+        source_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(os.path.realpath(directory))
+            for relative in (
+                ".omx/plans/hanonly-r59-b0-custody-contract.json",
+                ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((source_root / relative).read_bytes())
+            ledger._r59_validate_protocol_files(str(root))
+            for relative in (
+                ".omx/plans/hanonly-r59-b0-custody-contract.json",
+                ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+            ):
+                path = root / relative
+                original = path.read_bytes()
+                path.write_bytes(original + b"\n")
+                with self.assertRaisesRegex(ledger.LedgerError, "SHA drift"):
+                    ledger._r59_validate_protocol_files(str(root))
+                path.write_bytes(original)
+
+    def test_rejects_corpus_commitment_drift(self):
+        changed = self.clone(self.successor)
+        changed["ciphertext_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "binding drift"):
+            self.preflight(changed)
+
+    def test_rejects_r51_ids(self):
+        changed = self.clone(self.successor)
+        changed["entry_ids"] = [f"r51-h0{index}" for index in range(1, 5)]
+        with self.assertRaisesRegex(ledger.LedgerError, "binding drift"):
+            self.preflight(changed)
+
+    def test_rejects_marker_reuse_and_unknown_start_state(self):
+        with self.assertRaisesRegex(ledger.LedgerError, "retry is forbidden"):
+            self.preflight(marker_exists=True)
+        start, cleanup, terminal = self.receipts()
+        start["state"] = "fresh"
+        with self.assertRaisesRegex(ledger.LedgerError, "state drift"):
+            self.authorize(start, cleanup, terminal)
+
+    def test_rejects_incomplete_cleanup(self):
+        start, cleanup, terminal = self.receipts()
+        cleanup["descriptors_closed"] = False
+        terminal["cleanup_receipt_sha256"] = hashlib.sha256(
+            ledger._r59_canonical_json(cleanup)
+        ).hexdigest()
+        with self.assertRaisesRegex(ledger.LedgerError, "non-authorizing"):
+            self.authorize(start, cleanup, terminal)
+
+    def test_authorizes_only_all_eight_passes_and_cleanup(self):
+        record = self.authorize()
+        self.assertEqual(record["result"], "authorized")
+        self.assertEqual(record["b0_sha"], self.SUCCESSOR_B0)
+        start, cleanup, terminal = self.receipts()
+        terminal["cell_results"][0]["result"] = "fail"
+        with self.assertRaisesRegex(ledger.LedgerError, "failed"):
+            self.authorize(start, cleanup, terminal)
+
+        start, cleanup, terminal = self.receipts()
+        terminal["bundle_validation_receipt_sha256"] = "missing"
+        with self.assertRaisesRegex(ledger.LedgerError, "bundle validation"):
+            self.authorize(start, cleanup, terminal)
+
+
 if __name__ == "__main__":
     unittest.main()
