@@ -2209,6 +2209,8 @@ class R51EvidenceTests(unittest.TestCase):
 
 
 class R59CustodyBoundaryTests(unittest.TestCase):
+    BUNDLE_RECEIPT_BYTES = b'{"result":"pass"}'
+    HOLDOUT_ARTIFACT_BYTES = b'{"holdout":"pass"}'
     ORIGINAL_BYTES = (
         b'{"B0_SHA":"4c0e0d25d4de3be2809e8c749a6858a1bb724fa4",'
         b'"age_public_recipient":"age1pzaxrtkwu424yrz2s4kck0avakx5y57u2qm2u2h30ya7s4fxaanqst09sw",'
@@ -2367,6 +2369,22 @@ class R59CustodyBoundaryTests(unittest.TestCase):
             runtime = public / "runtime.json"
             terminal = public / "terminal.json"
             cleanup = public / "cleanup.json"
+            readiness_prefix = str(temporary_root / "readiness-")
+            readiness = Path(readiness_prefix + head)
+            bundle_parent = readiness.joinpath(
+                *ledger.R59_BUNDLE_RECEIPT_COMPONENTS[:-1]
+            )
+            bundle_parent.mkdir(parents=True, mode=0o700)
+            for path in (readiness, readiness / "formal-report", bundle_parent):
+                path.chmod(0o700)
+                subprocess.run(["/bin/chmod", "+a", directory_acl, path], check=True)
+            holdout_artifact = readiness / ledger.R59_HOLDOUT_ARTIFACT_NAME
+            holdout_artifact.write_bytes(self.HOLDOUT_ARTIFACT_BYTES)
+            bundle_receipt = bundle_parent / ledger.R59_BUNDLE_RECEIPT_COMPONENTS[-1]
+            bundle_receipt.write_bytes(self.BUNDLE_RECEIPT_BYTES)
+            for path in (holdout_artifact, bundle_receipt):
+                path.chmod(0o600)
+                subprocess.run(["/bin/chmod", "+a", file_acl, path], check=True)
             patches = (
                 mock.patch.object(ledger, "R59_ORIGINAL_PUBLIC_COMMITMENT_PATH", str(original)),
                 mock.patch.object(ledger, "R59_SUCCESSOR_COMMITMENT_PATH", str(successor)),
@@ -2374,6 +2392,9 @@ class R59CustodyBoundaryTests(unittest.TestCase):
                 mock.patch.object(ledger, "R59_RUNTIME_COMMITMENT_PATH", str(runtime)),
                 mock.patch.object(ledger, "R59_TERMINAL_RECEIPT_PATH", str(terminal)),
                 mock.patch.object(ledger, "R59_CLEANUP_RECEIPT_PATH", str(cleanup)),
+                mock.patch.object(
+                    ledger, "R59_READINESS_ROOT_PREFIX", readiness_prefix
+                ),
                 mock.patch.object(ledger, "R59_CALIBRATION_ARTIFACT_PATH", str(calibration)),
                 mock.patch.object(
                     ledger,
@@ -2526,6 +2547,60 @@ class R59CustodyBoundaryTests(unittest.TestCase):
                     ]
                 )
                 self.assertEqual(json.loads(authorization)["result"], "authorized")
+                read_custody_file = ledger._r59_read_custody_file
+
+                def drift_terminal_receipt(root, name, label, stack):
+                    value = read_custody_file(root, name, label, stack)
+                    if label == "R59 bundle validation receipt":
+                        terminal.write_bytes(b"drift")
+                    return value
+
+                with mock.patch.object(
+                    ledger,
+                    "_r59_read_custody_file",
+                    side_effect=drift_terminal_receipt,
+                ):
+                    with self.assertRaisesRegex(
+                        ledger.LedgerError, "terminal receipt changed"
+                    ):
+                        ledger.execute(
+                            [
+                                "validate-r59-b0-authorization",
+                                "--repo-root",
+                                str(root),
+                                "--requested-b0-sha",
+                                head,
+                            ]
+                        )
+                terminal.write_bytes(ledger._r59_canonical_json(receipt_values[3]))
+                terminal.chmod(0o600)
+                subprocess.run(["/bin/chmod", "+a", file_acl, terminal], check=True)
+                moved_public = temporary_root / "moved-public"
+
+                def rename_public_directory(root, name, label, stack):
+                    value = read_custody_file(root, name, label, stack)
+                    if label == "R59 bundle validation receipt":
+                        public.rename(moved_public)
+                    return value
+
+                with mock.patch.object(
+                    ledger,
+                    "_r59_read_custody_file",
+                    side_effect=rename_public_directory,
+                ):
+                    with self.assertRaisesRegex(
+                        ledger.LedgerError, "public directory metadata changed"
+                    ):
+                        ledger.execute(
+                            [
+                                "validate-r59-b0-authorization",
+                                "--repo-root",
+                                str(root),
+                                "--requested-b0-sha",
+                                head,
+                            ]
+                        )
+                moved_public.rename(public)
                 subprocess.run(
                     ["/bin/chmod", "+a", "user:root allow readattr", runtime],
                     check=True,
@@ -2599,8 +2674,12 @@ class R59CustodyBoundaryTests(unittest.TestCase):
             "first_failed_cell": None,
             "unexecuted_cells": [],
             "cleanup_receipt_sha256": hashlib.sha256(cleanup_bytes).hexdigest(),
-            "bundle_validation_receipt_sha256": "8" * 64,
-            "artifact_payload_sha256": "9" * 64,
+            "bundle_validation_receipt_sha256": hashlib.sha256(
+                self.BUNDLE_RECEIPT_BYTES
+            ).hexdigest(),
+            "artifact_payload_sha256": hashlib.sha256(
+                self.HOLDOUT_ARTIFACT_BYTES
+            ).hexdigest(),
             "runtime_commitment_receipt_sha256": hashlib.sha256(
                 runtime_bytes
             ).hexdigest(),
@@ -2608,7 +2687,15 @@ class R59CustodyBoundaryTests(unittest.TestCase):
         }
         return start, runtime, cleanup, terminal
 
-    def authorize(self, start=None, runtime=None, cleanup=None, terminal=None):
+    def authorize(
+        self,
+        start=None,
+        runtime=None,
+        cleanup=None,
+        terminal=None,
+        bundle_bytes=None,
+        artifact_bytes=None,
+    ):
         default_start, default_runtime, default_cleanup, default_terminal = self.receipts()
         start = start or default_start
         runtime = runtime or default_runtime
@@ -2628,6 +2715,8 @@ class R59CustodyBoundaryTests(unittest.TestCase):
             ledger._r59_canonical_json(cleanup),
             cleanup,
             self.SUCCESSOR_B0,
+            hashlib.sha256(bundle_bytes or self.BUNDLE_RECEIPT_BYTES).hexdigest(),
+            hashlib.sha256(artifact_bytes or self.HOLDOUT_ARTIFACT_BYTES).hexdigest(),
         )
 
     def test_rejects_successor_b0_mismatch(self):
@@ -2712,15 +2801,120 @@ class R59CustodyBoundaryTests(unittest.TestCase):
         record = self.authorize()
         self.assertEqual(record["result"], "authorized")
         self.assertEqual(record["b0_sha"], self.SUCCESSOR_B0)
+        self.assertEqual(
+            record["bundle_validation_receipt_sha256"],
+            hashlib.sha256(self.BUNDLE_RECEIPT_BYTES).hexdigest(),
+        )
+        self.assertEqual(
+            record["artifact_payload_sha256"],
+            hashlib.sha256(self.HOLDOUT_ARTIFACT_BYTES).hexdigest(),
+        )
         start, runtime, cleanup, terminal = self.receipts()
         terminal["cell_results"][0]["result"] = "fail"
         with self.assertRaisesRegex(ledger.LedgerError, "failed"):
             self.authorize(start, runtime, cleanup, terminal)
 
         start, runtime, cleanup, terminal = self.receipts()
-        terminal["bundle_validation_receipt_sha256"] = "missing"
-        with self.assertRaisesRegex(ledger.LedgerError, "bundle validation"):
+        terminal["bundle_validation_receipt_sha256"] = "8" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "bundle validation.*drift"):
             self.authorize(start, runtime, cleanup, terminal)
+
+        start, runtime, cleanup, terminal = self.receipts()
+        terminal["artifact_payload_sha256"] = "9" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "artifact payload SHA drift"):
+            self.authorize(start, runtime, cleanup, terminal)
+
+    def test_authorization_requires_fixed_evidence_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = str(Path(directory).resolve() / "readiness-")
+            root = Path(prefix + self.SUCCESSOR_B0)
+            bundle_parent = root.joinpath(*ledger.R59_BUNDLE_RECEIPT_COMPONENTS[:-1])
+            bundle_parent.mkdir(parents=True, mode=0o700)
+            for path in (root, root / "formal-report", bundle_parent):
+                path.chmod(0o700)
+            artifact = root / ledger.R59_HOLDOUT_ARTIFACT_NAME
+            bundle = bundle_parent / ledger.R59_BUNDLE_RECEIPT_COMPONENTS[-1]
+            directory_acl = (
+                f"user:{ledger._r59_implementation_user()} "
+                "allow read,execute,readattr"
+            )
+            file_acl = (
+                f"user:{ledger._r59_implementation_user()} allow read,readattr"
+            )
+            for path in (root, root / "formal-report", bundle_parent):
+                subprocess.run(["/bin/chmod", "+a", directory_acl, path], check=True)
+            artifact.write_bytes(self.HOLDOUT_ARTIFACT_BYTES)
+            bundle.write_bytes(self.BUNDLE_RECEIPT_BYTES)
+            for path in (artifact, bundle):
+                path.chmod(0o600)
+                subprocess.run(["/bin/chmod", "+a", file_acl, path], check=True)
+            with (
+                mock.patch.object(ledger, "R59_READINESS_ROOT_PREFIX", prefix),
+                mock.patch.object(ledger, "_r59_custody_uid", return_value=os.geteuid()),
+            ):
+                self.assertEqual(
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0),
+                    (
+                        hashlib.sha256(self.BUNDLE_RECEIPT_BYTES).hexdigest(),
+                        hashlib.sha256(self.HOLDOUT_ARTIFACT_BYTES).hexdigest(),
+                    ),
+                )
+                read_custody_file = ledger._r59_read_custody_file
+
+                def drift_intermediate_directory(root, name, label, stack):
+                    value = read_custody_file(root, name, label, stack)
+                    if label == "R59 bundle validation receipt":
+                        (Path(prefix + self.SUCCESSOR_B0) / "formal-report").chmod(
+                            0o777
+                        )
+                    return value
+
+                with (
+                    mock.patch.object(
+                        ledger,
+                        "_r59_read_custody_file",
+                        side_effect=drift_intermediate_directory,
+                    ),
+                    self.assertRaisesRegex(
+                        ledger.LedgerError, "formal-report.*metadata changed"
+                    ),
+                ):
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0)
+                (root / "formal-report").chmod(0o700)
+
+                def drift_artifact(root, name, label, stack):
+                    value = read_custody_file(root, name, label, stack)
+                    if label == "R59 bundle validation receipt":
+                        artifact.write_bytes(b"drift")
+                    return value
+
+                with (
+                    mock.patch.object(
+                        ledger,
+                        "_r59_read_custody_file",
+                        side_effect=drift_artifact,
+                    ),
+                    self.assertRaisesRegex(
+                        ledger.LedgerError, "holdout artifact changed"
+                    ),
+                ):
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0)
+                artifact.write_bytes(self.HOLDOUT_ARTIFACT_BYTES)
+                artifact.chmod(0o600)
+                subprocess.run(["/bin/chmod", "+a", file_acl, artifact], check=True)
+                bundle.unlink()
+                with self.assertRaisesRegex(
+                    ledger.LedgerError, "bundle-validation.json"
+                ):
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0)
+                bundle.write_bytes(self.BUNDLE_RECEIPT_BYTES)
+                bundle.chmod(0o600)
+                subprocess.run(["/bin/chmod", "+a", file_acl, bundle], check=True)
+                artifact.unlink()
+                with self.assertRaisesRegex(
+                    ledger.LedgerError, ledger.R59_HOLDOUT_ARTIFACT_NAME
+                ):
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0)
 
 
 if __name__ == "__main__":

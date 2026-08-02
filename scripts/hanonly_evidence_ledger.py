@@ -645,6 +645,9 @@ R59_TERMINAL_RECEIPT_PATH = (
 R59_CLEANUP_RECEIPT_PATH = (
     "/Users/Shared/hanonly-r59-public/r59-cleanup-receipt.json"
 )
+R59_READINESS_ROOT_PREFIX = "/Users/Shared/hanonly-r59-readiness-"
+R59_HOLDOUT_ARTIFACT_NAME = "crop-policy-selection.json.holdout.json"
+R59_BUNDLE_RECEIPT_COMPONENTS = ("formal-report", "r59", "bundle-validation.json")
 R59_CALIBRATION_ARTIFACT_PATH = (
     "/Users/jinkui/ec-image-Koharu/hanonly-r58-b0-evidence/"
     "20260801T222538Z-4c0e0d25d4de-1/source-gate-selection/"
@@ -4372,12 +4375,8 @@ def _r51_validate_authorization(arguments):
     )
 
 
-def _r59_read_public_json(root, path, expected_path, label, stack):
-    if path != expected_path:
-        raise LedgerError(f"{label} path drift")
-    if os.path.dirname(path) != root.path:
-        raise LedgerError(f"{label} must remain in the R59 public directory")
-    held = _open_child(root, os.path.basename(path), directory=False, stack=stack)
+def _r59_read_custody_file(root, name, label, stack):
+    held = _open_child(root, name, directory=False, stack=stack)
     before = os.fstat(held.fd)
     if before.st_uid != _r59_custody_uid():
         raise LedgerError(f"{label} owner must be koharu-custody")
@@ -4393,7 +4392,24 @@ def _r59_read_public_json(root, path, expected_path, label, stack):
     _r59_require_acl(held.fd, "read,readattr", label)
     if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
         raise LedgerError(f"{label} metadata changed during final ACL validation")
-    return data, _parse_json(data, label)
+    return data, held, _r59_secure_metadata(before)
+
+
+def _r59_revalidate_custody_file(held, label, expected_metadata):
+    _r59_require_acl(held.fd, "read,readattr", label)
+    if _r59_secure_metadata(os.fstat(held.fd)) != expected_metadata:
+        raise LedgerError(f"{label} changed while evidence was read")
+
+
+def _r59_read_public_json(root, path, expected_path, label, stack):
+    if path != expected_path:
+        raise LedgerError(f"{label} path drift")
+    if os.path.dirname(path) != root.path:
+        raise LedgerError(f"{label} must remain in the R59 public directory")
+    data, held, metadata = _r59_read_custody_file(
+        root, os.path.basename(path), label, stack
+    )
+    return data, _parse_json(data, label), held, metadata
 
 
 def _r59_custody_uid():
@@ -4464,22 +4480,82 @@ def _r59_secure_metadata(value):
     )
 
 
-def _r59_validate_public_directory_held(held):
+def _r59_validate_custody_directory_held(held, label):
     before = os.fstat(held.fd)
     if before.st_uid != _r59_custody_uid():
-        raise LedgerError("R59 public directory owner must be koharu-custody")
+        raise LedgerError(f"{label} owner must be koharu-custody")
     if _mode(before) != 0o700:
-        raise LedgerError("R59 public directory mode must be 0700")
-    _r59_require_acl(held.fd, "read,execute,readattr", "R59 public directory")
+        raise LedgerError(f"{label} mode must be 0700")
+    _r59_require_acl(held.fd, "read,execute,readattr", label)
     if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
-        raise LedgerError("R59 public directory metadata changed during ACL validation")
+        raise LedgerError(f"{label} metadata changed during ACL validation")
+    return _r59_secure_metadata(before)
+
+
+def _r59_revalidate_custody_directory_held(held, label, expected_metadata):
+    _r59_require_acl(held.fd, "read,execute,readattr", label)
+    if _r59_secure_metadata(os.fstat(held.fd)) != expected_metadata:
+        raise LedgerError(f"{label} metadata changed while evidence was read")
 
 
 def _r59_open_public_directory(stack):
     root = os.path.dirname(R59_ORIGINAL_PUBLIC_COMMITMENT_PATH)
     held = _open_absolute(root, directory=True, stack=stack)
-    _r59_validate_public_directory_held(held)
-    return held
+    metadata = _r59_validate_custody_directory_held(held, "R59 public directory")
+    return held, metadata
+
+
+def _r59_open_authorization_evidence(requested_b0_sha, stack):
+    root_path = R59_READINESS_ROOT_PREFIX + requested_b0_sha
+    root = _open_absolute(root_path, directory=True, stack=stack)
+    held_directories = [
+        (
+            root,
+            "R59 readiness directory",
+            _r59_validate_custody_directory_held(root, "R59 readiness directory"),
+        )
+    ]
+    artifact, artifact_held, artifact_metadata = _r59_read_custody_file(
+        root, R59_HOLDOUT_ARTIFACT_NAME, "R59 holdout artifact", stack
+    )
+    current = root
+    for component in R59_BUNDLE_RECEIPT_COMPONENTS[:-1]:
+        current = _open_child(current, component, directory=True, stack=stack)
+        label = f"R59 readiness directory {component}"
+        held_directories.append(
+            (
+                current,
+                label,
+                _r59_validate_custody_directory_held(current, label),
+            )
+        )
+    bundle, bundle_held, bundle_metadata = _r59_read_custody_file(
+        current,
+        R59_BUNDLE_RECEIPT_COMPONENTS[-1],
+        "R59 bundle validation receipt",
+        stack,
+    )
+    held_files = [
+        (artifact_held, "R59 holdout artifact", artifact_metadata),
+        (bundle_held, "R59 bundle validation receipt", bundle_metadata),
+    ]
+    return _sha256(bundle), _sha256(artifact), held_files, held_directories
+
+
+def _r59_revalidate_authorization_evidence(held_files, held_directories):
+    for held, label, metadata in held_files:
+        _r59_revalidate_custody_file(held, label, metadata)
+    for held, label, metadata in held_directories:
+        _r59_revalidate_custody_directory_held(held, label, metadata)
+
+
+def _r59_read_authorization_evidence(requested_b0_sha):
+    with contextlib.ExitStack() as stack:
+        bundle_sha256, artifact_sha256, held_files, held_directories = (
+            _r59_open_authorization_evidence(requested_b0_sha, stack)
+        )
+        _r59_revalidate_authorization_evidence(held_files, held_directories)
+    return bundle_sha256, artifact_sha256
 
 
 def _r59_validate_calibration_artifact():
@@ -4614,15 +4690,15 @@ def _r59_validate_preflight(arguments):
     _r59_validate_protocol_files(repo_root)
     _r59_validate_calibration_artifact()
     with contextlib.ExitStack() as stack:
-        public = _r59_open_public_directory(stack)
-        original_data, original = _r59_read_public_json(
+        public, public_metadata = _r59_open_public_directory(stack)
+        original_data, original, original_held, original_metadata = _r59_read_public_json(
             public,
             R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
             R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
             "R59 original public commitment",
             stack,
         )
-        successor_data, successor = _r59_read_public_json(
+        successor_data, successor, successor_held, successor_metadata = _r59_read_public_json(
             public,
             R59_SUCCESSOR_COMMITMENT_PATH,
             R59_SUCCESSOR_COMMITMENT_PATH,
@@ -4642,7 +4718,15 @@ def _r59_validate_preflight(arguments):
                 public, R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"
             ),
         )
-        _r59_validate_public_directory_held(public)
+        _r59_revalidate_custody_file(
+            original_held, "R59 original public commitment", original_metadata
+        )
+        _r59_revalidate_custody_file(
+            successor_held, "R59 successor commitment", successor_metadata
+        )
+        _r59_revalidate_custody_directory_held(
+            public, "R59 public directory", public_metadata
+        )
     return _r59_canonical_json(
         {"result": "pass", "successor_commitment_sha256": successor_sha256}
     ) + b"\n"
@@ -4662,6 +4746,8 @@ def _r59_validate_authorization_values(
     cleanup_data,
     cleanup,
     requested_b0_sha,
+    bundle_validation_receipt_sha256,
+    artifact_payload_sha256,
 ):
     original = _r59_validate_original(original_data, original)
     successor_sha256 = _r59_validate_successor(
@@ -4754,11 +4840,12 @@ def _r59_validate_authorization_values(
         or cleanup["cleanup_pass"] is not True
     ):
         raise LedgerError("R59 cleanup receipt is non-authorizing")
-    _validate_hash(
-        terminal["bundle_validation_receipt_sha256"],
-        "R59 bundle validation receipt",
-    )
-    _validate_hash(terminal["artifact_payload_sha256"], "R59 artifact payload")
+    _validate_hash(bundle_validation_receipt_sha256, "R59 bundle validation receipt")
+    _validate_hash(artifact_payload_sha256, "R59 artifact payload")
+    if terminal["bundle_validation_receipt_sha256"] != bundle_validation_receipt_sha256:
+        raise LedgerError("R59 bundle validation receipt SHA drift")
+    if terminal["artifact_payload_sha256"] != artifact_payload_sha256:
+        raise LedgerError("R59 artifact payload SHA drift")
     record = {
         "schema": "hanonly-r59-b0-authorization-v1",
         "plan_revision": R59_PLAN_REVISION,
@@ -4773,12 +4860,10 @@ def _r59_validate_authorization_values(
             "pre_holdout_attestation_sha256"
         ],
         "start_marker_sha256": start_sha256,
-        "bundle_validation_receipt_sha256": terminal[
-            "bundle_validation_receipt_sha256"
-        ],
+        "bundle_validation_receipt_sha256": bundle_validation_receipt_sha256,
         "terminal_receipt_sha256": _sha256(terminal_data),
         "cleanup_receipt_sha256": cleanup_sha256,
-        "artifact_payload_sha256": terminal["artifact_payload_sha256"],
+        "artifact_payload_sha256": artifact_payload_sha256,
         "runtime_commitment_receipt_sha256": runtime_sha256,
         "result": "authorized",
     }
@@ -4792,18 +4877,27 @@ def _r59_validate_authorization(arguments):
     _r59_validate_protocol_files(repo_root)
     _r59_validate_calibration_artifact()
     with contextlib.ExitStack() as stack:
-        public = _r59_open_public_directory(stack)
+        public, public_metadata = _r59_open_public_directory(stack)
         inputs = []
-        for path, label in (
+        public_inputs = (
             (R59_ORIGINAL_PUBLIC_COMMITMENT_PATH, "R59 original public commitment"),
             (R59_SUCCESSOR_COMMITMENT_PATH, "R59 successor commitment"),
             (R59_START_MARKER_PATH, "R59 start marker"),
             (R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"),
             (R59_TERMINAL_RECEIPT_PATH, "R59 terminal receipt"),
             (R59_CLEANUP_RECEIPT_PATH, "R59 cleanup receipt"),
-        ):
+        )
+        for path, label in public_inputs:
             inputs.append(_r59_read_public_json(public, path, path, label, stack))
-        _r59_validate_public_directory_held(public)
+        bundle_sha256, artifact_sha256, held_files, held_directories = (
+            _r59_open_authorization_evidence(arguments.requested_b0_sha, stack)
+        )
+        for value, (_, label) in zip(inputs, public_inputs):
+            _r59_revalidate_custody_file(value[2], label, value[3])
+        _r59_revalidate_authorization_evidence(held_files, held_directories)
+        _r59_revalidate_custody_directory_held(
+            public, "R59 public directory", public_metadata
+        )
     record = _r59_validate_authorization_values(
         inputs[0][0],
         inputs[0][1],
@@ -4818,6 +4912,8 @@ def _r59_validate_authorization(arguments):
         inputs[5][0],
         inputs[5][1],
         arguments.requested_b0_sha,
+        bundle_sha256,
+        artifact_sha256,
     )
     return _r59_canonical_json(record) + b"\n"
 
