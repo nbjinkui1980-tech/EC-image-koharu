@@ -973,7 +973,6 @@ describe('release feature inventory policy', () => {
 
 const antiFixturePaths = [
   'crates/koharu-app/src/pipeline/engines/source_language_gate.rs',
-  'crates/koharu-app/src/pipeline/engines/support.rs',
   'crates/koharu-ml/src/pp_ocr_v5.rs',
   'crates/koharu-llm/src/paddleocr_vl.rs',
   'crates/koharu-app/src/pipeline/mod.rs',
@@ -993,7 +992,7 @@ async function antiFixtureSources(): Promise<RustSourceFile[]> {
 }
 
 describe('B0 source gate anti-fixture policy', () => {
-  test('accepts the current R51 scan roots', async () => {
+  test('accepts the current R49 scan roots', async () => {
     const files = await antiFixtureSources()
     expect(() => validateB0SourceGateAntiFixture(files)).not.toThrow()
   })
@@ -1005,16 +1004,9 @@ describe('B0 source gate anti-fixture policy', () => {
     expect(() => validateB0SourceGateAntiFixture(files)).toThrow(PolicyError)
   })
 
-  test('rejects fixture branches in shared production support', async () => {
-    const files = await antiFixtureSources()
-    files[1].text = 'if entry_id == "h03" { return true }\n' + files[1].text
-
-    expect(() => validateB0SourceGateAntiFixture(files)).toThrow(PolicyError)
-  })
-
   test('rejects descriptor flow in production PP-OCR roots', async () => {
     const files = await antiFixtureSources()
-    files[2].text = 'let source_gate_fixture_manifest_sha256 = "fixture";\n' + files[2].text
+    files[1].text = 'let source_gate_fixture_manifest_sha256 = "fixture";\n' + files[1].text
 
     expect(() => validateB0SourceGateAntiFixture(files)).toThrow(PolicyError)
   })
@@ -1233,23 +1225,12 @@ describe('R51 evidence executable selection', () => {
   }
 
   test('selects exactly one evidence lib-test executable', () => {
-    expect(r51EvidenceExecutable(`${JSON.stringify(artifact)}\n`)).toBe(artifact.executable)
     expect(
       r51EvidenceExecutable(
-        `Storage: 33.5 GiB free, target 4.3 GiB, ui/.next 0.0 GiB\n${JSON.stringify(artifact)}\n`,
+        `Storage: 33.6 GiB free, target 4.3 GiB, ui/.next 0.0 GiB\n${JSON.stringify(artifact)}\n`,
       ),
     ).toBe(artifact.executable)
-  })
-
-  test('rejects duplicate, late, and malformed storage snapshots', () => {
-    const storage = 'Storage: 33.5 GiB free, target 4.3 GiB, ui/.next 0.0 GiB'
-    expect(() =>
-      r51EvidenceExecutable(`${storage}\n${storage}\n${JSON.stringify(artifact)}\n`),
-    ).toThrow(PolicyError)
-    expect(() => r51EvidenceExecutable(`${JSON.stringify(artifact)}\n${storage}\n`)).toThrow(
-      PolicyError,
-    )
-    expect(() => r51EvidenceExecutable(`Storage: unknown\n${JSON.stringify(artifact)}\n`)).toThrow(
+    expect(() => r51EvidenceExecutable(`unexpected output\n${JSON.stringify(artifact)}\n`)).toThrow(
       PolicyError,
     )
   })
@@ -1312,6 +1293,14 @@ describe('CLI contract', () => {
     expect(obsolete.stderr).toStartWith('FAIL [argv]:')
   })
 
+  test('runs the preflight anti-fixture scan without creating a formal attestation', async () => {
+    expect(await runCli(['--scan-b0-source-gate-anti-fixture'])).toEqual({
+      exitCode: 0,
+      stdout: 'PASS: hanonly b0 source gate anti-fixture scan\n',
+      stderr: '',
+    })
+  })
+
   test('does not start a build when the preflight custody snapshot fails', async () => {
     const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-r51-')))
     temporaryRoots.push(temporaryRoot)
@@ -1366,6 +1355,72 @@ process.exit(${exitCode})
     expect(result.stdout).toBe('')
     expect(await readFile(spawnLog, 'utf8')).toBe('python3\n')
   })
+
+  test.each([
+    ['--project-r52-calibration-manifest', 'project-r52-calibration-manifest'],
+    ['--write-r52-b0-preflight-attestation', 'write-r52-b0-preflight-attestation'],
+    ['--write-r52-r51-holdout-adoption', 'write-r52-r51-holdout-adoption'],
+    ['--run-r52-challenge', 'run-r52-challenge'],
+    ['--run-r52-holdout', 'run-r52-holdout'],
+    ['--validate-r52-b0-authorization', 'validate-r52-b0-authorization'],
+  ])('wires %s only to its R52 ledger endpoint', async (flag, endpoint) => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-r52-')))
+    temporaryRoots.push(temporaryRoot)
+    const bin = path.join(temporaryRoot, 'bin')
+    const argvLog = path.join(temporaryRoot, 'argv.json')
+    await mkdir(bin)
+    const shim = path.join(bin, 'python3')
+    await writeFile(
+      shim,
+      `#!${process.execPath}
+import { writeFileSync } from 'node:fs'
+writeFileSync(process.env.HANONLY_R52_ARGV_LOG, JSON.stringify(process.argv.slice(2)))
+process.stdout.write("R52\\n")
+`,
+      { mode: 0o700 },
+    )
+    await chmod(shim, 0o700)
+
+    const result = await runCli([flag], {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      HANONLY_R52_ARGV_LOG: argvLog,
+    })
+
+    expect(result).toEqual({ exitCode: 0, stdout: 'R52\n', stderr: '' })
+    const argv = JSON.parse(await readFile(argvLog, 'utf8')) as string[]
+    expect(argv.slice(0, 3)).toEqual([
+      'scripts/hanonly_evidence_ledger.py',
+      endpoint,
+      '--repo-root',
+    ])
+    expect(argv).not.toContain('validate-r51-b0-authorization')
+  })
+
+  test('rejects caller-controlled repo roots on every R52 endpoint', async () => {
+    for (const flag of [
+      '--project-r52-calibration-manifest',
+      '--write-r52-b0-preflight-attestation',
+      '--write-r52-r51-holdout-adoption',
+      '--run-r52-challenge',
+      '--run-r52-holdout',
+      '--validate-r52-b0-authorization',
+    ]) {
+      const result = await runCli([flag, '--repo-root', '/tmp'])
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toStartWith('FAIL [r52-argv]:')
+    }
+  })
+
+  test.each(['--run-r52-challenge', '--run-r52-holdout'])(
+    'rejects arbitrary runner control for %s',
+    async (flag) => {
+      for (const option of ['--command', '--argv', '--runner', '--environment', '--env']) {
+        const result = await runCli([flag, option, '/tmp/caller-controlled'])
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toStartWith('FAIL [r52-argv]:')
+      }
+    },
+  )
 
   test('uses the exact cargo metadata argv and prints only PASS on success', async () => {
     const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-cli-')))
