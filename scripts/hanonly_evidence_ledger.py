@@ -4436,18 +4436,16 @@ def _r59_validate_successor(data, value, original, requested_b0_sha):
 def _r59_validate_clean_detached_head(repo_root, requested_b0_sha):
     if not B0_SHA_RE.fullmatch(requested_b0_sha):
         raise LedgerError("R59 requested B0 SHA is invalid")
-    head = _git(repo_root, "rev-parse", "HEAD").decode().strip()
-    if head != requested_b0_sha:
+    head = _run_git(repo_root, ["rev-parse", "HEAD"])
+    if head.returncode != 0 or head.stdout.decode().strip() != requested_b0_sha:
         raise LedgerError("R59 successor B0 does not equal HEAD")
-    symbolic = subprocess.run(
-        ["git", "-C", repo_root, "symbolic-ref", "-q", "HEAD"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    symbolic = _run_git(repo_root, ["symbolic-ref", "-q", "HEAD"])
     if symbolic.returncode != 1:
         raise LedgerError("R59 B0 requires detached HEAD")
-    if _git(repo_root, "status", "--porcelain=v1", "--untracked-files=all"):
+    status_result = _run_git(
+        repo_root, ["status", "--porcelain=v1", "--untracked-files=all"]
+    )
+    if status_result.returncode != 0 or status_result.stdout:
         raise LedgerError("R59 B0 worktree must be clean")
 
 

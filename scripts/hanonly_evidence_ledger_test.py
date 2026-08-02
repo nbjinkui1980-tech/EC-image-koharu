@@ -2263,6 +2263,40 @@ class R59CustodyBoundaryTests(unittest.TestCase):
             runtime_exists=runtime_exists,
         )
 
+    def test_clean_detached_head_uses_shared_git_runner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            subprocess.run(
+                ["git", "-C", directory, "config", "user.name", "R59 Test"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", directory, "config", "user.email", "r59@test.invalid"],
+                check=True,
+            )
+            Path(directory, "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "-C", directory, "add", "tracked.txt"], check=True)
+            subprocess.run(
+                ["git", "-C", directory, "commit", "-q", "-m", "fixture"],
+                check=True,
+            )
+            head = subprocess.run(
+                ["git", "-C", directory, "rev-parse", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "-C", directory, "checkout", "-q", "--detach", head],
+                check=True,
+            )
+
+            ledger._r59_validate_clean_detached_head(directory, head)
+
+            Path(directory, "untracked.txt").write_text("dirty\n", encoding="utf-8")
+            with self.assertRaisesRegex(ledger.LedgerError, "clean"):
+                ledger._r59_validate_clean_detached_head(directory, head)
+
     def receipts(self):
         successor_sha256 = self.preflight()
         start = {
