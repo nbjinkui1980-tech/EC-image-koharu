@@ -1567,9 +1567,18 @@ function r59Args(args: readonly string[], endpoint: string): string[] {
 
 function r59Python(root: string, command: string, args: readonly string[]): string {
   const result = Bun.spawnSync({
-    cmd: ['python3', 'scripts/hanonly_evidence_ledger.py', command, '--repo-root', root, ...args],
+    cmd: [
+      '/usr/bin/python3',
+      '-I',
+      '-B',
+      'scripts/hanonly_evidence_ledger.py',
+      command,
+      '--repo-root',
+      root,
+      ...args,
+    ],
     cwd: root,
-    env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' },
+    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin' },
     stdout: 'pipe',
     stderr: 'pipe',
   })

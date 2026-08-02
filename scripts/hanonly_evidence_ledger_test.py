@@ -2291,11 +2291,255 @@ class R59CustodyBoundaryTests(unittest.TestCase):
                 check=True,
             )
 
-            ledger._r59_validate_clean_detached_head(directory, head)
+            with tempfile.TemporaryDirectory() as shim_directory:
+                shim = Path(shim_directory, "git")
+                shim.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+                shim.chmod(0o700)
+                with mock.patch.dict(os.environ, {"PATH": shim_directory}):
+                    ledger._r59_validate_clean_detached_head(directory, head)
 
             Path(directory, "untracked.txt").write_text("dirty\n", encoding="utf-8")
             with self.assertRaisesRegex(ledger.LedgerError, "clean"):
                 ledger._r59_validate_clean_detached_head(directory, head)
+
+    def test_full_preflight_endpoint_revalidates_artifact_and_public_permissions(self):
+        source_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            temporary_root = Path(directory).resolve()
+            root = temporary_root / "repo"
+            root.mkdir()
+            public = temporary_root / "public"
+            public.mkdir(mode=0o700)
+            directory_acl = (
+                f"user:{ledger._r59_implementation_user()} "
+                "allow list,search,readattr"
+            )
+            file_acl = (
+                f"user:{ledger._r59_implementation_user()} allow read,readattr"
+            )
+            subprocess.run(["/bin/chmod", "+a", directory_acl, public], check=True)
+            calibration = temporary_root / "calibration.json"
+            calibration.write_bytes(b"calibration")
+            calibration.chmod(0o600)
+            for relative in (
+                ".omx/plans/hanonly-r59-b0-custody-contract.json",
+                ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((source_root / relative).read_bytes())
+            subprocess.run(["git", "init", "-q", root], check=True)
+            subprocess.run(
+                ["git", "-C", root, "config", "user.name", "R59 Test"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", root, "config", "user.email", "r59@test.invalid"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", root, "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", root, "commit", "-q", "-m", "fixture"], check=True
+            )
+            head = subprocess.run(
+                ["git", "-C", root, "rev-parse", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "-C", root, "checkout", "-q", "--detach", head],
+                check=True,
+            )
+            original = public / "original.json"
+            original.write_bytes(self.ORIGINAL_BYTES)
+            original.chmod(0o600)
+            subprocess.run(["/bin/chmod", "+a", file_acl, original], check=True)
+            successor = public / "successor.json"
+            successor_value = self.clone(self.successor)
+            successor_value["successor_b0_sha"] = head
+            successor_value["calibration_artifact_sha256"] = hashlib.sha256(
+                calibration.read_bytes()
+            ).hexdigest()
+            successor.write_bytes(self.successor_bytes(successor_value))
+            successor.chmod(0o600)
+            subprocess.run(["/bin/chmod", "+a", file_acl, successor], check=True)
+            marker = public / "start.json"
+            runtime = public / "runtime.json"
+            terminal = public / "terminal.json"
+            cleanup = public / "cleanup.json"
+            patches = (
+                mock.patch.object(ledger, "R59_ORIGINAL_PUBLIC_COMMITMENT_PATH", str(original)),
+                mock.patch.object(ledger, "R59_SUCCESSOR_COMMITMENT_PATH", str(successor)),
+                mock.patch.object(ledger, "R59_START_MARKER_PATH", str(marker)),
+                mock.patch.object(ledger, "R59_RUNTIME_COMMITMENT_PATH", str(runtime)),
+                mock.patch.object(ledger, "R59_TERMINAL_RECEIPT_PATH", str(terminal)),
+                mock.patch.object(ledger, "R59_CLEANUP_RECEIPT_PATH", str(cleanup)),
+                mock.patch.object(ledger, "R59_CALIBRATION_ARTIFACT_PATH", str(calibration)),
+                mock.patch.object(
+                    ledger,
+                    "R59_CALIBRATION_ARTIFACT_SHA256",
+                    hashlib.sha256(calibration.read_bytes()).hexdigest(),
+                ),
+                mock.patch.object(ledger, "_r59_custody_uid", return_value=os.geteuid()),
+            )
+            with contextlib.ExitStack() as stack:
+                for patcher in patches:
+                    stack.enter_context(patcher)
+                output = ledger.execute(
+                    [
+                        "validate-r59-b0-preflight",
+                        "--repo-root",
+                        str(root),
+                        "--requested-b0-sha",
+                        head,
+                    ]
+                )
+                self.assertEqual(
+                    json.loads(output),
+                    {
+                        "result": "pass",
+                        "successor_commitment_sha256": hashlib.sha256(
+                            successor.read_bytes()
+                        ).hexdigest(),
+                    },
+                )
+                require_acl = ledger._r59_require_acl
+
+                def drift_root_mode(fd, permissions, label):
+                    require_acl(fd, permissions, label)
+                    if label == "R59 public directory":
+                        os.fchmod(fd, 0o777)
+
+                with mock.patch.object(
+                    ledger, "_r59_require_acl", side_effect=drift_root_mode
+                ):
+                    with self.assertRaisesRegex(ledger.LedgerError, "metadata changed"):
+                        ledger.execute(
+                            [
+                                "validate-r59-b0-preflight",
+                                "--repo-root",
+                                str(root),
+                                "--requested-b0-sha",
+                                head,
+                            ]
+                        )
+                public.chmod(0o700)
+
+                def drift_successor_mode(fd, permissions, label):
+                    require_acl(fd, permissions, label)
+                    if label == "R59 successor commitment":
+                        os.fchmod(fd, 0o666)
+
+                with mock.patch.object(
+                    ledger, "_r59_require_acl", side_effect=drift_successor_mode
+                ):
+                    with self.assertRaisesRegex(ledger.LedgerError, "metadata changed"):
+                        ledger.execute(
+                            [
+                                "validate-r59-b0-preflight",
+                                "--repo-root",
+                                str(root),
+                                "--requested-b0-sha",
+                                head,
+                            ]
+                        )
+                successor.chmod(0o600)
+                subprocess.run(
+                    ["/bin/chmod", "+a", "user:root allow readattr", public],
+                    check=True,
+                )
+                with self.assertRaisesRegex(ledger.LedgerError, "directory ACL"):
+                    ledger.execute(
+                        [
+                            "validate-r59-b0-preflight",
+                            "--repo-root",
+                            str(root),
+                            "--requested-b0-sha",
+                            head,
+                        ]
+                    )
+                subprocess.run(["/bin/chmod", "-a#", "0", public], check=True)
+                with mock.patch.object(
+                    ledger, "_r59_custody_uid", return_value=os.geteuid() + 1
+                ):
+                    with self.assertRaisesRegex(ledger.LedgerError, "directory owner"):
+                        ledger.execute(
+                            [
+                                "validate-r59-b0-preflight",
+                                "--repo-root",
+                                str(root),
+                                "--requested-b0-sha",
+                                head,
+                            ]
+                        )
+                calibration.write_bytes(b"drift")
+                with self.assertRaisesRegex(
+                    ledger.LedgerError, "calibration artifact SHA"
+                ):
+                    ledger.execute(
+                        [
+                            "validate-r59-b0-preflight",
+                            "--repo-root",
+                            str(root),
+                            "--requested-b0-sha",
+                            head,
+                        ]
+                    )
+                calibration.write_bytes(b"calibration")
+                subprocess.run(
+                    ["/bin/chmod", "+a", "user:root allow readattr", successor],
+                    check=True,
+                )
+                with self.assertRaisesRegex(ledger.LedgerError, "successor.*ACL"):
+                    ledger.execute(
+                        [
+                            "validate-r59-b0-preflight",
+                            "--repo-root",
+                            str(root),
+                            "--requested-b0-sha",
+                            head,
+                        ]
+                    )
+                subprocess.run(["/bin/chmod", "-a#", "0", successor], check=True)
+                previous_b0 = self.SUCCESSOR_B0
+                previous_successor = self.successor
+                self.SUCCESSOR_B0 = head
+                self.successor = successor_value
+                try:
+                    receipt_values = self.receipts()
+                finally:
+                    self.SUCCESSOR_B0 = previous_b0
+                    self.successor = previous_successor
+                for path, value in zip(
+                    (marker, runtime, cleanup, terminal), receipt_values
+                ):
+                    path.write_bytes(ledger._r59_canonical_json(value))
+                    path.chmod(0o600)
+                    subprocess.run(["/bin/chmod", "+a", file_acl, path], check=True)
+                authorization = ledger.execute(
+                    [
+                        "validate-r59-b0-authorization",
+                        "--repo-root",
+                        str(root),
+                        "--requested-b0-sha",
+                        head,
+                    ]
+                )
+                self.assertEqual(json.loads(authorization)["result"], "authorized")
+                subprocess.run(
+                    ["/bin/chmod", "+a", "user:root allow readattr", runtime],
+                    check=True,
+                )
+                with self.assertRaisesRegex(ledger.LedgerError, "runtime.*ACL"):
+                    ledger.execute(
+                        [
+                            "validate-r59-b0-authorization",
+                            "--repo-root",
+                            str(root),
+                            "--requested-b0-sha",
+                            head,
+                        ]
+                    )
 
     def receipts(self):
         successor_sha256 = self.preflight()

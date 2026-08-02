@@ -3,11 +3,13 @@
 import argparse
 import base64
 import contextlib
+import ctypes
 import datetime
 import errno
 import hashlib
 import json
 import os
+import pwd
 import re
 import stat
 import struct
@@ -642,6 +644,11 @@ R59_TERMINAL_RECEIPT_PATH = (
 )
 R59_CLEANUP_RECEIPT_PATH = (
     "/Users/Shared/hanonly-r59-public/r59-cleanup-receipt.json"
+)
+R59_CALIBRATION_ARTIFACT_PATH = (
+    "/Users/jinkui/ec-image-Koharu/hanonly-r58-b0-evidence/"
+    "20260801T222538Z-4c0e0d25d4de-1/source-gate-selection/"
+    "crop-policy-selection.json"
 )
 R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256 = (
     "d1ec5a35d01d716663df99cf8c4b153fd33b2934008c231813bd73b8f59aa927"
@@ -1754,10 +1761,11 @@ def _require_owned_mode(path, value, expected_mode):
 def _run_git(repo_root, arguments):
     try:
         return subprocess.run(
-            ["git", "-C", repo_root, *arguments],
+            ["/usr/bin/git", "-C", repo_root, *arguments],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
             shell=False,
         )
     except OSError as error:
@@ -4364,24 +4372,124 @@ def _r51_validate_authorization(arguments):
     )
 
 
-def _r59_read_public_json(path, expected_path, label):
+def _r59_read_public_json(root, path, expected_path, label, stack):
     if path != expected_path:
         raise LedgerError(f"{label} path drift")
-    with contextlib.ExitStack() as stack:
-        held = _open_absolute(path, directory=False, stack=stack)
-        if _mode(held.stat) != 0o600:
-            raise LedgerError(f"{label} mode must be 0600")
-        before = os.fstat(held.fd)
-        data = _read_all(held.fd)
-        after = os.fstat(held.fd)
-        if (
-            _identity(before) != _identity(after)
-            or before.st_size != after.st_size
-            or before.st_mtime_ns != after.st_mtime_ns
-            or before.st_ctime_ns != after.st_ctime_ns
-        ):
-            raise LedgerError(f"{label} changed while being read")
+    if os.path.dirname(path) != root.path:
+        raise LedgerError(f"{label} must remain in the R59 public directory")
+    held = _open_child(root, os.path.basename(path), directory=False, stack=stack)
+    before = os.fstat(held.fd)
+    if before.st_uid != _r59_custody_uid():
+        raise LedgerError(f"{label} owner must be koharu-custody")
+    if _mode(before) != 0o600:
+        raise LedgerError(f"{label} mode must be 0600")
+    _r59_require_acl(held.fd, "read,readattr", label)
+    if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
+        raise LedgerError(f"{label} metadata changed during ACL validation")
+    data = _read_all(held.fd)
+    after = os.fstat(held.fd)
+    if _r59_secure_metadata(after) != _r59_secure_metadata(before):
+        raise LedgerError(f"{label} changed while being read")
+    _r59_require_acl(held.fd, "read,readattr", label)
+    if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
+        raise LedgerError(f"{label} metadata changed during final ACL validation")
     return data, _parse_json(data, label)
+
+
+def _r59_custody_uid():
+    try:
+        return pwd.getpwnam("koharu-custody").pw_uid
+    except KeyError as error:
+        raise LedgerError("koharu-custody principal is unavailable") from error
+
+
+def _r59_implementation_user():
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError as error:
+        raise LedgerError("implementation principal is unavailable") from error
+
+
+def _r59_acl_text(fd):
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.acl_get_fd_np.argtypes = [ctypes.c_int, ctypes.c_int]
+    libc.acl_get_fd_np.restype = ctypes.c_void_p
+    libc.acl_to_text.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ssize_t)]
+    libc.acl_to_text.restype = ctypes.c_void_p
+    libc.acl_free.argtypes = [ctypes.c_void_p]
+    libc.acl_free.restype = ctypes.c_int
+    acl = libc.acl_get_fd_np(fd, 0x00000100)
+    if not acl:
+        raise LedgerError("cannot inspect R59 ACL")
+    text = None
+    try:
+        length = ctypes.c_ssize_t()
+        text = libc.acl_to_text(acl, ctypes.byref(length))
+        if not text:
+            raise LedgerError("cannot serialize R59 ACL")
+        return ctypes.string_at(text, length.value).decode("utf-8")
+    finally:
+        if text:
+            libc.acl_free(text)
+        libc.acl_free(acl)
+
+
+def _r59_require_acl(fd, permissions, label):
+    lines = _r59_acl_text(fd).splitlines()
+    if len(lines) != 2 or lines[0] != "!#acl 1":
+        raise LedgerError(f"{label} ACL drift")
+    fields = lines[1].split(":")
+    if (
+        len(fields) != 6
+        or fields[0] != "user"
+        or re.fullmatch(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}", fields[1])
+        is None
+        or fields[2] != _r59_implementation_user()
+        or fields[3] != str(os.geteuid())
+        or fields[4] != "allow"
+        or fields[5] != permissions
+    ):
+        raise LedgerError(f"{label} ACL drift")
+
+
+def _r59_secure_metadata(value):
+    return (
+        _identity(value),
+        value.st_uid,
+        value.st_gid,
+        _mode(value),
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _r59_validate_public_directory_held(held):
+    before = os.fstat(held.fd)
+    if before.st_uid != _r59_custody_uid():
+        raise LedgerError("R59 public directory owner must be koharu-custody")
+    if _mode(before) != 0o700:
+        raise LedgerError("R59 public directory mode must be 0700")
+    _r59_require_acl(held.fd, "read,execute,readattr", "R59 public directory")
+    if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
+        raise LedgerError("R59 public directory metadata changed during ACL validation")
+
+
+def _r59_open_public_directory(stack):
+    root = os.path.dirname(R59_ORIGINAL_PUBLIC_COMMITMENT_PATH)
+    held = _open_absolute(root, directory=True, stack=stack)
+    _r59_validate_public_directory_held(held)
+    return held
+
+
+def _r59_validate_calibration_artifact():
+    _, data = _r51_read(
+        R59_CALIBRATION_ARTIFACT_PATH,
+        "R59 calibration artifact",
+        mode=0o600,
+    )
+    if _sha256(data) != R59_CALIBRATION_ARTIFACT_SHA256:
+        raise LedgerError("R59 calibration artifact SHA drift")
 
 
 def _r59_validate_original(data, value):
@@ -4488,9 +4596,11 @@ def _r59_validate_preflight_values(
     return successor_sha256
 
 
-def _r59_path_exists_fail_closed(path, label):
+def _r59_path_exists_fail_closed(root, path, label):
+    if os.path.dirname(path) != root.path:
+        raise LedgerError(f"{label} must remain in the R59 public directory")
     try:
-        os.lstat(path)
+        os.stat(os.path.basename(path), dir_fd=root.fd, follow_symlinks=False)
     except FileNotFoundError:
         return False
     except OSError as error:
@@ -4502,29 +4612,37 @@ def _r59_validate_preflight(arguments):
     repo_root = _canonical_existing_path(arguments.repo_root, "repository root")
     _r59_validate_clean_detached_head(repo_root, arguments.requested_b0_sha)
     _r59_validate_protocol_files(repo_root)
-    original_data, original = _r59_read_public_json(
-        R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
-        R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
-        "R59 original public commitment",
-    )
-    successor_data, successor = _r59_read_public_json(
-        R59_SUCCESSOR_COMMITMENT_PATH,
-        R59_SUCCESSOR_COMMITMENT_PATH,
-        "R59 successor commitment",
-    )
-    successor_sha256 = _r59_validate_preflight_values(
-        original_data,
-        original,
-        successor_data,
-        successor,
-        arguments.requested_b0_sha,
-        marker_exists=_r59_path_exists_fail_closed(
-            R59_START_MARKER_PATH, "R59 start marker"
-        ),
-        runtime_exists=_r59_path_exists_fail_closed(
-            R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"
-        ),
-    )
+    _r59_validate_calibration_artifact()
+    with contextlib.ExitStack() as stack:
+        public = _r59_open_public_directory(stack)
+        original_data, original = _r59_read_public_json(
+            public,
+            R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
+            R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
+            "R59 original public commitment",
+            stack,
+        )
+        successor_data, successor = _r59_read_public_json(
+            public,
+            R59_SUCCESSOR_COMMITMENT_PATH,
+            R59_SUCCESSOR_COMMITMENT_PATH,
+            "R59 successor commitment",
+            stack,
+        )
+        successor_sha256 = _r59_validate_preflight_values(
+            original_data,
+            original,
+            successor_data,
+            successor,
+            arguments.requested_b0_sha,
+            marker_exists=_r59_path_exists_fail_closed(
+                public, R59_START_MARKER_PATH, "R59 start marker"
+            ),
+            runtime_exists=_r59_path_exists_fail_closed(
+                public, R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"
+            ),
+        )
+        _r59_validate_public_directory_held(public)
     return _r59_canonical_json(
         {"result": "pass", "successor_commitment_sha256": successor_sha256}
     ) + b"\n"
@@ -4671,16 +4789,21 @@ def _r59_validate_authorization_values(
 def _r59_validate_authorization(arguments):
     repo_root = _canonical_existing_path(arguments.repo_root, "repository root")
     _r59_validate_clean_detached_head(repo_root, arguments.requested_b0_sha)
-    inputs = []
-    for path, label in (
-        (R59_ORIGINAL_PUBLIC_COMMITMENT_PATH, "R59 original public commitment"),
-        (R59_SUCCESSOR_COMMITMENT_PATH, "R59 successor commitment"),
-        (R59_START_MARKER_PATH, "R59 start marker"),
-        (R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"),
-        (R59_TERMINAL_RECEIPT_PATH, "R59 terminal receipt"),
-        (R59_CLEANUP_RECEIPT_PATH, "R59 cleanup receipt"),
-    ):
-        inputs.append(_r59_read_public_json(path, path, label))
+    _r59_validate_protocol_files(repo_root)
+    _r59_validate_calibration_artifact()
+    with contextlib.ExitStack() as stack:
+        public = _r59_open_public_directory(stack)
+        inputs = []
+        for path, label in (
+            (R59_ORIGINAL_PUBLIC_COMMITMENT_PATH, "R59 original public commitment"),
+            (R59_SUCCESSOR_COMMITMENT_PATH, "R59 successor commitment"),
+            (R59_START_MARKER_PATH, "R59 start marker"),
+            (R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"),
+            (R59_TERMINAL_RECEIPT_PATH, "R59 terminal receipt"),
+            (R59_CLEANUP_RECEIPT_PATH, "R59 cleanup receipt"),
+        ):
+            inputs.append(_r59_read_public_json(public, path, path, label, stack))
+        _r59_validate_public_directory_held(public)
     record = _r59_validate_authorization_values(
         inputs[0][0],
         inputs[0][1],
