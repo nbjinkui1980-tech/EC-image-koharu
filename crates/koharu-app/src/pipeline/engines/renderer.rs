@@ -681,10 +681,11 @@ fn render_target_language_tag(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::path::Path;
 
     use super::*;
+    use anyhow::Context as _;
     use image::{DynamicImage, Rgba, RgbaImage};
     use koharu_core::{
         BlobRef, FontSource, ImageData, ImageRole, Node, NodeId, NodeKind, Page, Scene, TextData,
@@ -694,7 +695,16 @@ mod tests {
     use crate::blobs::BlobStore;
     use crate::config::SourceTextPolicy;
     use crate::pipeline::engine::PipelineRunOptions;
-    use crate::renderer::Renderer;
+    use crate::renderer::{Renderer, RendererDiagnosticCapture, RendererDiagnosticCaptureActive};
+
+    fn start_renderer_diagnostic_capture() -> RendererDiagnosticCapture {
+        loop {
+            match RendererDiagnosticCapture::start() {
+                Ok(capture) => return capture,
+                Err(RendererDiagnosticCaptureActive) => std::thread::yield_now(),
+            }
+        }
+    }
 
     #[derive(Debug, PartialEq)]
     struct RenderSignature {
@@ -818,8 +828,10 @@ mod tests {
     #[test]
     #[ignore = "hanonly-pre-b1-red"]
     fn hanonly_pre_b1_red_t2_pipeline_layout_handoff_contract() -> Result<()> {
+        let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
         let temp = tempfile::tempdir()?;
         let blobs = BlobStore::open(temp.path())?;
+        let renderer = Renderer::new()?;
         let node = renderer_node(
             NodeId::new(),
             "中文",
@@ -833,25 +845,64 @@ mod tests {
             ..Default::default()
         };
 
-        let error = run_renderer_page(
+        let alpha_page_pixels = RefCell::new(Vec::new());
+        let capture = start_renderer_diagnostic_capture();
+        let ops = run_renderer_page(
             &scene,
             page,
             &blobs,
             &options,
-            |_, _, _, _, _, inputs, page_options| {
+            |base, brush, bubble, width, height, inputs, page_options| {
                 assert_eq!(inputs.len(), 1);
-                assert_eq!(
-                    page_options
-                        .source_relative_font_size_policy
-                        .map(|policy| policy.offset),
-                    Some(0.0),
-                    "pipeline handoff must not retain the legacy blanket -5px cap"
-                );
-                anyhow::bail!("captured dynamic layout handoff")
+                let output = renderer.render_page(
+                    base,
+                    brush,
+                    bubble,
+                    width,
+                    height,
+                    inputs,
+                    page_options,
+                )?;
+                let block = output.blocks.first().context("real rendered block")?;
+                let transform = block
+                    .expanded_transform
+                    .context("real expanded sprite transform")?;
+                for (x, y, pixel) in block.sprite.to_rgba8().enumerate_pixels() {
+                    if pixel.0[3] != 0 {
+                        alpha_page_pixels.borrow_mut().push((
+                            transform.x.round() as i64 + i64::from(x),
+                            transform.y.round() as i64 + i64::from(y),
+                        ));
+                    }
+                }
+                Ok(output)
             },
-        )
-        .expect_err("capture closure must stop before writes");
-        assert_eq!(error.to_string(), "captured dynamic layout handoff");
+        )?;
+        assert!(!ops.is_empty());
+        let events = capture.take();
+        let [event] = events.as_slice() else {
+            panic!("expected one real renderer diagnostic");
+        };
+        assert_eq!(event.resolver_record_ptr, event.fit_record_ptr);
+        assert_eq!(event.fit_record_ptr, event.postvalidate_record_ptr);
+        assert_ne!(event.resolver_record_ptr, 0);
+        assert_eq!(event.resolver_box, event.fit_box);
+        assert_eq!(event.fit_box, event.postvalidate_box);
+        assert_eq!(event.resolver_box_blake3, event.fit_box_blake3);
+        assert_eq!(event.fit_box_blake3, event.postvalidate_box_blake3);
+        assert!(!alpha_page_pixels.borrow().is_empty());
+        for &(x, y) in alpha_page_pixels.borrow().iter() {
+            assert!(
+                x >= event.postvalidate_box.left
+                    && x < event.postvalidate_box.right
+                    && y >= event.postvalidate_box.top
+                    && y < event.postvalidate_box.bottom,
+                "every real sprite alpha pixel must remain in the exact handoff box"
+            );
+        }
+        assert_eq!(event.builder_publication_count, 1);
+        assert_eq!(event.builder_raster_count, 1);
+        assert_eq!(event.renderer_rebuild_count, 0);
         Ok(())
     }
 

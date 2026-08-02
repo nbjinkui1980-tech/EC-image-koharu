@@ -3,8 +3,8 @@ use std::{path::PathBuf, sync::OnceLock};
 use anyhow::Result;
 use koharu_renderer::{
     font::{Font, FontBook},
-    layout::{TextLayout, WritingMode},
-    renderer::{RenderOptions, TinySkiaRenderer},
+    layout::{LayoutRun, TextLayout, WritingMode},
+    renderer::{RasterOptions, RenderOptions, RenderStrokeOptions, TinySkiaRenderer},
 };
 use unicode_bidi::BidiInfo;
 
@@ -235,33 +235,306 @@ fn render_rgba_text() -> Result<()> {
 mod hanonly_contracts {
     use super::*;
 
+    type SourceColorProbe = fn(&Font) -> Result<()>;
+
+    fn render(font: &Font, text: &str, options: &RenderOptions) -> Result<image::RgbaImage> {
+        let layout = TextLayout::new(font, Some(options.font_size)).run(text)?;
+        tiny_skia_renderer()?.render(&layout, WritingMode::Horizontal, options)
+    }
+
+    fn cluster_transcript(layout: &LayoutRun<'_>) -> Vec<Vec<u32>> {
+        layout
+            .lines
+            .iter()
+            .map(|line| line.glyphs.iter().map(|glyph| glyph.cluster).collect())
+            .collect()
+    }
+
+    fn normal_multi_glyph_positions_have_alpha(font: &Font) -> Result<()> {
+        let options = RenderOptions {
+            font_size: 32.0,
+            ..Default::default()
+        };
+        let layout = TextLayout::new(font, Some(options.font_size)).run("ABC")?;
+        let image = tiny_skia_renderer()?.render(&layout, WritingMode::Horizontal, &options)?;
+        let line = layout
+            .lines
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("multi-glyph probe shaped no line"))?;
+        let mut pen_x = 0.0f32;
+
+        for (position, glyph) in line.glyphs.iter().enumerate() {
+            let start = (line.baseline.0 + pen_x).floor().max(0.0) as u32;
+            pen_x += glyph.x_advance;
+            let end = (line.baseline.0 + pen_x)
+                .ceil()
+                .max(start as f32 + 1.0)
+                .min(image.width() as f32) as u32;
+            assert!(
+                (start..end).any(|x| (0..image.height()).any(|y| image.get_pixel(x, y).0[3] > 0)),
+                "normal multi-glyph position {position} has no rendered alpha"
+            );
+        }
+        assert_eq!(line.glyphs.len(), 3, "fixture must shape three glyphs");
+        Ok(())
+    }
+
+    fn exact_fill_rgba(font: &Font) -> Result<()> {
+        let color = [17, 83, 149, 255];
+        let image = render(
+            font,
+            "M",
+            &RenderOptions {
+                color,
+                anti_alias: false,
+                font_size: 48.0,
+                ..Default::default()
+            },
+        )?;
+        assert!(
+            image.pixels().any(|pixel| pixel.0 == color),
+            "opaque glyph interior must preserve the exact requested fill RGBA"
+        );
+        Ok(())
+    }
+
+    fn stroke_then_fill_order(font: &Font) -> Result<()> {
+        let fill = [19, 117, 211, 255];
+        let stroke = [229, 41, 73, 255];
+        let base = RenderOptions {
+            anti_alias: false,
+            font_size: 48.0,
+            stroke: Some(RenderStrokeOptions {
+                color: stroke,
+                width_px: 3.0,
+            }),
+            ..Default::default()
+        };
+        let stroke_only = render(
+            font,
+            "M",
+            &RenderOptions {
+                color: [0, 0, 0, 0],
+                ..base.clone()
+            },
+        )?;
+        let fill_only = render(
+            font,
+            "M",
+            &RenderOptions {
+                color: fill,
+                stroke: None,
+                ..base.clone()
+            },
+        )?;
+        let combined = render(
+            font,
+            "M",
+            &RenderOptions {
+                color: fill,
+                ..base
+            },
+        )?;
+
+        let overlap = stroke_only
+            .pixels()
+            .zip(fill_only.pixels())
+            .zip(combined.pixels())
+            .find(|((stroke_pixel, fill_pixel), _)| stroke_pixel.0[3] > 0 && fill_pixel.0 == fill)
+            .map(|(_, combined_pixel)| combined_pixel.0);
+        assert_eq!(
+            overlap,
+            Some(fill),
+            "fill must overwrite the inside half of the earlier stroke pass"
+        );
+        assert!(
+            combined.pixels().any(|pixel| pixel.0 == stroke),
+            "combined render must retain an outside stroke"
+        );
+        Ok(())
+    }
+
+    fn transparent_fill_has_empty_alpha(font: &Font) -> Result<()> {
+        let image = render(
+            font,
+            "ABC",
+            &RenderOptions {
+                color: [17, 83, 149, 0],
+                ..Default::default()
+            },
+        )?;
+        assert!(
+            image.pixels().all(|pixel| pixel.0[3] == 0),
+            "zero-alpha fill must leave the surface alpha empty"
+        );
+        Ok(())
+    }
+
+    fn oversized_surface_errors(font: &Font) -> Result<()> {
+        let mut layout = TextLayout::new(font, Some(24.0)).run("A")?;
+        layout.width = u32::MAX as f32;
+        let error = tiny_skia_renderer()?
+            .render(&layout, WritingMode::Horizontal, &RenderOptions::default())
+            .expect_err("oversized logical width must error");
+        assert!(
+            error.to_string().contains("render surface width overflow"),
+            "unexpected oversized-surface error: {error:#}"
+        );
+        Ok(())
+    }
+
+    fn pixmap_rejection_errors(font: &Font) -> Result<()> {
+        let mut layout = TextLayout::new(font, Some(24.0)).run("A")?;
+        layout.width = 300_000_000.0;
+        layout.height = 1.0;
+        let error = tiny_skia_renderer()?
+            .render(&layout, WritingMode::Horizontal, &RenderOptions::default())
+            .expect_err("tiny-skia width limit must reject the pixmap");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to allocate render surface"),
+            "unexpected Pixmap rejection error: {error:#}"
+        );
+        Ok(())
+    }
+
+    fn scale_two_and_four_keep_logical_dimensions(font: &Font) -> Result<()> {
+        let layout = TextLayout::new(font, Some(32.0)).run("ABC")?;
+        let expected = (layout.width.ceil() as u32, layout.height.ceil() as u32);
+        for factor in [2, 4] {
+            let image = tiny_skia_renderer()?.render(
+                &layout,
+                WritingMode::Horizontal,
+                &RenderOptions {
+                    font_size: 32.0,
+                    raster: RasterOptions::supersampled(factor),
+                    ..Default::default()
+                },
+            )?;
+            assert_eq!(
+                image.dimensions(),
+                expected,
+                "scale {factor} changed logical dimensions"
+            );
+            assert!(
+                image.pixels().any(|pixel| pixel.0[3] > 0),
+                "scale {factor} produced no alpha"
+            );
+        }
+        Ok(())
+    }
+
+    fn lf_is_insertion_only_and_transcript_is_stable(font: &Font) -> Result<()> {
+        let compact = TextLayout::new(font, Some(24.0)).run("ABCD")?;
+        let with_lf = TextLayout::new(font, Some(24.0)).run("AB\nCD")?;
+        let before = cluster_transcript(&with_lf);
+        assert_eq!(
+            before,
+            vec![vec![0, 1], vec![3, 4]],
+            "LF cluster transcript drifted"
+        );
+
+        let restored = before
+            .iter()
+            .flatten()
+            .map(|cluster| if *cluster > 1 { cluster - 1 } else { *cluster })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            restored,
+            cluster_transcript(&compact)
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>(),
+            "removing the inserted LF must restore compact-text clusters"
+        );
+
+        tiny_skia_renderer()?.render(
+            &with_lf,
+            WritingMode::Horizontal,
+            &RenderOptions {
+                font_size: 24.0,
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(
+            cluster_transcript(&with_lf),
+            before,
+            "public render mutated the LF cluster transcript"
+        );
+        Ok(())
+    }
+
+    fn glyph_zero_for_non_control_errors(font: &Font) -> Result<()> {
+        let mut layout = TextLayout::new(font, Some(24.0)).run("A")?;
+        layout
+            .lines
+            .iter_mut()
+            .flat_map(|line| &mut line.glyphs)
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("glyph-zero probe shaped no glyphs"))?
+            .glyph_id = 0;
+        assert!(
+            tiny_skia_renderer()?
+                .render(&layout, WritingMode::Horizontal, &RenderOptions::default())
+                .is_err(),
+            "source color probe must reject glyph zero for non-control text"
+        );
+        Ok(())
+    }
+
+    fn glyph_id_above_u16_errors(font: &Font) -> Result<()> {
+        let mut layout = TextLayout::new(font, Some(24.0)).run("A")?;
+        layout
+            .lines
+            .iter_mut()
+            .flat_map(|line| &mut line.glyphs)
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("wide-glyph probe shaped no glyphs"))?
+            .glyph_id = u32::from(u16::MAX) + 1;
+        assert!(
+            tiny_skia_renderer()?
+                .render(&layout, WritingMode::Horizontal, &RenderOptions::default())
+                .is_err(),
+            "source color probe must reject a shaped glyph ID above u16"
+        );
+        Ok(())
+    }
+
     #[test]
     #[ignore = "hanonly-pre-greenc-red"]
     fn hanonly_pre_greenc_red_t3_source_color_probe_contract() -> Result<()> {
         let mut book = FontBook::new();
         let font =
             book.load_from_bytes(include_bytes!("fixtures/roboto-mono-stripped.ttf").to_vec())?;
-        let mut layout = TextLayout::new(&font, Some(24.0)).run("A")?;
-        let options = RenderOptions {
-            color: [17, 83, 149, 255],
-            ..Default::default()
-        };
-        tiny_skia_renderer()?.render(&layout, WritingMode::Horizontal, &options)?;
+        let probes: &[(&str, SourceColorProbe)] = &[
+            (
+                "normal_multi_glyph_alpha",
+                normal_multi_glyph_positions_have_alpha,
+            ),
+            ("exact_fill_rgba", exact_fill_rgba),
+            ("stroke_then_fill_order", stroke_then_fill_order),
+            ("transparent_fill_alpha", transparent_fill_has_empty_alpha),
+            ("oversized_surface_error", oversized_surface_errors),
+            ("pixmap_rejection_error", pixmap_rejection_errors),
+            (
+                "scale_two_and_four_logical_dimensions",
+                scale_two_and_four_keep_logical_dimensions,
+            ),
+            (
+                "lf_insertion_only_cluster_transcript",
+                lf_is_insertion_only_and_transcript_is_stable,
+            ),
+            (
+                "glyph_zero_non_control_error",
+                glyph_zero_for_non_control_errors,
+            ),
+            ("glyph_above_u16_error", glyph_id_above_u16_errors),
+        ];
 
-        let glyph = layout
-            .lines
-            .iter_mut()
-            .flat_map(|line| &mut line.glyphs)
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("source color probe fixture shaped no glyphs"))?;
-        glyph.glyph_id = u32::from(u16::MAX) + 1;
-
-        let result = tiny_skia_renderer()?.render(&layout, WritingMode::Horizontal, &options);
-
-        assert!(
-            result.is_err(),
-            "source color probe must reject a nonzero shaped glyph ID outside u16"
-        );
+        for (name, probe) in probes {
+            probe(&font).map_err(|error| anyhow::anyhow!("{name}: {error:#}"))?;
+        }
         Ok(())
     }
 }

@@ -391,44 +391,54 @@ mod tests {
     #[ignore = "hanonly-pre-greenc-red"]
     async fn hanonly_pre_greenc_red_t3_mcp_marker_rejection_contract() {
         let app = in_memory_app();
+        let (root, session, page_id) = typography_session();
+        let node_id = session
+            .scene
+            .read()
+            .pages
+            .get(&page_id)
+            .unwrap()
+            .nodes
+            .values()
+            .find(|node| matches!(node.kind, koharu_core::NodeKind::Text(_)))
+            .unwrap()
+            .id;
+        let page = session.scene.read().pages.get(&page_id).unwrap().clone();
+        app.session.store(Some(session.clone()));
         let state = crate::BootstrapManager::new(app.runtime.clone());
         assert!(state.set_app(app).is_ok(), "set app");
         let server = KoharuServer::new(state);
 
-        for marker in [false, true] {
-            let op = Op::Batch {
-                ops: vec![Op::Batch {
-                    ops: vec![Op::UpdateNode {
-                        page: PageId::new(),
-                        id: NodeId::new(),
-                        patch: NodePatch {
-                            data: Some(NodeDataPatch::Text(TextDataPatch {
-                                typography_plan_verified: Some(marker),
-                                ..Default::default()
-                            })),
-                            ..Default::default()
-                        },
-                        prev: NodePatch::default(),
-                    }],
-                    label: "inner".into(),
-                }],
-                label: "outer".into(),
-            };
-            let result = server
-                .apply(Parameters(ApplyInput {
-                    op: serde_json::to_value(op).expect("serialize representative MCP input"),
-                }))
-                .await;
-            let error = result
-                .err()
-                .expect("MCP apply must reject an explicitly present marker");
-
-            assert_eq!(
-                error.message,
-                "typographyPlanVerified is internal and cannot be set by external operations",
-                "MCP apply must reject an explicitly present {marker} marker before mutation"
-            );
+        for case in crate::routes::history::tests::t3_marker_cases(&page, node_id) {
+            let before = crate::routes::history::tests::mutation_state(&session);
+            let result = server.apply(Parameters(ApplyInput { op: case.raw })).await;
+            if case.reject {
+                let error = result.err().expect(case.name);
+                assert_eq!(
+                    error.message,
+                    crate::routes::history::tests::MARKER_ERROR,
+                    "{}",
+                    case.name
+                );
+                assert_eq!(
+                    crate::routes::history::tests::mutation_state(&session),
+                    before,
+                    "{}",
+                    case.name
+                );
+            } else {
+                assert!(result.is_ok(), "{}", case.name);
+                assert_eq!(session.epoch(), before.1 + 1, "{}", case.name);
+                assert!(
+                    !crate::routes::history::tests::has_verified_marker(&session),
+                    "{}",
+                    case.name
+                );
+            }
         }
+        drop(server);
+        drop(session);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

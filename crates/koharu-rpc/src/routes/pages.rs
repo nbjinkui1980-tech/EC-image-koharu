@@ -604,6 +604,9 @@ async fn reorder_text_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::extract::FromRequest;
+    use axum::http::{Request, header::CONTENT_TYPE};
     use camino::Utf8PathBuf;
     use koharu_app::{App, AppConfig, ProjectSession, config::SourceTextPolicy};
     use koharu_runtime::{ComputePolicy, RuntimeManager};
@@ -614,6 +617,208 @@ mod tests {
     impl Drop for TestDir {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[derive(Clone)]
+    struct ImportFile {
+        name: &'static str,
+        bytes: Option<Vec<u8>>,
+    }
+
+    #[derive(Clone)]
+    enum ImportIngress {
+        Paths,
+        Multipart { malformed: bool },
+    }
+
+    struct ImportCase {
+        name: &'static str,
+        ingress: ImportIngress,
+        files: Vec<ImportFile>,
+        succeeds: bool,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ImportSnapshot {
+        scene: Vec<u8>,
+        page_order: Vec<PageId>,
+        epoch: u64,
+        history: Vec<u8>,
+        scene_blob_refs: Vec<String>,
+        blob_files: Vec<String>,
+    }
+
+    fn encoded_image(format: image::ImageFormat) -> Vec<u8> {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 1)
+            .write_to(&mut bytes, format)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    fn overbudget_png() -> Vec<u8> {
+        let mut bytes = encoded_image(image::ImageFormat::Png);
+        bytes[16..20].copy_from_slice(&20_000_u32.to_be_bytes());
+        bytes[20..24].copy_from_slice(&20_000_u32.to_be_bytes());
+        let mut crc = 0xffff_ffff_u32;
+        for byte in &bytes[12..29] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & 0_u32.wrapping_sub(crc & 1));
+            }
+        }
+        bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
+        bytes
+    }
+
+    fn multipart_body(files: &[ImportFile], malformed: bool) -> (String, Vec<u8>) {
+        let boundary = "koharu-g002-boundary";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"replace\"\r\n\r\ntrue\r\n"
+        )
+        .into_bytes();
+        for file in files {
+            body.extend_from_slice(
+                format!(
+                    "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
+                    file.name
+                )
+                .as_bytes(),
+            );
+            if let Some(bytes) = &file.bytes {
+                body.extend_from_slice(bytes);
+            }
+            body.extend_from_slice(b"\r\n");
+        }
+        if !malformed {
+            body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        }
+        (boundary.into(), body)
+    }
+
+    fn scene_blob_refs(scene: &Scene) -> Vec<String> {
+        let mut refs = scene
+            .pages
+            .values()
+            .flat_map(|page| page.nodes.values())
+            .filter_map(|node| match &node.kind {
+                NodeKind::Image(image) => Some(image.blob.hash().to_string()),
+                NodeKind::Mask(mask) => Some(mask.blob.hash().to_string()),
+                NodeKind::Text(_) => None,
+            })
+            .collect::<Vec<_>>();
+        refs.sort();
+        refs
+    }
+
+    fn blob_files(root: &std::path::Path) -> Vec<String> {
+        fn visit(root: &std::path::Path, path: &std::path::Path, files: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    visit(root, &path, files);
+                } else if let Ok(relative) = path.strip_prefix(root) {
+                    files.push(relative.to_string_lossy().into_owned());
+                }
+            }
+        }
+        let mut files = Vec::new();
+        visit(root, root, &mut files);
+        files.sort();
+        files
+    }
+
+    fn snapshot(session: &ProjectSession, project_dir: &camino::Utf8Path) -> ImportSnapshot {
+        let scene = session.scene.read();
+        ImportSnapshot {
+            scene: postcard::to_allocvec(&*scene).unwrap(),
+            page_order: scene.pages.keys().copied().collect(),
+            epoch: session.epoch(),
+            history: std::fs::read(project_dir.join("history.log")).unwrap(),
+            scene_blob_refs: scene_blob_refs(&scene),
+            blob_files: blob_files(project_dir.join("blobs").as_std_path()),
+        }
+    }
+
+    fn seeded_session(
+        root: &std::path::Path,
+        name: &str,
+        source_bytes: &[u8],
+    ) -> (Utf8PathBuf, Arc<ProjectSession>) {
+        let project_dir = Utf8PathBuf::from_path_buf(root.join(format!("{name}.khrproj"))).unwrap();
+        let session = ProjectSession::create(&project_dir, name).unwrap();
+        let blob = session.blobs.put_bytes(source_bytes).unwrap();
+        let mut page = Page::new("old.png", 2, 1);
+        let id = NodeId::new();
+        page.nodes.insert(
+            id,
+            Node {
+                id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Image(ImageData {
+                    role: ImageRole::Source,
+                    blob,
+                    opacity: 1.0,
+                    natural_width: 2,
+                    natural_height: 1,
+                    name: Some("old.png".into()),
+                }),
+            },
+        );
+        session.apply(Op::AddPage { page, at: 0 }).unwrap();
+        (project_dir, session)
+    }
+
+    async fn run_import(
+        state: AppState,
+        project_dir: &camino::Utf8Path,
+        case: &ImportCase,
+    ) -> Result<CreatePagesResponse, String> {
+        match &case.ingress {
+            ImportIngress::Paths => {
+                let input_dir = project_dir.join("inputs");
+                std::fs::create_dir_all(&input_dir).unwrap();
+                let mut paths = Vec::new();
+                for file in &case.files {
+                    let path = input_dir.join(file.name);
+                    if let Some(bytes) = &file.bytes {
+                        std::fs::write(&path, bytes).unwrap();
+                    }
+                    paths.push(path.into_string());
+                }
+                create_pages_from_paths(
+                    State(state),
+                    Json(CreatePagesFromPathsRequest {
+                        paths,
+                        replace: true,
+                    }),
+                )
+                .await
+                .map(|Json(response)| response)
+                .map_err(|error| error.message)
+            }
+            ImportIngress::Multipart { malformed } => {
+                let (boundary, body) = multipart_body(&case.files, *malformed);
+                let request = Request::builder()
+                    .header(
+                        CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(body))
+                    .unwrap();
+                let multipart = Multipart::from_request(request, &state)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                create_pages(State(state), multipart)
+                    .await
+                    .map(|Json(response)| response)
+                    .map_err(|error| error.message)
+            }
         }
     }
 
@@ -661,18 +866,6 @@ mod tests {
             std::env::temp_dir().join(format!("koharu-replace-atomicity-{}", Uuid::new_v4())),
         );
         std::fs::create_dir_all(&root.0).expect("create test root");
-        let project_dir =
-            Utf8PathBuf::from_path_buf(root.0.join("project.khrproj")).expect("UTF-8 project path");
-        let session = ProjectSession::create(&project_dir, "atomicity").expect("create session");
-        let old_page = Page::new("old.png", 4, 4);
-        let old_page_id = old_page.id;
-        session
-            .apply(Op::AddPage {
-                page: old_page,
-                at: 0,
-            })
-            .expect("seed old page");
-
         let runtime = RuntimeManager::new(root.0.join("runtime"), ComputePolicy::CpuOnly)
             .expect("create runtime");
         runtime.prepare().await.expect("prepare runtime");
@@ -680,49 +873,210 @@ mod tests {
         let app = Arc::new(
             App::new(AppConfig::default(), runtime.clone(), true, "test").expect("create app"),
         );
-        app.session.store(Some(session.clone()));
         let state = crate::BootstrapManager::new(runtime);
         assert!(state.set_app(app).is_ok(), "set test app");
+        let png = encoded_image(image::ImageFormat::Png);
+        let sorted = || {
+            ["page-10.png", "page-2.png", "page-1.png"]
+                .map(|name| ImportFile {
+                    name,
+                    bytes: Some(png.clone()),
+                })
+                .into()
+        };
+        let cases = [
+            ImportCase {
+                name: "path-valid-corrupt",
+                ingress: ImportIngress::Paths,
+                files: vec![
+                    ImportFile {
+                        name: "page-1.png",
+                        bytes: Some(png.clone()),
+                    },
+                    ImportFile {
+                        name: "page-2.png",
+                        bytes: Some(b"not an image".to_vec()),
+                    },
+                ],
+                succeeds: false,
+            },
+            ImportCase {
+                name: "multipart-valid-corrupt",
+                ingress: ImportIngress::Multipart { malformed: false },
+                files: vec![
+                    ImportFile {
+                        name: "page-1.png",
+                        bytes: Some(png.clone()),
+                    },
+                    ImportFile {
+                        name: "page-2.png",
+                        bytes: Some(b"not an image".to_vec()),
+                    },
+                ],
+                succeeds: false,
+            },
+            ImportCase {
+                name: "path-unsupported-gif",
+                ingress: ImportIngress::Paths,
+                files: vec![ImportFile {
+                    name: "page.gif",
+                    bytes: Some(encoded_image(image::ImageFormat::Gif)),
+                }],
+                succeeds: false,
+            },
+            ImportCase {
+                name: "multipart-unsupported-bmp",
+                ingress: ImportIngress::Multipart { malformed: false },
+                files: vec![ImportFile {
+                    name: "page.bmp",
+                    bytes: Some(encoded_image(image::ImageFormat::Bmp)),
+                }],
+                succeeds: false,
+            },
+            ImportCase {
+                name: "path-overbudget",
+                ingress: ImportIngress::Paths,
+                files: vec![ImportFile {
+                    name: "huge.png",
+                    bytes: Some(overbudget_png()),
+                }],
+                succeeds: false,
+            },
+            ImportCase {
+                name: "multipart-overbudget",
+                ingress: ImportIngress::Multipart { malformed: false },
+                files: vec![ImportFile {
+                    name: "huge.png",
+                    bytes: Some(overbudget_png()),
+                }],
+                succeeds: false,
+            },
+            ImportCase {
+                name: "path-unreadable",
+                ingress: ImportIngress::Paths,
+                files: vec![ImportFile {
+                    name: "missing.png",
+                    bytes: None,
+                }],
+                succeeds: false,
+            },
+            ImportCase {
+                name: "multipart-unreadable",
+                ingress: ImportIngress::Multipart { malformed: true },
+                files: vec![ImportFile {
+                    name: "truncated.png",
+                    bytes: Some(png.clone()),
+                }],
+                succeeds: false,
+            },
+            ImportCase {
+                name: "path-success-sort",
+                ingress: ImportIngress::Paths,
+                files: sorted(),
+                succeeds: true,
+            },
+            ImportCase {
+                name: "multipart-success-sort",
+                ingress: ImportIngress::Multipart { malformed: false },
+                files: sorted(),
+                succeeds: true,
+            },
+        ];
+        let mut violations = Vec::new();
 
-        let bad_image = root.0.join("broken.png");
-        std::fs::write(&bad_image, b"not an image").expect("write invalid image");
-        let scene_before = postcard::to_allocvec(&*session.scene.read()).expect("encode scene");
-        let epoch_before = session.epoch();
-        let history_before =
-            std::fs::read(project_dir.join("history.log")).expect("read history log");
+        for case in &cases {
+            let (project_dir, session) = seeded_session(&root.0, case.name, &png);
+            state.app().unwrap().session.store(Some(session.clone()));
+            let before = snapshot(&session, &project_dir);
+            let result = run_import(state.clone(), &project_dir, case).await;
+            let after = snapshot(&session, &project_dir);
+            if !case.succeeds {
+                if result.is_ok() {
+                    violations.push(format!("{}: invalid replacement succeeded", case.name));
+                }
+                if after != before {
+                    violations.push(format!(
+                        "{}: failed replacement changed Scene/order/epoch/history/blob refs",
+                        case.name
+                    ));
+                }
+                if !matches!(session.undo(), Ok(Some(_))) || !session.scene.read().pages.is_empty()
+                {
+                    violations.push(format!(
+                        "{}: first undo did not target the pre-existing seed op",
+                        case.name
+                    ));
+                }
+                if !matches!(session.redo(), Ok(Some(_)))
+                    || postcard::to_allocvec(&*session.scene.read()).unwrap() != before.scene
+                {
+                    violations.push(format!(
+                        "{}: redo did not restore the exact pre-import Scene",
+                        case.name
+                    ));
+                }
+                if session.redo().unwrap().is_some() {
+                    violations.push(format!("{}: hidden redo item remained", case.name));
+                }
+                continue;
+            }
 
-        let result = create_pages_from_paths(
-            State(state),
-            Json(CreatePagesFromPathsRequest {
-                paths: vec![bad_image.to_string_lossy().into_owned()],
-                replace: true,
-            }),
-        )
-        .await;
+            let response = match result {
+                Ok(response) => response,
+                Err(error) => {
+                    violations.push(format!("{}: valid replacement failed: {error}", case.name));
+                    continue;
+                }
+            };
+            let names = session
+                .scene
+                .read()
+                .pages
+                .values()
+                .map(|p| p.name.clone())
+                .collect::<Vec<_>>();
+            if names != ["page-1.png", "page-2.png", "page-10.png"] {
+                violations.push(format!("{}: natural sort was {names:?}", case.name));
+            }
+            if response.pages.len() != 3 {
+                violations.push(format!(
+                    "{}: response returned {} page IDs",
+                    case.name,
+                    response.pages.len()
+                ));
+            }
+            if after.epoch != before.epoch + 1 {
+                violations.push(format!(
+                    "{}: replacement must be one Batch epoch, {} -> {}",
+                    case.name, before.epoch, after.epoch
+                ));
+            }
+            let successful_scene = after.scene.clone();
+            if !matches!(session.undo(), Ok(Some(_)))
+                || postcard::to_allocvec(&*session.scene.read()).unwrap() != before.scene
+            {
+                violations.push(format!(
+                    "{}: one undo did not restore the exact pre-import Scene",
+                    case.name
+                ));
+            }
+            if !matches!(session.redo(), Ok(Some(_)))
+                || postcard::to_allocvec(&*session.scene.read()).unwrap() != successful_scene
+            {
+                violations.push(format!(
+                    "{}: one redo did not restore the replacement Scene",
+                    case.name
+                ));
+            }
+            if session.redo().unwrap().is_some() {
+                violations.push(format!("{}: hidden redo item remained", case.name));
+            }
+        }
 
         assert!(
-            result.is_err(),
-            "invalid replacement image must be rejected"
-        );
-        assert_eq!(
-            postcard::to_allocvec(&*session.scene.read()).expect("encode scene after rejection"),
-            scene_before,
-            "failed replacement must preserve the complete Scene"
-        );
-        assert_eq!(
-            session.epoch(),
-            epoch_before,
-            "failed replacement must preserve the History epoch"
-        );
-        assert_eq!(
-            std::fs::read(project_dir.join("history.log"))
-                .expect("read history log after rejection"),
-            history_before,
-            "failed replacement must preserve canonical History bytes"
-        );
-        assert!(
-            session.scene.read().pages.contains_key(&old_page_id),
-            "failed replacement must preserve the original page"
+            violations.is_empty(),
+            "G002 replace contract violations:\n{}",
+            violations.join("\n")
         );
     }
 }

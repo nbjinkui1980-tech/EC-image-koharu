@@ -1,17 +1,27 @@
-Fixture provenance
-==================
+Fixture provenance and modification notice
+==========================================
 
-roboto-mono-stripped.ttf is a trimmed Roboto Mono fixture used only by the
-koharu-renderer tests. It was produced by subsetting/stripping the upstream
-font to the ASCII glyphs needed by the renderer test, while retaining the
-existing fixture filename.
+File: roboto-mono-stripped.ttf
+SHA-256: acee6428149e87ccacb2cf66889350c225ec93033dc50c27ec4f315292be860c
 
-Upstream: https://github.com/googlefonts/RobotoMono
-Upstream license: SIL Open Font License, Version 1.1
-Upstream license source:
-https://github.com/googlefonts/RobotoMono/blob/main/OFL.txt
+Repository history:
+- Added by commit 8dcc60c1d93b673139dd3b91170d45e234be4fa9 at
+  candle-yolo-v8/src/roboto-mono-stripped.ttf.
+- Later retained at yolo-v8/src/roboto-mono-stripped.ttf until its removal by
+  commit 1a893b98b76d1472726d67f6306c6fa9a1c8e5e3.
+- Restored as this renderer fixture by commit
+  abf5fb12610bbe228ffc22f3578058a11a279e83.
 
-Copyright 2015 The Roboto Mono Project Authors (https://github.com/googlefonts/robotomono)
+Candle source:
+https://github.com/huggingface/candle/blob/main/candle-examples/examples/yolo-v8/roboto-mono-stripped.ttf
+
+The file in this directory is byte-for-byte identical to that Candle source at
+the SHA-256 above. It is a modified subset of Roboto Mono: glyphs not needed by
+the fixture were removed/stripped. This notice does not claim authorship of the
+font or alter its license.
+
+Copyright 2015 The Roboto Mono Project Authors
+(https://github.com/googlefonts/robotomono)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
@@ -87,8 +97,8 @@ permission.
 5) The Font Software, modified or unmodified, in part or in whole,
 must be distributed entirely under this license, and must not be
 distributed under any other license. The requirement for fonts to
-remain under this license does not apply to any document created
-using the Font Software.
+remain under this license does not apply to any document created using
+the Font Software.
 
 TERMINATION
 This license becomes null and void if any of the above conditions are

@@ -81,6 +81,19 @@ pub(crate) enum RendererStrokeBranch {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RendererFieldOutcome {
+    ManualOverride,
+    Prediction,
+    TransientPlanner,
+    Default,
+    SourceColorContract,
+    IgnoredByPolicy,
+    Unsupported,
+}
+
+#[cfg(test)]
 struct SourceSizeResolution {
     candidate: f32,
     valid_detected_size: Option<f32>,
@@ -126,6 +139,16 @@ pub(crate) struct RendererAlphaBbox {
 }
 
 #[cfg(test)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RendererHalfOpenBox {
+    pub(crate) left: i64,
+    pub(crate) top: i64,
+    pub(crate) right: i64,
+    pub(crate) bottom: i64,
+}
+
+#[cfg(test)]
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RendererDiagnosticEvent {
@@ -163,8 +186,25 @@ pub(crate) struct RendererDiagnosticEvent {
     pub(crate) resolved_stroke_width: Option<f32>,
     pub(crate) fill_branch: RendererFillBranch,
     pub(crate) stroke_branch: RendererStrokeBranch,
+    pub(crate) font_outcome: RendererFieldOutcome,
+    pub(crate) fill_outcome: RendererFieldOutcome,
+    pub(crate) stroke_outcome: RendererFieldOutcome,
+    pub(crate) final_font_size_px: u32,
+    pub(crate) resolver_record_ptr: usize,
+    pub(crate) fit_record_ptr: usize,
+    pub(crate) postvalidate_record_ptr: usize,
+    pub(crate) resolver_box: RendererHalfOpenBox,
+    pub(crate) fit_box: RendererHalfOpenBox,
+    pub(crate) postvalidate_box: RendererHalfOpenBox,
+    pub(crate) resolver_box_blake3: String,
+    pub(crate) fit_box_blake3: String,
+    pub(crate) postvalidate_box_blake3: String,
+    pub(crate) builder_publication_count: u32,
+    pub(crate) builder_raster_count: u32,
+    pub(crate) renderer_rebuild_count: u32,
     pub(crate) sprite_width: u32,
     pub(crate) sprite_height: u32,
+    pub(crate) sprite_rgba_blake3: String,
     #[serde(deserialize_with = "deserialize_required_option")]
     pub(crate) alpha_bbox: Option<RendererAlphaBbox>,
     pub(crate) alpha_nonzero_pixels: u64,
@@ -186,9 +226,28 @@ where
 type RendererDiagnosticEvents = Arc<Mutex<Vec<RendererDiagnosticEvent>>>;
 
 #[cfg(test)]
+#[derive(Clone, Debug)]
+struct RendererLayoutDiagnosticRecord {
+    node_id: NodeId,
+    resolver_record_ptr: usize,
+    fit_record_ptr: Option<usize>,
+    postvalidate_record_ptr: Option<usize>,
+    resolver_box: RendererHalfOpenBox,
+    fit_box: Option<RendererHalfOpenBox>,
+    postvalidate_box: Option<RendererHalfOpenBox>,
+    builder_publication_count: u32,
+    builder_raster_count: u32,
+    renderer_rebuild_count: u32,
+}
+
+#[cfg(test)]
+type RendererLayoutDiagnosticRecords = Arc<Mutex<Vec<RendererLayoutDiagnosticRecord>>>;
+
+#[cfg(test)]
 struct ActiveRendererDiagnosticSink {
     owner: ThreadId,
     events: RendererDiagnosticEvents,
+    layout_records: RendererLayoutDiagnosticRecords,
 }
 
 #[cfg(test)]
@@ -203,6 +262,7 @@ pub(crate) struct RendererDiagnosticCaptureActive;
 pub(crate) struct RendererDiagnosticCapture {
     owner: ThreadId,
     events: RendererDiagnosticEvents,
+    layout_records: RendererLayoutDiagnosticRecords,
 }
 
 #[cfg(test)]
@@ -210,6 +270,7 @@ impl RendererDiagnosticCapture {
     pub(crate) fn start() -> std::result::Result<Self, RendererDiagnosticCaptureActive> {
         let owner = std::thread::current().id();
         let events = Arc::new(Mutex::new(Vec::new()));
+        let layout_records = Arc::new(Mutex::new(Vec::new()));
         let mut active = RENDERER_DIAGNOSTIC_SINK
             .get_or_init(|| Mutex::new(None))
             .lock()
@@ -220,8 +281,13 @@ impl RendererDiagnosticCapture {
         *active = Some(ActiveRendererDiagnosticSink {
             owner,
             events: events.clone(),
+            layout_records: layout_records.clone(),
         });
-        Ok(Self { owner, events })
+        Ok(Self {
+            owner,
+            events,
+            layout_records,
+        })
     }
 
     pub(crate) fn take(&self) -> Vec<RendererDiagnosticEvent> {
@@ -241,10 +307,11 @@ impl Drop for RendererDiagnosticCapture {
             .get_or_init(|| Mutex::new(None))
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if active
-            .as_ref()
-            .is_some_and(|sink| sink.owner == self.owner && Arc::ptr_eq(&sink.events, &self.events))
-        {
+        if active.as_ref().is_some_and(|sink| {
+            sink.owner == self.owner
+                && Arc::ptr_eq(&sink.events, &self.events)
+                && Arc::ptr_eq(&sink.layout_records, &self.layout_records)
+        }) {
             *active = None;
         }
     }
@@ -265,6 +332,134 @@ fn record_renderer_diagnostic(event: RendererDiagnosticEvent) {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(event);
     }
+}
+
+#[cfg(test)]
+fn active_renderer_layout_records() -> Option<RendererLayoutDiagnosticRecords> {
+    let owner = std::thread::current().id();
+    RENDERER_DIAGNOSTIC_SINK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|sink| sink.owner == owner)
+        .map(|sink| sink.layout_records.clone())
+}
+
+#[cfg(test)]
+fn renderer_half_open_box(layout_box: LayoutBox) -> RendererHalfOpenBox {
+    RendererHalfOpenBox {
+        left: layout_box.x.floor() as i64,
+        top: layout_box.y.floor() as i64,
+        right: (layout_box.x + layout_box.width).ceil() as i64,
+        bottom: (layout_box.y + layout_box.height).ceil() as i64,
+    }
+}
+
+#[cfg(test)]
+fn renderer_box_digest(layout_box: RendererHalfOpenBox) -> String {
+    let mut bytes = Vec::with_capacity(32);
+    for value in [
+        layout_box.left,
+        layout_box.top,
+        layout_box.right,
+        layout_box.bottom,
+    ] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
+#[cfg(test)]
+fn record_renderer_layout_resolver(node_id: NodeId, layout_box: &LayoutBox) {
+    let Some(records) = active_renderer_layout_records() else {
+        return;
+    };
+    records
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(RendererLayoutDiagnosticRecord {
+            node_id,
+            resolver_record_ptr: std::ptr::from_ref(layout_box) as usize,
+            fit_record_ptr: None,
+            postvalidate_record_ptr: None,
+            resolver_box: renderer_half_open_box(*layout_box),
+            fit_box: None,
+            postvalidate_box: None,
+            builder_publication_count: 0,
+            builder_raster_count: 0,
+            renderer_rebuild_count: 0,
+        });
+}
+
+#[cfg(test)]
+fn record_renderer_layout_stage(
+    node_id: NodeId,
+    layout_box: &LayoutBox,
+    update: impl FnOnce(&mut RendererLayoutDiagnosticRecord, usize, RendererHalfOpenBox),
+) {
+    let Some(records) = active_renderer_layout_records() else {
+        return;
+    };
+    let mut records = records
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(record) = records.iter_mut().find(|record| record.node_id == node_id) {
+        update(
+            record,
+            std::ptr::from_ref(layout_box) as usize,
+            renderer_half_open_box(*layout_box),
+        );
+    }
+}
+
+#[cfg(test)]
+fn record_renderer_layout_count(
+    node_id: NodeId,
+    update: impl FnOnce(&mut RendererLayoutDiagnosticRecord),
+) {
+    let Some(records) = active_renderer_layout_records() else {
+        return;
+    };
+    let mut records = records
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(record) = records.iter_mut().find(|record| record.node_id == node_id) {
+        update(record);
+    }
+}
+
+#[cfg(test)]
+type RendererLayoutDiagnostic = (
+    usize,
+    usize,
+    usize,
+    RendererHalfOpenBox,
+    RendererHalfOpenBox,
+    RendererHalfOpenBox,
+    u32,
+    u32,
+    u32,
+);
+
+#[cfg(test)]
+fn renderer_layout_diagnostic(node_id: NodeId) -> Option<RendererLayoutDiagnostic> {
+    let records = active_renderer_layout_records()?;
+    let records = records
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let record = records.iter().find(|record| record.node_id == node_id)?;
+    Some((
+        record.resolver_record_ptr,
+        record.fit_record_ptr?,
+        record.postvalidate_record_ptr?,
+        record.resolver_box,
+        record.fit_box?,
+        record.postvalidate_box?,
+        record.builder_publication_count,
+        record.builder_raster_count,
+        record.renderer_rebuild_count,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +599,10 @@ impl Renderer {
         // lookups in O(seed_area).
         let bubble_index: Option<BubbleIndex> = bubble_mask.map(|m| BubbleIndex::new(m.to_luma8()));
         let layout_boxes = resolve_layout_boxes(blocks, bubble_index.as_ref());
+        #[cfg(test)]
+        for (block, resolved) in blocks.iter().zip(&layout_boxes) {
+            record_renderer_layout_resolver(block.node_id, &resolved.layout_box);
+        }
         let mut automatic = HashMap::new();
         if let Some(policy) = opts.source_relative_font_size_policy {
             for (block, resolved_box) in blocks.iter().zip(layout_boxes.iter().copied()) {
@@ -414,6 +613,10 @@ impl Renderer {
                     policy,
                     min_font,
                 )? {
+                    #[cfg(test)]
+                    record_renderer_layout_count(block.node_id, |record| {
+                        record.builder_publication_count += 1;
+                    });
                     automatic.insert(block.node_id, prepared);
                 }
             }
@@ -619,6 +822,19 @@ impl Renderer {
             prepared.align,
             target_language,
         );
+        #[cfg(test)]
+        record_renderer_layout_count(block.node_id, |record| {
+            record.renderer_rebuild_count += 1;
+        });
+        #[cfg(test)]
+        record_renderer_layout_stage(
+            block.node_id,
+            &prepared.layout_box,
+            |record, record_ptr, value| {
+                record.fit_record_ptr = Some(record_ptr);
+                record.fit_box = Some(value);
+            },
+        );
         let layout = run_layout_at(
             &builder,
             block.translation.trim(),
@@ -653,6 +869,15 @@ impl Renderer {
             "automatic font size does not fit node {}",
             block.node_id
         );
+        #[cfg(test)]
+        record_renderer_layout_stage(
+            block.node_id,
+            &prepared.layout_box,
+            |record, record_ptr, value| {
+                record.postvalidate_record_ptr = Some(record_ptr);
+                record.postvalidate_box = Some(value);
+            },
+        );
         let rendered = self.render_layout(
             &layout,
             prepared.writing_mode,
@@ -668,6 +893,10 @@ impl Renderer {
             block.node_id,
             RasterPath::SourceRelative,
         )?;
+        #[cfg(test)]
+        record_renderer_layout_count(block.node_id, |record| {
+            record.builder_raster_count += 1;
+        });
         debug_assert_eq!(rendered.width(), predicted_width);
         debug_assert_eq!(rendered.height(), predicted_height);
         #[cfg(test)]
@@ -675,41 +904,71 @@ impl Renderer {
             let prediction = block.font_prediction.as_ref();
             let (alpha_bbox, alpha_nonzero_pixels, alpha_blake3) =
                 renderer_alpha_summary(&rendered);
-            record_renderer_diagnostic(RendererDiagnosticEvent {
-                node_id: block.node_id,
-                source_geometry_estimate: prepared.diagnostic.source_geometry_estimate,
-                valid_detected_size: prepared.diagnostic.valid_detected_size,
-                valid_predicted_size: prepared.diagnostic.valid_predicted_size,
-                source_size_branch: prepared.diagnostic.source_size_branch,
-                policy_offset: prepared.diagnostic.policy_offset,
-                candidate_size: prepared.diagnostic.candidate_size,
-                auto_max: prepared.diagnostic.auto_max,
-                cap: prepared.cap,
-                resolved_layout_width: prepared.layout_box.width,
-                resolved_layout_height: prepared.layout_box.height,
-                layout_box_branch: prepared.diagnostic.layout_box_branch,
-                tight_layout_width: layout.width,
-                tight_layout_height: layout.height,
-                independent_size: prepared.independent_font_size,
-                group_size: grouped_font_size,
-                final_size: font_size,
-                rotation_deg: block.transform.rotation_deg,
-                predicted_fill_rgb: prediction.map(|prediction| prediction.text_color),
-                predicted_stroke_rgb: prediction.map(|prediction| prediction.stroke_color),
-                predicted_stroke_width: prediction
-                    .map(|prediction| prediction.stroke_width_px)
-                    .filter(|width| width.is_finite()),
-                resolved_fill_rgba: prepared.color,
-                resolved_stroke_rgba: resolved_stroke.map(|stroke| stroke.color),
-                resolved_stroke_width: resolved_stroke.map(|stroke| stroke.width_px),
-                fill_branch: prepared.diagnostic.fill_branch,
-                stroke_branch: stroke_resolution.branch,
-                sprite_width: rendered.width(),
-                sprite_height: rendered.height(),
-                alpha_bbox,
-                alpha_nonzero_pixels,
-                alpha_blake3,
-            });
+            if let Some((
+                resolver_record_ptr,
+                fit_record_ptr,
+                postvalidate_record_ptr,
+                resolver_box,
+                fit_box,
+                postvalidate_box,
+                builder_publication_count,
+                builder_raster_count,
+                renderer_rebuild_count,
+            )) = renderer_layout_diagnostic(block.node_id)
+            {
+                record_renderer_diagnostic(RendererDiagnosticEvent {
+                    node_id: block.node_id,
+                    source_geometry_estimate: prepared.diagnostic.source_geometry_estimate,
+                    valid_detected_size: prepared.diagnostic.valid_detected_size,
+                    valid_predicted_size: prepared.diagnostic.valid_predicted_size,
+                    source_size_branch: prepared.diagnostic.source_size_branch,
+                    policy_offset: prepared.diagnostic.policy_offset,
+                    candidate_size: prepared.diagnostic.candidate_size,
+                    auto_max: prepared.diagnostic.auto_max,
+                    cap: prepared.cap,
+                    resolved_layout_width: prepared.layout_box.width,
+                    resolved_layout_height: prepared.layout_box.height,
+                    layout_box_branch: prepared.diagnostic.layout_box_branch,
+                    tight_layout_width: layout.width,
+                    tight_layout_height: layout.height,
+                    independent_size: prepared.independent_font_size,
+                    group_size: grouped_font_size,
+                    final_size: font_size,
+                    rotation_deg: block.transform.rotation_deg,
+                    predicted_fill_rgb: prediction.map(|prediction| prediction.text_color),
+                    predicted_stroke_rgb: prediction.map(|prediction| prediction.stroke_color),
+                    predicted_stroke_width: prediction
+                        .map(|prediction| prediction.stroke_width_px)
+                        .filter(|width| width.is_finite()),
+                    resolved_fill_rgba: prepared.color,
+                    resolved_stroke_rgba: resolved_stroke.map(|stroke| stroke.color),
+                    resolved_stroke_width: resolved_stroke.map(|stroke| stroke.width_px),
+                    fill_branch: prepared.diagnostic.fill_branch,
+                    stroke_branch: stroke_resolution.branch,
+                    font_outcome: renderer_font_outcome(block),
+                    fill_outcome: renderer_fill_outcome(prepared.diagnostic.fill_branch),
+                    stroke_outcome: renderer_stroke_outcome(stroke_resolution.branch),
+                    final_font_size_px: renderer_final_font_size(font_size)?,
+                    resolver_record_ptr,
+                    fit_record_ptr,
+                    postvalidate_record_ptr,
+                    resolver_box,
+                    fit_box,
+                    postvalidate_box,
+                    resolver_box_blake3: renderer_box_digest(resolver_box),
+                    fit_box_blake3: renderer_box_digest(fit_box),
+                    postvalidate_box_blake3: renderer_box_digest(postvalidate_box),
+                    builder_publication_count,
+                    builder_raster_count,
+                    renderer_rebuild_count,
+                    sprite_width: rendered.width(),
+                    sprite_height: rendered.height(),
+                    sprite_rgba_blake3: blake3::hash(rendered.as_raw()).to_hex().to_string(),
+                    alpha_bbox,
+                    alpha_nonzero_pixels,
+                    alpha_blake3,
+                });
+            }
         }
         tracing::debug!(
             node = %block.node_id,
@@ -2144,6 +2403,56 @@ fn renderer_alpha_summary(image: &RgbaImage) -> (Option<RendererAlphaBbox>, u64,
     (bbox, nonzero, blake3::hash(&alpha).to_hex().to_string())
 }
 
+#[cfg(test)]
+fn renderer_font_outcome(block: &RenderBlockInput) -> RendererFieldOutcome {
+    if block.typography_plan_verified
+        && block
+            .style
+            .as_ref()
+            .and_then(|style| style.font_size)
+            .is_some()
+    {
+        RendererFieldOutcome::IgnoredByPolicy
+    } else if block.font_prediction.as_ref().is_some_and(|prediction| {
+        prediction.font_size_px.is_finite() && prediction.font_size_px > 0.0
+    }) {
+        RendererFieldOutcome::Prediction
+    } else {
+        RendererFieldOutcome::Default
+    }
+}
+
+#[cfg(test)]
+fn renderer_fill_outcome(branch: RendererFillBranch) -> RendererFieldOutcome {
+    match branch {
+        RendererFillBranch::Explicit => RendererFieldOutcome::ManualOverride,
+        RendererFillBranch::Predicted => RendererFieldOutcome::Prediction,
+        RendererFillBranch::DefaultBlack => RendererFieldOutcome::Default,
+    }
+}
+
+#[cfg(test)]
+fn renderer_stroke_outcome(branch: RendererStrokeBranch) -> RendererFieldOutcome {
+    match branch {
+        RendererStrokeBranch::BlockExplicit | RendererStrokeBranch::BlockDisabled => {
+            RendererFieldOutcome::ManualOverride
+        }
+        RendererStrokeBranch::PredictedWidth | RendererStrokeBranch::PredictedNoStroke => {
+            RendererFieldOutcome::Prediction
+        }
+        _ => RendererFieldOutcome::Default,
+    }
+}
+
+#[cfg(test)]
+fn renderer_final_font_size(font_size: f32) -> Result<u32> {
+    anyhow::ensure!(
+        font_size.is_finite() && font_size >= 0.0 && font_size <= u32::MAX as f32,
+        "invalid final renderer font size"
+    );
+    Ok((font_size + 0.5).floor() as u32)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers: type conversions
 // ---------------------------------------------------------------------------
@@ -2300,11 +2609,36 @@ mod tests {
         assert_eq!(event.alpha_nonzero_pixels, nonzero);
         assert_eq!(event.alpha_blake3, hash);
         assert_eq!(
+            event.sprite_rgba_blake3,
+            blake3::hash(sprite.as_raw()).to_hex().to_string()
+        );
+        assert_eq!(
             event
                 .alpha_bbox
                 .as_ref()
                 .map(|bbox| (bbox.x, bbox.y, bbox.width, bbox.height)),
             bbox
+        );
+        assert!(
+            [
+                event.resolver_record_ptr,
+                event.fit_record_ptr,
+                event.postvalidate_record_ptr,
+            ]
+            .into_iter()
+            .all(|record_ptr| record_ptr != 0)
+        );
+        assert_eq!(event.resolver_box, event.fit_box);
+        assert_eq!(event.fit_box, event.postvalidate_box);
+        assert_eq!(
+            event.resolver_box_blake3,
+            renderer_box_digest(event.resolver_box)
+        );
+        assert_eq!(event.resolver_box_blake3, event.fit_box_blake3);
+        assert_eq!(event.fit_box_blake3, event.postvalidate_box_blake3);
+        assert_eq!(
+            event.final_font_size_px,
+            renderer_final_font_size(event.final_size).unwrap()
         );
     }
 
@@ -2406,7 +2740,65 @@ mod tests {
         assert_diagnostic_matches_sprite(event, &active.blocks[0].sprite);
 
         let value = serde_json::to_value(event)?;
-        assert_eq!(value.as_object().unwrap().len(), 31);
+        let mut actual_fields = value
+            .as_object()
+            .context("renderer diagnostic object")?
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        actual_fields.sort_unstable();
+        let mut expected_fields = [
+            "alpha_bbox",
+            "alpha_blake3",
+            "alpha_nonzero_pixels",
+            "auto_max",
+            "builder_publication_count",
+            "builder_raster_count",
+            "candidate_size",
+            "cap",
+            "fill_branch",
+            "fill_outcome",
+            "final_font_size_px",
+            "final_size",
+            "fit_box",
+            "fit_box_blake3",
+            "fit_record_ptr",
+            "font_outcome",
+            "group_size",
+            "independent_size",
+            "layout_box_branch",
+            "node_id",
+            "policy_offset",
+            "postvalidate_box",
+            "postvalidate_box_blake3",
+            "postvalidate_record_ptr",
+            "predicted_fill_rgb",
+            "predicted_stroke_rgb",
+            "predicted_stroke_width",
+            "renderer_rebuild_count",
+            "resolved_fill_rgba",
+            "resolved_layout_height",
+            "resolved_layout_width",
+            "resolved_stroke_rgba",
+            "resolved_stroke_width",
+            "resolver_box",
+            "resolver_box_blake3",
+            "resolver_record_ptr",
+            "rotation_deg",
+            "source_geometry_estimate",
+            "source_size_branch",
+            "sprite_height",
+            "sprite_rgba_blake3",
+            "sprite_width",
+            "stroke_branch",
+            "stroke_outcome",
+            "tight_layout_height",
+            "tight_layout_width",
+            "valid_detected_size",
+            "valid_predicted_size",
+        ];
+        expected_fields.sort_unstable();
+        assert_eq!(actual_fields, expected_fields);
         assert_eq!(
             serde_json::from_value::<RendererDiagnosticEvent>(value.clone())?,
             *event
@@ -3037,6 +3429,7 @@ mod tests {
     #[test]
     #[ignore = "hanonly-pre-greenc-red"]
     fn hanonly_pre_greenc_red_t3_planner_font_outcome_contract() -> Result<()> {
+        let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
         let renderer = Renderer::new()?;
         let mut planned = automatic_test_block(
             &renderer,
@@ -3063,7 +3456,7 @@ mod tests {
         };
 
         clear_raster_trace();
-        let (_, events) = render_with_diagnostics(
+        let (automatic, events) = render_with_diagnostics(
             &renderer,
             std::slice::from_ref(&planned),
             None,
@@ -3071,16 +3464,21 @@ mod tests {
             240,
             &han_only_options,
         )?;
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].node_id, planned.node_id);
-        assert_eq!(events[0].cap, events[0].auto_max);
-        assert!(events[0].final_size > 18.0);
-        assert!(raster_trace().iter().all(|entry| {
-            entry.node_id == planned.node_id && entry.path == RasterPath::SourceRelative
-        }));
+        let [event] = events.as_slice() else {
+            panic!("expected one automatic diagnostic");
+        };
+        assert_eq!(event.node_id, planned.node_id);
+        assert_eq!(event.font_outcome, RendererFieldOutcome::IgnoredByPolicy);
+        assert_eq!(event.candidate_size, 40.0);
+        assert_eq!(event.cap, 40.0);
+        assert_eq!(event.independent_size, 40.0);
+        assert_eq!(event.group_size, Some(40.0));
+        assert_eq!(event.final_size, 40.0);
+        assert_eq!(event.final_font_size_px, 40);
+        assert_diagnostic_matches_sprite(event, &automatic.blocks[0].sprite);
 
         clear_raster_trace();
-        renderer.render_page(
+        let all_text = renderer.render_page(
             &DynamicImage::new_rgba8(340, 240),
             None,
             None,
@@ -3103,7 +3501,7 @@ mod tests {
         manual.node_id = NodeId::new();
         manual.typography_plan_verified = false;
         clear_raster_trace();
-        renderer.render_page(
+        let manual_output = renderer.render_page(
             &DynamicImage::new_rgba8(340, 240),
             None,
             None,
@@ -3121,6 +3519,13 @@ mod tests {
             }],
             "manual font size must remain authoritative and outside HanOnly automatic layout"
         );
+        assert_eq!(
+            all_text.blocks[0].sprite.to_rgba8().as_raw(),
+            manual_output.blocks[0].sprite.to_rgba8().as_raw()
+        );
+        assert_eq!(event.builder_publication_count, 1);
+        assert_eq!(event.builder_raster_count, 1);
+        assert_eq!(event.renderer_rebuild_count, 0);
         Ok(())
     }
 
@@ -4668,28 +5073,10 @@ mod tests {
     #[test]
     #[ignore = "hanonly-pre-greenc-red"]
     fn hanonly_pre_greenc_red_t3_source_color_contract() -> Result<()> {
+        let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
         let renderer = Renderer::new()?;
-        let mut block = automatic_test_block(
-            &renderer,
-            Transform {
-                x: 20.0,
-                y: 20.0,
-                width: 220.0,
-                height: 80.0,
-                rotation_deg: 0.0,
-            },
-            "Source color",
-            30.0,
-            28.0,
-            TextDirection::Horizontal,
-        );
-        block.typography_plan_verified = true;
-        block.style.as_mut().expect("test style").color = [1, 2, 3, 255];
-        block
-            .font_prediction
-            .as_mut()
-            .expect("test prediction")
-            .text_color = [240, 241, 242];
+        const SOURCE_RGBA: [u8; 4] = [12, 34, 56, 255];
+        const STALE_RGBA: [u8; 4] = [1, 2, 3, 255];
         let options = PageRenderOptions {
             source_relative_font_size_policy: Some(SourceRelativeFontSizePolicy {
                 offset: 0.0,
@@ -4698,17 +5085,75 @@ mod tests {
             ..Default::default()
         };
 
-        let (_, events) = render_with_diagnostics(&renderer, &[block], None, 280, 120, &options)?;
-
-        assert!(
-            !matches!(
-                events[0].fill_branch,
-                RendererFillBranch::Explicit
-                    | RendererFillBranch::Predicted
-                    | RendererFillBranch::DefaultBlack
-            ),
-            "HanOnly automatic fill must come from SourceColorContract, not persisted Planner style, prediction, or a default"
-        );
+        let source = DynamicImage::ImageRgba8(RgbaImage::from_pixel(280, 120, Rgba(SOURCE_RGBA)));
+        let mut observations = Vec::new();
+        for (name, predicted) in [
+            ("absent", None),
+            ("present", Some([240, 241, 242])),
+            ("delayed", Some([90, 91, 92])),
+            ("contradictory", Some([255, 0, 255])),
+        ] {
+            let mut block = automatic_test_block(
+                &renderer,
+                Transform {
+                    x: 20.0,
+                    y: 20.0,
+                    width: 220.0,
+                    height: 80.0,
+                    rotation_deg: 0.0,
+                },
+                "Source color",
+                30.0,
+                28.0,
+                TextDirection::Horizontal,
+            );
+            block.typography_plan_verified = true;
+            let style = block.style.as_mut().context("test style")?;
+            style.color = STALE_RGBA;
+            style.stroke = None;
+            match predicted {
+                Some(color) => {
+                    block
+                        .font_prediction
+                        .as_mut()
+                        .context("prediction")?
+                        .text_color = color
+                }
+                None => block.font_prediction = None,
+            }
+            let capture = start_renderer_diagnostic_capture();
+            let output = renderer.render_page(&source, None, None, 280, 120, &[block], &options)?;
+            let events = capture.take();
+            let [event] = events.as_slice() else {
+                panic!("{name}: expected one diagnostic");
+            };
+            assert_diagnostic_matches_sprite(event, &output.blocks[0].sprite);
+            observations.push((name, event.clone(), output.blocks[0].sprite.to_rgba8()));
+        }
+        let digest = observations[0].1.sprite_rgba_blake3.clone();
+        for (name, event, sprite) in observations {
+            assert_eq!(
+                event.fill_outcome,
+                RendererFieldOutcome::SourceColorContract,
+                "{name}"
+            );
+            assert_eq!(event.resolved_fill_rgba, SOURCE_RGBA, "{name}");
+            assert_eq!(event.final_font_size_px, 30, "{name}");
+            assert_eq!(event.sprite_rgba_blake3, digest, "{name}");
+            assert!(
+                sprite.pixels().any(|pixel| pixel.0 == SOURCE_RGBA),
+                "{name}"
+            );
+            assert!(
+                sprite
+                    .pixels()
+                    .all(|pixel| pixel.0[3] == 0 || pixel.0 != STALE_RGBA),
+                "{name}"
+            );
+            assert_eq!(event.builder_publication_count, 1, "{name}");
+            assert_eq!(event.builder_raster_count, 1, "{name}");
+            assert_eq!(event.renderer_rebuild_count, 0, "{name}");
+        }
         Ok(())
     }
 
@@ -4787,60 +5232,205 @@ mod tests {
 
     #[test]
     #[ignore = "hanonly-pre-b1-red"]
-    fn hanonly_pre_b1_red_t2_dynamic_layout_contract() {
-        let mut mask = GrayImage::from_pixel(200, 120, Luma([0u8]));
-        paint_rect(&mut mask, 10, 10, 190, 110, 1);
-        let index = BubbleIndex::new(mask);
-        let blocks = vec![
-            block(30.0, 40.0, 30.0, 30.0, "left"),
-            block(140.0, 40.0, 30.0, 30.0, "right"),
-        ];
+    fn hanonly_pre_b1_red_t2_dynamic_layout_contract() -> Result<()> {
+        use std::io::Cursor;
 
-        let resolved = resolve_layout_boxes(&blocks, Some(&index));
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        struct Rect(u32, u32, u32, u32);
 
-        let contains = |region: LayoutBox, anchor: LayoutBox| {
-            region.x <= anchor.x
-                && region.y <= anchor.y
-                && region.x + region.width >= anchor.x + anchor.width
-                && region.y + region.height >= anchor.y + anchor.height
-        };
-        let overlaps = |left: LayoutBox, right: LayoutBox| {
-            left.x < right.x + right.width
-                && right.x < left.x + left.width
-                && left.y < right.y + right.height
-                && right.y < left.y + left.height
-        };
-        let resolved_by_id = |ordered_blocks: &[RenderBlockInput]| {
-            ordered_blocks
-                .iter()
-                .zip(resolve_layout_boxes(ordered_blocks, Some(&index)))
-                .map(|(block, resolved)| (block.node_id, resolved))
-                .collect::<HashMap<_, _>>()
-        };
+        impl Rect {
+            fn contains(self, other: Self) -> bool {
+                self.0 <= other.0 && self.1 <= other.1 && self.2 >= other.2 && self.3 >= other.3
+            }
 
-        for (block, region) in blocks.iter().zip(&resolved) {
-            let anchor = seed_layout_box(block);
-            assert_eq!(region.bubble_id, Some(1));
-            assert!(
-                region.layout_box.width > anchor.width,
-                "each target in a shared bubble must receive an expanded, independently owned dynamic region"
-            );
-            assert!(
-                contains(region.layout_box, anchor),
-                "owner region must contain its complete source anchor"
-            );
+            fn overlaps(self, other: Self) -> bool {
+                self.0 < other.2 && other.0 < self.2 && self.1 < other.3 && other.1 < self.3
+            }
         }
-        assert!(
-            !overlaps(resolved[0].layout_box, resolved[1].layout_box),
-            "independent owner regions must not overlap"
+
+        fn actual(layout: LayoutBox) -> Rect {
+            Rect(
+                layout.x.floor() as u32,
+                layout.y.floor() as u32,
+                (layout.x + layout.width).ceil() as u32,
+                (layout.y + layout.height).ceil() as u32,
+            )
+        }
+
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum SizeBin {
+            Below720,
+            From720To1439,
+            From1440To2159,
+            AtLeast2160,
+        }
+
+        fn size_bin(short_side: u32) -> SizeBin {
+            match short_side {
+                ..720 => SizeBin::Below720,
+                720..1440 => SizeBin::From720To1439,
+                1440..2160 => SizeBin::From1440To2159,
+                _ => SizeBin::AtLeast2160,
+            }
+        }
+
+        fn decoded_source(short_side: u32, marker: u8) -> Result<(DynamicImage, String)> {
+            let width = short_side * 4 / 3;
+            let source =
+                DynamicImage::ImageLuma8(GrayImage::from_pixel(width, short_side, Luma([marker])));
+            let mut encoded = Cursor::new(Vec::new());
+            source.write_to(&mut encoded, image::ImageFormat::Png)?;
+            let decoded = image::load_from_memory(&encoded.into_inner())?;
+            let rgba = decoded.to_rgba8();
+            let mut identity = blake3::Hasher::new();
+            identity.update(&rgba.width().to_le_bytes());
+            identity.update(&rgba.height().to_le_bytes());
+            identity.update(rgba.as_raw());
+            Ok((decoded, identity.finalize().to_hex().to_string()))
+        }
+
+        type ResolvedDimensions = (
+            Vec<(NodeId, Rect)>,
+            Vec<(NodeId, Rect)>,
+            Vec<(NodeId, Rect)>,
         );
 
-        let expected = resolved_by_id(&blocks);
-        let reversed = blocks.iter().cloned().rev().collect::<Vec<_>>();
-        assert_eq!(resolved_by_id(&reversed), expected);
-        for _ in 0..10 {
-            assert_eq!(resolved_by_id(&blocks), expected);
+        fn resolve_real_dimensions(
+            decoded: &DynamicImage,
+            node_ids: &[NodeId; 2],
+        ) -> ResolvedDimensions {
+            let (width, height) = decoded.dimensions();
+            let anchors = [
+                Rect(width / 8, height / 3, width * 3 / 8, height * 2 / 3),
+                Rect(width * 5 / 8, height / 3, width * 7 / 8, height * 2 / 3),
+            ];
+            let mut blocks = anchors
+                .iter()
+                .zip(["short", "three times longer"])
+                .enumerate()
+                .map(|(index, (anchor, text))| {
+                    let mut input = block(
+                        anchor.0 as f32,
+                        anchor.1 as f32,
+                        (anchor.2 - anchor.0) as f32,
+                        (anchor.3 - anchor.1) as f32,
+                        text,
+                    );
+                    input.node_id = node_ids[index];
+                    input.source_direction = Some(TextDirection::Horizontal);
+                    input
+                })
+                .collect::<Vec<_>>();
+            let index = BubbleIndex::new(GrayImage::from_pixel(width, height, Luma([1])));
+            let resolve = |inputs: &[RenderBlockInput]| {
+                inputs
+                    .iter()
+                    .zip(resolve_layout_boxes(inputs, Some(&index)))
+                    .map(|(input, resolved)| (input.node_id, actual(resolved.layout_box)))
+                    .collect::<Vec<_>>()
+            };
+            let forward = resolve(&blocks);
+            blocks.reverse();
+            let reverse = resolve(&blocks);
+            blocks.reverse();
+            let repeated = resolve(&blocks);
+            (
+                anchors
+                    .into_iter()
+                    .zip(&blocks)
+                    .map(|(anchor, input)| (input.node_id, anchor))
+                    .collect(),
+                forward,
+                reverse.into_iter().chain(repeated).collect::<Vec<_>>(),
+            )
         }
+
+        let boundary_cases = [
+            (719, SizeBin::Below720),
+            (720, SizeBin::From720To1439),
+            (1439, SizeBin::From720To1439),
+            (1440, SizeBin::From1440To2159),
+            (2159, SizeBin::From1440To2159),
+            (2160, SizeBin::AtLeast2160),
+        ];
+        let metamorphic_cases = [(0.5, 270), (1.0, 540), (2.0, 1080), (4.0, 2160)];
+        let node_ids = [NodeId::new(), NodeId::new()];
+        let mut source_hashes = Vec::new();
+        let mut observations = Vec::new();
+
+        for (index, (short_side, expected_bin)) in boundary_cases.into_iter().enumerate() {
+            let (decoded, source_hash) = decoded_source(short_side, index as u8 + 1)?;
+            assert_eq!(decoded.dimensions().1, short_side);
+            assert_eq!(size_bin(decoded.dimensions().1), expected_bin);
+            source_hashes.push(source_hash);
+            observations.push((
+                short_side as f32 / 540.0,
+                resolve_real_dimensions(&decoded, &node_ids),
+            ));
+        }
+        let boundary_observation_count = observations.len();
+        for (index, (scale, short_side)) in metamorphic_cases.into_iter().enumerate() {
+            let (decoded, source_hash) = decoded_source(
+                short_side,
+                index as u8 + boundary_observation_count as u8 + 1,
+            )?;
+            assert_eq!(decoded.dimensions(), (short_side * 4 / 3, short_side));
+            source_hashes.push(source_hash);
+            observations.push((scale, resolve_real_dimensions(&decoded, &node_ids)));
+        }
+
+        source_hashes.sort_unstable();
+        source_hashes.dedup();
+        assert!(
+            source_hashes.len() >= 4,
+            "dynamic bins must come from distinct decoded sources"
+        );
+
+        for (_, (anchors, forward, reverse_and_repeat)) in &observations {
+            let forward = forward.iter().copied().collect::<HashMap<_, _>>();
+            let reverse = reverse_and_repeat[..anchors.len()]
+                .iter()
+                .copied()
+                .collect::<HashMap<_, _>>();
+            let repeated = reverse_and_repeat[anchors.len()..]
+                .iter()
+                .copied()
+                .collect::<HashMap<_, _>>();
+            assert_eq!(reverse, forward, "resolver must be order-independent");
+            assert_eq!(repeated, forward, "resolver must be repeatable");
+            let regions = anchors
+                .iter()
+                .map(|(node_id, anchor)| (*anchor, forward[node_id]))
+                .collect::<Vec<_>>();
+            for (anchor, region) in &regions {
+                assert!(region.contains(*anchor));
+                assert_ne!(
+                    region, anchor,
+                    "shared-bubble owners must receive dynamic space beyond their detector boxes"
+                );
+            }
+            assert!(!regions[0].1.overlaps(regions[1].1));
+        }
+
+        let metamorphic = &observations[boundary_observation_count..];
+        let reference = &metamorphic[1].1.1;
+        for (scale, (_, resolved, _)) in metamorphic {
+            for ((reference_id, reference), (node_id, actual)) in reference.iter().zip(resolved) {
+                assert_eq!(node_id, reference_id);
+                for (actual, reference) in [
+                    (actual.0 as f32 / scale, reference.0 as f32),
+                    (actual.1 as f32 / scale, reference.1 as f32),
+                    (actual.2 as f32 / scale, reference.2 as f32),
+                    (actual.3 as f32 / scale, reference.3 as f32),
+                ] {
+                    assert!(
+                        (actual - reference).abs() <= 1.0,
+                        "resolver geometry must be scale-metamorphic"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]

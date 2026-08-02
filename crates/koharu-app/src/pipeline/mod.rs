@@ -94,6 +94,198 @@ use crate::renderer;
 use crate::session::ProjectSession;
 use crate::typography::TypographyPlanner;
 
+#[cfg(test)]
+static DIAGNOSTIC_CAPTURE_TEST_LOCK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) struct DiagnosticCaptureTestGuard;
+
+#[cfg(test)]
+pub(crate) fn lock_diagnostic_capture_test() -> DiagnosticCaptureTestGuard {
+    while DIAGNOSTIC_CAPTURE_TEST_LOCK
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::Acquire,
+            std::sync::atomic::Ordering::Relaxed,
+        )
+        .is_err()
+    {
+        std::thread::yield_now();
+    }
+    DiagnosticCaptureTestGuard
+}
+
+#[cfg(test)]
+impl Drop for DiagnosticCaptureTestGuard {
+    fn drop(&mut self) {
+        DIAGNOSTIC_CAPTURE_TEST_LOCK.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod test_probe {
+    use koharu_core::{NodeId, PageId};
+    use std::sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub(crate) struct PipelineTestView {
+        pub(crate) page: PageId,
+        pub(crate) scene_ptr: usize,
+        pub(crate) run_state_ptr: Option<usize>,
+        pub(crate) frozen_object_ptr: Option<usize>,
+        pub(crate) sprite_ptr: Option<usize>,
+        pub(crate) transient_hints: Vec<(NodeId, String)>,
+        pub(crate) live_pixel_payloads: usize,
+        pub(crate) live_scratch_surfaces: usize,
+    }
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(crate) enum PipelineTestPoint {
+        Run,
+        Builder,
+        Inpainter,
+        Renderer,
+    }
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub(crate) enum PipelineTestEvent {
+        RunStarted {
+            run_id: u64,
+            session_ptr: usize,
+            pages: Vec<PageId>,
+        },
+        EngineCtxEntered {
+            page: PageId,
+            step_id: String,
+            scene_ptr: usize,
+        },
+        EngineCtxDropped {
+            page: PageId,
+            step_id: String,
+            scene_ptr: usize,
+        },
+        StateObserved {
+            run_id: u64,
+            point: PipelineTestPoint,
+            page: PageId,
+            view: Option<PipelineTestView>,
+        },
+        Published {
+            page: PageId,
+            step_id: String,
+            op_count: usize,
+        },
+        UnsupportedGeometry {
+            page: PageId,
+            node: NodeId,
+            rotation_bits: u32,
+        },
+        RunDropped {
+            run_id: u64,
+            session_ptr: usize,
+        },
+    }
+    type Events = Arc<Mutex<Vec<PipelineTestEvent>>>;
+    struct ActiveProbe {
+        events: Events,
+    }
+    static ACTIVE_PROBE: OnceLock<Mutex<Option<ActiveProbe>>> = OnceLock::new();
+    #[derive(Debug)]
+    pub(crate) struct PipelineTestCapture {
+        events: Events,
+    }
+    impl PipelineTestCapture {
+        pub(crate) fn take(&self) -> Vec<PipelineTestEvent> {
+            std::mem::take(
+                &mut *self
+                    .events
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )
+        }
+    }
+    impl Drop for PipelineTestCapture {
+        fn drop(&mut self) {
+            let mut active = ACTIVE_PROBE
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if active
+                .as_ref()
+                .is_some_and(|probe| Arc::ptr_eq(&probe.events, &self.events))
+            {
+                *active = None;
+            }
+        }
+    }
+    pub(crate) fn start_pipeline_test_probe() -> anyhow::Result<PipelineTestCapture> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut active = ACTIVE_PROBE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(active.is_none(), "pipeline test probe is already active");
+        *active = Some(ActiveProbe {
+            events: events.clone(),
+        });
+        Ok(PipelineTestCapture { events })
+    }
+    pub(super) fn record(event: PipelineTestEvent) {
+        let Some(events) = ACTIVE_PROBE
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|probe| probe.events.clone())
+        else {
+            return;
+        };
+        events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+    }
+    pub(super) struct RunDrop {
+        run_id: u64,
+        session_ptr: usize,
+    }
+    impl RunDrop {
+        pub(super) fn started(session_ptr: usize, pages: Vec<PageId>) -> Self {
+            let run_id = NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed);
+            record(PipelineTestEvent::RunStarted {
+                run_id,
+                session_ptr,
+                pages,
+            });
+            Self {
+                run_id,
+                session_ptr,
+            }
+        }
+
+        pub(super) fn run_id(&self) -> u64 {
+            self.run_id
+        }
+    }
+    impl Drop for RunDrop {
+        fn drop(&mut self) {
+            record(PipelineTestEvent::RunDropped {
+                run_id: self.run_id,
+                session_ptr: self.session_ptr,
+            });
+        }
+    }
+}
+#[cfg(test)]
+pub(crate) use test_probe::{
+    PipelineTestCapture, PipelineTestEvent, PipelineTestPoint, start_pipeline_test_probe,
+};
+
 // ---------------------------------------------------------------------------
 // Spec + scope
 // ---------------------------------------------------------------------------
@@ -208,6 +400,17 @@ pub async fn run(
             .collect::<Vec<_>>(),
         Scope::Pages(ids) => ids.clone(),
     };
+    #[cfg(test)]
+    let _run_drop = test_probe::RunDrop::started(Arc::as_ptr(&session) as usize, pages.clone());
+    #[cfg(test)]
+    for page in &pages {
+        test_probe::record(PipelineTestEvent::StateObserved {
+            run_id: _run_drop.run_id(),
+            point: PipelineTestPoint::Run,
+            page: *page,
+            view: None,
+        });
+    }
 
     let total_pages = pages.len().max(1);
     let total_steps = order.len().max(1);
@@ -301,9 +504,48 @@ pub async fn run(
                 typography_planner: &typography_planner,
                 warnings: Some(engine_warnings),
             };
+            #[cfg(test)]
+            let scene_ptr = std::ptr::from_ref(ctx.scene) as usize;
+            #[cfg(test)]
+            test_probe::record(PipelineTestEvent::EngineCtxEntered {
+                page: ctx.page,
+                step_id: info.id.to_string(),
+                scene_ptr,
+            });
+            #[cfg(test)]
+            test_probe::record(PipelineTestEvent::StateObserved {
+                run_id: _run_drop.run_id(),
+                point: PipelineTestPoint::Builder,
+                page: ctx.page,
+                view: None,
+            });
+            #[cfg(test)]
+            if info.produces.contains(&Artifact::Inpainted) {
+                test_probe::record(PipelineTestEvent::StateObserved {
+                    run_id: _run_drop.run_id(),
+                    point: PipelineTestPoint::Inpainter,
+                    page: ctx.page,
+                    view: None,
+                });
+            }
+            #[cfg(test)]
+            if info.produces.contains(&Artifact::FinalRender) {
+                test_probe::record(PipelineTestEvent::StateObserved {
+                    run_id: _run_drop.run_id(),
+                    point: PipelineTestPoint::Renderer,
+                    page: ctx.page,
+                    view: None,
+                });
+            }
             let step_result = async { engine.run(ctx).await }
                 .instrument(tracing::info_span!("step", engine = info.id, page = %page_id))
                 .await;
+            #[cfg(test)]
+            test_probe::record(PipelineTestEvent::EngineCtxDropped {
+                page: *page_id,
+                step_id: info.id.to_string(),
+                scene_ptr,
+            });
             let ops = match step_result {
                 Ok(ops) => ops,
                 Err(err) => {
@@ -326,6 +568,8 @@ pub async fn run(
             };
             completed += 1;
             if !ops.is_empty() {
+                #[cfg(test)]
+                let published_op_count = ops.len();
                 let batch = Op::Batch {
                     ops,
                     label: format!("{}: page {}", info.id, page_id),
@@ -364,6 +608,12 @@ pub async fn run(
                     );
                     continue 'pages;
                 }
+                #[cfg(test)]
+                test_probe::record(PipelineTestEvent::Published {
+                    page: *page_id,
+                    step_id: info.id.to_string(),
+                    op_count: published_op_count,
+                });
                 if spec.options.source_text_policy == SourceTextPolicy::HanOnly {
                     let scene = session.scene_snapshot();
                     new_unsupported_geometry(&scene, *page_id, &mut unsupported_seen);
@@ -406,6 +656,12 @@ fn new_unsupported_geometry(
         .filter(|geometry| seen.insert(geometry.node_id))
         .collect::<Vec<_>>();
     for geometry in &new {
+        #[cfg(test)]
+        test_probe::record(PipelineTestEvent::UnsupportedGeometry {
+            page,
+            node: geometry.node_id,
+            rotation_bits: geometry.rotation_deg.to_bits(),
+        });
         tracing::warn!(
             node = %geometry.node_id,
             direction = ?geometry.direction,
@@ -549,13 +805,14 @@ mod d0_output_transaction;
 mod d0_guarded_baseline;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::{BTreeMap, HashMap, HashSet};
     use std::path::Path;
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use anyhow::Context as _;
     use async_trait::async_trait;
     use camino::Utf8PathBuf;
     use image::{DynamicImage, Rgba, RgbaImage};
@@ -874,6 +1131,13 @@ mod tests {
         calls: Arc<AtomicUsize>,
         remove_text: bool,
     }
+    struct LifecycleOuterEngine {
+        nested: Arc<PipelineFixture>,
+    }
+    struct PageFailureEngine {
+        first_page: PageId,
+        pages: Arc<Mutex<Vec<PageId>>>,
+    }
 
     struct ProductionGateEngine {
         calls: Arc<AtomicUsize>,
@@ -906,6 +1170,31 @@ mod tests {
                     prev_index,
                 })
                 .collect())
+        }
+    }
+    #[async_trait]
+    impl Engine for LifecycleOuterEngine {
+        async fn run(&self, _ctx: EngineCtx<'_>) -> anyhow::Result<Vec<Op>> {
+            run_fixture_steps_with_options(
+                &self.nested,
+                &["paddle-ocr-vl-1.6"],
+                PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::AllText,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            Ok(Vec::new())
+        }
+    }
+    #[async_trait]
+    impl Engine for PageFailureEngine {
+        async fn run(&self, ctx: EngineCtx<'_>) -> anyhow::Result<Vec<Op>> {
+            self.pages.lock().unwrap().push(ctx.page);
+            if ctx.page == self.first_page {
+                anyhow::bail!("injected page-one inpainter failure");
+            }
+            Ok(Vec::new())
         }
     }
 
@@ -1083,34 +1372,97 @@ mod tests {
         )
         .await
     }
+    fn snapshot_file_tree(root: &Path) -> anyhow::Result<BTreeMap<String, Vec<u8>>> {
+        fn visit(
+            root: &Path,
+            path: &Path,
+            files: &mut BTreeMap<String, Vec<u8>>,
+        ) -> anyhow::Result<()> {
+            for entry in std::fs::read_dir(path)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    visit(root, &path, files)?;
+                } else {
+                    let relative = path
+                        .strip_prefix(root)?
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/");
+                    files.insert(relative, std::fs::read(path)?);
+                }
+            }
+            Ok(())
+        }
+        let mut files = BTreeMap::new();
+        visit(root, root, &mut files)?;
+        Ok(files)
+    }
 
     #[tokio::test]
     #[ignore = "hanonly-pre-b1-red"]
     async fn hanonly_pre_b1_red_t2_rotation_status_contract() -> anyhow::Result<()> {
+        let _diagnostic_lock = lock_diagnostic_capture_test();
         let fixture = PipelineFixture::new("中文", "translation")?;
-        let transform = fixture
+        let original = fixture
             .session
             .scene_snapshot()
             .node(fixture.page, fixture.text)
             .expect("fixture text")
-            .transform;
+            .clone();
         fixture.session.apply(Op::UpdateNode {
             page: fixture.page,
             id: fixture.text,
             patch: NodePatch {
                 transform: Some(Transform {
                     rotation_deg: 15.0,
-                    ..transform
+                    ..original.transform
                 }),
                 ..Default::default()
             },
             prev: NodePatch::default(),
         })?;
+        let mixed = NodeId::new();
+        let supported = NodeId::new();
+        let at = fixture
+            .session
+            .scene_snapshot()
+            .page(fixture.page)
+            .unwrap()
+            .nodes
+            .len();
+        fixture.session.apply(Op::AddNode {
+            page: fixture.page,
+            node: unsupported_mixed_node(mixed),
+            at,
+        })?;
+        let mut supported_node = original;
+        supported_node.id = supported;
+        supported_node.transform.rotation_deg = 0.0;
+        if let NodeKind::Text(text) = &mut supported_node.kind {
+            text.text = Some("支援中文".into());
+            text.translation = Some("supported".into());
+        }
+        fixture.session.apply(Op::AddNode {
+            page: fixture.page,
+            node: supported_node,
+            at: at + 1,
+        })?;
+        let scene_before = serde_json::to_value(fixture.session.scene_snapshot())?;
+        let epoch_before = fixture.session.epoch();
+        let files_before = snapshot_file_tree(fixture._dir.path())?;
+        let engine_calls = Arc::new(AtomicUsize::new(0));
+        install_counting_engine(
+            &fixture,
+            "pp-ocr-v5-source-gate",
+            Arc::new(AtomicUsize::new(0)),
+            false,
+        );
+        install_counting_engine(&fixture, "aot-inpainting", engine_calls.clone(), false);
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let warning_log = warnings.clone();
         let warning_sink: WarningSink = Arc::new(move |warning| {
             warning_log.lock().unwrap().push(warning);
         });
+        let capture: PipelineTestCapture = start_pipeline_test_probe()?;
 
         let outcome = run(
             fixture.session.clone(),
@@ -1122,7 +1474,7 @@ mod tests {
             Arc::new(TypographyPlanner::default()),
             PipelineSpec {
                 scope: Scope::Pages(vec![fixture.page]),
-                steps: Vec::new(),
+                steps: vec!["aot-inpainting".into()],
                 options: PipelineRunOptions {
                     source_text_policy: SourceTextPolicy::HanOnly,
                     ..Default::default()
@@ -1134,6 +1486,7 @@ mod tests {
         )
         .await?;
 
+        assert_eq!(engine_calls.load(Ordering::Relaxed), 1);
         assert_eq!(outcome.warning_count, 1);
         let warnings = warnings.lock().unwrap();
         assert_eq!(warnings.len(), 1);
@@ -1142,35 +1495,334 @@ mod tests {
                 .message
                 .starts_with("han_only.unsupported_rotation:")
         );
+        drop(warnings);
+        let unsupported = capture
+            .take()
+            .into_iter()
+            .filter_map(|event| match event {
+                PipelineTestEvent::UnsupportedGeometry {
+                    page,
+                    node,
+                    rotation_bits,
+                } => Some((page, node, rotation_bits)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(unsupported.contains(&(fixture.page, fixture.text, 15.0_f32.to_bits())));
+        assert!(unsupported.iter().any(|(_, node, _)| *node == mixed));
+        assert_eq!(
+            serde_json::to_value(fixture.session.scene_snapshot())?,
+            scene_before
+        );
+        assert_eq!(fixture.session.epoch(), epoch_before);
+        assert_eq!(snapshot_file_tree(fixture._dir.path())?, files_before);
         Ok(())
     }
 
     #[tokio::test]
     #[ignore = "hanonly-pre-greenc-red"]
     async fn hanonly_pre_greenc_red_t3_run_state_lifetime_contract() -> anyhow::Result<()> {
-        let fixture = PipelineFixture::new("中文", "translation")?;
-
-        let error = run_fixture_steps_with_options(
-            &fixture,
-            &["hanonly-missing-engine"],
-            PipelineRunOptions {
-                source_text_policy: SourceTextPolicy::HanOnly,
-                region: Some(koharu_core::Region {
-                    x: 0,
-                    y: 0,
-                    width: 1,
-                    height: 1,
-                }),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect_err("region-bearing pipeline::run must reject before registry access");
-
-        assert!(
-            error.to_string().contains("region"),
-            "region rejection must be the first executable validation: {error:#}"
+        let _diagnostic_lock = lock_diagnostic_capture_test();
+        let fixture = Arc::new(PipelineFixture::new("中文", "translation")?);
+        let nested = Arc::new(PipelineFixture::new("内层", "nested")?);
+        install_counting_engine(
+            &nested,
+            "paddle-ocr-vl-1.6",
+            Arc::new(AtomicUsize::new(0)),
+            false,
         );
+        install_counting_engine(
+            &fixture,
+            "pp-ocr-v5-source-gate",
+            Arc::new(AtomicUsize::new(0)),
+            false,
+        );
+        fixture.registry.insert_test_engine(
+            "aot-inpainting",
+            Arc::new(LifecycleOuterEngine {
+                nested: nested.clone(),
+            }),
+        );
+        let capture: PipelineTestCapture = start_pipeline_test_probe()?;
+        assert!(
+            capture.take().is_empty(),
+            "probe must not synthesize pre-run state"
+        );
+        for _ in 0..2 {
+            run_fixture_steps(&fixture, &["aot-inpainting"]).await?;
+        }
+        let (a, b) = tokio::join!(
+            run_fixture_steps(&fixture, &["aot-inpainting"]),
+            run_fixture_steps(&fixture, &["aot-inpainting"])
+        );
+        a?;
+        b?;
+        let lifecycle = capture.take();
+        let counts = (
+            lifecycle
+                .iter()
+                .filter(|e| matches!(e, PipelineTestEvent::RunStarted { .. }))
+                .count(),
+            lifecycle
+                .iter()
+                .filter(|e| matches!(e, PipelineTestEvent::RunDropped { .. }))
+                .count(),
+            lifecycle
+                .iter()
+                .filter(|e| matches!(e, PipelineTestEvent::EngineCtxEntered { .. }))
+                .count(),
+            lifecycle
+                .iter()
+                .filter(|e| matches!(e, PipelineTestEvent::EngineCtxDropped { .. }))
+                .count(),
+        );
+        assert_eq!(counts.0, counts.1, "nested/concurrent run drop imbalance");
+        assert_eq!(counts.2, counts.3, "nested/concurrent ctx drop imbalance");
+        let lifecycle_run_ids = lifecycle
+            .iter()
+            .filter_map(|event| match event {
+                PipelineTestEvent::RunStarted { run_id, .. } => Some(*run_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lifecycle_run_ids.len(),
+            8,
+            "sequential/concurrent/nested run identity matrix"
+        );
+        assert!(
+            lifecycle_run_ids.windows(2).all(|ids| ids[0] < ids[1]),
+            "run IDs must increase with start order: {lifecycle_run_ids:?}"
+        );
+        let lifecycle_drop_ids = lifecycle
+            .iter()
+            .filter_map(|event| match event {
+                PipelineTestEvent::RunDropped { run_id, .. } => Some(*run_id),
+                _ => None,
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            lifecycle_run_ids.iter().copied().collect::<HashSet<_>>(),
+            lifecycle_drop_ids,
+            "nested/concurrent start/drop identity imbalance"
+        );
+        let state_events = lifecycle
+            .iter()
+            .filter_map(|event| match event {
+                PipelineTestEvent::StateObserved {
+                    run_id,
+                    point,
+                    page,
+                    view,
+                } => Some((*run_id, *point, *page, view.as_ref())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            state_events
+                .iter()
+                .filter(|(_, point, page, _)| {
+                    *point == PipelineTestPoint::Inpainter && *page == fixture.page
+                })
+                .count(),
+            4,
+            "sequential/concurrent inpainter matrix"
+        );
+        assert_eq!(
+            state_events
+                .iter()
+                .filter(|(_, point, page, _)| {
+                    *point == PipelineTestPoint::Builder && *page == nested.page
+                })
+                .count(),
+            4,
+            "nested builder matrix"
+        );
+        assert!(
+            !state_events
+                .iter()
+                .any(|(_, point, _, _)| *point == PipelineTestPoint::Renderer),
+            "no-renderer branch must not report a renderer consumer"
+        );
+        let mut failures = Vec::new();
+
+        let mut page_two = fixture
+            .session
+            .scene_snapshot()
+            .page(fixture.page)
+            .unwrap()
+            .clone();
+        page_two.id = PageId::new();
+        page_two.name = "page-two".into();
+        let page_two_id = page_two.id;
+        fixture.session.apply(Op::AddPage {
+            page: page_two,
+            at: 1,
+        })?;
+        let pages = Arc::new(Mutex::new(Vec::new()));
+        fixture.registry.insert_test_engine(
+            "aot-inpainting",
+            Arc::new(PageFailureEngine {
+                first_page: fixture.page,
+                pages: pages.clone(),
+            }),
+        );
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let warning_log = warnings.clone();
+        let outcome = run(
+            fixture.session.clone(),
+            fixture.registry.clone(),
+            fixture.runtime.clone(),
+            true,
+            fixture.llm.clone(),
+            fixture.renderer.clone(),
+            Arc::new(TypographyPlanner::default()),
+            PipelineSpec {
+                scope: Scope::WholeProject,
+                steps: vec!["aot-inpainting".into()],
+                options: PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::AllText,
+                    ..Default::default()
+                },
+            },
+            Arc::new(AtomicBool::new(false)),
+            None,
+            Some(Arc::new(move |warning| {
+                warning_log.lock().unwrap().push(warning)
+            })),
+        )
+        .await?;
+        if outcome.warning_count != 1 || warnings.lock().unwrap().len() != 1 {
+            failures.push("failure warning count".into());
+        }
+        if *pages.lock().unwrap() != [fixture.page, page_two_id] {
+            failures.push(format!("page isolation {:?}", pages.lock().unwrap()));
+        }
+        let events = capture.take();
+        let counts = (
+            events
+                .iter()
+                .filter(|e| matches!(e, PipelineTestEvent::RunStarted { .. }))
+                .count(),
+            events
+                .iter()
+                .filter(|e| matches!(e, PipelineTestEvent::RunDropped { .. }))
+                .count(),
+            events
+                .iter()
+                .filter(|e| matches!(e, PipelineTestEvent::EngineCtxEntered { .. }))
+                .count(),
+            events
+                .iter()
+                .filter(|e| matches!(e, PipelineTestEvent::EngineCtxDropped { .. }))
+                .count(),
+        );
+        if counts.0 != counts.1 || counts.2 != counts.3 {
+            failures.push(format!("failure/no-renderer drop imbalance: {counts:?}"));
+        }
+        let failure_run_ids = events
+            .iter()
+            .filter_map(|event| match event {
+                PipelineTestEvent::RunStarted { run_id, .. } => Some(*run_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if failure_run_ids.len() != 1
+            || failure_run_ids[0]
+                <= lifecycle_run_ids
+                    .iter()
+                    .copied()
+                    .max()
+                    .expect("lifecycle runs")
+        {
+            failures.push(format!(
+                "failure run identity must be unique and later: {failure_run_ids:?}"
+            ));
+        }
+        let observed = lifecycle
+            .iter()
+            .chain(&events)
+            .filter_map(|event| match event {
+                PipelineTestEvent::StateObserved {
+                    run_id,
+                    point,
+                    page,
+                    view,
+                } => Some((*run_id, *point, *page, view)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let views = observed
+            .iter()
+            .filter_map(|(run_id, _, _, view)| view.as_ref().map(|view| (*run_id, view)))
+            .collect::<Vec<_>>();
+        let run_ids = views
+            .iter()
+            .map(|(run_id, _)| *run_id)
+            .collect::<HashSet<_>>();
+        if views.is_empty() {
+            failures.push("PipelineRunState unavailable at production probe points".into());
+        } else {
+            if run_ids.len() < 9 {
+                failures.push(format!(
+                    "sequential/concurrent/nested/failure run identity matrix: {run_ids:?}"
+                ));
+            }
+            if views.iter().any(|(_, view)| {
+                view.run_state_ptr.is_none()
+                    || view.frozen_object_ptr.is_none()
+                    || view.sprite_ptr.is_none()
+                    || view.live_pixel_payloads > 1
+                    || view.live_scratch_surfaces > 1
+            }) {
+                failures.push("production run-state identity/scratch contract".into());
+            }
+            if observed
+                .iter()
+                .any(|(_, _, page, view)| view.as_ref().is_some_and(|view| view.page != *page))
+            {
+                failures.push("wrong-page production state observation".into());
+            }
+            let mut state_ptrs = HashMap::new();
+            for (run_id, view) in &views {
+                let state_ptr = view.run_state_ptr.expect("checked above");
+                if state_ptrs
+                    .insert(*run_id, state_ptr)
+                    .is_some_and(|ptr| ptr != state_ptr)
+                {
+                    failures.push(format!("run {run_id} changed live state pointer"));
+                }
+            }
+            let all_events = lifecycle.iter().chain(&events).collect::<Vec<_>>();
+            let mut spans = HashMap::<u64, (usize, usize)>::new();
+            for (index, event) in all_events.iter().enumerate() {
+                match event {
+                    PipelineTestEvent::RunStarted { run_id, .. } => {
+                        spans.insert(*run_id, (index, usize::MAX));
+                    }
+                    PipelineTestEvent::RunDropped { run_id, .. } => {
+                        spans.entry(*run_id).or_default().1 = index;
+                    }
+                    _ => {}
+                }
+            }
+            let run_ids = state_ptrs.keys().copied().collect::<Vec<_>>();
+            for (index, left) in run_ids.iter().enumerate() {
+                for right in &run_ids[index + 1..] {
+                    let (left_start, left_drop) = spans[left];
+                    let (right_start, right_drop) = spans[right];
+                    if left_start < right_drop
+                        && right_start < left_drop
+                        && state_ptrs[left] == state_ptrs[right]
+                    {
+                        failures.push(format!(
+                            "simultaneously live runs {left}/{right} share state pointer"
+                        ));
+                    }
+                }
+            }
+        }
+        anyhow::ensure!(failures.is_empty(), failures.join("\n"));
         Ok(())
     }
 
@@ -1766,6 +2418,127 @@ mod tests {
             }]
         })
         .to_string()
+    }
+
+    pub(crate) async fn assert_transient_planner_hint_pipeline_contract() -> anyhow::Result<()> {
+        use crate::renderer::RendererDiagnosticCapture;
+        use crate::typography::{
+            TypographyDiagnosticCapture, TypographyDiagnosticOutcome, TypographyFieldOutcome,
+        };
+        let fixture = PipelineFixture::new("中文", "abcdef")?;
+        let text_before = fixture
+            .session
+            .scene_snapshot()
+            .node(fixture.page, fixture.text)
+            .and_then(|node| match &node.kind {
+                NodeKind::Text(text) => Some((
+                    text.translation.clone(),
+                    serde_json::to_value(&text.style).ok()?,
+                    text.typography_plan_verified,
+                )),
+                _ => None,
+            })
+            .context("fixture text node")?;
+        let response = json!({
+            "nodes": [{
+                "nodeId": fixture.text,
+                "lines": ["abc", "def"],
+                "style": {
+                    "fontFamily": fixture.font, "fontSize": null,
+                    "color": [9, 8, 7, 255], "stroke": null, "effect": null,
+                    "textAlign": "center"
+                }
+            }]
+        })
+        .to_string();
+        let planner = Arc::new(TypographyPlanner::with_test_sender(
+            Arc::new(move |_, _| {
+                let response = response.clone();
+                Box::pin(async move { Ok(response) })
+            }),
+            Duration::from_secs(1),
+        ));
+        install_counting_engine(
+            &fixture,
+            "pp-ocr-v5-source-gate",
+            Arc::new(AtomicUsize::new(0)),
+            false,
+        );
+        let typography = TypographyDiagnosticCapture::start()
+            .map_err(|_| anyhow::anyhow!("typography diagnostic capture already active"))?;
+        let renderer = RendererDiagnosticCapture::start()
+            .map_err(|_| anyhow::anyhow!("renderer diagnostic capture already active"))?;
+        let pipeline: PipelineTestCapture = start_pipeline_test_probe()?;
+        let mut failures = Vec::new();
+        assert!(
+            pipeline.take().is_empty(),
+            "probe must not synthesize pre-run state"
+        );
+        let outcome = fixture
+            .run(planner, Arc::new(Mutex::new(Vec::new())))
+            .await?;
+        if outcome.warning_count != 0 {
+            failures.push(format!("warnings {}", outcome.warning_count));
+        }
+        match renderer.take().as_slice() {
+            [event] if event.node_id == fixture.text => {}
+            other => failures.push(format!("real Renderer consumer events {other:?}")),
+        }
+        match typography.take().as_slice() {
+            [diagnostic] => {
+                if diagnostic.outcome != TypographyDiagnosticOutcome::Accepted {
+                    failures.push(format!("Planner outcome {:?}", diagnostic.outcome));
+                }
+                if diagnostic.accepted_op_count != Some(0) {
+                    failures.push(format!("accepted ops {:?}", diagnostic.accepted_op_count));
+                }
+                match diagnostic.target_field_outcomes.as_deref() {
+                    Some([target])
+                        if target.node_id == fixture.text
+                            && target.planner_line_count == 2
+                            && target.translation_exactly_preserved
+                            && target.line_outcome == TypographyFieldOutcome::Applied => {}
+                    other => failures.push(format!("Planner field outcomes {other:?}")),
+                }
+            }
+            other => failures.push(format!("Planner acceptance events {other:?}")),
+        }
+        let text_after = fixture
+            .session
+            .scene_snapshot()
+            .node(fixture.page, fixture.text)
+            .and_then(|node| match &node.kind {
+                NodeKind::Text(text) => Some((
+                    text.translation.clone(),
+                    serde_json::to_value(&text.style).ok()?,
+                    text.typography_plan_verified,
+                )),
+                _ => None,
+            })
+            .context("rendered text node")?;
+        if text_after != text_before {
+            failures.push(format!(
+                "transient hint persisted in Scene text fields: {text_before:?} -> {text_after:?}"
+            ));
+        }
+        let events = pipeline.take();
+        let renderer_view = events.iter().find_map(|event| match event {
+            PipelineTestEvent::StateObserved {
+                point: PipelineTestPoint::Renderer,
+                page,
+                view,
+                ..
+            } if *page == fixture.page => view.as_ref(),
+            _ => None,
+        });
+        match renderer_view {
+            Some(view) if view.transient_hints == [(fixture.text, "abc\ndef".to_string())] => {}
+            other => failures.push(format!(
+                "production Renderer transient state unavailable: {other:?}"
+            )),
+        }
+        anyhow::ensure!(failures.is_empty(), failures.join("\n"));
+        Ok(())
     }
 
     #[tokio::test]

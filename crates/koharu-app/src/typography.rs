@@ -151,20 +151,15 @@ where
 type TypographyDiagnosticEvents = Arc<Mutex<Vec<TypographyDiagnosticEvent>>>;
 
 #[cfg(test)]
-type TypographyTransientConsumerInputs = Arc<Mutex<Vec<(NodeId, String)>>>;
-
-#[cfg(test)]
 #[derive(Clone)]
 struct TypographyDiagnosticSinkToken {
     events: TypographyDiagnosticEvents,
-    transient_consumer_inputs: TypographyTransientConsumerInputs,
 }
 
 #[cfg(test)]
 struct ActiveTypographyDiagnosticSink {
     owner: ThreadId,
     events: TypographyDiagnosticEvents,
-    transient_consumer_inputs: TypographyTransientConsumerInputs,
 }
 
 #[cfg(test)]
@@ -179,7 +174,6 @@ pub(crate) struct TypographyDiagnosticCaptureActive;
 pub(crate) struct TypographyDiagnosticCapture {
     owner: ThreadId,
     events: TypographyDiagnosticEvents,
-    transient_consumer_inputs: TypographyTransientConsumerInputs,
 }
 
 #[cfg(test)]
@@ -187,7 +181,6 @@ impl TypographyDiagnosticCapture {
     pub(crate) fn start() -> std::result::Result<Self, TypographyDiagnosticCaptureActive> {
         let owner = std::thread::current().id();
         let events = Arc::new(Mutex::new(Vec::new()));
-        let transient_consumer_inputs = Arc::new(Mutex::new(Vec::new()));
         let mut active = TYPOGRAPHY_DIAGNOSTIC_SINK
             .get_or_init(|| Mutex::new(None))
             .lock()
@@ -198,28 +191,14 @@ impl TypographyDiagnosticCapture {
         *active = Some(ActiveTypographyDiagnosticSink {
             owner,
             events: events.clone(),
-            transient_consumer_inputs: transient_consumer_inputs.clone(),
         });
-        Ok(Self {
-            owner,
-            events,
-            transient_consumer_inputs,
-        })
+        Ok(Self { owner, events })
     }
 
     pub(crate) fn take(&self) -> Vec<TypographyDiagnosticEvent> {
         std::mem::take(
             &mut *self
                 .events
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-    }
-
-    fn take_transient_consumer_inputs(&self) -> Vec<(NodeId, String)> {
-        std::mem::take(
-            &mut *self
-                .transient_consumer_inputs
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
@@ -253,23 +232,7 @@ fn current_typography_diagnostic_sink() -> Option<TypographyDiagnosticSinkToken>
         .filter(|sink| sink.owner == owner)
         .map(|sink| TypographyDiagnosticSinkToken {
             events: sink.events.clone(),
-            transient_consumer_inputs: sink.transient_consumer_inputs.clone(),
         })
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-fn record_transient_typography_consumer_input_with(
-    sink: Option<&TypographyDiagnosticSinkToken>,
-    node_id: NodeId,
-    translation: String,
-) {
-    if let Some(sink) = sink {
-        sink.transient_consumer_inputs
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((node_id, translation));
-    }
 }
 
 #[cfg(test)]
@@ -2141,65 +2104,11 @@ mod tests {
         Ok(())
     }
 
-    #[test]
+    #[tokio::test(flavor = "current_thread")]
     #[ignore = "hanonly-pre-greenc-red"]
-    fn hanonly_pre_greenc_red_t3_transient_planner_hint_contract() -> Result<()> {
-        let mut source = text_node("中文", Some("abcdef"));
-        let NodeKind::Text(source_text) = &mut source.kind else {
-            anyhow::bail!("test fixture must be a text node")
-        };
-        source_text.style = Some(TextStyle {
-            font_size: None,
-            color: [9, 8, 7, 255],
-            ..Default::default()
-        });
-        source_text.typography_plan_verified = false;
-        let (scene, page) = scene(vec![source]);
-        let mut request = request(&scene, page, SourceTextPolicy::HanOnly, None)?;
-        assert_eq!(request.targets[0].safe_regions.len(), 1);
-        request.targets[0].preserve_lines = false;
-        let planner_lines = vec!["abc".to_string(), "def".to_string()];
-        assert_ne!(planner_lines.join("\n"), request.targets[0].translation);
-        assert_eq!(planner_lines.concat(), request.targets[0].translation);
-        let response = serde_json::to_string(&json!({
-            "nodes": [response_node(&request.targets[0], planner_lines)]
-        }))?;
-
-        let capture = start_typography_diagnostic_capture();
-        let ops = build_typography_ops(&request, &response)
-            .context("accepted-transient acceptance boundary is missing")?;
-        let events = capture.take();
-        assert_eq!(events.len(), 1);
-        let diagnostic = &events[0];
-        assert_eq!(
-            diagnostic.outcome,
-            TypographyDiagnosticOutcome::Accepted,
-            "a valid transient hint must cross the existing acceptance boundary"
-        );
-        let outcomes = diagnostic
-            .target_field_outcomes
-            .as_deref()
-            .context("accepted Planner response must reach the local consumer")?;
-        assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].planner_line_count, 2);
-        assert!(
-            outcomes[0].translation_exactly_preserved,
-            "removing the Planner line break must restore the original translation"
-        );
-        assert_eq!(
-            capture.take_transient_consumer_inputs(),
-            [(request.targets[0].node_id, "abc\ndef".to_string())],
-            "the run-local consumer must use the accepted line break"
-        );
-
-        assert!(ops.is_empty(), "transient hints must not create Scene ops");
-        assert_eq!(diagnostic.accepted_op_count, Some(0));
-        assert_eq!(
-            serde_json::to_value(&scene)?,
-            serde_json::to_value(apply_ops(scene.clone(), &ops)?)?,
-            "transient Planner hints must not change Scene translation, style, or marker"
-        );
-        Ok(())
+    async fn hanonly_pre_greenc_red_t3_transient_planner_hint_contract() -> Result<()> {
+        let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
+        crate::pipeline::tests::assert_transient_planner_hint_pipeline_contract().await
     }
 
     #[test]
