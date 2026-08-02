@@ -506,6 +506,8 @@ mod source_gate_selection {
         "950b34ec6a3672ba4760429a38dc3b383680d6a97512de32831fdc1422654665";
     const R59_PUBLIC_COMMITMENT_SHA256: &str =
         "d1ec5a35d01d716663df99cf8c4b153fd33b2934008c231813bd73b8f59aa927";
+    const R59_CALIBRATION_ARTIFACT_SHA256: &str =
+        "7006eecae1aab6a7f178fc64c0979db0ec155ce3239122c280db750b8f90a3dc";
     const R59_PUBLIC_COMMITMENT_JSON: &[u8] = br#"{"B0_SHA":"4c0e0d25d4de3be2809e8c749a6858a1bb724fa4","age_public_recipient":"age1pzaxrtkwu424yrz2s4kck0avakx5y57u2qm2u2h30ya7s4fxaanqst09sw","ciphertext_sha256":"1985675aae9ec857f97e42e3942cd9d0d717563cd384b5d2f642222701376b72","created_at":"2026-08-02T10:25:51.592320Z","opaque_ids":["r59-h01","r59-h02","r59-h03","r59-h04"],"plaintext_cleanup":true,"private_manifest_commitment_sha256":"b9bf0d416d38e4adcd8d34e07666d365e4652582437979d986cdb68bae7e764d","restricted_content_disclosed":false,"schema":"hanonly.r59.public-commitment.v1","start_marker_absent":true}
 "#;
     const R59_PLAINTEXT_ROOT: &str = "/Users/koharu-custody/r59-plaintext";
@@ -585,6 +587,8 @@ mod source_gate_selection {
         holdout_entry_ids: Vec<String>,
         required_check: RequiredCheck,
         required_check_attestation: HeldInput,
+        held_calibration_artifact_sha256: OnceCell<String>,
+        frozen_candidate_id: OnceCell<String>,
     }
 
     struct R59FormalCustody {
@@ -607,8 +611,22 @@ mod source_gate_selection {
         original_public_commitment_sha256: String,
         original_b0_sha: String,
         successor_b0_sha: String,
+        calibration_artifact_sha256: String,
         ciphertext_sha256: String,
         private_manifest_commitment_sha256: String,
+    }
+
+    impl R59FreezeCommitments {
+        fn accepts_calibration_artifact(
+            &self,
+            artifact_b0_sha: &str,
+            requested_b0_sha: &str,
+            artifact_sha256: &str,
+        ) -> bool {
+            self.original_b0_sha == artifact_b0_sha
+                && self.successor_b0_sha == requested_b0_sha
+                && self.calibration_artifact_sha256 == artifact_sha256
+        }
     }
 
     struct R59RuntimeCommitments {
@@ -850,6 +868,8 @@ mod source_gate_selection {
                 holdout_entry_ids,
                 required_check,
                 required_check_attestation,
+                held_calibration_artifact_sha256: OnceCell::new(),
+                frozen_candidate_id: OnceCell::new(),
             })
         }
     }
@@ -1803,19 +1823,15 @@ mod source_gate_selection {
                 write_artifact(&environment.artifact, &canonical_json(&artifact)?)
             }
             Phase::Holdout => {
-                let bytes = fs::read(&environment.artifact)?;
+                let artifact_input = HeldInput::open(&environment.artifact)?;
+                let bytes = artifact_input.bytes();
                 let mut artifact: FrozenArtifact = serde_json::from_slice(&bytes)
                     .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
                 require(
                     canonical_json(&artifact)? == bytes,
                     "selection artifact must be canonical JSON",
                 )?;
-                if environment.r59_formal_custody.is_some() {
-                    require(
-                        artifact.manifest_sha256 == environment.calibration_manifest_sha256,
-                        "R59 frozen calibration manifest binding drift",
-                    )?;
-                }
+                hold_calibration_artifact(&environment, &artifact_input, &artifact)?;
                 validate_artifact(&artifact, Phase::CalibrationFreeze, &environment)?;
                 let formal_holdout = environment.r59_formal_custody.is_some();
                 if formal_holdout {
@@ -1823,7 +1839,9 @@ mod source_gate_selection {
                     validate_r59_runtime_commitment(&environment)?;
                 }
                 let result = (|| {
-                    let evidence = model_runner(&environment)?;
+                    let evidence =
+                        artifact_input.with_revalidated_path(|_| model_runner(&environment))?;
+                    artifact_input.with_revalidated_path(|_| Ok(()))?;
                     require(
                         evidence.selected_candidate_id == artifact.selected_candidate_id,
                         "holdout selected candidate drift",
@@ -2658,10 +2676,8 @@ mod source_gate_selection {
                 .map(|(id, policy)| (id.into(), policy))
                 .collect());
         }
-        let artifact: FrozenArtifact = serde_json::from_slice(&fs::read(&environment.artifact)?)
-            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
         all.into_iter()
-            .find(|(id, _)| *id == artifact.selected_candidate_id)
+            .find(|(id, _)| environment.frozen_candidate_id.get().map(String::as_str) == Some(*id))
             .map(|(id, policy)| vec![(id.into(), policy)])
             .ok_or_else(|| invalid_data("frozen candidate is unknown"))
     }
@@ -3396,8 +3412,7 @@ mod source_gate_selection {
                 && receipt.successor_b0_sha == requested_b0_sha
                 && receipt.contract_sha256 == contract_sha256
                 && receipt.test_spec_sha256 == test_spec_sha256
-                && receipt.calibration_artifact_sha256
-                    == "7006eecae1aab6a7f178fc64c0979db0ec155ce3239122c280db750b8f90a3dc"
+                && receipt.calibration_artifact_sha256 == R59_CALIBRATION_ARTIFACT_SHA256
                 && receipt.selected_candidate_id == "S25L4"
                 && receipt.ciphertext_sha256 == public.ciphertext_sha256
                 && receipt.private_manifest_commitment_sha256
@@ -3424,6 +3439,7 @@ mod source_gate_selection {
             original_public_commitment_sha256: receipt.original_public_commitment_sha256,
             original_b0_sha: receipt.original_b0_sha,
             successor_b0_sha: receipt.successor_b0_sha,
+            calibration_artifact_sha256: receipt.calibration_artifact_sha256,
             ciphertext_sha256: receipt.ciphertext_sha256,
             private_manifest_commitment_sha256: receipt.private_manifest_commitment_sha256,
         })
@@ -5597,6 +5613,36 @@ mod source_gate_selection {
             .collect()
     }
 
+    fn hold_calibration_artifact(
+        environment: &SelectionEnvironment,
+        input: &HeldInput,
+        artifact: &FrozenArtifact,
+    ) -> io::Result<()> {
+        if let Some(holdout) = environment
+            .r59_formal_custody
+            .as_ref()
+            .and_then(|custody| custody.holdout.as_ref())
+        {
+            let artifact_sha256 = hex_sha256(input.sha256());
+            require(
+                holdout.freeze.accepts_calibration_artifact(
+                    &artifact.b0_sha,
+                    &environment.b0_sha,
+                    &artifact_sha256,
+                ) && artifact.manifest_sha256 == environment.calibration_manifest_sha256,
+                "R59 frozen calibration artifact binding drift",
+            )?;
+            environment
+                .held_calibration_artifact_sha256
+                .set(artifact_sha256)
+                .map_err(|_| invalid_data("R59 calibration artifact already held"))?;
+        }
+        environment
+            .frozen_candidate_id
+            .set(artifact.selected_candidate_id.clone())
+            .map_err(|_| invalid_data("holdout candidate already held"))
+    }
+
     fn validate_artifact(
         artifact: &FrozenArtifact,
         phase: Phase,
@@ -5606,8 +5652,28 @@ mod source_gate_selection {
             artifact.version == ARTIFACT_VERSION && artifact.plan_revision == PLAN_REVISION,
             "selection artifact version or plan revision mismatch",
         )?;
+        let b0_binding_valid = if artifact.b0_sha == environment.b0_sha {
+            true
+        } else if let Some(holdout) = environment
+            .r59_formal_custody
+            .as_ref()
+            .and_then(|custody| custody.holdout.as_ref())
+        {
+            environment
+                .held_calibration_artifact_sha256
+                .get()
+                .is_some_and(|artifact_sha256| {
+                    holdout.freeze.accepts_calibration_artifact(
+                        &artifact.b0_sha,
+                        &environment.b0_sha,
+                        artifact_sha256,
+                    )
+                })
+        } else {
+            false
+        };
         require(
-            artifact.b0_sha == environment.b0_sha
+            b0_binding_valid
                 && artifact.source_gate_fixture_manifest_sha256
                     == environment.source_gate_fixture_manifest_sha256,
             "selection artifact frozen input drift",
@@ -5716,12 +5782,16 @@ mod source_gate_selection {
             .iter()
             .zip(expected_phases.into_iter().flatten())
         {
+            let expected_b0_sha = match expected_phase {
+                Phase::CalibrationFreeze => &artifact.b0_sha,
+                Phase::Holdout => &environment.b0_sha,
+            };
             let path = environment.evidence_root.join(&stored.attestation_relpath);
             let (current, held) = load_required_check(
                 &environment.evidence_root,
                 &path,
                 expected_phase,
-                &artifact.b0_sha,
+                expected_b0_sha,
                 &stored.manifest_sha256,
                 &artifact.source_gate_fixture_manifest_sha256,
             )?;
@@ -6555,6 +6625,103 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             value["successor_b0_sha"] = serde_json::Value::String("b".repeat(40));
         });
         assert!(validate_test_successor(&values).is_err());
+    }
+
+    #[test]
+    fn r59_successor_accepts_only_exact_calibration_artifact_binding() {
+        let original_b0_sha = "a".repeat(40);
+        let successor_b0_sha = "b".repeat(40);
+        let artifact_sha256 = synthetic_hash(5);
+        let freeze = R59FreezeCommitments {
+            receipt_sha256: synthetic_hash(1),
+            original_public_commitment_sha256: synthetic_hash(2),
+            original_b0_sha: original_b0_sha.clone(),
+            successor_b0_sha: successor_b0_sha.clone(),
+            calibration_artifact_sha256: artifact_sha256.clone(),
+            ciphertext_sha256: synthetic_hash(3),
+            private_manifest_commitment_sha256: synthetic_hash(4),
+        };
+
+        assert!(freeze.accepts_calibration_artifact(
+            &original_b0_sha,
+            &successor_b0_sha,
+            &artifact_sha256,
+        ));
+        assert!(!freeze.accepts_calibration_artifact(
+            &"c".repeat(40),
+            &successor_b0_sha,
+            &artifact_sha256
+        ));
+        assert!(!freeze.accepts_calibration_artifact(
+            &original_b0_sha,
+            &"d".repeat(40),
+            &artifact_sha256
+        ));
+        assert!(!freeze.accepts_calibration_artifact(
+            &original_b0_sha,
+            &successor_b0_sha,
+            &synthetic_hash(6),
+        ));
+    }
+
+    #[test]
+    fn r59_successor_holds_exact_artifact_and_uses_phase_b0_attestations() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let mut values = valid_environment(&root);
+        run_with(
+            |name| values.get(name).cloned(),
+            &test_repository(),
+            |_| Ok("a".repeat(40)),
+            |_| Ok(()),
+            |_| Ok(calibration_evidence()),
+        )
+        .unwrap();
+
+        let artifact_path = root.join("selection.json");
+        let input = HeldInput::open(&artifact_path).unwrap();
+        let mut artifact: FrozenArtifact = serde_json::from_slice(input.bytes()).unwrap();
+        let original_b0_sha = artifact.b0_sha.clone();
+        let successor_b0_sha = "b".repeat(40);
+        let mut environment = parse_test_environment(&values).unwrap();
+        environment.phase = Phase::Holdout;
+        environment.b0_sha.clone_from(&successor_b0_sha);
+        environment.r59_formal_custody = Some(R59FormalCustody {
+            contract_sha256: synthetic_hash(7),
+            holdout: Some(R59HoldoutCustody {
+                directory: root.join("custody"),
+                plaintext_directory: root.join("plaintext"),
+                plaintext_archive: root.join("plaintext/bundle.tar"),
+                freeze: R59FreezeCommitments {
+                    receipt_sha256: synthetic_hash(8),
+                    original_public_commitment_sha256: synthetic_hash(9),
+                    original_b0_sha: original_b0_sha.clone(),
+                    successor_b0_sha: successor_b0_sha.clone(),
+                    calibration_artifact_sha256: hex_sha256(input.sha256()),
+                    ciphertext_sha256: synthetic_hash(10),
+                    private_manifest_commitment_sha256: synthetic_hash(11),
+                },
+                expected_start_marker_sha256: synthetic_hash(12),
+                open_marker: OnceCell::new(),
+                runtime_commitment: OnceCell::new(),
+            }),
+        });
+
+        hold_calibration_artifact(&environment, &input, &artifact).unwrap();
+        validate_artifact(&artifact, Phase::CalibrationFreeze, &environment).unwrap();
+        input.with_revalidated_path(|_| Ok(())).unwrap();
+
+        values.insert(PHASE_ENV, "holdout".into());
+        values.insert(B0_SHA_ENV, successor_b0_sha);
+        set_required_check(&mut values, &root, Phase::Holdout);
+        let holdout_environment = parse_test_environment(&values).unwrap();
+        artifact
+            .required_checks
+            .push(holdout_environment.required_check.clone());
+        validate_required_checks(&artifact, Phase::Holdout, &holdout_environment).unwrap();
+
+        fs::write(&artifact_path, b"drifted calibration").unwrap();
+        assert!(input.with_revalidated_path(|_| Ok(())).is_err());
     }
 
     #[test]
