@@ -67,10 +67,22 @@ async function directorySize(root: string): Promise<number> {
   return total
 }
 
+async function statfsNearestExisting(root: string) {
+  try {
+    return await statfs(root)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    const parent = path.dirname(root)
+    if (parent === root) throw error
+    return await statfsNearestExisting(parent)
+  }
+}
+
 async function inspectStorage(root: string): Promise<StorageSnapshot> {
   const targetRoot = path.resolve(root, process.env.CARGO_TARGET_DIR ?? 'target')
+  const filesystemRoot = process.env.CARGO_TARGET_DIR ? targetRoot : root
   const [filesystem, targetBytes, nextBytes] = await Promise.all([
-    statfs(root),
+    statfsNearestExisting(filesystemRoot),
     directorySize(targetRoot),
     directorySize(path.join(root, 'ui', '.next')),
   ])
