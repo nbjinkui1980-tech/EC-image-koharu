@@ -2238,11 +2238,6 @@ class R59CustodyBoundaryTests(unittest.TestCase):
             "private_manifest_commitment_sha256": self.original[
                 "private_manifest_commitment_sha256"
             ],
-            "runtime_manifest_sha256": "1" * 64,
-            "runtime_oracle_sha256": "2" * 64,
-            "runtime_hashes_sha256": "3" * 64,
-            "runtime_archive_sha256": "4" * 64,
-            "private_schema_receipt_sha256": "5" * 64,
             "entry_ids": ledger.R59_ENTRY_IDS,
             "package_unchanged": True,
             "start_marker_absent": True,
@@ -2254,7 +2249,9 @@ class R59CustodyBoundaryTests(unittest.TestCase):
     def successor_bytes(self, value=None):
         return ledger._r59_canonical_json(value or self.successor)
 
-    def preflight(self, successor=None, requested_b0=None, marker_exists=False):
+    def preflight(
+        self, successor=None, requested_b0=None, marker_exists=False, runtime_exists=False
+    ):
         successor = successor or self.successor
         return ledger._r59_validate_preflight_values(
             self.ORIGINAL_BYTES,
@@ -2263,6 +2260,7 @@ class R59CustodyBoundaryTests(unittest.TestCase):
             successor,
             requested_b0 or self.SUCCESSOR_B0,
             marker_exists=marker_exists,
+            runtime_exists=runtime_exists,
         )
 
     def receipts(self):
@@ -2288,6 +2286,27 @@ class R59CustodyBoundaryTests(unittest.TestCase):
             "cleanup_pass": True,
         }
         start_bytes = ledger._r59_canonical_json(start)
+        runtime = {
+            "schema": "hanonly.r59.runtime-commitment.v1",
+            "plan_revision": 59,
+            "b0_sha": self.SUCCESSOR_B0,
+            "start_marker_sha256": hashlib.sha256(start_bytes).hexdigest(),
+            "successor_commitment_sha256": successor_sha256,
+            "ciphertext_sha256": self.original["ciphertext_sha256"],
+            "private_manifest_commitment_sha256": self.original[
+                "private_manifest_commitment_sha256"
+            ],
+            "runtime_archive_sha256": "1" * 64,
+            "runtime_manifest_sha256": "2" * 64,
+            "runtime_oracle_sha256": "3" * 64,
+            "runtime_hashes_sha256": "4" * 64,
+            "entry_ids": ledger.R59_ENTRY_IDS,
+            "decrypt_result": "pass",
+            "package_unchanged": True,
+            "restricted_values_disclosed": False,
+            "state": "runtime_committed",
+        }
+        runtime_bytes = ledger._r59_canonical_json(runtime)
         cleanup_bytes = ledger._r59_canonical_json(cleanup)
         terminal = {
             "schema": "hanonly-r59-holdout-terminal-v1",
@@ -2304,13 +2323,17 @@ class R59CustodyBoundaryTests(unittest.TestCase):
             "cleanup_receipt_sha256": hashlib.sha256(cleanup_bytes).hexdigest(),
             "bundle_validation_receipt_sha256": "8" * 64,
             "artifact_payload_sha256": "9" * 64,
+            "runtime_commitment_receipt_sha256": hashlib.sha256(
+                runtime_bytes
+            ).hexdigest(),
             "state": "completed_pass",
         }
-        return start, cleanup, terminal
+        return start, runtime, cleanup, terminal
 
-    def authorize(self, start=None, cleanup=None, terminal=None):
-        default_start, default_cleanup, default_terminal = self.receipts()
+    def authorize(self, start=None, runtime=None, cleanup=None, terminal=None):
+        default_start, default_runtime, default_cleanup, default_terminal = self.receipts()
         start = start or default_start
+        runtime = runtime or default_runtime
         cleanup = cleanup or default_cleanup
         terminal = terminal or default_terminal
         return ledger._r59_validate_authorization_values(
@@ -2320,6 +2343,8 @@ class R59CustodyBoundaryTests(unittest.TestCase):
             self.successor,
             ledger._r59_canonical_json(start),
             start,
+            ledger._r59_canonical_json(runtime),
+            runtime,
             ledger._r59_canonical_json(terminal),
             terminal,
             ledger._r59_canonical_json(cleanup),
@@ -2360,6 +2385,12 @@ class R59CustodyBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ledger.LedgerError, "binding drift"):
             self.preflight(changed)
 
+    def test_rejects_pre_start_runtime_fields(self):
+        changed = self.clone(self.successor)
+        changed["runtime_manifest_sha256"] = "1" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+            self.preflight(changed)
+
     def test_rejects_r51_ids(self):
         changed = self.clone(self.successor)
         changed["entry_ids"] = [f"r51-h0{index}" for index in range(1, 5)]
@@ -2369,33 +2400,49 @@ class R59CustodyBoundaryTests(unittest.TestCase):
     def test_rejects_marker_reuse_and_unknown_start_state(self):
         with self.assertRaisesRegex(ledger.LedgerError, "retry is forbidden"):
             self.preflight(marker_exists=True)
-        start, cleanup, terminal = self.receipts()
+        with self.assertRaisesRegex(ledger.LedgerError, "before start marker"):
+            self.preflight(runtime_exists=True)
+        start, runtime, cleanup, terminal = self.receipts()
         start["state"] = "fresh"
         with self.assertRaisesRegex(ledger.LedgerError, "state drift"):
-            self.authorize(start, cleanup, terminal)
+            self.authorize(start, runtime, cleanup, terminal)
 
     def test_rejects_incomplete_cleanup(self):
-        start, cleanup, terminal = self.receipts()
+        start, runtime, cleanup, terminal = self.receipts()
         cleanup["descriptors_closed"] = False
         terminal["cleanup_receipt_sha256"] = hashlib.sha256(
             ledger._r59_canonical_json(cleanup)
         ).hexdigest()
         with self.assertRaisesRegex(ledger.LedgerError, "non-authorizing"):
-            self.authorize(start, cleanup, terminal)
+            self.authorize(start, runtime, cleanup, terminal)
+
+    def test_rejects_runtime_commitment_drift(self):
+        start, runtime, cleanup, terminal = self.receipts()
+        runtime["ciphertext_sha256"] = "0" * 64
+        terminal["runtime_commitment_receipt_sha256"] = hashlib.sha256(
+            ledger._r59_canonical_json(runtime)
+        ).hexdigest()
+        with self.assertRaisesRegex(ledger.LedgerError, "runtime commitment"):
+            self.authorize(start, runtime, cleanup, terminal)
+
+        start, runtime, cleanup, terminal = self.receipts()
+        del terminal["runtime_commitment_receipt_sha256"]
+        with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+            self.authorize(start, runtime, cleanup, terminal)
 
     def test_authorizes_only_all_eight_passes_and_cleanup(self):
         record = self.authorize()
         self.assertEqual(record["result"], "authorized")
         self.assertEqual(record["b0_sha"], self.SUCCESSOR_B0)
-        start, cleanup, terminal = self.receipts()
+        start, runtime, cleanup, terminal = self.receipts()
         terminal["cell_results"][0]["result"] = "fail"
         with self.assertRaisesRegex(ledger.LedgerError, "failed"):
-            self.authorize(start, cleanup, terminal)
+            self.authorize(start, runtime, cleanup, terminal)
 
-        start, cleanup, terminal = self.receipts()
+        start, runtime, cleanup, terminal = self.receipts()
         terminal["bundle_validation_receipt_sha256"] = "missing"
         with self.assertRaisesRegex(ledger.LedgerError, "bundle validation"):
-            self.authorize(start, cleanup, terminal)
+            self.authorize(start, runtime, cleanup, terminal)
 
 
 if __name__ == "__main__":

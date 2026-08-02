@@ -1555,6 +1555,13 @@ function r59Args(args: readonly string[], endpoint: string): string[] {
   if (filtered.length !== args.length - 1) {
     fail('r59-argv', `${endpoint} must appear exactly once`)
   }
+  if (
+    filtered.length !== 2 ||
+    filtered[0] !== '--requested-b0-sha' ||
+    !/^[0-9a-f]{40}$/.test(filtered[1] ?? '')
+  ) {
+    fail('r59-argv', `${endpoint} accepts only --requested-b0-sha <sha>`)
+  }
   return filtered
 }
 

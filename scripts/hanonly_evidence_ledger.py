@@ -634,6 +634,9 @@ R59_SUCCESSOR_COMMITMENT_PATH = (
     "/Users/Shared/hanonly-r59-public/r59-successor-commitment.json"
 )
 R59_START_MARKER_PATH = "/Users/Shared/hanonly-r59-public/r59-holdout-start.json"
+R59_RUNTIME_COMMITMENT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-runtime-commitment.json"
+)
 R59_TERMINAL_RECEIPT_PATH = (
     "/Users/Shared/hanonly-r59-public/r59-holdout-terminal.json"
 )
@@ -645,10 +648,10 @@ R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256 = (
 )
 R59_ORIGINAL_B0_SHA = "4c0e0d25d4de3be2809e8c749a6858a1bb724fa4"
 R59_CONTRACT_SHA256 = (
-    "47ee4a1f63cb75f3782f21b2f9d3d2b73bc48865a9969a728b242fdc7d24924e"
+    "f3d2f057e2b248e2fcfd4d460afea845cc8c1dbcc7ed2153f54ca2e21ce671d6"
 )
 R59_TEST_SPEC_SHA256 = (
-    "55a6e2307ec48cbbbaf6aed7b1944f42a5f310eb0f42e8d229cfe025b2749592"
+    "950b34ec6a3672ba4760429a38dc3b383680d6a97512de32831fdc1422654665"
 )
 R59_CALIBRATION_ARTIFACT_SHA256 = (
     "7006eecae1aab6a7f178fc64c0979db0ec155ce3239122c280db750b8f90a3dc"
@@ -683,11 +686,6 @@ R59_SUCCESSOR_KEYS = {
     "selected_candidate_id",
     "ciphertext_sha256",
     "private_manifest_commitment_sha256",
-    "runtime_manifest_sha256",
-    "runtime_oracle_sha256",
-    "runtime_hashes_sha256",
-    "runtime_archive_sha256",
-    "private_schema_receipt_sha256",
     "entry_ids",
     "package_unchanged",
     "start_marker_absent",
@@ -704,6 +702,24 @@ R59_START_KEYS = {
     "nonce_hex",
     "state",
 }
+R59_RUNTIME_COMMITMENT_KEYS = {
+    "schema",
+    "plan_revision",
+    "b0_sha",
+    "start_marker_sha256",
+    "successor_commitment_sha256",
+    "ciphertext_sha256",
+    "private_manifest_commitment_sha256",
+    "runtime_archive_sha256",
+    "runtime_manifest_sha256",
+    "runtime_oracle_sha256",
+    "runtime_hashes_sha256",
+    "entry_ids",
+    "decrypt_result",
+    "package_unchanged",
+    "restricted_values_disclosed",
+    "state",
+}
 R59_TERMINAL_KEYS = {
     "schema",
     "plan_revision",
@@ -717,6 +733,7 @@ R59_TERMINAL_KEYS = {
     "cleanup_receipt_sha256",
     "bundle_validation_receipt_sha256",
     "artifact_payload_sha256",
+    "runtime_commitment_receipt_sha256",
     "state",
 }
 R59_TERMINAL_CELL_KEYS = {"cell", "result"}
@@ -744,6 +761,7 @@ R59_AUTHORIZATION_KEYS = {
     "terminal_receipt_sha256",
     "cleanup_receipt_sha256",
     "artifact_payload_sha256",
+    "runtime_commitment_receipt_sha256",
     "result",
 }
 JPEG_SOF_MARKERS = {
@@ -4410,14 +4428,6 @@ def _r59_validate_successor(data, value, original, requested_b0_sha):
         or value["start_marker_absent"] is not True
     ):
         raise LedgerError("R59 successor commitment binding drift")
-    for key in (
-        "runtime_manifest_sha256",
-        "runtime_oracle_sha256",
-        "runtime_hashes_sha256",
-        "runtime_archive_sha256",
-        "private_schema_receipt_sha256",
-    ):
-        _validate_hash(value[key], f"R59 successor {key}")
     if _r59_canonical_json(value) != data:
         raise LedgerError("R59 successor commitment is not canonical JSON")
     return _sha256(data)
@@ -4467,6 +4477,7 @@ def _r59_validate_preflight_values(
     requested_b0_sha,
     *,
     marker_exists,
+    runtime_exists=False,
 ):
     original = _r59_validate_original(original_data, original)
     successor_sha256 = _r59_validate_successor(
@@ -4474,6 +4485,8 @@ def _r59_validate_preflight_values(
     )
     if marker_exists:
         raise LedgerError("R59 start marker already exists; retry is forbidden")
+    if runtime_exists:
+        raise LedgerError("R59 runtime commitment exists before start marker")
     return successor_sha256
 
 
@@ -4510,6 +4523,9 @@ def _r59_validate_preflight(arguments):
         marker_exists=_r59_path_exists_fail_closed(
             R59_START_MARKER_PATH, "R59 start marker"
         ),
+        runtime_exists=_r59_path_exists_fail_closed(
+            R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"
+        ),
     )
     return _r59_canonical_json(
         {"result": "pass", "successor_commitment_sha256": successor_sha256}
@@ -4523,6 +4539,8 @@ def _r59_validate_authorization_values(
     successor,
     start_data,
     start,
+    runtime_data,
+    runtime,
     terminal_data,
     terminal,
     cleanup_data,
@@ -4534,15 +4552,18 @@ def _r59_validate_authorization_values(
         successor_data, successor, original, requested_b0_sha
     )
     _require_keys(start, R59_START_KEYS, "R59 start marker")
+    _require_keys(runtime, R59_RUNTIME_COMMITMENT_KEYS, "R59 runtime commitment")
     _require_keys(terminal, R59_TERMINAL_KEYS, "R59 terminal receipt")
     _require_keys(cleanup, R59_CLEANUP_KEYS, "R59 cleanup receipt")
     if (
         _r59_canonical_json(start) != start_data
+        or _r59_canonical_json(runtime) != runtime_data
         or _r59_canonical_json(terminal) != terminal_data
         or _r59_canonical_json(cleanup) != cleanup_data
     ):
         raise LedgerError("R59 receipt JSON is not canonical")
     start_sha256 = _sha256(start_data)
+    runtime_sha256 = _sha256(runtime_data)
     cleanup_sha256 = _sha256(cleanup_data)
     if (
         start["schema"] != "hanonly-r59-holdout-start-v1"
@@ -4562,6 +4583,29 @@ def _r59_validate_authorization_values(
         start["pre_holdout_attestation_sha256"],
         "R59 pre-holdout attestation",
     )
+    if (
+        runtime["schema"] != "hanonly.r59.runtime-commitment.v1"
+        or runtime["plan_revision"] != R59_PLAN_REVISION
+        or runtime["b0_sha"] != requested_b0_sha
+        or runtime["start_marker_sha256"] != start_sha256
+        or runtime["successor_commitment_sha256"] != successor_sha256
+        or runtime["ciphertext_sha256"] != original["ciphertext_sha256"]
+        or runtime["private_manifest_commitment_sha256"]
+        != original["private_manifest_commitment_sha256"]
+        or runtime["entry_ids"] != R59_ENTRY_IDS
+        or runtime["decrypt_result"] != "pass"
+        or runtime["package_unchanged"] is not True
+        or runtime["restricted_values_disclosed"] is not False
+        or runtime["state"] != "runtime_committed"
+    ):
+        raise LedgerError("R59 runtime commitment binding or state drift")
+    for key in (
+        "runtime_archive_sha256",
+        "runtime_manifest_sha256",
+        "runtime_oracle_sha256",
+        "runtime_hashes_sha256",
+    ):
+        _validate_hash(runtime[key], f"R59 runtime commitment {key}")
     cells = terminal["cell_results"]
     if not isinstance(cells, list) or len(cells) != len(R59_CELLS):
         raise LedgerError("R59 terminal receipt must contain all eight cells")
@@ -4581,6 +4625,7 @@ def _r59_validate_authorization_values(
         or terminal["first_failed_cell"] is not None
         or terminal["unexecuted_cells"] != []
         or terminal["cleanup_receipt_sha256"] != cleanup_sha256
+        or terminal["runtime_commitment_receipt_sha256"] != runtime_sha256
         or terminal["state"] != "completed_pass"
     ):
         raise LedgerError("R59 terminal receipt binding or state drift")
@@ -4618,6 +4663,7 @@ def _r59_validate_authorization_values(
         "terminal_receipt_sha256": _sha256(terminal_data),
         "cleanup_receipt_sha256": cleanup_sha256,
         "artifact_payload_sha256": terminal["artifact_payload_sha256"],
+        "runtime_commitment_receipt_sha256": runtime_sha256,
         "result": "authorized",
     }
     _require_keys(record, R59_AUTHORIZATION_KEYS, "R59 authorization record")
@@ -4632,6 +4678,7 @@ def _r59_validate_authorization(arguments):
         (R59_ORIGINAL_PUBLIC_COMMITMENT_PATH, "R59 original public commitment"),
         (R59_SUCCESSOR_COMMITMENT_PATH, "R59 successor commitment"),
         (R59_START_MARKER_PATH, "R59 start marker"),
+        (R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"),
         (R59_TERMINAL_RECEIPT_PATH, "R59 terminal receipt"),
         (R59_CLEANUP_RECEIPT_PATH, "R59 cleanup receipt"),
     ):
@@ -4647,6 +4694,8 @@ def _r59_validate_authorization(arguments):
         inputs[3][1],
         inputs[4][0],
         inputs[4][1],
+        inputs[5][0],
+        inputs[5][1],
         arguments.requested_b0_sha,
     )
     return _r59_canonical_json(record) + b"\n"

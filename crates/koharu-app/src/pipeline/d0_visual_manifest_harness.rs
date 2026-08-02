@@ -497,12 +497,13 @@ mod source_gate_selection {
     const R59_SUCCESSOR_COMMITMENT_PATH: &str =
         "/Users/Shared/hanonly-r59-public/r59-successor-commitment.json";
     const R59_START_MARKER_NAME: &str = "r59-holdout-start.json";
+    const R59_RUNTIME_COMMITMENT_NAME: &str = "r59-runtime-commitment.json";
     const R59_TERMINAL_RECEIPT_NAME: &str = "r59-holdout-terminal.json";
     const R59_CLEANUP_RECEIPT_NAME: &str = "r59-cleanup-receipt.json";
     const R59_CONTRACT_SHA256: &str =
-        "47ee4a1f63cb75f3782f21b2f9d3d2b73bc48865a9969a728b242fdc7d24924e";
+        "f3d2f057e2b248e2fcfd4d460afea845cc8c1dbcc7ed2153f54ca2e21ce671d6";
     const R59_TEST_SPEC_SHA256: &str =
-        "55a6e2307ec48cbbbaf6aed7b1944f42a5f310eb0f42e8d229cfe025b2749592";
+        "950b34ec6a3672ba4760429a38dc3b383680d6a97512de32831fdc1422654665";
     const R59_PUBLIC_COMMITMENT_SHA256: &str =
         "d1ec5a35d01d716663df99cf8c4b153fd33b2934008c231813bd73b8f59aa927";
     const R59_PUBLIC_COMMITMENT_JSON: &[u8] = br#"{"B0_SHA":"4c0e0d25d4de3be2809e8c749a6858a1bb724fa4","age_public_recipient":"age1pzaxrtkwu424yrz2s4kck0avakx5y57u2qm2u2h30ya7s4fxaanqst09sw","ciphertext_sha256":"1985675aae9ec857f97e42e3942cd9d0d717563cd384b5d2f642222701376b72","created_at":"2026-08-02T10:25:51.592320Z","opaque_ids":["r59-h01","r59-h02","r59-h03","r59-h04"],"plaintext_cleanup":true,"private_manifest_commitment_sha256":"b9bf0d416d38e4adcd8d34e07666d365e4652582437979d986cdb68bae7e764d","restricted_content_disclosed":false,"schema":"hanonly.r59.public-commitment.v1","start_marker_absent":true}
@@ -598,6 +599,7 @@ mod source_gate_selection {
         freeze: R59FreezeCommitments,
         expected_start_marker_sha256: String,
         open_marker: OnceCell<PublishedArtifact>,
+        runtime_commitment: OnceCell<R59RuntimeCommitments>,
     }
 
     struct R59FreezeCommitments {
@@ -607,11 +609,14 @@ mod source_gate_selection {
         successor_b0_sha: String,
         ciphertext_sha256: String,
         private_manifest_commitment_sha256: String,
+    }
+
+    struct R59RuntimeCommitments {
+        receipt: PublishedArtifact,
         plaintext_archive_sha256: String,
         manifest_sha256: String,
         oracle_sha256: String,
         hashes_sha256: String,
-        private_schema_receipt_sha256: String,
     }
 
     struct R59PublicPaths {
@@ -677,6 +682,7 @@ mod source_gate_selection {
                                 R59_START_MARKER_SHA256_ENV,
                             )?,
                             open_marker: OnceCell::new(),
+                            runtime_commitment: OnceCell::new(),
                         })
                     } else {
                         None
@@ -692,7 +698,7 @@ mod source_gate_selection {
                 .as_ref()
                 .and_then(|custody| custody.holdout.as_ref());
             let visual_manifest_sha256 = match formal_holdout {
-                Some(holdout) => holdout.freeze.manifest_sha256.clone(),
+                Some(holdout) => holdout.freeze.private_manifest_commitment_sha256.clone(),
                 None => {
                     let value = required(&mut get, VISUAL_MANIFEST_SHA256_ENV)?;
                     decode_sha256(&value)?;
@@ -721,7 +727,7 @@ mod source_gate_selection {
             ) = if let Some(holdout) = formal_holdout {
                 (
                     holdout.plaintext_archive.clone(),
-                    holdout.freeze.plaintext_archive_sha256.clone(),
+                    holdout.freeze.ciphertext_sha256.clone(),
                     holdout.plaintext_directory.join("manifest.json"),
                     Vec::new(),
                     r59_entry_ids('h'),
@@ -817,7 +823,7 @@ mod source_gate_selection {
                 .as_ref()
                 .and_then(|custody| custody.holdout.as_ref())
                 .map_or(visual_manifest_sha256.as_str(), |holdout| {
-                    holdout.freeze.manifest_sha256.as_str()
+                    holdout.freeze.private_manifest_commitment_sha256.as_str()
                 });
             let (required_check, required_check_attestation) = load_required_check(
                 &evidence_root,
@@ -1170,7 +1176,7 @@ mod source_gate_selection {
         original_b0_sha: &'a str,
         successor_b0_sha: &'a str,
         private_manifest_commitment_sha256: &'a str,
-        private_schema_receipt_sha256: &'a str,
+        runtime_commitment_receipt_sha256: &'a str,
         plaintext_archive_sha256: &'a str,
         manifest_sha256: &'a str,
         oracle_sha256: &'a str,
@@ -1211,11 +1217,6 @@ mod source_gate_selection {
         selected_candidate_id: String,
         ciphertext_sha256: String,
         private_manifest_commitment_sha256: String,
-        runtime_manifest_sha256: String,
-        runtime_oracle_sha256: String,
-        runtime_hashes_sha256: String,
-        runtime_archive_sha256: String,
-        private_schema_receipt_sha256: String,
         entry_ids: Vec<String>,
         package_unchanged: bool,
         start_marker_absent: bool,
@@ -1233,6 +1234,27 @@ mod source_gate_selection {
         ciphertext_sha256: String,
         pre_holdout_attestation_sha256: String,
         nonce_hex: String,
+        state: String,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct R59RuntimeCommitment {
+        schema: String,
+        plan_revision: u32,
+        b0_sha: String,
+        start_marker_sha256: String,
+        successor_commitment_sha256: String,
+        ciphertext_sha256: String,
+        private_manifest_commitment_sha256: String,
+        runtime_archive_sha256: String,
+        runtime_manifest_sha256: String,
+        runtime_oracle_sha256: String,
+        runtime_hashes_sha256: String,
+        entry_ids: Vec<String>,
+        decrypt_result: String,
+        package_unchanged: bool,
+        restricted_values_disclosed: bool,
         state: String,
     }
 
@@ -1305,7 +1327,7 @@ mod source_gate_selection {
         start_marker_sha256: &'a str,
         ciphertext_sha256: &'a str,
         private_manifest_commitment_sha256: &'a str,
-        private_schema_receipt_sha256: &'a str,
+        runtime_commitment_receipt_sha256: &'a str,
         pre_holdout_attestation_sha256: &'a str,
         holdout_manifest_sha256: &'a str,
         bundle_validation_receipt_path: &'a str,
@@ -1798,6 +1820,7 @@ mod source_gate_selection {
                 let formal_holdout = environment.r59_formal_custody.is_some();
                 if formal_holdout {
                     validate_r59_runner_open(&environment, &artifact.selected_candidate_id)?;
+                    validate_r59_runtime_commitment(&environment)?;
                 }
                 let result = (|| {
                     let evidence = model_runner(&environment)?;
@@ -1835,7 +1858,9 @@ mod source_gate_selection {
                                     .holdout
                                     .as_ref()
                                     .expect("formal holdout custody")
-                                    .freeze
+                                    .runtime_commitment
+                                    .get()
+                                    .expect("validated runtime commitment")
                                     .manifest_sha256
                                     .clone()
                             },
@@ -2038,9 +2063,13 @@ mod source_gate_selection {
             .and_then(|custody| custody.holdout.as_ref())
             .ok_or_else(|| invalid_data("R59 holdout custody is unavailable"))?;
         require(
-            holdout.open_marker.get().is_some(),
-            "R59 start marker must be validated before bundle access",
+            holdout.open_marker.get().is_some() && holdout.runtime_commitment.get().is_some(),
+            "R59 start marker and runtime commitment must be validated before bundle access",
         )?;
+        let runtime = holdout
+            .runtime_commitment
+            .get()
+            .ok_or_else(|| invalid_data("R59 runtime commitment is unavailable"))?;
         require_r59_plaintext_root(&holdout.plaintext_directory)?;
         let archive = HeldInput::open(&holdout.plaintext_archive)?;
         let validated = validate_r59_plaintext_holdout_bundle(
@@ -2048,10 +2077,10 @@ mod source_gate_selection {
             &holdout.plaintext_archive,
             archive.bytes(),
             R59BundleFreezeCommitments {
-                plaintext_archive_sha256: &holdout.freeze.plaintext_archive_sha256,
-                manifest_sha256: &holdout.freeze.manifest_sha256,
-                oracle_sha256: &holdout.freeze.oracle_sha256,
-                hashes_sha256: &holdout.freeze.hashes_sha256,
+                plaintext_archive_sha256: &runtime.plaintext_archive_sha256,
+                manifest_sha256: &runtime.manifest_sha256,
+                oracle_sha256: &runtime.oracle_sha256,
+                hashes_sha256: &runtime.hashes_sha256,
             },
         )?;
         let prepared = prepare_r59_execution_entries(validated.execution)?;
@@ -3283,7 +3312,12 @@ mod source_gate_selection {
             original_b0_sha: &holdout.freeze.original_b0_sha,
             successor_b0_sha: &holdout.freeze.successor_b0_sha,
             private_manifest_commitment_sha256: &holdout.freeze.private_manifest_commitment_sha256,
-            private_schema_receipt_sha256: &holdout.freeze.private_schema_receipt_sha256,
+            runtime_commitment_receipt_sha256: &holdout
+                .runtime_commitment
+                .get()
+                .ok_or_else(|| invalid_data("R59 runtime commitment is unavailable"))?
+                .receipt
+                .sha256,
             plaintext_archive_sha256: &validated.plaintext_archive_sha256,
             manifest_sha256: &validated.manifest_sha256,
             oracle_sha256: &validated.oracle_sha256,
@@ -3380,11 +3414,6 @@ mod source_gate_selection {
             &receipt.calibration_artifact_sha256,
             &receipt.ciphertext_sha256,
             &receipt.private_manifest_commitment_sha256,
-            &receipt.runtime_archive_sha256,
-            &receipt.runtime_manifest_sha256,
-            &receipt.runtime_oracle_sha256,
-            &receipt.runtime_hashes_sha256,
-            &receipt.private_schema_receipt_sha256,
         ] {
             decode_sha256(hash)?;
         }
@@ -3397,11 +3426,6 @@ mod source_gate_selection {
             successor_b0_sha: receipt.successor_b0_sha,
             ciphertext_sha256: receipt.ciphertext_sha256,
             private_manifest_commitment_sha256: receipt.private_manifest_commitment_sha256,
-            plaintext_archive_sha256: receipt.runtime_archive_sha256,
-            manifest_sha256: receipt.runtime_manifest_sha256,
-            oracle_sha256: receipt.runtime_oracle_sha256,
-            hashes_sha256: receipt.runtime_hashes_sha256,
-            private_schema_receipt_sha256: receipt.private_schema_receipt_sha256,
         })
     }
 
@@ -3497,6 +3521,103 @@ mod source_gate_selection {
                 byte_length: bytes.len() as u64,
             })
             .map_err(|_| invalid_data("R59 start marker was already consumed"))
+    }
+
+    fn validate_r59_runtime_commitment(environment: &SelectionEnvironment) -> io::Result<()> {
+        let holdout = environment
+            .r59_formal_custody
+            .as_ref()
+            .and_then(|custody| custody.holdout.as_ref())
+            .ok_or_else(|| invalid_data("R59 holdout custody is unavailable"))?;
+        require(
+            holdout.runtime_commitment.get().is_none(),
+            "R59 runtime commitment was already consumed",
+        )?;
+        let marker = holdout
+            .open_marker
+            .get()
+            .ok_or_else(|| invalid_data("R59 start marker must precede runtime commitment"))?;
+        let custody = R59HeldDirectory::open(&holdout.directory)?;
+        let descriptor = openat(
+            custody.descriptor.as_fd(),
+            R59_RUNTIME_COMMITMENT_NAME,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+        let metadata = r59_descriptor_metadata(descriptor.as_fd())?;
+        require(
+            metadata.file_type.is_file()
+                && metadata.owner == effective_owner()?
+                && metadata.mode & 0o7777 == 0o600,
+            "R59 runtime commitment metadata is invalid",
+        )?;
+        let mut file = fs::File::from(descriptor);
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let receipt: R59RuntimeCommitment = serde_json::from_slice(&bytes)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            canonical_json(&receipt)? == bytes
+                && receipt.schema == "hanonly.r59.runtime-commitment.v1"
+                && receipt.plan_revision == PLAN_REVISION
+                && receipt.b0_sha == environment.b0_sha
+                && receipt.start_marker_sha256 == marker.sha256
+                && receipt.successor_commitment_sha256 == holdout.freeze.receipt_sha256
+                && receipt.ciphertext_sha256 == holdout.freeze.ciphertext_sha256
+                && receipt.private_manifest_commitment_sha256
+                    == holdout.freeze.private_manifest_commitment_sha256
+                && receipt.entry_ids == r59_entry_ids('h')
+                && receipt.decrypt_result == "pass"
+                && receipt.package_unchanged
+                && !receipt.restricted_values_disclosed
+                && receipt.state == "runtime_committed",
+            "R59 runtime commitment binding drift",
+        )?;
+        for hash in [
+            &receipt.start_marker_sha256,
+            &receipt.successor_commitment_sha256,
+            &receipt.ciphertext_sha256,
+            &receipt.private_manifest_commitment_sha256,
+            &receipt.runtime_archive_sha256,
+            &receipt.runtime_manifest_sha256,
+            &receipt.runtime_oracle_sha256,
+            &receipt.runtime_hashes_sha256,
+        ] {
+            decode_sha256(hash)?;
+        }
+        let fresh = custody.revalidate_descriptor()?;
+        let named = statat(
+            fresh.as_fd(),
+            R59_RUNTIME_COMMITMENT_NAME,
+            AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(io::Error::from)?;
+        require(
+            metadata
+                == R59DescriptorMetadata {
+                    dev: named.st_dev as u64,
+                    ino: named.st_ino,
+                    owner: named.st_uid.into(),
+                    mode: named.st_mode.into(),
+                    file_type: FileType::from_raw_mode(named.st_mode),
+                },
+            "R59 runtime commitment namespace changed",
+        )?;
+        holdout
+            .runtime_commitment
+            .set(R59RuntimeCommitments {
+                receipt: PublishedArtifact {
+                    path: R59_RUNTIME_COMMITMENT_NAME.into(),
+                    sha256: sha256_hex(&bytes),
+                    byte_length: bytes.len() as u64,
+                },
+                plaintext_archive_sha256: receipt.runtime_archive_sha256,
+                manifest_sha256: receipt.runtime_manifest_sha256,
+                oracle_sha256: receipt.runtime_oracle_sha256,
+                hashes_sha256: receipt.runtime_hashes_sha256,
+            })
+            .map_err(|_| invalid_data("R59 runtime commitment was already consumed"))
     }
 
     fn validate_r59_custody_entry_state(directory: BorrowedFd<'_>) -> io::Result<()> {
@@ -4080,7 +4201,8 @@ mod source_gate_selection {
                 .r59_formal_custody
                 .as_ref()
                 .and_then(|custody| custody.holdout.as_ref())
-                .map(|holdout| holdout.freeze.manifest_sha256.as_str()),
+                .and_then(|holdout| holdout.runtime_commitment.get())
+                .map(|runtime| runtime.manifest_sha256.as_str()),
             "fixture_manifest_sha256": &environment.source_gate_fixture_manifest_sha256,
             "phase": phase,
             "entry_id": &result.entry_id,
@@ -4277,12 +4399,12 @@ mod source_gate_selection {
                 && result.entry_id == schema.id,
             "invalid R59 formal cell context",
         )?;
-        let custody = &environment
+        let custody = environment
             .r59_formal_custody
             .as_ref()
             .and_then(|custody| custody.holdout.as_ref())
-            .ok_or_else(|| invalid_data("R59 holdout custody is unavailable"))?
-            .freeze;
+            .and_then(|holdout| holdout.runtime_commitment.get())
+            .ok_or_else(|| invalid_data("R59 runtime commitment is unavailable"))?;
         let device = process.requested_device.as_str();
         let cell_key = format!(
             "holdout/{}/{device}/{}",
@@ -4318,7 +4440,7 @@ mod source_gate_selection {
             "plan_revision": PLAN_REVISION,
             "b0_sha": &environment.b0_sha,
             "cell_key": &cell_key,
-            "manifest_sha256": &environment.visual_manifest_sha256,
+            "manifest_sha256": &custody.manifest_sha256,
             "selection_result": &result,
             "target_recall": &recall,
             "pp_han_count": result.derived.source_coverage_preflight.pp_han_scalar_count,
@@ -5127,6 +5249,10 @@ mod source_gate_selection {
             .open_marker
             .get()
             .ok_or_else(|| invalid_data("R59 runner open marker was not validated"))?;
+        let runtime = holdout
+            .runtime_commitment
+            .get()
+            .ok_or_else(|| invalid_data("R59 runtime commitment was not validated"))?;
         let (previous, mut records) =
             read_r59_calibration_terminal(environment, calibration_manifest_sha256)?;
         let terminal_generation = 64 + formal.cells.len() as u64 * 2;
@@ -5137,7 +5263,7 @@ mod source_gate_selection {
             Some(previous),
             &mut records,
             calibration_manifest_sha256,
-            Some(&holdout.freeze.manifest_sha256),
+            Some(&runtime.manifest_sha256),
             Some(bundle),
         )?;
         let generation_bytes = fs::read(
@@ -5171,9 +5297,18 @@ mod source_gate_selection {
             start_marker_sha256: &open_marker.sha256,
             ciphertext_sha256: &holdout.freeze.ciphertext_sha256,
             private_manifest_commitment_sha256: &holdout.freeze.private_manifest_commitment_sha256,
-            private_schema_receipt_sha256: &holdout.freeze.private_schema_receipt_sha256,
+            runtime_commitment_receipt_sha256: &holdout
+                .runtime_commitment
+                .get()
+                .ok_or_else(|| invalid_data("R59 runtime commitment is unavailable"))?
+                .receipt
+                .sha256,
             pre_holdout_attestation_sha256: &environment.required_check.attestation_sha256,
-            holdout_manifest_sha256: &holdout.freeze.manifest_sha256,
+            holdout_manifest_sha256: &holdout
+                .runtime_commitment
+                .get()
+                .ok_or_else(|| invalid_data("R59 runtime commitment is unavailable"))?
+                .manifest_sha256,
             bundle_validation_receipt_path: &bundle_path,
             bundle_validation_receipt_sha256: &bundle.sha256,
             bundle_validation_receipt_byte_length: bundle.byte_length,
@@ -5488,8 +5623,9 @@ mod source_gate_selection {
                     .r59_formal_custody
                     .as_ref()
                     .and_then(|custody| custody.holdout.as_ref())
-                    .map_or(environment.visual_manifest_sha256.as_str(), |holdout| {
-                        holdout.freeze.manifest_sha256.as_str()
+                    .and_then(|holdout| holdout.runtime_commitment.get())
+                    .map_or(environment.visual_manifest_sha256.as_str(), |runtime| {
+                        runtime.manifest_sha256.as_str()
                     });
                 artifact.holdout_manifest_sha256.as_deref() == Some(expected_manifest)
                     && artifact.holdout_entry_ids == r59_entry_ids('h')
@@ -6281,11 +6417,6 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 "selected_candidate_id": "S25L4",
                 "ciphertext_sha256": "1985675aae9ec857f97e42e3942cd9d0d717563cd384b5d2f642222701376b72",
                 "private_manifest_commitment_sha256": "b9bf0d416d38e4adcd8d34e07666d365e4652582437979d986cdb68bae7e764d",
-                "runtime_manifest_sha256": values.get(VISUAL_MANIFEST_SHA256_ENV).unwrap(),
-                "runtime_oracle_sha256": synthetic_hash(25),
-                "runtime_hashes_sha256": synthetic_hash(26),
-                "runtime_archive_sha256": synthetic_hash(24),
-                "private_schema_receipt_sha256": synthetic_hash(27),
                 "entry_ids": r59_entry_ids('h'),
                 "package_unchanged": true,
                 "start_marker_absent": true,
@@ -6309,7 +6440,11 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             root,
             phase,
             values.get(B0_SHA_ENV).unwrap(),
-            values.get(VISUAL_MANIFEST_SHA256_ENV).unwrap(),
+            if phase == Phase::Holdout {
+                "b9bf0d416d38e4adcd8d34e07666d365e4652582437979d986cdb68bae7e764d"
+            } else {
+                values.get(VISUAL_MANIFEST_SHA256_ENV).unwrap()
+            },
             values.get(SOURCE_GATE_FIXTURE_SHA256_ENV).unwrap(),
         );
         values.insert(
@@ -6337,6 +6472,29 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             fs::write(&open, &bytes).unwrap();
             fs::set_permissions(&open, fs::Permissions::from_mode(0o600)).unwrap();
             values.insert(R59_START_MARKER_SHA256_ENV, sha256_hex(&bytes));
+            let runtime = R59RuntimeCommitment {
+                schema: "hanonly.r59.runtime-commitment.v1".into(),
+                plan_revision: PLAN_REVISION,
+                b0_sha: values.get(B0_SHA_ENV).unwrap().clone(),
+                start_marker_sha256: sha256_hex(&bytes),
+                successor_commitment_sha256: sha256_file(&receipt).unwrap(),
+                ciphertext_sha256:
+                    "1985675aae9ec857f97e42e3942cd9d0d717563cd384b5d2f642222701376b72".into(),
+                private_manifest_commitment_sha256:
+                    "b9bf0d416d38e4adcd8d34e07666d365e4652582437979d986cdb68bae7e764d".into(),
+                runtime_archive_sha256: synthetic_hash(24),
+                runtime_manifest_sha256: values.get(VISUAL_MANIFEST_SHA256_ENV).unwrap().clone(),
+                runtime_oracle_sha256: synthetic_hash(25),
+                runtime_hashes_sha256: synthetic_hash(26),
+                entry_ids: r59_entry_ids('h'),
+                decrypt_result: "pass".into(),
+                package_unchanged: true,
+                restricted_values_disclosed: false,
+                state: "runtime_committed".into(),
+            };
+            let runtime_path = custody.join(R59_RUNTIME_COMMITMENT_NAME);
+            fs::write(&runtime_path, canonical_json(&runtime).unwrap()).unwrap();
+            fs::set_permissions(&runtime_path, fs::Permissions::from_mode(0o600)).unwrap();
         }
         values
     }
@@ -6382,6 +6540,10 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let root = fs::canonicalize(temp.path()).unwrap();
         let values = formal_environment(&root, Phase::Holdout);
         assert!(validate_test_successor(&values).is_ok());
+        rewrite_successor(&values, |value| {
+            value["runtime_manifest_sha256"] = serde_json::Value::String(synthetic_hash(1));
+        });
+        assert!(validate_test_successor(&values).is_err());
     }
 
     #[test]
@@ -7391,6 +7553,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let incomplete_values = formal_environment(&incomplete_root, Phase::Holdout);
         let incomplete = parse_test_environment(&incomplete_values).unwrap();
         validate_r59_runner_open(&incomplete, "S25L4").unwrap();
+        validate_r59_runtime_commitment(&incomplete).unwrap();
         let seven = synthetic_formal_run(
             expected[..7]
                 .iter()
@@ -7419,6 +7582,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let failure_values = formal_environment(&failure_root, Phase::Holdout);
         let failure = parse_test_environment(&failure_values).unwrap();
         validate_r59_runner_open(&failure, "S25L4").unwrap();
+        validate_r59_runtime_commitment(&failure).unwrap();
         let failed = synthetic_formal_run(vec![synthetic_formal_cell(
             &expected[0].0,
             expected[0].1,
@@ -7445,6 +7609,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let pass_values = formal_environment(&pass_root, Phase::Holdout);
         let pass = parse_test_environment(&pass_values).unwrap();
         validate_r59_runner_open(&pass, "S25L4").unwrap();
+        validate_r59_runtime_commitment(&pass).unwrap();
         let complete = synthetic_formal_run(
             expected
                 .iter()
@@ -7722,6 +7887,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let environment = parse_test_environment(&values).unwrap();
 
         validate_r59_runner_open(&environment, "S25L4").unwrap();
+        validate_r59_runtime_commitment(&environment).unwrap();
         let custody = environment
             .r59_formal_custody
             .as_ref()
@@ -7736,9 +7902,63 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 & 0o777,
             0o600
         );
+        assert_eq!(
+            custody.runtime_commitment.get().unwrap().manifest_sha256,
+            values[VISUAL_MANIFEST_SHA256_ENV]
+        );
         assert!(validate_r59_runner_open(&environment, "S25L4").is_err());
+        assert!(validate_r59_runtime_commitment(&environment).is_err());
         assert!(!custody.directory.join(R59_TERMINAL_RECEIPT_NAME).exists());
         assert!(!custody.directory.join(R59_CLEANUP_RECEIPT_NAME).exists());
+    }
+
+    #[test]
+    fn r59_runtime_commitment_requires_marker_and_exact_corpus_binding() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let values = formal_environment(&root, Phase::Holdout);
+        let environment = parse_test_environment(&values).unwrap();
+        assert!(validate_r59_runtime_commitment(&environment).is_err());
+        for (field, value) in [
+            ("b0_sha", serde_json::Value::String("b".repeat(40))),
+            (
+                "start_marker_sha256",
+                serde_json::Value::String(synthetic_hash(61)),
+            ),
+            (
+                "successor_commitment_sha256",
+                serde_json::Value::String(synthetic_hash(62)),
+            ),
+            (
+                "ciphertext_sha256",
+                serde_json::Value::String(synthetic_hash(63)),
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = fs::canonicalize(temp.path()).unwrap();
+            let values = formal_environment(&root, Phase::Holdout);
+            let environment = parse_test_environment(&values).unwrap();
+            validate_r59_runner_open(&environment, "S25L4").unwrap();
+            let runtime_path = PathBuf::from(values.get(R59_CUSTODY_DIRECTORY_ENV).unwrap())
+                .join(R59_RUNTIME_COMMITMENT_NAME);
+            let mut runtime: serde_json::Value =
+                serde_json::from_slice(&fs::read(&runtime_path).unwrap()).unwrap();
+            runtime[field] = value;
+            fs::write(&runtime_path, canonical_json(&runtime).unwrap()).unwrap();
+            assert!(validate_r59_runtime_commitment(&environment).is_err());
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let values = formal_environment(&root, Phase::Holdout);
+        let environment = parse_test_environment(&values).unwrap();
+        validate_r59_runner_open(&environment, "S25L4").unwrap();
+        fs::remove_file(
+            PathBuf::from(values.get(R59_CUSTODY_DIRECTORY_ENV).unwrap())
+                .join(R59_RUNTIME_COMMITMENT_NAME),
+        )
+        .unwrap();
+        assert!(validate_r59_runtime_commitment(&environment).is_err());
     }
 
     #[test]
@@ -7777,6 +7997,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let values = formal_environment(&root, Phase::Holdout);
         let environment = parse_test_environment(&values).unwrap();
         validate_r59_runner_open(&environment, "S25L4").unwrap();
+        validate_r59_runtime_commitment(&environment).unwrap();
         let bundle = publish_r59_artifact(
             &environment,
             "r59/bundle-validation.json",

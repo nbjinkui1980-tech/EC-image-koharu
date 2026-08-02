@@ -1264,6 +1264,18 @@ process.stdout.write('{"result":"pass"}\\n')
     expect(
       await runCli(['--validate-r59-b0-authorization', '--requested-b0-sha', 'a'.repeat(40)], env),
     ).toEqual({ exitCode: 0, stdout: '{"result":"pass"}\n', stderr: '' })
+    const callerRuntimeHash = await runCli(
+      [
+        '--validate-r59-b0-preflight',
+        '--requested-b0-sha',
+        'a'.repeat(40),
+        '--runtime-commitment-sha256',
+        'b'.repeat(64),
+      ],
+      env,
+    )
+    expect(callerRuntimeHash.exitCode).not.toBe(0)
+    expect(callerRuntimeHash.stderr).toStartWith('FAIL [r59-argv]:')
 
     const retired = await runCli(
       ['--write-r51-b0-preflight-attestation', '--b0-sha', 'a'.repeat(40)],
