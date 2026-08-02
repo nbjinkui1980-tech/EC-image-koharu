@@ -1356,6 +1356,72 @@ process.exit(${exitCode})
     expect(await readFile(spawnLog, 'utf8')).toBe('python3\n')
   })
 
+  test.each([
+    ['--project-r52-calibration-manifest', 'project-r52-calibration-manifest'],
+    ['--write-r52-b0-preflight-attestation', 'write-r52-b0-preflight-attestation'],
+    ['--write-r52-r51-holdout-adoption', 'write-r52-r51-holdout-adoption'],
+    ['--run-r52-challenge', 'run-r52-challenge'],
+    ['--run-r52-holdout', 'run-r52-holdout'],
+    ['--validate-r52-b0-authorization', 'validate-r52-b0-authorization'],
+  ])('wires %s only to its R52 ledger endpoint', async (flag, endpoint) => {
+    const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-r52-')))
+    temporaryRoots.push(temporaryRoot)
+    const bin = path.join(temporaryRoot, 'bin')
+    const argvLog = path.join(temporaryRoot, 'argv.json')
+    await mkdir(bin)
+    const shim = path.join(bin, 'python3')
+    await writeFile(
+      shim,
+      `#!${process.execPath}
+import { writeFileSync } from 'node:fs'
+writeFileSync(process.env.HANONLY_R52_ARGV_LOG, JSON.stringify(process.argv.slice(2)))
+process.stdout.write("R52\\n")
+`,
+      { mode: 0o700 },
+    )
+    await chmod(shim, 0o700)
+
+    const result = await runCli([flag], {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      HANONLY_R52_ARGV_LOG: argvLog,
+    })
+
+    expect(result).toEqual({ exitCode: 0, stdout: 'R52\n', stderr: '' })
+    const argv = JSON.parse(await readFile(argvLog, 'utf8')) as string[]
+    expect(argv.slice(0, 3)).toEqual([
+      'scripts/hanonly_evidence_ledger.py',
+      endpoint,
+      '--repo-root',
+    ])
+    expect(argv).not.toContain('validate-r51-b0-authorization')
+  })
+
+  test('rejects caller-controlled repo roots on every R52 endpoint', async () => {
+    for (const flag of [
+      '--project-r52-calibration-manifest',
+      '--write-r52-b0-preflight-attestation',
+      '--write-r52-r51-holdout-adoption',
+      '--run-r52-challenge',
+      '--run-r52-holdout',
+      '--validate-r52-b0-authorization',
+    ]) {
+      const result = await runCli([flag, '--repo-root', '/tmp'])
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr).toStartWith('FAIL [r52-argv]:')
+    }
+  })
+
+  test.each(['--run-r52-challenge', '--run-r52-holdout'])(
+    'rejects arbitrary runner control for %s',
+    async (flag) => {
+      for (const option of ['--command', '--argv', '--runner', '--environment', '--env']) {
+        const result = await runCli([flag, option, '/tmp/caller-controlled'])
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr).toStartWith('FAIL [r52-argv]:')
+      }
+    },
+  )
+
   test('uses the exact cargo metadata argv and prints only PASS on success', async () => {
     const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-cli-')))
     temporaryRoots.push(temporaryRoot)

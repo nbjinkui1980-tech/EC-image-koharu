@@ -476,6 +476,20 @@ mod source_gate_selection {
     const R51_CALIBRATION_MANIFEST_SHA256_ENV: &str = "HANONLY_R51_CALIBRATION_MANIFEST_SHA256";
     const R51_OPEN_MARKER_SHA256_ENV: &str = "HANONLY_R51_OPEN_MARKER_SHA256";
     const R51_COMPLETION_SUMMARY_STDOUT_PREFIX: &str = "HANONLY_R51_COMPLETION_SUMMARY=";
+    const R52_BRIDGE_REQUEST_ENV: &str = "HANONLY_R52_BRIDGE_REQUEST";
+    const R52_PLAN_REVISION: u32 = 52;
+    const R52_CHALLENGE_MANIFEST: &str =
+        "/Users/jinkui/ec-image-Koharu/hanonly-r51-challenge/challenge-manifest.json";
+    const R52_CHALLENGE_MANIFEST_SHA256: &str =
+        "88fc92474502514d29b09e9863a4907d89adaeab7e67808a7e1890e5835d86b6";
+    const R52_CHALLENGE_HASHES: &str =
+        "/Users/jinkui/ec-image-Koharu/hanonly-r51-challenge/challenge-hashes.json";
+    const R52_CHALLENGE_HASHES_SHA256: &str =
+        "07ce42c60d6f6c7f7c2ea27b9ca9e13afc4edbf458ad4b359af7e16baf4822bb";
+    const R49_VISUAL_MANIFEST: &str =
+        "/Users/jinkui/ec-image-Koharu/hanonly-r49-corpus/evidence-assets/visual-manifest.json";
+    const R49_VISUAL_MANIFEST_SHA256: &str =
+        "fe7e4782fe7dfeaa953e0fc538509f53b287d023328c518dd8ac8b27e690945c";
     const B0_SHA_ENV: &str = "HANONLY_B0_SHA";
     const ARTIFACT_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT";
     const REPORT_DIR_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR";
@@ -551,6 +565,7 @@ mod source_gate_selection {
         holdout_entry_ids: Vec<String>,
         required_check: RequiredCheck,
         required_check_attestation: HeldInput,
+        selected_candidate_override: Option<String>,
     }
 
     struct R51FormalCustody {
@@ -779,6 +794,7 @@ mod source_gate_selection {
                 holdout_entry_ids,
                 required_check,
                 required_check_attestation,
+                selected_candidate_override: None,
             })
         }
     }
@@ -980,6 +996,122 @@ mod source_gate_selection {
         path: String,
         sha256: String,
         byte_length: u64,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct R52BridgeRequest {
+        contract: String,
+        plan_revision: u32,
+        mode: String,
+        b0_sha: String,
+        repo_root: PathBuf,
+        evidence_root: PathBuf,
+        result_path: PathBuf,
+        selected_candidate_id: String,
+        challenge_manifest_path: PathBuf,
+        challenge_manifest_sha256: String,
+        challenge_hash_record_path: PathBuf,
+        challenge_hash_record_sha256: String,
+        r49_visual_manifest_path: PathBuf,
+        r49_visual_manifest_sha256: String,
+        source_gate_fixture_manifest_sha256: String,
+        calibration_selection_artifact_path: PathBuf,
+        b0_preflight_attestation_path: PathBuf,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct R52ChallengeManifest {
+        contract: String,
+        entries: Vec<R52ChallengeManifestEntry>,
+        oracle_corrections: Vec<R52OracleCorrection>,
+        plan_revision: u32,
+        role: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct R52ChallengeManifestEntry {
+        id: String,
+        notes_path: Option<PathBuf>,
+        notes_sha256: Option<String>,
+        prior_role: String,
+        source_path: PathBuf,
+        source_sha256: String,
+    }
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    #[serde(deny_unknown_fields)]
+    struct R52OracleCorrection {
+        entry_id: String,
+        expected_decision: String,
+        expected_rejection_reason: String,
+        r49_corpus_immutable: bool,
+        source_script_class: String,
+        target_id: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct R52ChallengeHashRecord {
+        contract: String,
+        manifest_sha256: String,
+        plan_revision: u32,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct R52SupplementalNote {
+        id: String,
+        role: String,
+        width: u32,
+        height: u32,
+        multi_node: bool,
+        protected_rois: Vec<[u64; 4]>,
+        targets: Vec<R52SupplementalTarget>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct R52SupplementalTarget {
+        id: String,
+        source_roi: [u64; 4],
+        clean_reference_edit_roi: [u64; 4],
+        erase_source_ink_mask_path: PathBuf,
+        residual_source_ink_mask_path: PathBuf,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct R52ChallengeCell {
+        ordinal: usize,
+        entry_id: String,
+        device: String,
+        kind: String,
+        candidate_id: String,
+        selection_result_path: String,
+        selection_result_sha256: String,
+        target_recall: Option<R51TargetRecall>,
+        pp_count: usize,
+        vl_count: usize,
+        rejection_reason: Option<String>,
+        diagnostic_path: String,
+        diagnostic_sha256: String,
+        process_evidence_path: String,
+        process_evidence_sha256: String,
+        log_path: String,
+        log_sha256: String,
+        result: &'static str,
+    }
+
+    #[derive(Debug, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct R52BridgeResult<'a> {
+        contract: &'static str,
+        plan_revision: u32,
+        b0_sha: &'a str,
+        selected_candidate_id: &'a str,
+        ordered_cell_results: &'a [R52ChallengeCell],
+        result: &'static str,
     }
 
     #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -1753,6 +1885,807 @@ mod source_gate_selection {
         oracle: &'a OracleValidatedEntry,
     }
 
+    struct R52OwnedChallengeEntry {
+        schema: VisualManifestEntry,
+        source: RgbaImage,
+        oracle: OracleValidatedEntry,
+        held_source: HeldInput,
+        held_note: HeldInput,
+    }
+
+    fn load_r52_bridge_request_path(
+        request_path: PathBuf,
+    ) -> io::Result<(PathBuf, HeldInput, R52BridgeRequest)> {
+        require_absolute_canonical(&request_path)?;
+        let held = HeldInput::open_bounded(&request_path, BYTE_CEILING)?;
+        held.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
+        let request: R52BridgeRequest = serde_json::from_slice(held.bytes())
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            canonical_json(&request)? == held.bytes(),
+            "R52 bridge request is not canonical JSON",
+        )?;
+        Ok((request_path, held, request))
+    }
+
+    fn load_r52_bridge_request() -> io::Result<(PathBuf, HeldInput, R52BridgeRequest)> {
+        load_r52_bridge_request_path(PathBuf::from(
+            std::env::var(R52_BRIDGE_REQUEST_ENV)
+                .map_err(|_| invalid_data("missing R52 bridge request path"))?,
+        ))
+    }
+
+    fn validate_r52_bridge_request(
+        request_path: &Path,
+        request: &R52BridgeRequest,
+    ) -> io::Result<()> {
+        require(
+            request.contract == "hanonly-r52-evidence-bridge-request-v1"
+                && request.plan_revision == R52_PLAN_REVISION
+                && request.mode == "challenge",
+            "R52 bridge request contract drift",
+        )?;
+        require(
+            request.b0_sha.len() == 40
+                && request
+                    .b0_sha
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "R52 bridge B0 sha drift",
+        )?;
+        for hash in [
+            &request.challenge_manifest_sha256,
+            &request.challenge_hash_record_sha256,
+            &request.r49_visual_manifest_sha256,
+            &request.source_gate_fixture_manifest_sha256,
+        ] {
+            decode_sha256(hash)?;
+        }
+        for path in [
+            &request.repo_root,
+            &request.evidence_root,
+            &request.challenge_manifest_path,
+            &request.challenge_hash_record_path,
+            &request.r49_visual_manifest_path,
+            &request.calibration_selection_artifact_path,
+            &request.b0_preflight_attestation_path,
+        ] {
+            require_absolute_canonical(path)?;
+        }
+        require_future_path_below(&request.evidence_root, &request.result_path)?;
+        require(
+            request_path.parent() == Some(request.evidence_root.as_path())
+                && request.result_path.parent() == Some(request.evidence_root.as_path())
+                && request.result_path != request_path
+                && request
+                    .result_path
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|name| {
+                        name.starts_with(".r52-challenge-result-") && name.ends_with(".tmp")
+                    }),
+            "R52 bridge request/result path binding drift",
+        )?;
+        require(
+            request.repo_root == repository_root()?
+                && git_head(&request.repo_root)? == request.b0_sha,
+            "R52 bridge executable worktree lineage drift",
+        )?;
+        let fixture = request.repo_root.join(FIXTURE_RELATIVE_PATH);
+        require(
+            sha256_file(&fixture)? == request.source_gate_fixture_manifest_sha256,
+            "R52 bridge Source Gate fixture hash drift",
+        )?;
+        let selection = HeldInput::open(&request.calibration_selection_artifact_path)?;
+        selection.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
+        let artifact: FrozenArtifact = serde_json::from_slice(selection.bytes())
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            artifact.plan_revision == PLAN_REVISION
+                && artifact.b0_sha == request.b0_sha
+                && artifact.selected_candidate_id == request.selected_candidate_id
+                && artifact.source_gate_fixture_manifest_sha256
+                    == request.source_gate_fixture_manifest_sha256,
+            "R52 bridge frozen selection binding drift",
+        )?;
+        let preflight = HeldInput::open(&request.b0_preflight_attestation_path)?;
+        preflight.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
+        let preflight_value: serde_json::Value = serde_json::from_slice(preflight.bytes())
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        let executable = fs::canonicalize(std::env::current_exe()?)?;
+        let executable_sha256 = sha256_file(&executable)?;
+        require(
+            canonical_json(&preflight_value)? == preflight.bytes()
+                && preflight_value
+                    .get("plan_revision")
+                    .and_then(|value| value.as_u64())
+                    == Some(R52_PLAN_REVISION.into())
+                && preflight_value
+                    .get("b0_sha")
+                    .and_then(|value| value.as_str())
+                    == Some(request.b0_sha.as_str())
+                && preflight_value
+                    .get("result")
+                    .and_then(|value| value.as_str())
+                    == Some("pass")
+                && preflight_value
+                    .get("evidence_test_executable_path")
+                    .and_then(|value| value.as_str())
+                    == executable.to_str()
+                && preflight_value
+                    .get("evidence_test_executable_sha256")
+                    .and_then(|value| value.as_str())
+                    == Some(executable_sha256.as_str()),
+            "R52 bridge preflight binding drift",
+        )
+    }
+
+    fn load_r52_challenge_manifest(
+        request: &R52BridgeRequest,
+    ) -> io::Result<(HeldInput, R52ChallengeManifest)> {
+        require(
+            request.mode == "challenge"
+                && request.challenge_manifest_path == Path::new(R52_CHALLENGE_MANIFEST)
+                && request.challenge_manifest_sha256 == R52_CHALLENGE_MANIFEST_SHA256
+                && request.challenge_hash_record_path == Path::new(R52_CHALLENGE_HASHES)
+                && request.challenge_hash_record_sha256 == R52_CHALLENGE_HASHES_SHA256
+                && request.r49_visual_manifest_path == Path::new(R49_VISUAL_MANIFEST)
+                && request.r49_visual_manifest_sha256 == R49_VISUAL_MANIFEST_SHA256,
+            "R52 challenge frozen path/hash binding drift",
+        )?;
+        let manifest = HeldInput::open(&request.challenge_manifest_path)?;
+        manifest.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
+        require(
+            sha256_hex(manifest.bytes()) == request.challenge_manifest_sha256,
+            "R52 challenge manifest hash drift",
+        )?;
+        let value: R52ChallengeManifest = serde_json::from_slice(manifest.bytes())
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            canonical_json(
+                &serde_json::from_slice::<serde_json::Value>(manifest.bytes())
+                    .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?,
+            )? == manifest.bytes(),
+            "R52 challenge manifest is not canonical JSON",
+        )?;
+        let expected_ids = [
+            "r49-h01", "r49-h02", "r49-h03", "r49-h04", "x01", "x02", "x03", "x04", "x05",
+        ];
+        require(
+            value.contract == "hanonly-r51-disclosed-challenge-manifest-v1"
+                && value.plan_revision == PLAN_REVISION
+                && value.role == "challenge"
+                && value
+                    .entries
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .eq(expected_ids)
+                && value.oracle_corrections
+                    == [R52OracleCorrection {
+                        entry_id: "r49-h04".into(),
+                        expected_decision: "reject".into(),
+                        expected_rejection_reason: "pp_no_han_protected_latin".into(),
+                        r49_corpus_immutable: true,
+                        source_script_class: "protected_latin".into(),
+                        target_id: "product-id".into(),
+                    }],
+            "R52 challenge manifest schema/order drift",
+        )?;
+        for (ordinal, entry) in value.entries.iter().enumerate() {
+            require_absolute_canonical(&entry.source_path)?;
+            decode_sha256(&entry.source_sha256)?;
+            require(
+                entry.prior_role
+                    == if ordinal < 4 {
+                        "r49_disclosed_holdout"
+                    } else {
+                        "r49_disclosed_challenge"
+                    },
+                "R52 challenge prior role drift",
+            )?;
+            if ordinal < 4 {
+                require(
+                    entry.notes_path.is_none() && entry.notes_sha256.is_none(),
+                    "R52 regression challenge unexpectedly has notes",
+                )?;
+            } else {
+                let note_path = entry
+                    .notes_path
+                    .as_ref()
+                    .ok_or_else(|| invalid_data("R52 supplemental notes are missing"))?;
+                require_absolute_canonical(note_path)?;
+                decode_sha256(
+                    entry
+                        .notes_sha256
+                        .as_deref()
+                        .ok_or_else(|| invalid_data("R52 supplemental notes hash is missing"))?,
+                )?;
+            }
+        }
+        let hashes = HeldInput::open(&request.challenge_hash_record_path)?;
+        hashes.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
+        require(
+            sha256_hex(hashes.bytes()) == request.challenge_hash_record_sha256,
+            "R52 challenge hash-record hash drift",
+        )?;
+        let hashes_value: R52ChallengeHashRecord = serde_json::from_slice(hashes.bytes())
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            hashes_value.contract == "hanonly-r51-disclosed-challenge-hashes-v1"
+                && hashes_value.plan_revision == PLAN_REVISION
+                && hashes_value.manifest_sha256 == request.challenge_manifest_sha256,
+            "R52 challenge hash-record binding drift",
+        )?;
+        Ok((manifest, value))
+    }
+
+    fn checked_r52_rect(
+        rect: [u64; 4],
+        width: u32,
+        height: u32,
+    ) -> io::Result<ValidatedHalfOpenRect> {
+        let [left, top, right, bottom] = rect;
+        require(
+            left < right
+                && top < bottom
+                && right <= u64::from(width)
+                && bottom <= u64::from(height)
+                && right <= u64::from(u32::MAX)
+                && bottom <= u64::from(u32::MAX),
+            "R52 supplemental rectangle drift",
+        )?;
+        Ok(ValidatedHalfOpenRect {
+            left: left as u32,
+            top: top as u32,
+            right: right as u32,
+            bottom: bottom as u32,
+        })
+    }
+
+    fn load_r52_supplemental_entry(
+        manifest_entry: &R52ChallengeManifestEntry,
+    ) -> io::Result<R52OwnedChallengeEntry> {
+        let held_source = HeldInput::open_bounded(&manifest_entry.source_path, BYTE_CEILING)?;
+        held_source.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
+        require(
+            sha256_hex(held_source.bytes()) == manifest_entry.source_sha256,
+            "R52 supplemental source hash drift",
+        )?;
+        let note_path = manifest_entry
+            .notes_path
+            .as_ref()
+            .ok_or_else(|| invalid_data("R52 supplemental note path is missing"))?;
+        let held_note = HeldInput::open_bounded(note_path, BYTE_CEILING)?;
+        held_note.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
+        require(
+            sha256_hex(held_note.bytes())
+                == manifest_entry
+                    .notes_sha256
+                    .as_deref()
+                    .ok_or_else(|| invalid_data("R52 supplemental note hash is missing"))?,
+            "R52 supplemental note hash drift",
+        )?;
+        let note: R52SupplementalNote = serde_json::from_slice(held_note.bytes())
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            note.id == format!("r49-{}", manifest_entry.id)
+                && note.role == "challenge"
+                && !note.targets.is_empty(),
+            "R52 supplemental note identity drift",
+        )?;
+        let source = image::load_from_memory(held_source.bytes())
+            .map_err(io::Error::other)?
+            .to_rgba8();
+        require(
+            source.dimensions() == (note.width, note.height),
+            "R52 supplemental source dimensions drift",
+        )?;
+        let mut targets = Vec::with_capacity(note.targets.len());
+        let mut oracle_targets = Vec::with_capacity(note.targets.len());
+        for target in note.targets {
+            let source_roi = checked_r52_rect(target.source_roi, note.width, note.height)?;
+            let edit_roi =
+                checked_r52_rect(target.clean_reference_edit_roi, note.width, note.height)?;
+            let mask_len = usize::try_from(
+                u64::from(edit_roi.right - edit_roi.left)
+                    * u64::from(edit_roi.bottom - edit_roi.top),
+            )
+            .map_err(|_| invalid_data("R52 supplemental geometry overflow"))?;
+            targets.push(VisualManifestTarget {
+                id: target.id,
+                source_roi: target.source_roi,
+                clean_reference_edit_roi: target.clean_reference_edit_roi,
+                erase_source_ink_mask_path: target
+                    .erase_source_ink_mask_path
+                    .to_string_lossy()
+                    .into_owned(),
+                erase_source_ink_mask_sha256: String::new(),
+                residual_source_ink_mask_path: target
+                    .residual_source_ink_mask_path
+                    .to_string_lossy()
+                    .into_owned(),
+                residual_source_ink_mask_sha256: String::new(),
+                position: Position::Interior,
+                writing: Writing::Horizontal,
+                effect: Effect::Plain,
+                translation_length: TranslationLength::Equal,
+                expected: Expected::AutomaticStrict,
+            });
+            oracle_targets.push(OracleValidatedTarget {
+                source_roi,
+                edit_roi,
+                delta_mask: vec![1; mask_len].into_boxed_slice(),
+            });
+        }
+        let protected_rois = note
+            .protected_rois
+            .iter()
+            .copied()
+            .map(|rect| checked_r52_rect(rect, note.width, note.height))
+            .collect::<io::Result<Vec<_>>>()?;
+        let max_side = note.width.max(note.height);
+        let dimension_bin = match max_side {
+            0..=719 => DimensionBin::Lt720,
+            720..=1439 => DimensionBin::From720To1439,
+            1440..=2159 => DimensionBin::From1440To2159,
+            _ => DimensionBin::Gte2160,
+        };
+        let aspect = if u64::from(note.width) * 10 > u64::from(note.height) * 11 {
+            Aspect::Landscape
+        } else if u64::from(note.height) * 10 > u64::from(note.width) * 11 {
+            Aspect::Portrait
+        } else {
+            Aspect::SquareOrNear
+        };
+        Ok(R52OwnedChallengeEntry {
+            schema: VisualManifestEntry {
+                id: manifest_entry.id.clone(),
+                path: manifest_entry.source_path.to_string_lossy().into_owned(),
+                sha256: manifest_entry.source_sha256.clone(),
+                decoded_rgba_blake3: rgba_fingerprint(&DynamicImage::ImageRgba8(source.clone())),
+                clean_reference_path: String::new(),
+                clean_reference_sha256: String::new(),
+                clean_reference_decoded_rgba_blake3: String::new(),
+                role: EntryRole::Holdout,
+                dimension_bin,
+                aspect,
+                background: Background::Product,
+                targets,
+                protected_rois: note.protected_rois,
+                multi_node: note.multi_node,
+            },
+            source,
+            oracle: OracleValidatedEntry {
+                protected_rois,
+                targets: oracle_targets,
+            },
+            held_source,
+            held_note,
+        })
+    }
+
+    fn apply_r52_protected_latin_correction(
+        schema: &mut VisualManifestEntry,
+        oracle: &mut OracleValidatedEntry,
+    ) -> io::Result<()> {
+        require(
+            schema.id == "r49-h04" && schema.targets.len() == oracle.targets.len(),
+            "R52 protected Latin correction entry drift",
+        )?;
+        let matching = schema
+            .targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.id == "product-id")
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        require(
+            matching.len() == 1,
+            "R52 protected Latin correction target drift",
+        )?;
+        let index = matching[0];
+        let target = schema.targets.remove(index);
+        let geometry = oracle.targets.remove(index);
+        require(
+            target.source_roi
+                == [
+                    u64::from(geometry.source_roi.left),
+                    u64::from(geometry.source_roi.top),
+                    u64::from(geometry.source_roi.right),
+                    u64::from(geometry.source_roi.bottom),
+                ],
+            "R52 protected Latin correction geometry drift",
+        )?;
+        schema.protected_rois.push(target.source_roi);
+        oracle.protected_rois.push(geometry.source_roi);
+        Ok(())
+    }
+
+    fn r52_challenge_cell_passed(
+        result: &SelectionResult,
+        schema: &VisualManifestEntry,
+        rejection: Option<&str>,
+        kind: &str,
+    ) -> bool {
+        if result.entry_id == "r49-h04" {
+            let expected_targets = schema
+                .targets
+                .iter()
+                .filter(|target| target.expected != Expected::UnsupportedRotation)
+                .count();
+            return rejection == Some("pp_no_han_protected_latin")
+                && result.execution_evidence.inference_completed
+                && result.derived.target_recall == 1.0
+                && result
+                    .derived
+                    .source_coverage_preflight
+                    .covered_source_roi_ids
+                    .len()
+                    == expected_targets
+                && result
+                    .derived
+                    .source_coverage_preflight
+                    .source_text_roi_coverage
+                    == 1.0
+                && result.derived.protected_false_positive_count == 0
+                && result.derived.selected_protected_node_ids.is_empty()
+                && result.derived.unmatched_selected_node_ids.is_empty()
+                && result.derived.rotation_targets_excluded;
+        }
+        if kind == "supplemental" {
+            return result.execution_evidence.inference_completed
+                && result.derived.protected_false_positive_count == 0
+                && result.derived.selected_protected_node_ids.is_empty();
+        }
+        result.derived.passed
+    }
+
+    fn write_r52_challenge_cell(
+        environment: &SelectionEnvironment,
+        ordinal: usize,
+        process: &ProcessEvidence,
+        result: &SelectionResult,
+        schema: &VisualManifestEntry,
+        oracle: &OracleValidatedEntry,
+        diagnostics: &[SourceGateDiagnosticEvent],
+    ) -> io::Result<R52ChallengeCell> {
+        let device = process.requested_device.as_str();
+        let kind = if ordinal < 8 {
+            "regression"
+        } else {
+            "supplemental"
+        };
+        let cell_root = format!("r52/challenge/{ordinal:02}-{}-{device}", result.entry_id);
+        let mut cell_process = process.clone();
+        cell_process.phase = "challenge".into();
+        cell_process.id = format!(
+            "challenge/{}/{}/{device}",
+            result.candidate_id, result.entry_id
+        );
+        let process_artifact = publish_r51_artifact(
+            environment,
+            &format!("{cell_root}/process.json"),
+            &canonical_json(&cell_process)?,
+        )?;
+        let artifact_parent = environment
+            .artifact
+            .parent()
+            .ok_or_else(|| invalid_data("R52 bridge result has no parent"))?;
+        let original_log =
+            artifact_parent.join(&result.execution_evidence.raw_inference_log_relpath);
+        let log_bytes = fs::read(&original_log)?;
+        require(
+            sha256_hex(&log_bytes) == result.execution_evidence.raw_inference_log_sha256,
+            "R52 challenge inference log hash drift",
+        )?;
+        let log_artifact = publish_r51_artifact(
+            environment,
+            &format!("{cell_root}/inference.log"),
+            &log_bytes,
+        )?;
+        let rejection = rejection_reason(diagnostics);
+        let selected = result.derived.selected_target_ids.len();
+        let covered = result
+            .derived
+            .source_coverage_preflight
+            .covered_source_roi_ids
+            .len();
+        let target_recall = (kind == "regression").then(|| R51TargetRecall {
+            target_total: schema.targets.len(),
+            selected,
+            covered,
+            uncovered: schema.targets.len().saturating_sub(covered),
+        });
+        let passed = r52_challenge_cell_passed(result, schema, rejection.as_deref(), kind);
+        let (raw_detector_outputs, canonical_lines, raw_detector_hash, support_records) =
+            r51_detector_diagnostics(environment, result, schema, oracle, diagnostics, &rejection)?;
+        let diagnostic = serde_json::json!({
+            "contract": "hanonly-r52-challenge-cell-diagnostic-v1",
+            "plan_revision": R52_PLAN_REVISION,
+            "b0_sha": &environment.b0_sha,
+            "calibration_manifest_sha256": &environment.calibration_manifest_sha256,
+            "holdout_manifest_sha256": serde_json::Value::Null,
+            "fixture_manifest_sha256": &environment.source_gate_fixture_manifest_sha256,
+            "phase": "challenge",
+            "entry_id": &result.entry_id,
+            "device": device,
+            "candidate_id": &result.candidate_id,
+            "state": if passed { "passed" } else { "failed" },
+            "selection_result": if rejection.is_some() { "rejected" } else { "selected" },
+            "target_recall": &target_recall,
+            "pp_han_count": result.derived.source_coverage_preflight.pp_han_scalar_count,
+            "vl_han_count": result.derived.source_coverage_preflight.vl_expected_han_scalar_count,
+            "rejection_reason": &rejection,
+            "raw_detector_outputs": raw_detector_outputs,
+            "canonical_lines": canonical_lines,
+            "raw_detector_count": support_records.len(),
+            "raw_detector_f32_bits_multiset_sha256": raw_detector_hash,
+            "detector_support_records": support_records,
+            "device_evidence_sha256": &process_artifact.sha256,
+            "device_evidence_byte_length": process_artifact.byte_length,
+            "log_sha256": &log_artifact.sha256,
+            "log_byte_length": log_artifact.byte_length,
+            "terminal_reason": if passed { None } else { Some(rejection.as_deref().unwrap_or("coverage_failure")) },
+            "bundle_validation_receipt_sha256": serde_json::Value::Null,
+            "target_coverage_index_sha256": serde_json::Value::Null,
+        });
+        let diagnostic_artifact = publish_r51_artifact(
+            environment,
+            &format!("{cell_root}/diagnostic.json"),
+            &canonical_json(&diagnostic)?,
+        )?;
+        let mut selection = result.clone();
+        selection.process_evidence_id = cell_process.id;
+        selection.execution_evidence.raw_inference_log_relpath = log_artifact.path.clone();
+        selection.execution_evidence.raw_inference_log_sha256 = log_artifact.sha256.clone();
+        selection.execution_evidence.source_gate_diagnostic_relpath =
+            diagnostic_artifact.path.clone();
+        selection.execution_evidence.source_gate_diagnostic_sha256 =
+            diagnostic_artifact.sha256.clone();
+        selection.derived.passed = passed;
+        let selection_artifact = publish_r51_artifact(
+            environment,
+            &format!("{cell_root}/selection.json"),
+            &canonical_json(&selection)?,
+        )?;
+        Ok(R52ChallengeCell {
+            ordinal,
+            entry_id: result.entry_id.clone(),
+            device: device.into(),
+            kind: kind.into(),
+            candidate_id: result.candidate_id.clone(),
+            selection_result_path: selection_artifact.path,
+            selection_result_sha256: selection_artifact.sha256,
+            target_recall,
+            pp_count: result.derived.source_coverage_preflight.pp_han_scalar_count,
+            vl_count: result
+                .derived
+                .source_coverage_preflight
+                .vl_expected_han_scalar_count,
+            rejection_reason: rejection,
+            diagnostic_path: diagnostic_artifact.path,
+            diagnostic_sha256: diagnostic_artifact.sha256,
+            process_evidence_path: process_artifact.path,
+            process_evidence_sha256: process_artifact.sha256,
+            log_path: log_artifact.path,
+            log_sha256: log_artifact.sha256,
+            result: if passed { "pass" } else { "fail" },
+        })
+    }
+
+    fn publish_r52_bridge_result(
+        environment: &SelectionEnvironment,
+        cells: &[R52ChallengeCell],
+    ) -> io::Result<()> {
+        let passed = cells.len() == 18 && cells.iter().all(|cell| cell.result == "pass");
+        let result = R52BridgeResult {
+            contract: "hanonly-r52-pinned-evaluator-result-v1",
+            plan_revision: R52_PLAN_REVISION,
+            b0_sha: &environment.b0_sha,
+            selected_candidate_id: environment
+                .selected_candidate_override
+                .as_deref()
+                .ok_or_else(|| invalid_data("R52 selected candidate override is missing"))?,
+            ordered_cell_results: cells,
+            result: if passed { "pass" } else { "fail" },
+        };
+        let parent = environment
+            .artifact
+            .parent()
+            .ok_or_else(|| invalid_data("R52 bridge result has no parent"))?;
+        require(
+            parent == environment.evidence_root,
+            "R52 bridge result parent drift",
+        )?;
+        let name = environment
+            .artifact
+            .file_name()
+            .ok_or_else(|| invalid_data("R52 bridge result name is missing"))?;
+        publish_descriptor_relative(
+            &environment.evidence_root,
+            Path::new(""),
+            name,
+            &canonical_json(&result)?,
+        )?;
+        Ok(())
+    }
+
+    fn run_r52_challenge_bridge(request: &R52BridgeRequest) -> io::Result<()> {
+        let (_challenge_input, challenge) = load_r52_challenge_manifest(request)?;
+        let h01 = &challenge.entries[0];
+        let selected_input = HeldInput::open_bounded(&h01.source_path, BYTE_CEILING)?;
+        selected_input.require_file_and_parent_security(effective_owner()?, 0o600, 0o700)?;
+        require(
+            sha256_hex(selected_input.bytes()) == h01.source_sha256,
+            "R52 challenge selected input hash drift",
+        )?;
+        let decoded_fingerprint =
+            canonical_decoded_rgba_blake3(selected_input.bytes()).map_err(io::Error::other)?;
+        let held_r49 = load_schema_and_hold_assets(
+            &request.r49_visual_manifest_path,
+            &request.r49_visual_manifest_sha256,
+            &h01.source_path,
+            &decoded_fingerprint,
+            &h01.source_sha256,
+        )
+        .map_err(io::Error::other)?;
+        let mut validated_r49 = validate_visual_oracles(
+            validate_dimensions_and_masks(held_r49).map_err(io::Error::other)?,
+        )
+        .map_err(io::Error::other)?;
+        let h04_index = validated_r49
+            .upstream
+            .held_schema
+            .schema
+            .entries
+            .iter()
+            .position(|entry| entry.id == "r49-h04")
+            .ok_or_else(|| invalid_data("R52 regression challenge h04 is missing"))?;
+        apply_r52_protected_latin_correction(
+            &mut validated_r49.upstream.held_schema.schema.entries[h04_index],
+            &mut validated_r49.entries[h04_index],
+        )?;
+        let supplemental = challenge.entries[4..]
+            .iter()
+            .map(load_r52_supplemental_entry)
+            .collect::<io::Result<Vec<_>>>()?;
+        for entry in &supplemental {
+            entry
+                .held_source
+                .with_revalidated_path(|validation| validation.with_current_namespace(|| Ok(())))?;
+            entry
+                .held_note
+                .with_revalidated_path(|validation| validation.with_current_namespace(|| Ok(())))?;
+        }
+        let artifact_bytes = fs::read(&request.calibration_selection_artifact_path)?;
+        let artifact: FrozenArtifact = serde_json::from_slice(&artifact_bytes)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        let preflight = HeldInput::open(&request.b0_preflight_attestation_path)?;
+        let environment = SelectionEnvironment {
+            phase: Phase::Holdout,
+            r51_formal_custody: None,
+            b0_sha: request.b0_sha.clone(),
+            visual_input: h01.source_path.clone(),
+            visual_input_sha256: h01.source_sha256.clone(),
+            visual_manifest: request.r49_visual_manifest_path.clone(),
+            visual_manifest_sha256: request.r49_visual_manifest_sha256.clone(),
+            calibration_manifest_sha256: artifact.manifest_sha256,
+            evidence_root: request.evidence_root.clone(),
+            report_dir: request.evidence_root.join("r52-challenge-bridge"),
+            source_gate_fixture_manifest_sha256: request
+                .source_gate_fixture_manifest_sha256
+                .clone(),
+            artifact: request.result_path.clone(),
+            calibration_entry_ids: Vec::new(),
+            holdout_entry_ids: challenge
+                .entries
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect(),
+            required_check: RequiredCheck {
+                phase: "challenge".into(),
+                command: REQUIRED_CHECK_COMMAND.into(),
+                checker_endpoint_sha256: String::new(),
+                manifest_sha256: request.challenge_manifest_sha256.clone(),
+                source_gate_fixture_manifest_sha256: request
+                    .source_gate_fixture_manifest_sha256
+                    .clone(),
+                attestation_relpath: request
+                    .b0_preflight_attestation_path
+                    .strip_prefix(&request.evidence_root)
+                    .ok()
+                    .and_then(Path::to_str)
+                    .unwrap_or("r52-b0-preflight.json")
+                    .into(),
+                attestation_sha256: sha256_hex(preflight.bytes()),
+                b0_sha: request.b0_sha.clone(),
+                result: "pass".into(),
+            },
+            required_check_attestation: preflight,
+            selected_candidate_override: Some(request.selected_candidate_id.clone()),
+        };
+        let executable_sha256 = sha256_file(&std::env::current_exe()?)?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        validated_r49
+            .upstream
+            .held_schema
+            .with_revalidated_paths(|| {
+                let mut entries = Vec::with_capacity(9);
+                for ((schema, decoded), oracle) in validated_r49
+                    .upstream
+                    .held_schema
+                    .schema
+                    .entries
+                    .iter()
+                    .zip(&validated_r49.upstream.entries)
+                    .zip(&validated_r49.entries)
+                {
+                    if let Some(expected) = challenge.entries[..4]
+                        .iter()
+                        .find(|entry| entry.id == schema.id)
+                    {
+                        require(
+                            schema.role == EntryRole::Holdout
+                                && schema.path == expected.source_path.to_string_lossy()
+                                && schema.sha256 == expected.source_sha256,
+                            "R52 regression challenge R49 binding drift",
+                        )?;
+                        entries.push(RealModelEntry {
+                            schema,
+                            source: &decoded.source,
+                            oracle,
+                        });
+                    }
+                }
+                require(
+                    entries.len() == 4
+                        && entries
+                            .iter()
+                            .map(|entry| entry.schema.id.as_str())
+                            .eq(["r49-h01", "r49-h02", "r49-h03", "r49-h04"])
+                        && entries[3].schema.protected_rois.iter().any(|roi| {
+                            entries[3].oracle.protected_rois.iter().any(|protected| {
+                                *roi == [
+                                    u64::from(protected.left),
+                                    u64::from(protected.top),
+                                    u64::from(protected.right),
+                                    u64::from(protected.bottom),
+                                ]
+                            })
+                        })
+                        && entries[3]
+                            .schema
+                            .targets
+                            .iter()
+                            .all(|target| target.id != "product-id"),
+                    "R52 regression challenge oracle set drift",
+                )?;
+                entries.extend(supplemental.iter().map(|entry| RealModelEntry {
+                    schema: &entry.schema,
+                    source: &entry.source,
+                    oracle: &entry.oracle,
+                }));
+                runtime
+                    .block_on(run_real_model_async(
+                        &environment,
+                        &entries,
+                        executable_sha256,
+                        None,
+                    ))
+                    .map(|_| ())
+            })
+    }
+
+    fn run_r52_evidence_bridge() -> io::Result<()> {
+        let (request_path, request_input, request) = load_r52_bridge_request()?;
+        validate_r52_bridge_request(&request_path, &request)?;
+        request_input.with_revalidated_path(|validation| {
+            validation.with_current_namespace(|| run_r52_challenge_bridge(&request))
+        })
+    }
+
     fn run_r51_real_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
         let holdout = environment
             .r51_formal_custody
@@ -2000,6 +2933,8 @@ mod source_gate_selection {
         let mut results = Vec::new();
         let mut formal_cells = Vec::new();
         let mut first_failed_cell = None;
+        let mut r52_cells = Vec::new();
+        let mut r52_failed = false;
         let mut runners = Vec::with_capacity(2);
 
         for (device, cpu) in [("cpu", true), ("metal", false)] {
@@ -2144,6 +3079,20 @@ mod source_gate_selection {
                         runtime_nodes,
                         derived,
                     };
+                    if environment.selected_candidate_override.is_some() {
+                        let cell = write_r52_challenge_cell(
+                            environment,
+                            r52_cells.len(),
+                            process,
+                            &result,
+                            schema_entry,
+                            oracle_entry,
+                            &source_gate_events,
+                        )?;
+                        r52_failed = cell.result == "fail";
+                        result.derived.passed = !r52_failed;
+                        r52_cells.push(cell);
+                    }
                     if environment.r51_formal_custody.is_some() {
                         let cell = match environment.phase {
                             Phase::CalibrationFreeze => write_r51_calibration_cell_evidence(
@@ -2179,12 +3128,15 @@ mod source_gate_selection {
                     } else {
                         results.push(result);
                     }
+                    if r52_failed {
+                        break;
+                    }
                 }
-                if first_failed_cell.is_some() {
+                if first_failed_cell.is_some() || r52_failed {
                     break;
                 }
             }
-            if first_failed_cell.is_some() {
+            if first_failed_cell.is_some() || r52_failed {
                 break;
             }
         }
@@ -2202,6 +3154,9 @@ mod source_gate_selection {
                 cells: formal_cells,
                 first_failed_cell,
             });
+        if environment.selected_candidate_override.is_some() {
+            publish_r52_bridge_result(environment, &r52_cells)?;
+        }
         Ok(RunnerEvidence {
             selected_candidate_id,
             process_evidence,
@@ -2241,6 +3196,13 @@ mod source_gate_selection {
             ("S25L6", SourceGateCropPolicy::S25L6),
             ("S25L7", SourceGateCropPolicy::S25L7),
         ];
+        if let Some(selected) = &environment.selected_candidate_override {
+            return all
+                .into_iter()
+                .find(|(id, _)| *id == selected)
+                .map(|(id, policy)| vec![(id.into(), policy)])
+                .ok_or_else(|| invalid_data("R52 bridge selected candidate is unknown"));
+        }
         if environment.phase == Phase::CalibrationFreeze {
             return Ok(all
                 .into_iter()
@@ -6778,6 +7740,144 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             &'a koharu_ml::aot_inpainting::AotInpainting,
         ) -> &'a koharu_ml::Device = koharu_ml::aot_inpainting::AotInpainting::device;
         let _ = accessor;
+    }
+
+    #[test]
+    fn r52_bridge_request_schema_is_closed() {
+        let request_value = serde_json::json!({
+            "contract": "hanonly-r52-evidence-bridge-request-v1",
+            "plan_revision": 52,
+            "mode": "challenge",
+            "b0_sha": "a".repeat(40),
+            "repo_root": "/repo",
+            "evidence_root": "/evidence",
+            "result_path": "/evidence/.r52-challenge-result-1.tmp",
+            "selected_candidate_id": "S25L4",
+            "challenge_manifest_path": "/challenge/manifest.json",
+            "challenge_manifest_sha256": R52_CHALLENGE_MANIFEST_SHA256,
+            "challenge_hash_record_path": "/challenge/hashes.json",
+            "challenge_hash_record_sha256": R52_CHALLENGE_HASHES_SHA256,
+            "r49_visual_manifest_path": R49_VISUAL_MANIFEST,
+            "r49_visual_manifest_sha256": R49_VISUAL_MANIFEST_SHA256,
+            "source_gate_fixture_manifest_sha256": "b".repeat(64),
+            "calibration_selection_artifact_path": "/evidence/selection.json",
+            "b0_preflight_attestation_path": "/evidence/preflight.json",
+        });
+        let request: R52BridgeRequest =
+            serde_json::from_value(request_value.clone()).expect("closed R52 request");
+        let temp = tempfile::tempdir().expect("R52 request temp");
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))
+            .expect("secure R52 request parent");
+        let path = temp.path().join("request.json");
+        fs::write(
+            &path,
+            canonical_json(&request).expect("canonical R52 request"),
+        )
+        .expect("write R52 request");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("secure R52 request");
+        assert!(load_r52_bridge_request_path(fs::canonicalize(&path).unwrap()).is_ok());
+        let mut unknown = request_value;
+        unknown["operator"] = serde_json::json!("forbidden");
+        assert!(serde_json::from_value::<R52BridgeRequest>(unknown).is_err());
+    }
+
+    #[test]
+    fn r52_bridge_applies_only_exact_protected_latin_correction() {
+        let (mut schema, mut oracle) = r51_test_schema_and_oracle();
+        schema.id = "r49-h04".into();
+        schema.protected_rois.clear();
+        oracle.protected_rois.clear();
+        schema.targets.push(VisualManifestTarget {
+            id: "product-id".into(),
+            source_roi: [50, 0, 64, 64],
+            clean_reference_edit_roi: [50, 0, 64, 64],
+            erase_source_ink_mask_path: "product-id-erase.bin".into(),
+            erase_source_ink_mask_sha256: synthetic_hash(46),
+            residual_source_ink_mask_path: "product-id-residual.bin".into(),
+            residual_source_ink_mask_sha256: synthetic_hash(47),
+            position: Position::Interior,
+            writing: Writing::Horizontal,
+            effect: Effect::Plain,
+            translation_length: TranslationLength::Equal,
+            expected: Expected::AutomaticStrict,
+        });
+        oracle.targets.push(OracleValidatedTarget {
+            source_roi: ValidatedHalfOpenRect {
+                left: 50,
+                top: 0,
+                right: 64,
+                bottom: 64,
+            },
+            edit_roi: ValidatedHalfOpenRect {
+                left: 50,
+                top: 0,
+                right: 64,
+                bottom: 64,
+            },
+            delta_mask: vec![1; 14 * 64].into_boxed_slice(),
+        });
+        apply_r52_protected_latin_correction(&mut schema, &mut oracle)
+            .expect("apply protected Latin correction");
+        assert!(
+            schema
+                .targets
+                .iter()
+                .all(|target| target.id != "product-id")
+        );
+        assert_eq!(schema.targets.len(), oracle.targets.len());
+
+        let mut result = synthetic_result("holdout", "r49-h04", "cpu", "S25L4");
+        result.derived.passed = false;
+        result.derived.source_coverage_preflight.rejected_after_vl = true;
+        result
+            .derived
+            .source_coverage_preflight
+            .pp_vl_complete_coverage = false;
+        result
+            .derived
+            .source_coverage_preflight
+            .source_removal_preflight_passed = false;
+        result.derived.protected_false_positive_count = 0;
+        assert!(r52_challenge_cell_passed(
+            &result,
+            &schema,
+            Some("pp_no_han_protected_latin"),
+            "regression"
+        ));
+        result
+            .derived
+            .source_coverage_preflight
+            .covered_source_roi_ids
+            .clear();
+        assert!(!r52_challenge_cell_passed(
+            &result,
+            &schema,
+            Some("pp_no_han_protected_latin"),
+            "regression"
+        ));
+        result
+            .derived
+            .source_coverage_preflight
+            .covered_source_roi_ids = vec!["target".into()];
+        assert!(!r52_challenge_cell_passed(
+            &result,
+            &schema,
+            Some("pp_no_han_unprotected"),
+            "regression"
+        ));
+        result.entry_id = "r49-h03".into();
+        assert!(!r52_challenge_cell_passed(
+            &result,
+            &schema,
+            Some("pp_no_han_protected_latin"),
+            "regression"
+        ));
+    }
+
+    #[test]
+    #[ignore = "requires a canonical R52 bridge request and installed Source Gate models"]
+    fn han_only_r52_evidence_bridge() {
+        run_r52_evidence_bridge().expect("R52 evidence bridge failed");
     }
 
     #[test]

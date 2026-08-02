@@ -12,6 +12,7 @@ import stat
 import struct
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 
 
@@ -613,6 +614,287 @@ R51_RAW_DETECTOR_KEYS = {
     "rect",
     "recognition_present",
     "recognition_class",
+}
+R52_PLAN_REVISION = 52
+R52_PARENT_B0_SHA = "389a5615332cf8f225defa5ebb501de9d73c3a06"
+R52_CONTRACT_PATH = ".omx/plans/hanonly-r52-b0-delta-contract.json"
+R52_CONTRACT_SHA256 = "72e0f9c9f4ad318863bf9b0e8894f4766cd14d13171706023285947799e1f2c2"
+R52_TEST_SPEC_PATH = ".omx/plans/test-spec-hanonly-r52-b0-delta.md"
+R52_TEST_SPEC_SHA256 = (
+    "8e93e4b22d586666487dcbc56aa648aeffda6c7e3a2fefd0c04f7a831900d223"
+)
+R52_R51_FAILURE_SHA256 = (
+    "dce6e5f4160443d986de3f58c080a249ac29346bae0072667ae3f7317e0609d2"
+)
+R52_R51_FAILURE_PATH = (
+    "/Users/jinkui/ec-image-Koharu/hanonly-r51-b0-evidence/"
+    "20260728T093758Z-389a5615332c-1/source-gate-selection/"
+    "calibration-failure/failure-summary.json"
+)
+R52_CALIBRATION_MANIFEST_SHA256 = (
+    "9498ec48cf9f842feae075b1c57ade65fadd84c778d53715a8b80dcf66ea0089"
+)
+R52_CALIBRATION_MANIFEST_PATH = (
+    "/Users/jinkui/ec-image-Koharu/hanonly-r52-calibration/"
+    "evidence-assets/visual-manifest.json"
+)
+R52_CALIBRATION_HASHES_SHA256 = (
+    "d78b40e498076c4d73b9ed7b06c7a1eaa573eb1f2f7654c5f0610602c033c4f1"
+)
+R52_CALIBRATION_HASHES_PATH = (
+    "/Users/jinkui/ec-image-Koharu/hanonly-r52-calibration/"
+    "evidence-assets/r52-calibration-hashes.json"
+)
+R52_CHALLENGE_MANIFEST_SHA256 = (
+    "88fc92474502514d29b09e9863a4907d89adaeab7e67808a7e1890e5835d86b6"
+)
+R52_CHALLENGE_MANIFEST_PATH = (
+    "/Users/jinkui/ec-image-Koharu/hanonly-r51-challenge/challenge-manifest.json"
+)
+R52_CHALLENGE_HASHES_SHA256 = (
+    "07ce42c60d6f6c7f7c2ea27b9ca9e13afc4edbf458ad4b359af7e16baf4822bb"
+)
+R52_CHALLENGE_HASHES_PATH = (
+    "/Users/jinkui/ec-image-Koharu/hanonly-r51-challenge/challenge-hashes.json"
+)
+R52_R49_VISUAL_MANIFEST_PATH = (
+    "/Users/jinkui/ec-image-Koharu/hanonly-r49-corpus/"
+    "evidence-assets/visual-manifest.json"
+)
+R52_R49_VISUAL_MANIFEST_SHA256 = (
+    "fe7e4782fe7dfeaa953e0fc538509f53b287d023328c518dd8ac8b27e690945c"
+)
+R52_BRIDGE_TEST = (
+    "pipeline::d0_visual_manifest_harness::source_gate_selection::"
+    "han_only_r52_evidence_bridge"
+)
+R52_CUSTODY_ROOT = "/Users/jinkui/ec-image-Koharu/hanonly-r51-custody"
+R52_STATE_ROOT = "/Users/jinkui/ec-image-Koharu/hanonly-r52-custody-state"
+R52_CIPHERTEXT_SHA256 = (
+    "50e573755de34adf938690a08a03187eadcde82bb86a0fbf7bc171e12410b76b"
+)
+R52_CALIBRATION_IDS = [f"r52-c0{index}" for index in range(1, 5)]
+R52_PROJECTION_MAPPING = [
+    {"outer_id": outer, "inner_id": inner}
+    for outer, inner in zip(R52_CALIBRATION_IDS, R51_CALIBRATION_IDS)
+]
+R52_CHALLENGE_IDS = ["r49-h01", "r49-h02", "r49-h03", "r49-h04"]
+R52_SUPPLEMENTAL_IDS = [f"x0{index}" for index in range(1, 6)]
+R52_CHALLENGE_CELL_IDS = [
+    f"{entry}/{device}"
+    for entry in R52_CHALLENGE_IDS + R52_SUPPLEMENTAL_IDS
+    for device in ("cpu", "metal")
+]
+R52_CHALLENGE_LOCK_NAME = f"challenge-use-{R52_CHALLENGE_MANIFEST_SHA256}.lock"
+R52_HOLDOUT_LOCK_NAME = f"holdout-use-{R52_CIPHERTEXT_SHA256}.lock"
+R52_CHALLENGE_LOCK_KEYS = {
+    "contract",
+    "plan_revision",
+    "b0_sha",
+    "challenge_manifest_sha256",
+    "challenge_hash_record_sha256",
+    "selected_candidate_id",
+    "frozen_recall_contract_sha256",
+    "created_at_utc",
+}
+R52_CHALLENGE_START_KEYS = {
+    "contract",
+    "plan_revision",
+    "b0_sha",
+    "challenge_lock_sha256",
+    "selected_candidate_id",
+    "ordered_cell_ids",
+    "started_at_utc",
+}
+R52_CHALLENGE_CELL_KEYS = {
+    "ordinal",
+    "entry_id",
+    "device",
+    "kind",
+    "candidate_id",
+    "selection_result_path",
+    "selection_result_sha256",
+    "target_recall",
+    "pp_count",
+    "vl_count",
+    "rejection_reason",
+    "diagnostic_path",
+    "diagnostic_sha256",
+    "process_evidence_path",
+    "process_evidence_sha256",
+    "log_path",
+    "log_sha256",
+    "result",
+}
+R52_CHALLENGE_FAILURE_KEYS = {
+    "contract",
+    "plan_revision",
+    "b0_sha",
+    "challenge_lock_sha256",
+    "challenge_start_sha256",
+    "executed_prefix",
+    "first_failed_cell",
+    "unexecuted_suffix",
+    "failure_reason",
+    "failed_at_utc",
+    "result",
+}
+R52_CHALLENGE_TERMINAL_KEYS = {
+    "contract",
+    "plan_revision",
+    "b0_sha",
+    "challenge_lock_sha256",
+    "challenge_start_sha256",
+    "selected_candidate_id",
+    "ordered_cell_results",
+    "completed_at_utc",
+    "result",
+}
+R52_ADOPTION_KEYS = {
+    "contract",
+    "plan_revision",
+    "b0_sha",
+    "r52_contract_sha256",
+    "r52_test_spec_sha256",
+    "r51_parent_b0_sha",
+    "r51_contract_sha256",
+    "r51_test_spec_sha256",
+    "r51_failure_summary_sha256",
+    "imported_holdout_revision",
+    "imported_entry_ids",
+    "custody_root_st_dev",
+    "custody_root_st_ino",
+    "custody_files",
+    "observed_namespace",
+    "observed_unopened",
+    "key_capability",
+    "result",
+}
+R52_HOLDOUT_LOCK_KEYS = {
+    "contract",
+    "plan_revision",
+    "b0_sha",
+    "ciphertext_sha256",
+    "adoption_record_sha256",
+    "selected_candidate_id",
+    "frozen_recall_contract_sha256",
+    "challenge_terminal_sha256",
+    "pre_holdout_attestation_sha256",
+    "created_at_utc",
+}
+R52_INNER_INDEX_KEYS = {"contract", "plan_revision", "b0_sha", "records", "result"}
+R52_INNER_RECORD_KEYS = {
+    "kind",
+    "relative_path",
+    "byte_length",
+    "sha256",
+    "inner_contract",
+    "inner_plan_revision",
+}
+R52_INNER_KINDS = [
+    "calibration_selection_artifact",
+    "frozen_recall_contract",
+    "bundle_validation_receipt",
+    "terminal_diagnostic_index",
+    "r51_terminal_receipt",
+]
+R52_ARTIFACT_PAYLOAD_KEYS = {
+    "contract",
+    "version",
+    "plan_revision",
+    "b0_sha",
+    "parent_b0_sha",
+    "r52_contract_sha256",
+    "r52_test_spec_sha256",
+    "calibration_manifest_sha256",
+    "calibration_hash_inventory_sha256",
+    "calibration_projection_receipt_sha256",
+    "selected_candidate_id",
+    "frozen_recall_contract_sha256",
+    "challenge_manifest_sha256",
+    "challenge_terminal_sha256",
+    "holdout_adoption_sha256",
+    "holdout_use_lock_sha256",
+    "imported_r51_holdout_revision",
+    "imported_r51_terminal_sha256",
+    "imported_inner_evidence_index_sha256",
+    "pre_calibration_attestation_sha256",
+    "pre_holdout_attestation_sha256",
+    "result",
+}
+R52_AUTHORIZATION_KEYS = {
+    "contract",
+    "plan_revision",
+    "b0_sha",
+    "parent_b0_sha",
+    "r52_contract_sha256",
+    "r52_test_spec_sha256",
+    "artifact_payload_path",
+    "artifact_payload_byte_length",
+    "artifact_payload_sha256",
+    "calibration_projection_receipt_sha256",
+    "challenge_terminal_sha256",
+    "holdout_adoption_sha256",
+    "holdout_use_lock_sha256",
+    "imported_r51_terminal_sha256",
+    "imported_inner_evidence_index_sha256",
+    "pre_calibration_attestation_sha256",
+    "pre_holdout_attestation_sha256",
+    "authorized_at_utc",
+    "result",
+}
+R52_PREFLIGHT_KEYS = {
+    "contract",
+    "plan_revision",
+    "b0_sha",
+    "parent_b0_sha",
+    "r52_contract_sha256",
+    "r52_test_spec_sha256",
+    "r51_contract_sha256",
+    "r51_test_spec_sha256",
+    "r51_failure_summary_sha256",
+    "calibration_manifest_sha256",
+    "calibration_hash_inventory_sha256",
+    "checker_endpoint_sha256",
+    "evidence_ledger_endpoint_sha256",
+    "evidence_test_executable_path",
+    "evidence_test_executable_sha256",
+    "evidence_enabled_cargo_features",
+    "gate_results",
+    "result",
+}
+R52_RUN_RESULT_KEYS = {
+    "contract",
+    "plan_revision",
+    "b0_sha",
+    "selected_candidate_id",
+    "ordered_cell_results",
+    "result",
+}
+R52_REJECTION_REASONS = {
+    "pp_no_words",
+    "pp_no_han_protected_latin",
+    "pp_no_han_unprotected",
+    "pp_non_finite_confidence",
+    "pp_low_confidence_han",
+    "pp_low_confidence_non_han",
+    "pp_vl_character_mismatch",
+    "pp_vl_line_mismatch",
+    "pp_bbox_invalid",
+    "pp_order_invalid",
+    "protected_latin_han_conflict",
+    "pp_vl_incomplete_coverage",
+    "no_safe_han_run",
+    "protected_geometry_overlap",
+    "invalid_candidate_geometry",
+    "vl_batch_error",
+}
+R52_FORBIDDEN_IDENTITY_TERMS = {
+    "identity",
+    "operator",
+    "agent",
+    "thread",
+    "author",
 }
 JPEG_SOF_MARKERS = {
     0xC0,
@@ -2133,79 +2415,177 @@ def _r51_hash_file(path, label, *, mode=None):
     return path, data, _sha256(data)
 
 
-def _r51_publish(path, value, label):
+def _publish_canonical(
+    path,
+    value,
+    label,
+    *,
+    allowed_names,
+    temp_name,
+    existing_ok,
+    recover_temp=False,
+    temp_prefix=None,
+    pre_link=None,
+):
     _require_platform_capabilities()
     path = _canonical_future_path(path, label)
     parent_path = os.path.dirname(path)
+    with contextlib.ExitStack() as stack:
+        parent = _open_absolute(parent_path, directory=True, stack=stack)
+        _require_owned_mode(parent.path, parent.stat, 0o700)
+        return _publish_canonical_held(
+            parent,
+            path,
+            value,
+            label,
+            allowed_names=allowed_names,
+            temp_name=temp_name,
+            existing_ok=existing_ok,
+            recover_temp=recover_temp,
+            temp_prefix=temp_prefix,
+            pre_link=pre_link,
+            stack=stack,
+        )
+
+
+def _revalidate_held_path(held, label):
+    descriptor = os.fstat(held.fd)
+    try:
+        current = os.stat(held.path, follow_symlinks=False)
+    except OSError as error:
+        raise LedgerError(f"{label} path identity is unavailable: {error}") from error
+    if _identity(descriptor) != _identity(held.stat) or _identity(current) != _identity(
+        held.stat
+    ):
+        raise LedgerError(f"{label} path identity drift")
+    if not stat.S_ISDIR(held.stat.st_mode) and (
+        descriptor.st_size != held.stat.st_size
+        or descriptor.st_mtime_ns != held.stat.st_mtime_ns
+        or descriptor.st_ctime_ns != held.stat.st_ctime_ns
+    ):
+        raise LedgerError(f"{label} descriptor metadata drift")
+
+
+def _publish_canonical_held(
+    parent,
+    path,
+    value,
+    label,
+    *,
+    allowed_names,
+    temp_name,
+    existing_ok,
+    stack,
+    recover_temp=False,
+    temp_prefix=None,
+    pre_link=None,
+):
+    _revalidate_held_path(parent, f"{label} parent")
+    path = _canonical_future_path(path, label)
+    if os.path.dirname(path) != parent.path:
+        raise LedgerError(f"{label} parent descriptor drift")
     name = os.path.basename(path)
-    expected_names = {
+    if name not in allowed_names:
+        raise LedgerError(f"{label} filename is not contract-fixed")
+    data = _r51_canonical_json(value)
+    digest = _sha256(data)
+    names = set(os.listdir(parent.fd))
+    owned_temps = {
+        item
+        for item in names
+        if temp_prefix is not None
+        and item.startswith(temp_prefix)
+        and item.endswith(".tmp")
+    }
+    if any(item != temp_name for item in owned_temps):
+        raise LedgerError(f"{label} has an unknown deterministic temp")
+    if name in names:
+        if owned_temps or temp_name in names:
+            raise LedgerError(f"{label} final and temp cannot coexist")
+        if not existing_ok:
+            raise LedgerError(f"{label} create-new final already exists")
+        final = _open_child(parent, name, directory=False, stack=stack)
+        _require_owned_mode(final.path, final.stat, 0o600)
+        if _read_all(final.fd) != data:
+            raise LedgerError(f"{label} existing final bytes drift")
+        return final.path, digest, False
+    if temp_name in names:
+        if not recover_temp:
+            raise LedgerError(f"{label} has a pre-existing temporary file")
+        temp = _open_child(parent, temp_name, directory=False, stack=stack)
+        _require_owned_mode(temp.path, temp.stat, 0o600)
+        os.unlink(temp_name, dir_fd=parent.fd)
+        os.fsync(parent.fd)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        temp_fd = os.open(temp_name, flags, 0o600, dir_fd=parent.fd)
+    except OSError as error:
+        raise LedgerError(f"cannot create {label} temporary file: {error}") from error
+    stack.callback(os.close, temp_fd)
+    _write_complete(temp_fd, data)
+    os.fsync(temp_fd)
+    temp_stat = os.fstat(temp_fd)
+    _require_owned_mode(temp_name, temp_stat, 0o600)
+    _revalidate_held_path(parent, f"{label} parent before link")
+    current_temp = os.stat(temp_name, dir_fd=parent.fd, follow_symlinks=False)
+    if _identity(current_temp) != _identity(temp_stat):
+        raise LedgerError(f"{label} temporary identity drift")
+    _checkpoint(f"before_link:{name}")
+    if pre_link is not None:
+        pre_link()
+    _revalidate_held_path(parent, f"{label} parent at link")
+    current_temp = os.stat(temp_name, dir_fd=parent.fd, follow_symlinks=False)
+    if _identity(current_temp) != _identity(temp_stat):
+        raise LedgerError(f"{label} temporary identity drift at link")
+    try:
+        os.link(
+            temp_name,
+            name,
+            src_dir_fd=parent.fd,
+            dst_dir_fd=parent.fd,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        raise LedgerError(f"cannot publish {label}: {error}") from error
+    final = _open_child(parent, name, directory=False, stack=stack)
+    temp = _open_child(parent, temp_name, directory=False, stack=stack)
+    _require_owned_mode(final.path, final.stat, 0o600)
+    _require_owned_mode(temp.path, temp.stat, 0o600)
+    final_bytes = _read_all(final.fd)
+    if (
+        final_bytes != data
+        or _identity(final.stat) != _identity(temp.stat)
+        or final.stat.st_ino != temp.stat.st_ino
+    ):
+        raise LedgerError(f"{label} publication identity drift")
+    os.fsync(final.fd)
+    os.fsync(parent.fd)
+    os.unlink(temp_name, dir_fd=parent.fd)
+    os.fsync(parent.fd)
+    return final.path, digest, True
+
+
+def _r51_publish(path, value, label):
+    name = os.path.basename(path)
+    allowed_names = {
         "r51-b0-preflight.json",
         "r51-b0-authorization.json",
         "hanonly-r51-b0-artifact.json",
     }
-    if name not in expected_names:
-        raise LedgerError(f"{label} filename is not contract-fixed")
-    data = _r51_canonical_json(value)
-    digest = _sha256(data)
-    temp_name = f".{name.removesuffix('.json')}.{digest}.tmp"
-    with contextlib.ExitStack() as stack:
-        parent = _open_absolute(parent_path, directory=True, stack=stack)
-        _require_owned_mode(parent.path, parent.stat, 0o700)
-        names = set(os.listdir(parent.fd))
-        owned_prefix = f".{name.removesuffix('.json')}."
-        owned_temps = sorted(
-            item
-            for item in names
-            if item.startswith(owned_prefix) and item.endswith(".tmp")
-        )
-        if any(item != temp_name for item in owned_temps):
-            raise LedgerError(f"{label} has an unknown deterministic temp")
-        if name in names:
-            if owned_temps:
-                raise LedgerError(f"{label} final and temp cannot coexist")
-            final = _open_child(parent, name, directory=False, stack=stack)
-            _require_owned_mode(final.path, final.stat, 0o600)
-            if _read_all(final.fd) != data:
-                raise LedgerError(f"{label} existing final bytes drift")
-            return final.path, digest
-        if temp_name in names:
-            temp = _open_child(parent, temp_name, directory=False, stack=stack)
-            _require_owned_mode(temp.path, temp.stat, 0o600)
-            os.unlink(temp_name, dir_fd=parent.fd)
-            os.fsync(parent.fd)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        temp_fd = os.open(temp_name, flags, 0o600, dir_fd=parent.fd)
-        try:
-            _write_complete(temp_fd, data)
-            os.fsync(temp_fd)
-        finally:
-            os.close(temp_fd)
-        try:
-            os.link(
-                temp_name,
-                name,
-                src_dir_fd=parent.fd,
-                dst_dir_fd=parent.fd,
-                follow_symlinks=False,
-            )
-        except OSError as error:
-            raise LedgerError(f"cannot publish {label}: {error}") from error
-        final = _open_child(parent, name, directory=False, stack=stack)
-        temp = _open_child(parent, temp_name, directory=False, stack=stack)
-        _require_owned_mode(final.path, final.stat, 0o600)
-        _require_owned_mode(temp.path, temp.stat, 0o600)
-        final_bytes = _read_all(final.fd)
-        if (
-            final_bytes != data
-            or _identity(final.stat) != _identity(temp.stat)
-            or final.stat.st_ino != temp.stat.st_ino
-        ):
-            raise LedgerError(f"{label} publication identity drift")
-        os.fsync(final.fd)
-        os.fsync(parent.fd)
-        os.unlink(temp_name, dir_fd=parent.fd)
-        os.fsync(parent.fd)
-        return final.path, digest
+    _, _, created = result = _publish_canonical(
+        path,
+        value,
+        label,
+        allowed_names=allowed_names,
+        temp_name=(
+            f".{name.removesuffix('.json')}.{_sha256(_r51_canonical_json(value))}.tmp"
+        ),
+        existing_ok=True,
+        recover_temp=True,
+        temp_prefix=f".{name.removesuffix('.json')}.",
+    )
+    del created
+    return result[:2]
 
 
 def _r51_validate_contract_files(arguments):
@@ -3598,6 +3978,1566 @@ def _r51_validate_terminal_diagnostic_index(
     return path, data, index, terminal_cells
 
 
+def _r52_repo_file(repo_root, supplied_path, relative_path, expected_sha256, label):
+    expected_path = os.path.join(repo_root, relative_path)
+    if supplied_path != expected_path:
+        raise LedgerError(f"{label} path drift")
+    path, data = _r51_read(supplied_path, label, mode=None)
+    if _sha256(data) != expected_sha256:
+        raise LedgerError(f"{label} hash drift")
+    return path, data
+
+
+def _r52_publish(path, value, label, *, filename, temp_name, existing_ok):
+    return _publish_canonical(
+        path,
+        value,
+        label,
+        allowed_names={filename},
+        temp_name=temp_name,
+        existing_ok=existing_ok,
+    )
+
+
+def _r52_validate_b0_lineage(repo_root, b0_sha):
+    if not B0_SHA_RE.fullmatch(b0_sha):
+        raise LedgerError("R52 B0 sha must be 40 lowercase hexadecimal characters")
+    head = _run_git(repo_root, ["rev-parse", "HEAD"])
+    if head.returncode != 0 or head.stdout.decode("ascii").strip() != b0_sha:
+        raise LedgerError("R52 B0 sha does not equal HEAD")
+    if _run_git(repo_root, ["symbolic-ref", "-q", "HEAD"]).returncode == 0:
+        raise LedgerError("R52 B0 validation requires detached HEAD")
+    status_result = _run_git(
+        repo_root, ["status", "--porcelain=v1", "--untracked-files=all"]
+    )
+    if status_result.returncode != 0 or status_result.stdout:
+        raise LedgerError("R52 B0 worktree must be clean")
+    parents = _run_git(repo_root, ["show", "-s", "--format=%P", b0_sha])
+    if parents.returncode != 0 or parents.stdout.decode("ascii").strip().split() != [
+        R52_PARENT_B0_SHA
+    ]:
+        raise LedgerError("R52 B0 parent lineage drift")
+
+
+def _r52_projection_values(outer_manifest, hash_inventory):
+    if (
+        not isinstance(outer_manifest, dict)
+        or set(outer_manifest) != {"entries", "version"}
+        or outer_manifest["version"] != 1
+        or not isinstance(outer_manifest["entries"], list)
+        or len(outer_manifest["entries"]) != 4
+    ):
+        raise LedgerError("R52 calibration manifest shape drift")
+    entries = outer_manifest["entries"]
+    if [entry.get("id") for entry in entries] != R52_CALIBRATION_IDS or any(
+        entry.get("role") != "calibration" for entry in entries
+    ):
+        raise LedgerError("R52 calibration manifest entry order or role drift")
+    if (
+        not isinstance(hash_inventory, dict)
+        or set(hash_inventory)
+        != {"assets", "contract", "manifest_sha256", "plan_revision"}
+        or hash_inventory["contract"] != "hanonly-r52-calibration-hashes-v1"
+        or hash_inventory["plan_revision"] != R52_PLAN_REVISION
+        or hash_inventory["manifest_sha256"] != R52_CALIBRATION_MANIFEST_SHA256
+        or not isinstance(hash_inventory["assets"], dict)
+        or len(hash_inventory["assets"]) != 17
+    ):
+        raise LedgerError("R52 calibration hash inventory drift")
+    inner = json.loads(_r51_canonical_json(outer_manifest).decode("utf-8"))
+    for entry, mapping in zip(inner["entries"], R52_PROJECTION_MAPPING):
+        entry["id"] = mapping["inner_id"]
+    outer_without_ids = json.loads(_r51_canonical_json(outer_manifest).decode("utf-8"))
+    inner_without_ids = json.loads(_r51_canonical_json(inner).decode("utf-8"))
+    for outer_entry, inner_entry in zip(
+        outer_without_ids["entries"], inner_without_ids["entries"]
+    ):
+        del outer_entry["id"]
+        del inner_entry["id"]
+    unchanged = _r51_canonical_json(outer_without_ids)
+    if unchanged != _r51_canonical_json(inner_without_ids):
+        raise LedgerError("R52 calibration unchanged projection drift")
+    return inner, _sha256(unchanged)
+
+
+def _r52_validate_hash_inventory_assets(inventory_path, inventory):
+    corpus_root = os.path.dirname(os.path.dirname(inventory_path))
+    for relpath, binding in inventory["assets"].items():
+        if (
+            not isinstance(binding, dict)
+            or set(binding) != {"byte_length", "sha256"}
+            or type(binding["byte_length"]) is not int
+            or binding["byte_length"] <= 0
+        ):
+            raise LedgerError("R52 calibration asset binding shape drift")
+        path = _r51_relative_path(corpus_root, relpath, "R52 calibration asset")
+        _, data = _r51_read(path, "R52 calibration asset", mode=0o600)
+        if len(data) != binding["byte_length"] or _sha256(data) != binding["sha256"]:
+            raise LedgerError("R52 calibration asset binding drift")
+
+
+def _r52_project_calibration(arguments):
+    repo_root = _canonical_existing_path(arguments.repo_root, "repo root")
+    _validate_repository(repo_root)
+    _r52_validate_b0_lineage(repo_root, arguments.b0_sha)
+    outer_path, outer_bytes, outer = _r51_json(
+        arguments.outer_manifest,
+        "R52 outer calibration manifest",
+        canonical=True,
+        mode=0o600,
+    )
+    inventory_path, inventory_bytes, inventory = _r51_json(
+        arguments.hash_inventory,
+        "R52 calibration hash inventory",
+        canonical=True,
+        mode=0o600,
+    )
+    if (
+        outer_path != R52_CALIBRATION_MANIFEST_PATH
+        or inventory_path != R52_CALIBRATION_HASHES_PATH
+        or _sha256(outer_bytes) != R52_CALIBRATION_MANIFEST_SHA256
+        or _sha256(inventory_bytes) != R52_CALIBRATION_HASHES_SHA256
+    ):
+        raise LedgerError("R52 frozen calibration input hash drift")
+    inner, unchanged_sha256 = _r52_projection_values(outer, inventory)
+    _r52_validate_hash_inventory_assets(inventory_path, inventory)
+    inner_path = _canonical_future_path(
+        arguments.inner_manifest_out, "R52 projected calibration manifest"
+    )
+    receipt_path = _canonical_future_path(
+        arguments.projection_receipt_out, "R52 calibration projection receipt"
+    )
+    if (
+        os.path.dirname(inner_path) != os.path.dirname(receipt_path)
+        or os.path.basename(inner_path) != "r52-to-r51-calibration-manifest.json"
+        or os.path.basename(receipt_path)
+        != "r52-to-r51-calibration-projection-receipt.json"
+    ):
+        raise LedgerError("R52 calibration projection output path drift")
+    _, inner_sha256, _ = _r52_publish(
+        inner_path,
+        inner,
+        "R52 projected calibration manifest",
+        filename="r52-to-r51-calibration-manifest.json",
+        temp_name=".r52-to-r51-calibration-manifest.json.tmp",
+        existing_ok=False,
+    )
+    _, publisher_bytes = _r51_read(
+        os.path.join(arguments.repo_root, "scripts/hanonly_evidence_ledger.py"),
+        "R52 projection publisher endpoint",
+        mode=None,
+    )
+    evidence_root = os.path.dirname(inner_path)
+    receipt = {
+        "contract": "hanonly-r52-to-r51-calibration-projection-v1",
+        "plan_revision": R52_PLAN_REVISION,
+        "b0_sha": arguments.b0_sha,
+        "outer_manifest_path": outer_path,
+        "outer_manifest_sha256": _sha256(outer_bytes),
+        "hash_inventory_path": inventory_path,
+        "hash_inventory_sha256": _sha256(inventory_bytes),
+        "mapping": R52_PROJECTION_MAPPING,
+        "inner_manifest_path": os.path.relpath(inner_path, evidence_root),
+        "inner_manifest_sha256": inner_sha256,
+        "unchanged_projection_sha256": unchanged_sha256,
+        "publisher_endpoint_sha256": _sha256(publisher_bytes),
+        "result": "pass",
+    }
+    _, receipt_sha256, _ = _r52_publish(
+        receipt_path,
+        receipt,
+        "R52 calibration projection receipt",
+        filename="r52-to-r51-calibration-projection-receipt.json",
+        temp_name=".r52-to-r51-calibration-projection-receipt.json.tmp",
+        existing_ok=False,
+    )
+    return (
+        _r51_canonical_json(
+            {
+                "inner_manifest_sha256": inner_sha256,
+                "projection_receipt_sha256": receipt_sha256,
+            }
+        )
+        + b"\n"
+    )
+
+
+def _r52_validate_projection(
+    receipt_path,
+    outer_manifest_path,
+    hash_inventory_path,
+    evidence_root,
+    b0_sha,
+    publisher_sha256,
+):
+    _, receipt_bytes, receipt = _r51_json(
+        receipt_path,
+        "R52 calibration projection receipt",
+        canonical=True,
+        mode=0o600,
+    )
+    _require_keys(
+        receipt,
+        {
+            "contract",
+            "plan_revision",
+            "b0_sha",
+            "outer_manifest_path",
+            "outer_manifest_sha256",
+            "hash_inventory_path",
+            "hash_inventory_sha256",
+            "mapping",
+            "inner_manifest_path",
+            "inner_manifest_sha256",
+            "unchanged_projection_sha256",
+            "publisher_endpoint_sha256",
+            "result",
+        },
+        "R52 calibration projection receipt",
+    )
+    _, outer_bytes, outer = _r51_json(
+        outer_manifest_path, "R52 outer calibration manifest", mode=0o600
+    )
+    _, inventory_bytes, inventory = _r51_json(
+        hash_inventory_path, "R52 calibration hash inventory", mode=0o600
+    )
+    inner_expected, unchanged_sha256 = _r52_projection_values(outer, inventory)
+    _r52_validate_hash_inventory_assets(hash_inventory_path, inventory)
+    _, inner_bytes, inner = _r51_relative_file(
+        evidence_root,
+        receipt["inner_manifest_path"],
+        "R52 projected calibration manifest",
+        canonical=True,
+        keys={"version", "entries"},
+    )
+    if (
+        receipt["contract"] != "hanonly-r52-to-r51-calibration-projection-v1"
+        or receipt["plan_revision"] != R52_PLAN_REVISION
+        or receipt["b0_sha"] != b0_sha
+        or receipt["outer_manifest_path"] != outer_manifest_path
+        or receipt["outer_manifest_sha256"] != _sha256(outer_bytes)
+        or receipt["hash_inventory_path"] != hash_inventory_path
+        or receipt["hash_inventory_sha256"] != _sha256(inventory_bytes)
+        or receipt["mapping"] != R52_PROJECTION_MAPPING
+        or receipt["inner_manifest_sha256"] != _sha256(inner_bytes)
+        or receipt["unchanged_projection_sha256"] != unchanged_sha256
+        or receipt["publisher_endpoint_sha256"] != publisher_sha256
+        or receipt["result"] != "pass"
+        or inner != inner_expected
+        or outer_manifest_path != R52_CALIBRATION_MANIFEST_PATH
+        or hash_inventory_path != R52_CALIBRATION_HASHES_PATH
+        or _sha256(outer_bytes) != R52_CALIBRATION_MANIFEST_SHA256
+        or _sha256(inventory_bytes) != R52_CALIBRATION_HASHES_SHA256
+    ):
+        raise LedgerError("R52 calibration projection binding drift")
+    return receipt_bytes, receipt
+
+
+def _r52_failure_summary(path):
+    if path != R52_R51_FAILURE_PATH:
+        raise LedgerError("R51 failure summary path drift")
+    _, data, value = _r51_json(path, "R51 failure summary", canonical=True, mode=0o600)
+    required = {
+        "calibration_cells_completed": 0,
+        "holdout_opened": False,
+        "artifact_frozen": False,
+        "selected_candidate": None,
+        "result": "fail_closed",
+    }
+    if _sha256(data) != R52_R51_FAILURE_SHA256 or any(
+        value.get(key) != expected for key, expected in required.items()
+    ):
+        raise LedgerError("R51 failure summary drift")
+    return data
+
+
+def _r52_reject_identity_claims(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = key.lower().replace("-", "_")
+            if any(term in normalized for term in R52_FORBIDDEN_IDENTITY_TERMS):
+                raise LedgerError("R52 preflight contains a forbidden identity claim")
+            _r52_reject_identity_claims(item)
+    elif isinstance(value, list):
+        for item in value:
+            _r52_reject_identity_claims(item)
+
+
+def _r52_validate_preflight_value(value, b0_sha):
+    _require_keys(value, R52_PREFLIGHT_KEYS, "R52 B0 preflight attestation")
+    _r52_reject_identity_claims(value)
+    if (
+        value["contract"] != "hanonly-r52-b0-preflight-v1"
+        or value["plan_revision"] != R52_PLAN_REVISION
+        or value["b0_sha"] != b0_sha
+        or value["parent_b0_sha"] != R52_PARENT_B0_SHA
+        or value["r52_contract_sha256"] != R52_CONTRACT_SHA256
+        or value["r52_test_spec_sha256"] != R52_TEST_SPEC_SHA256
+        or value["r51_contract_sha256"] != R51_CONTRACT_SHA256
+        or value["r51_test_spec_sha256"] != R51_TEST_SPEC_SHA256
+        or value["r51_failure_summary_sha256"] != R52_R51_FAILURE_SHA256
+        or value["calibration_manifest_sha256"] != R52_CALIBRATION_MANIFEST_SHA256
+        or value["calibration_hash_inventory_sha256"] != R52_CALIBRATION_HASHES_SHA256
+        or value["evidence_enabled_cargo_features"] != R51_FEATURES
+        or not isinstance(value["gate_results"], dict)
+        or set(value["gate_results"]) != R51_GATE_KEYS
+        or any(result != "pass" for result in value["gate_results"].values())
+        or value["result"] != "pass"
+    ):
+        raise LedgerError("R52 B0 preflight attestation drift")
+    for key in (
+        "checker_endpoint_sha256",
+        "evidence_ledger_endpoint_sha256",
+        "evidence_test_executable_sha256",
+    ):
+        _validate_hash(value[key], f"R52 preflight {key}")
+    executable = value["evidence_test_executable_path"]
+    if (
+        not isinstance(executable, str)
+        or not os.path.isabs(executable)
+        or os.path.normpath(executable) != executable
+    ):
+        raise LedgerError("R52 preflight executable path drift")
+
+
+def _r52_write_preflight(arguments):
+    repo_root = _canonical_existing_path(arguments.repo_root, "repo root")
+    _validate_repository(repo_root)
+    _r52_validate_b0_lineage(repo_root, arguments.b0_sha)
+    _r52_repo_file(
+        repo_root,
+        arguments.r52_contract,
+        R52_CONTRACT_PATH,
+        R52_CONTRACT_SHA256,
+        "R52 contract",
+    )
+    _r52_repo_file(
+        repo_root,
+        arguments.r52_test_spec,
+        R52_TEST_SPEC_PATH,
+        R52_TEST_SPEC_SHA256,
+        "R52 test spec",
+    )
+    _r52_failure_summary(arguments.r51_failure_summary)
+    manifest_path, manifest_bytes = _r51_read(
+        arguments.calibration_manifest,
+        "R52 calibration manifest",
+        mode=0o600,
+    )
+    hashes_path, hashes_bytes, hashes = _r51_json(
+        arguments.calibration_hash_inventory,
+        "R52 calibration hash inventory",
+        mode=0o600,
+    )
+    if (
+        manifest_path != R52_CALIBRATION_MANIFEST_PATH
+        or hashes_path != R52_CALIBRATION_HASHES_PATH
+        or _sha256(manifest_bytes) != R52_CALIBRATION_MANIFEST_SHA256
+        or _sha256(hashes_bytes) != R52_CALIBRATION_HASHES_SHA256
+    ):
+        raise LedgerError("R52 preflight calibration input drift")
+    _r52_validate_hash_inventory_assets(hashes_path, hashes)
+    _, _, gates = _r51_json(
+        arguments.gate_results,
+        "R52 preflight gate results",
+        keys=R51_GATE_KEYS,
+        canonical=True,
+        mode=0o600,
+    )
+    executable, executable_bytes = _r51_read(
+        arguments.evidence_test_executable,
+        "R52 evidence test executable",
+        mode=None,
+    )
+    executable_stat = os.stat(executable, follow_symlinks=False)
+    if executable_stat.st_uid != os.geteuid() or executable_stat.st_mode & 0o111 == 0:
+        raise LedgerError("R52 evidence test executable is not same-owner executable")
+    checker_bytes = _r51_read(
+        os.path.join(repo_root, B0_CHECKER_ENDPOINT), "R52 checker", mode=None
+    )[1]
+    ledger_bytes = _r51_read(
+        os.path.join(repo_root, "scripts/hanonly_evidence_ledger.py"),
+        "R52 evidence ledger",
+        mode=None,
+    )[1]
+    value = {
+        "contract": "hanonly-r52-b0-preflight-v1",
+        "plan_revision": R52_PLAN_REVISION,
+        "b0_sha": arguments.b0_sha,
+        "parent_b0_sha": R52_PARENT_B0_SHA,
+        "r52_contract_sha256": R52_CONTRACT_SHA256,
+        "r52_test_spec_sha256": R52_TEST_SPEC_SHA256,
+        "r51_contract_sha256": R51_CONTRACT_SHA256,
+        "r51_test_spec_sha256": R51_TEST_SPEC_SHA256,
+        "r51_failure_summary_sha256": R52_R51_FAILURE_SHA256,
+        "calibration_manifest_sha256": R52_CALIBRATION_MANIFEST_SHA256,
+        "calibration_hash_inventory_sha256": R52_CALIBRATION_HASHES_SHA256,
+        "checker_endpoint_sha256": _sha256(checker_bytes),
+        "evidence_ledger_endpoint_sha256": _sha256(ledger_bytes),
+        "evidence_test_executable_path": executable,
+        "evidence_test_executable_sha256": _sha256(executable_bytes),
+        "evidence_enabled_cargo_features": R51_FEATURES,
+        "gate_results": gates,
+        "result": "pass",
+    }
+    _r52_validate_preflight_value(value, arguments.b0_sha)
+    _, digest, _ = _r52_publish(
+        arguments.output,
+        value,
+        "R52 B0 preflight attestation",
+        filename="r52-b0-preflight.json",
+        temp_name=".r52-b0-preflight.json.tmp",
+        existing_ok=False,
+    )
+    return _r51_canonical_json({"preflight_sha256": digest}) + b"\n"
+
+
+def _r52_adoption_record(arguments):
+    snapshot = _r51_preflight_custody_snapshot(arguments)
+    if snapshot["custody_root"] != R52_CUSTODY_ROOT:
+        raise LedgerError("R52 adopted custody root drift")
+    expected_files = {
+        "historical-inventory.json": (
+            "7d3576f7bca8992ff72bcbcbd56bc429b6ac7d8ea6095f511347459c1df0bb12",
+            None,
+        ),
+        "holdout-header.json": (
+            "ee98d8667c10ac44f222b3f891924eefff4626707e161a712772f67da1245b9d",
+            None,
+        ),
+        "holdout.enc": (R52_CIPHERTEXT_SHA256, 2075136),
+        "holdout-freeze-receipt.json": (
+            "5e4c36596b9ab7dd0a293841e1cf00f9d56af475d9829038b9226c4e9f5db6b9",
+            None,
+        ),
+    }
+    for name, (digest, length) in expected_files.items():
+        observed = snapshot["files"][name]
+        if (
+            observed["sha256"] != digest
+            or observed["mode"] != 0o600
+            or (length is not None and observed["byte_length"] != length)
+        ):
+            raise LedgerError(f"R52 adopted custody {name} drift")
+    _r52_repo_file(
+        arguments.repo_root,
+        arguments.r52_contract,
+        R52_CONTRACT_PATH,
+        R52_CONTRACT_SHA256,
+        "R52 contract",
+    )
+    _r52_repo_file(
+        arguments.repo_root,
+        arguments.r52_test_spec,
+        R52_TEST_SPEC_PATH,
+        R52_TEST_SPEC_SHA256,
+        "R52 test spec",
+    )
+    _r52_failure_summary(arguments.r51_failure_summary)
+    if arguments.key_capability not in {"retained", "unavailable"}:
+        raise LedgerError("R52 adoption key capability is invalid")
+    return {
+        "contract": "hanonly-r52-r51-holdout-adoption-v1",
+        "plan_revision": R52_PLAN_REVISION,
+        "b0_sha": arguments.b0_sha,
+        "r52_contract_sha256": R52_CONTRACT_SHA256,
+        "r52_test_spec_sha256": R52_TEST_SPEC_SHA256,
+        "r51_parent_b0_sha": R52_PARENT_B0_SHA,
+        "r51_contract_sha256": R51_CONTRACT_SHA256,
+        "r51_test_spec_sha256": R51_TEST_SPEC_SHA256,
+        "r51_failure_summary_sha256": R52_R51_FAILURE_SHA256,
+        "imported_holdout_revision": R51_PLAN_REVISION,
+        "imported_entry_ids": R51_HOLDOUT_IDS,
+        "custody_root_st_dev": snapshot["custody_root_st_dev"],
+        "custody_root_st_ino": snapshot["custody_root_st_ino"],
+        "custody_files": snapshot["files"],
+        "observed_namespace": sorted(snapshot["files"]),
+        "observed_unopened": True,
+        "key_capability": arguments.key_capability,
+        "result": "pass" if arguments.key_capability == "retained" else "fail_closed",
+    }
+
+
+def _r52_write_adoption(arguments):
+    repo_root = _canonical_existing_path(arguments.repo_root, "repo root")
+    _validate_repository(repo_root)
+    _r52_validate_b0_lineage(repo_root, arguments.b0_sha)
+    record = _r52_adoption_record(arguments)
+    _require_keys(record, R52_ADOPTION_KEYS, "R52 holdout adoption record")
+    _, digest, _ = _r52_publish(
+        arguments.output,
+        record,
+        "R52 holdout adoption record",
+        filename="r52-r51-holdout-adoption.json",
+        temp_name=".r52-r51-holdout-adoption.json.tmp",
+        existing_ok=False,
+    )
+    return _r51_canonical_json({"adoption_record_sha256": digest}) + b"\n"
+
+
+def _r52_with_one_shot_lock(state_root, filename, value, kind, action):
+    state_root = _canonical_existing_path(state_root, f"R52 {kind} state root")
+    with contextlib.ExitStack() as stack:
+        root = _open_absolute(state_root, directory=True, stack=stack)
+        _require_owned_mode(root.path, root.stat, 0o700)
+        names = set(os.listdir(root.fd))
+        expected = (
+            set()
+            if kind == "challenge"
+            else {
+                R52_CHALLENGE_LOCK_NAME,
+                "challenge-start.json",
+                "challenge-terminal.json",
+            }
+        )
+        if names != expected:
+            raise LedgerError(f"R52 {kind} state is not eligible for a one-shot lock")
+        path = os.path.join(state_root, filename)
+        _, digest, created = _publish_canonical_held(
+            root,
+            path,
+            value,
+            f"R52 {kind} use lock",
+            allowed_names={filename},
+            temp_name=f".{filename}.tmp",
+            existing_ok=False,
+            pre_link=lambda: _revalidate_held_path(
+                root, f"R52 {kind} state root at lock publication"
+            ),
+            stack=stack,
+        )
+        if not created:
+            raise LedgerError(f"R52 {kind} lock was not created this invocation")
+        lock = _open_child(root, filename, directory=False, stack=stack)
+        _require_owned_mode(lock.path, lock.stat, 0o600)
+        lock_bytes = _read_all(lock.fd)
+        if _sha256(lock_bytes) != digest:
+            raise LedgerError(f"R52 {kind} lock bytes drift")
+
+        def revalidate_capability():
+            _revalidate_held_path(root, f"R52 {kind} state root")
+            _revalidate_held_path(lock, f"R52 {kind} held lock")
+            current = os.stat(filename, dir_fd=root.fd, follow_symlinks=False)
+            if _identity(current) != _identity(lock.stat):
+                raise LedgerError(f"R52 {kind} lock path identity drift")
+
+        revalidate_capability()
+        return action(root, lock, digest, revalidate_capability, stack)
+
+
+def _r52_runner_from_preflight(preflight_path, b0_sha, repo_root):
+    _, _, value = _r51_json(
+        preflight_path,
+        "R52 B0 preflight attestation",
+        keys=R52_PREFLIGHT_KEYS,
+    )
+    _r52_validate_preflight_value(value, b0_sha)
+    checker_bytes = _r51_read(
+        os.path.join(repo_root, B0_CHECKER_ENDPOINT), "R52 checker", mode=None
+    )[1]
+    ledger_bytes = _r51_read(
+        os.path.join(repo_root, "scripts/hanonly_evidence_ledger.py"),
+        "R52 evidence ledger",
+        mode=None,
+    )[1]
+    if value["checker_endpoint_sha256"] != _sha256(checker_bytes) or value[
+        "evidence_ledger_endpoint_sha256"
+    ] != _sha256(ledger_bytes):
+        raise LedgerError("R52 preflight endpoint hash drift")
+    executable, executable_bytes = _r51_read(
+        value["evidence_test_executable_path"],
+        "R52 pinned evidence executable",
+        mode=None,
+    )
+    executable_stat = os.stat(executable, follow_symlinks=False)
+    if (
+        executable_stat.st_uid != os.geteuid()
+        or executable_stat.st_mode & 0o111 == 0
+        or _sha256(executable_bytes) != value["evidence_test_executable_sha256"]
+    ):
+        raise LedgerError("R52 pinned evidence executable drift")
+    return executable
+
+
+def _r52_run_pinned_evaluator(executable, mode, environment):
+    if mode not in {"challenge", "holdout"}:
+        raise LedgerError("R52 evaluator mode drift")
+    test_name = (
+        R52_BRIDGE_TEST
+        if mode == "challenge"
+        else (
+            "pipeline::d0_visual_manifest_harness::source_gate_selection::"
+            "han_only_source_gate_crop_selection_matrix"
+        )
+    )
+    child_environment = {
+        key: os.environ[key]
+        for key in ("HOME", "LANG", "PATH", "TMPDIR")
+        if key in os.environ
+    }
+    child_environment.update(environment)
+    result = subprocess.run(
+        [
+            executable,
+            "--ignored",
+            "--exact",
+            test_name,
+            "--nocapture",
+        ],
+        cwd=environment["HANONLY_R52_REPO_ROOT"],
+        env=child_environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=7200,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise LedgerError(f"R52 pinned {mode} evaluator failed")
+
+
+def _r52_hold_invocation_inputs(paths, stack, label):
+    held = []
+    digests = {}
+    for path, mode in sorted(set(paths)):
+        item = _open_absolute(path, directory=False, stack=stack)
+        if mode is not None:
+            _require_owned_mode(item.path, item.stat, mode)
+        elif item.stat.st_uid != os.geteuid() or not stat.S_ISREG(item.stat.st_mode):
+            raise LedgerError(f"{label} held input owner or type drift")
+        data = _read_all(item.fd)
+        held.append(item)
+        digests[item.path] = (len(data), _sha256(data))
+
+    def revalidate():
+        for item in held:
+            _revalidate_held_path(item, f"{label} held input")
+            os.lseek(item.fd, 0, os.SEEK_SET)
+            data = _read_all(item.fd)
+            if (len(data), _sha256(data)) != digests[item.path]:
+                raise LedgerError(f"{label} held input bytes drift")
+
+    revalidate()
+    return revalidate
+
+
+def _r52_write_bridge_request(evidence_root, value, stack):
+    request_name = f".r52-bridge-request-{os.getpid()}.json"
+    result_name = f".r52-challenge-result-{os.getpid()}.tmp"
+    request_path = os.path.join(evidence_root, request_name)
+    result_path = os.path.join(evidence_root, result_name)
+    if os.path.lexists(request_path) or os.path.lexists(result_path):
+        raise LedgerError("R52 bridge temporary path already exists")
+    value = {**value, "result_path": result_path}
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    request_fd = os.open(request_path, flags, 0o600)
+    stack.callback(os.close, request_fd)
+    stack.callback(lambda: os.path.lexists(request_path) and os.unlink(request_path))
+    stack.callback(lambda: os.path.lexists(result_path) and os.unlink(result_path))
+    _write_complete(request_fd, _r51_canonical_json(value))
+    os.fsync(request_fd)
+    request_stat = os.fstat(request_fd)
+    _require_owned_mode(request_path, request_stat, 0o600)
+    current = os.stat(request_path, follow_symlinks=False)
+    if _identity(current) != _identity(request_stat):
+        raise LedgerError("R52 bridge request identity drift")
+    return request_path, result_path
+
+
+def _r52_run_result(path, b0_sha, candidate_id):
+    path, data, value = _r51_json(
+        path,
+        "R52 pinned evaluator result",
+        keys=R52_RUN_RESULT_KEYS,
+        canonical=True,
+        mode=0o600,
+    )
+    if (
+        value["contract"] != "hanonly-r52-pinned-evaluator-result-v1"
+        or value["plan_revision"] != R52_PLAN_REVISION
+        or value["b0_sha"] != b0_sha
+        or value["selected_candidate_id"] != candidate_id
+        or value["result"] not in {"pass", "fail"}
+        or not isinstance(value["ordered_cell_results"], list)
+    ):
+        raise LedgerError("R52 pinned evaluator result drift")
+    return path, data, value
+
+
+def _r52_challenge_inputs(arguments):
+    repo_root = _canonical_existing_path(arguments.repo_root, "repo root")
+    _validate_repository(repo_root)
+    _r52_validate_b0_lineage(repo_root, arguments.b0_sha)
+    executable = _r52_runner_from_preflight(
+        arguments.b0_preflight_attestation, arguments.b0_sha, repo_root
+    )
+    manifest_path, manifest_bytes, manifest = _r51_json(
+        arguments.challenge_manifest,
+        "R52 challenge manifest",
+        canonical=True,
+        mode=0o600,
+    )
+    hashes_path, hashes_bytes, hashes = _r51_json(
+        arguments.challenge_hash_record,
+        "R52 challenge hash record",
+        canonical=True,
+        mode=0o600,
+    )
+    _r52_validate_challenge_manifest(manifest)
+    if (
+        manifest_path != R52_CHALLENGE_MANIFEST_PATH
+        or hashes_path != R52_CHALLENGE_HASHES_PATH
+        or _sha256(manifest_bytes) != R52_CHALLENGE_MANIFEST_SHA256
+        or _sha256(hashes_bytes) != R52_CHALLENGE_HASHES_SHA256
+        or hashes.get("manifest_sha256") != R52_CHALLENGE_MANIFEST_SHA256
+    ):
+        raise LedgerError("R52 challenge frozen input drift")
+    _, recall_bytes, recall = _r51_json(
+        arguments.frozen_recall_contract,
+        "R52 frozen recall contract",
+        canonical=True,
+        mode=0o600,
+    )
+    calibration_ledger, _, calibration = _r51_json(
+        arguments.calibration_ledger,
+        "R52 calibration selection artifact",
+        canonical=True,
+        mode=0o600,
+    )
+    candidate_id = recall.get("selected_candidate_id")
+    if (
+        candidate_id not in {candidate["id"] for candidate in B0_CANDIDATES}
+        or calibration.get("selected_candidate_id") != candidate_id
+        or calibration.get("b0_sha") != arguments.b0_sha
+    ):
+        raise LedgerError("R52 challenge selected candidate drift")
+    _validate_hash(
+        arguments.source_gate_fixture_manifest_sha256,
+        "R52 Source Gate fixture manifest",
+    )
+    r49_manifest, r49_bytes = _r51_read(
+        R52_R49_VISUAL_MANIFEST_PATH,
+        "R49 visual manifest",
+        mode=0o600,
+    )
+    if _sha256(r49_bytes) != R52_R49_VISUAL_MANIFEST_SHA256:
+        raise LedgerError("R49 visual manifest drift")
+    evidence_root = _canonical_existing_path(
+        arguments.evidence_root, "R52 evidence root"
+    )
+    if arguments.challenge_state_root != R52_STATE_ROOT:
+        raise LedgerError("R52 challenge state root drift")
+    return (
+        repo_root,
+        evidence_root,
+        executable,
+        candidate_id,
+        recall_bytes,
+        calibration_ledger,
+        r49_manifest,
+    )
+
+
+def _r52_run_challenge(arguments):
+    (
+        repo_root,
+        evidence_root,
+        executable,
+        candidate_id,
+        recall_bytes,
+        calibration_ledger,
+        r49_manifest,
+    ) = _r52_challenge_inputs(arguments)
+    created = _validate_utc_seconds(arguments.created_at_utc, "challenge lock creation")
+    started = _validate_utc_seconds(arguments.started_at_utc, "challenge start")
+    completed = _validate_utc_seconds(
+        arguments.completed_at_utc, "challenge completion"
+    )
+    if started < created or completed <= started:
+        raise LedgerError("R52 challenge timestamps are out of order")
+    lock_value = {
+        "contract": "hanonly-r52-challenge-use-lock-v1",
+        "plan_revision": R52_PLAN_REVISION,
+        "b0_sha": arguments.b0_sha,
+        "challenge_manifest_sha256": R52_CHALLENGE_MANIFEST_SHA256,
+        "challenge_hash_record_sha256": R52_CHALLENGE_HASHES_SHA256,
+        "selected_candidate_id": candidate_id,
+        "frozen_recall_contract_sha256": _sha256(recall_bytes),
+        "created_at_utc": arguments.created_at_utc,
+    }
+
+    def run(root, _lock, lock_sha256, revalidate, stack):
+        revalidate_inputs = _r52_hold_invocation_inputs(
+            {
+                (arguments.b0_preflight_attestation, 0o600),
+                (arguments.challenge_manifest, 0o600),
+                (arguments.challenge_hash_record, 0o600),
+                (arguments.frozen_recall_contract, 0o600),
+                (calibration_ledger, 0o600),
+                (r49_manifest, 0o600),
+                (executable, None),
+            },
+            stack,
+            "R52 challenge",
+        )
+
+        def revalidate_all():
+            revalidate()
+            revalidate_inputs()
+
+        revalidate_all()
+        start_value = {
+            "contract": "hanonly-r52-challenge-start-v1",
+            "plan_revision": R52_PLAN_REVISION,
+            "b0_sha": arguments.b0_sha,
+            "challenge_lock_sha256": lock_sha256,
+            "selected_candidate_id": candidate_id,
+            "ordered_cell_ids": R52_CHALLENGE_CELL_IDS,
+            "started_at_utc": arguments.started_at_utc,
+        }
+        _, start_sha256, _ = _publish_canonical_held(
+            root,
+            os.path.join(root.path, "challenge-start.json"),
+            start_value,
+            "R52 challenge start receipt",
+            allowed_names={"challenge-start.json"},
+            temp_name=".challenge-start.json.tmp",
+            existing_ok=False,
+            pre_link=revalidate_all,
+            stack=stack,
+        )
+        request_path, result_path = _r52_write_bridge_request(
+            evidence_root,
+            {
+                "contract": "hanonly-r52-evidence-bridge-request-v1",
+                "plan_revision": R52_PLAN_REVISION,
+                "mode": "challenge",
+                "b0_sha": arguments.b0_sha,
+                "repo_root": repo_root,
+                "evidence_root": evidence_root,
+                "selected_candidate_id": candidate_id,
+                "challenge_manifest_path": arguments.challenge_manifest,
+                "challenge_manifest_sha256": R52_CHALLENGE_MANIFEST_SHA256,
+                "challenge_hash_record_path": arguments.challenge_hash_record,
+                "challenge_hash_record_sha256": R52_CHALLENGE_HASHES_SHA256,
+                "r49_visual_manifest_path": r49_manifest,
+                "r49_visual_manifest_sha256": R52_R49_VISUAL_MANIFEST_SHA256,
+                "source_gate_fixture_manifest_sha256": (
+                    arguments.source_gate_fixture_manifest_sha256
+                ),
+                "calibration_selection_artifact_path": calibration_ledger,
+                "b0_preflight_attestation_path": (arguments.b0_preflight_attestation),
+            },
+            stack,
+        )
+        revalidate_all()
+        try:
+            _r52_run_pinned_evaluator(
+                executable,
+                "challenge",
+                {
+                    "HANONLY_R52_REPO_ROOT": repo_root,
+                    "HANONLY_R52_BRIDGE_REQUEST": request_path,
+                },
+            )
+            revalidate_all()
+            _, _, result = _r52_run_result(result_path, arguments.b0_sha, candidate_id)
+        except (LedgerError, OSError, subprocess.SubprocessError) as error:
+            failure = {
+                "contract": "hanonly-r52-challenge-failure-v1",
+                "plan_revision": R52_PLAN_REVISION,
+                "b0_sha": arguments.b0_sha,
+                "challenge_lock_sha256": lock_sha256,
+                "challenge_start_sha256": start_sha256,
+                "executed_prefix": [],
+                "first_failed_cell": None,
+                "unexecuted_suffix": R52_CHALLENGE_CELL_IDS,
+                "failure_reason": f"pinned evaluator operational failure: {error}",
+                "failed_at_utc": arguments.completed_at_utc,
+                "result": "fail",
+            }
+            revalidate()
+            _publish_canonical_held(
+                root,
+                os.path.join(root.path, "challenge-failure.json"),
+                failure,
+                "R52 challenge failure receipt",
+                allowed_names={"challenge-failure.json"},
+                temp_name=".challenge-failure.json.tmp",
+                existing_ok=False,
+                pre_link=revalidate,
+                stack=stack,
+            )
+            raise LedgerError("R52 challenge failed permanently") from error
+        cells = result["ordered_cell_results"]
+        seen_paths = set()
+        for ordinal, cell in enumerate(cells):
+            if ordinal >= len(R52_CHALLENGE_CELL_IDS):
+                raise LedgerError("R52 challenge evaluator returned extra cells")
+            _r52_validate_challenge_cell(
+                evidence_root,
+                cell,
+                ordinal,
+                candidate_id,
+                seen_paths,
+                arguments.b0_sha,
+            )
+            if cell["result"] == "fail":
+                if ordinal != len(cells) - 1 or result["result"] != "fail":
+                    raise LedgerError("R52 challenge failure suffix executed")
+                failure = {
+                    "contract": "hanonly-r52-challenge-failure-v1",
+                    "plan_revision": R52_PLAN_REVISION,
+                    "b0_sha": arguments.b0_sha,
+                    "challenge_lock_sha256": lock_sha256,
+                    "challenge_start_sha256": start_sha256,
+                    "executed_prefix": cells,
+                    "first_failed_cell": cell,
+                    "unexecuted_suffix": R52_CHALLENGE_CELL_IDS[len(cells) :],
+                    "failure_reason": "pinned evaluator cell failed",
+                    "failed_at_utc": arguments.completed_at_utc,
+                    "result": "fail",
+                }
+                revalidate_all()
+                _publish_canonical_held(
+                    root,
+                    os.path.join(root.path, "challenge-failure.json"),
+                    failure,
+                    "R52 challenge failure receipt",
+                    allowed_names={"challenge-failure.json"},
+                    temp_name=".challenge-failure.json.tmp",
+                    existing_ok=False,
+                    pre_link=revalidate_all,
+                    stack=stack,
+                )
+                return _r51_canonical_json({"result": "fail"}) + b"\n"
+        if len(cells) != 18 or result["result"] != "pass":
+            raise LedgerError("R52 challenge evaluator result is not a closed terminal")
+        terminal = {
+            "contract": "hanonly-r52-challenge-terminal-v1",
+            "plan_revision": R52_PLAN_REVISION,
+            "b0_sha": arguments.b0_sha,
+            "challenge_lock_sha256": lock_sha256,
+            "challenge_start_sha256": start_sha256,
+            "selected_candidate_id": candidate_id,
+            "ordered_cell_results": cells,
+            "completed_at_utc": arguments.completed_at_utc,
+            "result": "pass",
+        }
+        revalidate_all()
+        _, terminal_sha256, _ = _publish_canonical_held(
+            root,
+            os.path.join(root.path, "challenge-terminal.json"),
+            terminal,
+            "R52 challenge terminal receipt",
+            allowed_names={"challenge-terminal.json"},
+            temp_name=".challenge-terminal.json.tmp",
+            existing_ok=False,
+            pre_link=revalidate_all,
+            stack=stack,
+        )
+        return (
+            _r51_canonical_json({"challenge_terminal_sha256": terminal_sha256}) + b"\n"
+        )
+
+    return _r52_with_one_shot_lock(
+        arguments.challenge_state_root,
+        R52_CHALLENGE_LOCK_NAME,
+        lock_value,
+        "challenge",
+        run,
+    )
+
+
+def _r52_run_holdout(arguments):
+    expected_holdout_lock = os.path.join(R52_STATE_ROOT, R52_HOLDOUT_LOCK_NAME)
+    if (
+        _canonical_future_path(arguments.holdout_use_lock, "R52 holdout use lock")
+        != expected_holdout_lock
+    ):
+        raise LedgerError("R52 holdout lock output path drift")
+    evidence_root = _canonical_existing_path(
+        arguments.evidence_root, "R52 evidence root"
+    )
+    plaintext_directory = os.path.normpath(arguments.plaintext_directory)
+    plaintext_archive = os.path.normpath(arguments.plaintext_archive)
+    if (
+        not os.path.isabs(plaintext_directory)
+        or not os.path.isabs(plaintext_archive)
+        or os.path.dirname(plaintext_directory) != evidence_root
+        or os.path.basename(plaintext_directory) != "r51-plaintext"
+        or os.path.dirname(plaintext_archive) != plaintext_directory
+        or os.path.basename(plaintext_archive) != "holdout.tar"
+        or _canonical_future_path(arguments.open_marker, "R51 open marker")
+        != os.path.join(R52_CUSTODY_ROOT, "holdout-open.json")
+    ):
+        raise LedgerError("R52 holdout runtime path drift")
+    repo_root = _canonical_existing_path(arguments.repo_root, "repo root")
+    _validate_repository(repo_root)
+    _r52_validate_b0_lineage(repo_root, arguments.b0_sha)
+    executable = _r52_runner_from_preflight(
+        arguments.b0_preflight_attestation, arguments.b0_sha, repo_root
+    )
+    _, recall_bytes, recall = _r51_json(
+        arguments.frozen_recall_contract,
+        "R52 frozen recall contract",
+        canonical=True,
+        mode=0o600,
+    )
+    candidate_id = recall.get("selected_candidate_id")
+    if candidate_id not in {candidate["id"] for candidate in B0_CANDIDATES}:
+        raise LedgerError("R52 holdout selected candidate drift")
+    challenge_bytes, _ = _r52_validate_challenge_receipts(
+        arguments.challenge_state_root,
+        arguments.evidence_root,
+        arguments.b0_sha,
+        candidate_id,
+        _sha256(recall_bytes),
+    )
+    adoption_bytes, adoption = _r52_validate_adoption(
+        arguments.holdout_adoption, arguments.b0_sha
+    )
+    if adoption["key_capability"] != "retained":
+        raise LedgerError("R52 holdout key capability is unavailable")
+    checker_bytes = _r51_read(
+        os.path.join(repo_root, B0_CHECKER_ENDPOINT), "R52 checker", mode=None
+    )[1]
+    pre_holdout = _r51_validate_attestation(
+        arguments.pre_holdout_attestation,
+        "pre-holdout",
+        arguments.b0_sha,
+        _sha256(checker_bytes),
+    )
+    _validate_hash(
+        arguments.source_gate_fixture_manifest_sha256,
+        "R52 Source Gate fixture manifest",
+    )
+    _r51_preflight_custody_snapshot(arguments)
+    if arguments.challenge_state_root != R52_STATE_ROOT:
+        raise LedgerError("R52 holdout state root drift")
+    created = _validate_utc_seconds(arguments.created_at_utc, "holdout lock creation")
+    del created
+    lock_value = {
+        "contract": "hanonly-r52-r51-holdout-use-lock-v1",
+        "plan_revision": R52_PLAN_REVISION,
+        "b0_sha": arguments.b0_sha,
+        "ciphertext_sha256": R52_CIPHERTEXT_SHA256,
+        "adoption_record_sha256": _sha256(adoption_bytes),
+        "selected_candidate_id": candidate_id,
+        "frozen_recall_contract_sha256": _sha256(recall_bytes),
+        "challenge_terminal_sha256": _sha256(challenge_bytes),
+        "pre_holdout_attestation_sha256": pre_holdout[1],
+        "created_at_utc": arguments.created_at_utc,
+    }
+
+    def run(_root, _lock, lock_sha256, revalidate, _stack):
+        revalidate_inputs = _r52_hold_invocation_inputs(
+            {
+                (arguments.b0_preflight_attestation, 0o600),
+                (arguments.pre_holdout_attestation, 0o600),
+                (arguments.calibration_ledger, 0o600),
+                (arguments.frozen_recall_contract, 0o600),
+                (arguments.holdout_adoption, 0o600),
+                (arguments.freeze_receipt, 0o600),
+                (arguments.historical_inventory, 0o600),
+                (arguments.ciphertext, 0o600),
+                (executable, None),
+            },
+            _stack,
+            "R52 holdout",
+        )
+
+        def revalidate_all():
+            revalidate()
+            revalidate_inputs()
+
+        revalidate_all()
+        deadline = time.monotonic() + 600
+        while not (
+            os.path.isfile(arguments.open_marker)
+            and os.path.isdir(plaintext_directory)
+            and os.path.isfile(plaintext_archive)
+        ):
+            if time.monotonic() >= deadline:
+                raise LedgerError("R52 custody opener did not publish runtime inputs")
+            time.sleep(0.1)
+            revalidate_all()
+        open_path, open_bytes = _r51_read(
+            arguments.open_marker, "R51 holdout open marker", mode=0o600
+        )
+        if open_path != os.path.join(R52_CUSTODY_ROOT, "holdout-open.json"):
+            raise LedgerError("R51 holdout open marker path drift")
+        plaintext_root = _canonical_existing_path(
+            plaintext_directory, "R51 plaintext directory"
+        )
+        plaintext_path, _ = _r51_read(
+            plaintext_archive, "R51 plaintext archive", mode=0o600
+        )
+        if (
+            plaintext_root != plaintext_directory
+            or plaintext_path != plaintext_archive
+            or _mode(os.stat(plaintext_root, follow_symlinks=False)) != 0o700
+        ):
+            raise LedgerError("R51 plaintext runtime identity drift")
+        _, _, calibration = _r51_json(
+            arguments.calibration_ledger,
+            "R52 calibration selection artifact",
+            canonical=True,
+            mode=0o600,
+        )
+        calibration_manifest_sha256 = calibration.get("manifest_sha256")
+        _validate_hash(
+            calibration_manifest_sha256, "R51 projected calibration manifest"
+        )
+        revalidate_all()
+        _r52_run_pinned_evaluator(
+            executable,
+            "holdout",
+            {
+                "HANONLY_R52_REPO_ROOT": repo_root,
+                "HANONLY_SOURCE_GATE_SELECTION_PHASE": "holdout",
+                "HANONLY_R51_FORMAL_CUSTODY": "1",
+                "HANONLY_B0_SHA": arguments.b0_sha,
+                "HANONLY_VISUAL_EVIDENCE_ROOT": evidence_root,
+                "HANONLY_SOURCE_GATE_FIXTURE_MANIFEST_SHA256": (
+                    arguments.source_gate_fixture_manifest_sha256
+                ),
+                "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT": (
+                    arguments.calibration_ledger
+                ),
+                "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR": os.path.join(
+                    os.path.dirname(arguments.calibration_ledger), "reports"
+                ),
+                "HANONLY_SOURCE_GATE_REQUIRED_CHECK_ATTESTATION": (
+                    arguments.pre_holdout_attestation
+                ),
+                "HANONLY_R51_CALIBRATION_MANIFEST_SHA256": (
+                    calibration_manifest_sha256
+                ),
+                "HANONLY_R51_CUSTODY_DIRECTORY": os.path.dirname(arguments.ciphertext),
+                "HANONLY_R51_PLAINTEXT_DIRECTORY": plaintext_root,
+                "HANONLY_R51_PLAINTEXT_ARCHIVE": plaintext_path,
+                "HANONLY_R51_OPEN_MARKER_SHA256": _sha256(open_bytes),
+            },
+        )
+        revalidate_all()
+        cleanup_deadline = time.monotonic() + 600
+        while os.path.lexists(plaintext_archive) or os.path.lexists(
+            plaintext_directory
+        ):
+            if time.monotonic() >= cleanup_deadline:
+                raise LedgerError("R52 custody plaintext cleanup did not complete")
+            time.sleep(0.1)
+            revalidate_all()
+        payload = _r52_validate_authorization_inputs(arguments)
+        revalidate_all()
+        return (
+            _r51_canonical_json(
+                {
+                    "holdout_use_lock_sha256": lock_sha256,
+                    "imported_r51_terminal_sha256": payload[
+                        "imported_r51_terminal_sha256"
+                    ],
+                }
+            )
+            + b"\n"
+        )
+
+    return _r52_with_one_shot_lock(
+        arguments.challenge_state_root,
+        R52_HOLDOUT_LOCK_NAME,
+        lock_value,
+        "holdout",
+        run,
+    )
+
+
+def _r52_validate_challenge_manifest(value):
+    _require_keys(
+        value,
+        {"contract", "entries", "oracle_corrections", "plan_revision", "role"},
+        "R52 challenge manifest",
+    )
+    expected_correction = {
+        "entry_id": "r49-h04",
+        "target_id": "product-id",
+        "source_script_class": "protected_latin",
+        "expected_decision": "reject",
+        "expected_rejection_reason": "pp_no_han_protected_latin",
+        "r49_corpus_immutable": True,
+    }
+    entries = value["entries"]
+    if (
+        value["contract"] != "hanonly-r51-disclosed-challenge-manifest-v1"
+        or value["plan_revision"] != 51
+        or value["role"] != "challenge"
+        or not isinstance(entries, list)
+        or [entry.get("id") for entry in entries]
+        != R52_CHALLENGE_IDS + R52_SUPPLEMENTAL_IDS
+        or value["oracle_corrections"] != [expected_correction]
+    ):
+        raise LedgerError("R52 challenge manifest binding drift")
+    for ordinal, entry in enumerate(entries):
+        expected_keys = {"id", "prior_role", "source_path", "source_sha256"}
+        if ordinal >= len(R52_CHALLENGE_IDS):
+            expected_keys |= {"notes_path", "notes_sha256"}
+        _require_keys(
+            entry,
+            expected_keys,
+            "R52 challenge manifest entry",
+        )
+        _validate_hash(entry["source_sha256"], "R52 challenge source")
+        if ordinal >= len(R52_CHALLENGE_IDS):
+            _validate_hash(entry["notes_sha256"], "R52 challenge notes")
+
+
+def _r52_bound_challenge_json(evidence_root, cell, field, label):
+    _, data, _ = _r51_relative_file(
+        evidence_root,
+        cell[f"{field}_path"],
+        f"R52 challenge {label}",
+    )
+    if _sha256(data) != cell[f"{field}_sha256"]:
+        raise LedgerError(f"R52 challenge {label} hash drift")
+    value = _parse_json(data, f"R52 challenge {label}")
+    if _r51_canonical_json(value) != data:
+        raise LedgerError(f"R52 challenge {label} is not canonical")
+    return value
+
+
+def _r52_validate_challenge_cell_identity(cell, ordinal, candidate_id):
+    _require_keys(cell, R52_CHALLENGE_CELL_KEYS, "R52 challenge cell")
+    expected_id, device = R52_CHALLENGE_CELL_IDS[ordinal].split("/")
+    kind = "regression" if ordinal < 8 else "supplemental"
+    if (
+        cell["ordinal"] != ordinal
+        or cell["entry_id"] != expected_id
+        or cell["device"] != device
+        or cell["kind"] != kind
+        or cell["candidate_id"] != candidate_id
+        or cell["result"] not in {"pass", "fail"}
+        or type(cell["pp_count"]) is not int
+        or cell["pp_count"] < 0
+        or type(cell["vl_count"]) is not int
+        or cell["vl_count"] < 0
+        or (
+            cell["rejection_reason"] is not None
+            and cell["rejection_reason"] not in R52_REJECTION_REASONS
+        )
+    ):
+        raise LedgerError("R52 challenge cell identity drift")
+    paths = [
+        cell[f"{field}_path"]
+        for field in ("selection_result", "diagnostic", "process_evidence", "log")
+    ]
+    if kind == "regression":
+        _r51_validate_target_recall(
+            cell["target_recall"], "R52 challenge target recall"
+        )
+    elif cell["target_recall"] is not None:
+        raise LedgerError("R52 supplemental challenge target recall must be null")
+    paths = [
+        cell[f"{field}_path"]
+        for field in ("selection_result", "diagnostic", "process_evidence", "log")
+    ]
+    if len(set(paths)) != len(paths) or any(
+        not isinstance(path, str)
+        or not path
+        or os.path.isabs(path)
+        or "\\" in path
+        or os.path.normpath(path) != path
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+        for path in paths
+    ):
+        raise LedgerError("R52 challenge evidence path drift")
+    return expected_id, device
+
+
+def _r52_validate_challenge_cell(
+    evidence_root, cell, ordinal, candidate_id, seen_paths=None, b0_sha=None
+):
+    expected_id, device = _r52_validate_challenge_cell_identity(
+        cell, ordinal, candidate_id
+    )
+    paths = [
+        cell[f"{field}_path"]
+        for field in ("selection_result", "diagnostic", "process_evidence", "log")
+    ]
+    if seen_paths is not None and any(path in seen_paths for path in paths):
+        raise LedgerError("R52 challenge evidence path reuse")
+    if seen_paths is not None:
+        seen_paths.update(paths)
+    selection = _r52_bound_challenge_json(
+        evidence_root, cell, "selection_result", "selection result"
+    )
+    diagnostic = _r52_bound_challenge_json(
+        evidence_root, cell, "diagnostic", "diagnostic"
+    )
+    process = _r52_bound_challenge_json(
+        evidence_root, cell, "process_evidence", "process evidence"
+    )
+    _, log_bytes, _ = _r51_relative_file(
+        evidence_root,
+        cell["log_path"],
+        "R52 challenge log",
+    )
+    if _sha256(log_bytes) != cell["log_sha256"]:
+        raise LedgerError("R52 challenge log hash drift")
+    _require_keys(selection, B0_RESULT_KEYS, "R52 challenge SelectionResult")
+    _require_keys(
+        selection["execution_evidence"],
+        B0_EXECUTION_KEYS,
+        "R52 challenge SelectionResult execution evidence",
+    )
+    if not isinstance(selection["runtime_nodes"], list):
+        raise LedgerError("R52 challenge SelectionResult runtime nodes drift")
+    for node in selection["runtime_nodes"]:
+        _require_keys(node, B0_RUNTIME_NODE_KEYS, "R52 challenge runtime node")
+    derived = selection["derived"]
+    _require_keys(derived, B0_DERIVED_KEYS, "R52 challenge SelectionResult derived")
+    coverage = derived["source_coverage_preflight"]
+    _require_keys(
+        coverage,
+        B0_SOURCE_COVERAGE_KEYS,
+        "R52 challenge SelectionResult source coverage",
+    )
+    _require_keys(diagnostic, R51_CELL_DIAGNOSTIC_KEYS, "R52 challenge diagnostic")
+    _require_keys(process, B0_PROCESS_KEYS, "R52 challenge process evidence")
+    rejection_reason = cell["rejection_reason"]
+    if rejection_reason is not None and rejection_reason not in R52_REJECTION_REASONS:
+        raise LedgerError("R52 challenge rejection reason is outside Source Gate enum")
+    expected_state = "passed" if cell["result"] == "pass" else "failed"
+    expected_selection = "rejected" if rejection_reason is not None else "selected"
+    execution = selection["execution_evidence"]
+    process_byte_length = len(_r51_canonical_json(process))
+    if (
+        selection["entry_id"] != expected_id
+        or selection["candidate_id"] != candidate_id
+        or selection["process_evidence_id"] != process["id"]
+        or process["id"] != f"challenge/{candidate_id}/{expected_id}/{device}"
+        or execution["paddle_instance_id"] != process["paddle_instance_id"]
+        or execution["source_gate_diagnostic_relpath"] != cell["diagnostic_path"]
+        or execution["source_gate_diagnostic_sha256"] != cell["diagnostic_sha256"]
+        or execution["raw_inference_log_relpath"] != cell["log_path"]
+        or execution["raw_inference_log_sha256"] != cell["log_sha256"]
+        or derived["actual_device"] != device
+        or diagnostic["contract"] != "hanonly-r52-challenge-cell-diagnostic-v1"
+        or diagnostic["plan_revision"] != R52_PLAN_REVISION
+        or (b0_sha is not None and diagnostic["b0_sha"] != b0_sha)
+        or diagnostic["phase"] != "challenge"
+        or diagnostic["entry_id"] != expected_id
+        or diagnostic["device"] != device
+        or diagnostic["candidate_id"] != candidate_id
+        or diagnostic["state"] != expected_state
+        or diagnostic["selection_result"] != expected_selection
+        or diagnostic["target_recall"] != cell["target_recall"]
+        or diagnostic["pp_han_count"] != cell["pp_count"]
+        or diagnostic["vl_han_count"] != cell["vl_count"]
+        or diagnostic["rejection_reason"] != rejection_reason
+        or diagnostic["device_evidence_sha256"] != cell["process_evidence_sha256"]
+        or diagnostic["device_evidence_byte_length"] != process_byte_length
+        or diagnostic["log_sha256"] != cell["log_sha256"]
+        or diagnostic["log_byte_length"] != len(log_bytes)
+        or coverage["pp_han_scalar_count"] != cell["pp_count"]
+        or coverage["vl_expected_han_scalar_count"] != cell["vl_count"]
+        or type(derived["passed"]) is not bool
+    ):
+        raise LedgerError("R52 challenge evidence binding drift")
+    _r51_validate_process_evidence(process, "challenge", device, evidence_root)
+    if expected_id == "r49-h04" and rejection_reason != "pp_no_han_protected_latin":
+        raise LedgerError("R52 protected-Latin correction result drift")
+    return cell
+
+
+def _r52_validate_challenge_receipts(
+    state_root, evidence_root, b0_sha, selected_candidate_id, frozen_recall_sha256
+):
+    state_root = _canonical_existing_path(state_root, "R52 challenge state root")
+    with contextlib.ExitStack() as stack:
+        root = _open_absolute(state_root, directory=True, stack=stack)
+        _require_owned_mode(root.path, root.stat, 0o700)
+        names = set(os.listdir(root.fd))
+    allowed = {
+        R52_CHALLENGE_LOCK_NAME,
+        "challenge-start.json",
+        "challenge-failure.json",
+        "challenge-terminal.json",
+        R52_HOLDOUT_LOCK_NAME,
+    }
+    if not names <= allowed or any(name.startswith(".") for name in names):
+        raise LedgerError("R52 challenge state namespace drift")
+    if "challenge-failure.json" in names:
+        raise LedgerError("R52 challenge failure permanently blocks holdout")
+    if (
+        not {
+            R52_CHALLENGE_LOCK_NAME,
+            "challenge-start.json",
+            "challenge-terminal.json",
+        }
+        <= names
+    ):
+        raise LedgerError("R52 challenge is not terminal")
+    _, lock_bytes, lock = _r51_json(
+        os.path.join(state_root, R52_CHALLENGE_LOCK_NAME),
+        "R52 challenge use lock",
+        keys=R52_CHALLENGE_LOCK_KEYS,
+    )
+    _, start_bytes, start = _r51_json(
+        os.path.join(state_root, "challenge-start.json"),
+        "R52 challenge start receipt",
+        keys=R52_CHALLENGE_START_KEYS,
+    )
+    _, terminal_bytes, terminal = _r51_json(
+        os.path.join(state_root, "challenge-terminal.json"),
+        "R52 challenge terminal receipt",
+        keys=R52_CHALLENGE_TERMINAL_KEYS,
+    )
+    created = _validate_utc_seconds(lock["created_at_utc"], "challenge lock creation")
+    started = _validate_utc_seconds(start["started_at_utc"], "challenge start")
+    completed = _validate_utc_seconds(
+        terminal["completed_at_utc"], "challenge completion"
+    )
+    if (
+        lock["contract"] != "hanonly-r52-challenge-use-lock-v1"
+        or lock["plan_revision"] != R52_PLAN_REVISION
+        or lock["b0_sha"] != b0_sha
+        or lock["challenge_manifest_sha256"] != R52_CHALLENGE_MANIFEST_SHA256
+        or lock["challenge_hash_record_sha256"] != R52_CHALLENGE_HASHES_SHA256
+        or lock["selected_candidate_id"] != selected_candidate_id
+        or lock["frozen_recall_contract_sha256"] != frozen_recall_sha256
+        or start["contract"] != "hanonly-r52-challenge-start-v1"
+        or start["plan_revision"] != R52_PLAN_REVISION
+        or start["b0_sha"] != b0_sha
+        or start["challenge_lock_sha256"] != _sha256(lock_bytes)
+        or start["selected_candidate_id"] != selected_candidate_id
+        or start["ordered_cell_ids"] != R52_CHALLENGE_CELL_IDS
+        or terminal["contract"] != "hanonly-r52-challenge-terminal-v1"
+        or terminal["plan_revision"] != R52_PLAN_REVISION
+        or terminal["b0_sha"] != b0_sha
+        or terminal["challenge_lock_sha256"] != _sha256(lock_bytes)
+        or terminal["challenge_start_sha256"] != _sha256(start_bytes)
+        or terminal["selected_candidate_id"] != selected_candidate_id
+        or terminal["result"] != "pass"
+        or started < created
+        or completed <= started
+    ):
+        raise LedgerError("R52 challenge receipt binding drift")
+    cells = terminal["ordered_cell_results"]
+    if not isinstance(cells, list) or len(cells) != 18:
+        raise LedgerError("R52 challenge terminal must contain 18 cells")
+    seen_paths = set()
+    for ordinal, cell in enumerate(cells):
+        _r52_validate_challenge_cell(
+            evidence_root,
+            cell,
+            ordinal,
+            selected_candidate_id,
+            seen_paths,
+            b0_sha,
+        )
+        if cell["result"] != "pass":
+            raise LedgerError("R52 challenge terminal contains a failed cell")
+    return terminal_bytes, terminal
+
+
+def _r52_validate_challenge_failure(
+    failure, b0_sha, lock_sha256, start_sha256, candidate_id, evidence_root
+):
+    _require_keys(failure, R52_CHALLENGE_FAILURE_KEYS, "R52 challenge failure")
+    prefix = failure["executed_prefix"]
+    if not isinstance(prefix, list) or len(prefix) > 18:
+        raise LedgerError("R52 challenge failure prefix length drift")
+    seen_paths = set()
+    for ordinal, cell in enumerate(prefix):
+        _r52_validate_challenge_cell(
+            evidence_root, cell, ordinal, candidate_id, seen_paths, b0_sha
+        )
+        if cell["result"] != ("fail" if ordinal == len(prefix) - 1 else "pass"):
+            raise LedgerError("R52 challenge failure prefix drift")
+    if (
+        failure["contract"] != "hanonly-r52-challenge-failure-v1"
+        or failure["plan_revision"] != R52_PLAN_REVISION
+        or failure["b0_sha"] != b0_sha
+        or failure["challenge_lock_sha256"] != lock_sha256
+        or failure["challenge_start_sha256"] != start_sha256
+        or failure["first_failed_cell"] != (prefix[-1] if prefix else None)
+        or failure["unexecuted_suffix"] != R52_CHALLENGE_CELL_IDS[len(prefix) :]
+        or not isinstance(failure["failure_reason"], str)
+        or not failure["failure_reason"]
+        or failure["result"] != "fail"
+    ):
+        raise LedgerError("R52 challenge failure receipt drift")
+    _validate_utc_seconds(failure["failed_at_utc"], "challenge failure")
+    return prefix
+
+
+def _r52_validate_inner_index(
+    index_path, evidence_root, custody_root, b0_sha, expected_paths
+):
+    _, data, index = _r51_json(
+        index_path,
+        "R52 imported R51 inner evidence index",
+        keys=R52_INNER_INDEX_KEYS,
+    )
+    if (
+        index["contract"] != "hanonly-r52-imported-r51-inner-evidence-index-v1"
+        or index["plan_revision"] != R52_PLAN_REVISION
+        or index["b0_sha"] != b0_sha
+        or index["result"] != "pass"
+        or not isinstance(index["records"], list)
+        or len(index["records"]) != 5
+    ):
+        raise LedgerError("R52 imported inner evidence index drift")
+    seen_paths = set()
+    for kind, record in zip(R52_INNER_KINDS, index["records"]):
+        _require_keys(record, R52_INNER_RECORD_KEYS, "R52 imported inner record")
+        root = custody_root if kind == "r51_terminal_receipt" else evidence_root
+        path = _r51_relative_path(root, record["relative_path"], kind)
+        if path != expected_paths[kind] or path in seen_paths:
+            raise LedgerError("R52 imported inner evidence path drift")
+        seen_paths.add(path)
+        _, file_bytes, inner = _r51_json(
+            path, f"R52 imported {kind}", canonical=True, mode=0o600
+        )
+        if (
+            record["kind"] != kind
+            or type(record["byte_length"]) is not int
+            or record["byte_length"] <= 0
+            or record["byte_length"] != len(file_bytes)
+            or record["sha256"] != _sha256(file_bytes)
+            or record["inner_contract"] != inner.get("contract")
+            or record["inner_plan_revision"] != R51_PLAN_REVISION
+            or inner.get("plan_revision") != R51_PLAN_REVISION
+        ):
+            raise LedgerError("R52 imported inner evidence record drift")
+    return data
+
+
+def _r51_validate_terminal_projection(terminal_cells, diagnostic_cells):
+    diagnostic_by_terminal_key = {
+        f"{record['entry_id']}/{record['device']}": record
+        for record in diagnostic_cells
+    }
+    for terminal_cell in terminal_cells:
+        record = diagnostic_by_terminal_key.get(terminal_cell["cell_key"])
+        if record is None:
+            raise LedgerError("R51 terminal receipt diagnostic cell is missing")
+        if (
+            terminal_cell["selection_result"] != record["selection_result"]
+            or terminal_cell["target_recall"] != record["target_recall"]
+            or terminal_cell["pp_han_count"] != record["pp_han_count"]
+            or terminal_cell["vl_han_count"] != record["vl_han_count"]
+            or terminal_cell["rejection_reason"] != record["rejection_reason"]
+            or terminal_cell["device_evidence_sha256"]
+            != record["device_evidence_sha256"]
+            or terminal_cell["log_sha256"] != record["log_sha256"]
+            or terminal_cell["diagnostic_sha256"] != record["diagnostic_sha256"]
+            or terminal_cell["target_coverage_index_sha256"]
+            != record["target_coverage_index_sha256"]
+        ):
+            raise LedgerError("R51 terminal receipt diagnostic projection drift")
+
+
 def _r51_validate_authorization(arguments):
     repo_root = _canonical_existing_path(arguments.repo_root, "repo root")
     _validate_repository(repo_root)
@@ -3785,28 +5725,7 @@ def _r51_validate_authorization(arguments):
     )
     if terminal["terminal_diagnostic_index_sha256"] != diagnostic_sha256:
         raise LedgerError("R51 terminal diagnostic index hash drift")
-    diagnostic_by_terminal_key = {
-        f"{record['entry_id']}/{record['device']}": record
-        for record in diagnostic_cells
-    }
-    for terminal_cell in terminal_cells:
-        record = diagnostic_by_terminal_key.get(terminal_cell["cell_key"])
-        if record is None:
-            raise LedgerError("R51 terminal receipt diagnostic cell is missing")
-        if (
-            terminal_cell["selection_result"] != record["selection_result"]
-            or terminal_cell["target_recall"] != record["target_recall"]
-            or terminal_cell["pp_han_count"] != record["pp_han_count"]
-            or terminal_cell["vl_han_count"] != record["vl_han_count"]
-            or terminal_cell["rejection_reason"] != record["rejection_reason"]
-            or terminal_cell["device_evidence_sha256"]
-            != record["device_evidence_sha256"]
-            or terminal_cell["log_sha256"] != record["log_sha256"]
-            or terminal_cell["diagnostic_sha256"] != record["diagnostic_sha256"]
-            or terminal_cell["target_coverage_index_sha256"]
-            != record["target_coverage_index_sha256"]
-        ):
-            raise LedgerError("R51 terminal receipt diagnostic projection drift")
+    _r51_validate_terminal_projection(terminal_cells, diagnostic_cells)
     custody_dir = os.path.dirname(open_path)
     failure_temp_prefix = ".holdout-failure."
     with contextlib.ExitStack() as stack:
@@ -3924,6 +5843,584 @@ def _r51_validate_authorization(arguments):
     )
 
 
+def _r52_validate_adoption(path, b0_sha):
+    _, data, value = _r51_json(
+        path, "R52 holdout adoption record", keys=R52_ADOPTION_KEYS
+    )
+    if (
+        value["contract"] != "hanonly-r52-r51-holdout-adoption-v1"
+        or value["plan_revision"] != R52_PLAN_REVISION
+        or value["b0_sha"] != b0_sha
+        or value["r52_contract_sha256"] != R52_CONTRACT_SHA256
+        or value["r52_test_spec_sha256"] != R52_TEST_SPEC_SHA256
+        or value["r51_parent_b0_sha"] != R52_PARENT_B0_SHA
+        or value["r51_contract_sha256"] != R51_CONTRACT_SHA256
+        or value["r51_test_spec_sha256"] != R51_TEST_SPEC_SHA256
+        or value["r51_failure_summary_sha256"] != R52_R51_FAILURE_SHA256
+        or value["imported_holdout_revision"] != R51_PLAN_REVISION
+        or value["imported_entry_ids"] != R51_HOLDOUT_IDS
+        or value["observed_namespace"] != sorted(R51_CUSTODY_FROZEN_NAMES)
+        or value["observed_unopened"] is not True
+        or value["key_capability"] != "retained"
+        or value["result"] != "pass"
+    ):
+        raise LedgerError("R52 holdout adoption binding drift")
+    files = value["custody_files"]
+    if not isinstance(files, dict) or set(files) != R51_CUSTODY_FROZEN_NAMES:
+        raise LedgerError("R52 holdout adoption custody inventory drift")
+    if (
+        files["holdout.enc"].get("sha256") != R52_CIPHERTEXT_SHA256
+        or files["holdout.enc"].get("byte_length") != 2075136
+    ):
+        raise LedgerError("R52 adopted ciphertext drift")
+    return data, value
+
+
+def _r52_validate_holdout_lock(
+    path,
+    b0_sha,
+    adoption_sha256,
+    selected_candidate_id,
+    frozen_recall_sha256,
+    challenge_terminal_sha256,
+    pre_holdout_sha256,
+):
+    _, data, value = _r51_json(path, "R52 holdout use lock", keys=R52_HOLDOUT_LOCK_KEYS)
+    if (
+        os.path.basename(path) != R52_HOLDOUT_LOCK_NAME
+        or os.path.dirname(path) != R52_STATE_ROOT
+        or value["contract"] != "hanonly-r52-r51-holdout-use-lock-v1"
+        or value["plan_revision"] != R52_PLAN_REVISION
+        or value["b0_sha"] != b0_sha
+        or value["ciphertext_sha256"] != R52_CIPHERTEXT_SHA256
+        or value["adoption_record_sha256"] != adoption_sha256
+        or value["selected_candidate_id"] != selected_candidate_id
+        or value["frozen_recall_contract_sha256"] != frozen_recall_sha256
+        or value["challenge_terminal_sha256"] != challenge_terminal_sha256
+        or value["pre_holdout_attestation_sha256"] != pre_holdout_sha256
+    ):
+        raise LedgerError("R52 holdout use lock binding drift")
+    _validate_utc_seconds(value["created_at_utc"], "R52 holdout lock creation")
+    return data
+
+
+def _r52_validate_preflight(path, b0_sha, repo_root):
+    _, data, value = _r51_json(
+        path, "R52 B0 preflight attestation", keys=R52_PREFLIGHT_KEYS
+    )
+    _r52_validate_preflight_value(value, b0_sha)
+    checker_bytes = _r51_read(
+        os.path.join(repo_root, B0_CHECKER_ENDPOINT), "R52 checker", mode=None
+    )[1]
+    ledger_bytes = _r51_read(
+        os.path.join(repo_root, "scripts/hanonly_evidence_ledger.py"),
+        "R52 evidence ledger",
+        mode=None,
+    )[1]
+    if value["checker_endpoint_sha256"] != _sha256(checker_bytes) or value[
+        "evidence_ledger_endpoint_sha256"
+    ] != _sha256(ledger_bytes):
+        raise LedgerError("R52 preflight endpoint hash drift")
+    return data
+
+
+def _r52_validate_authorization_inputs(arguments):
+    repo_root = _canonical_existing_path(arguments.repo_root, "repo root")
+    _validate_repository(repo_root)
+    _r52_validate_b0_lineage(repo_root, arguments.b0_sha)
+    _r52_repo_file(
+        repo_root,
+        arguments.r52_contract,
+        R52_CONTRACT_PATH,
+        R52_CONTRACT_SHA256,
+        "R52 contract",
+    )
+    _r52_repo_file(
+        repo_root,
+        arguments.r52_test_spec,
+        R52_TEST_SPEC_PATH,
+        R52_TEST_SPEC_SHA256,
+        "R52 test spec",
+    )
+    _r52_validate_preflight(
+        arguments.b0_preflight_attestation, arguments.b0_sha, repo_root
+    )
+    checker_path, checker_bytes = _r51_read(
+        os.path.join(repo_root, B0_CHECKER_ENDPOINT), "R52 checker", mode=None
+    )
+    del checker_path
+    checker_sha256 = _sha256(checker_bytes)
+    pre_calibration = _r51_validate_attestation(
+        arguments.pre_calibration_attestation,
+        "pre-calibration",
+        arguments.b0_sha,
+        checker_sha256,
+    )
+    pre_holdout = _r51_validate_attestation(
+        arguments.pre_holdout_attestation,
+        "pre-holdout",
+        arguments.b0_sha,
+        checker_sha256,
+    )
+    if pre_calibration[1] == pre_holdout[1] or pre_calibration[0] == pre_holdout[0]:
+        raise LedgerError("R52 requires two independent attestations")
+    publisher_sha256 = _sha256(
+        _r51_read(
+            os.path.join(repo_root, "scripts/hanonly_evidence_ledger.py"),
+            "R52 evidence ledger endpoint",
+            mode=None,
+        )[1]
+    )
+    evidence_root = _canonical_existing_path(
+        arguments.evidence_root, "R52 evidence root"
+    )
+    projection_bytes, projection = _r52_validate_projection(
+        arguments.calibration_projection_receipt,
+        arguments.calibration_manifest,
+        arguments.calibration_hash_inventory,
+        evidence_root,
+        arguments.b0_sha,
+        publisher_sha256,
+    )
+    if (
+        pre_calibration[2]["manifest_sha256"] != R52_CALIBRATION_MANIFEST_SHA256
+        or pre_holdout[2]["manifest_sha256"] != R52_CHALLENGE_MANIFEST_SHA256
+        or pre_calibration[2]["source_gate_fixture_manifest_sha256"]
+        != pre_holdout[2]["source_gate_fixture_manifest_sha256"]
+    ):
+        raise LedgerError("R52 anti-fixture manifest binding drift")
+    _, calibration_bytes, calibration = _r51_json(
+        arguments.calibration_ledger, "R52 calibration ledger"
+    )
+    _, recall_bytes, recall = _r51_json(
+        arguments.frozen_recall_contract, "R52 frozen recall contract"
+    )
+    selected_candidate_id = recall.get("selected_candidate_id")
+    if selected_candidate_id not in {candidate["id"] for candidate in B0_CANDIDATES}:
+        raise LedgerError("R52 selected candidate drift")
+    if (
+        calibration.get("calibration_entry_ids") != R51_CALIBRATION_IDS
+        or calibration.get("selected_candidate_id") != selected_candidate_id
+    ):
+        raise LedgerError("R52 inner calibration ledger binding drift")
+    _r51_validate_calibration(
+        {
+            "calibration_results": calibration.get("calibration_results"),
+            "selected_candidate_id": selected_candidate_id,
+        },
+        calibration,
+        os.path.dirname(arguments.calibration_ledger),
+    )
+    challenge_path, challenge_bytes, challenge = _r51_json(
+        arguments.challenge_manifest, "R52 challenge manifest"
+    )
+    hashes_path, challenge_hash_bytes, challenge_hashes = _r51_json(
+        arguments.challenge_hash_record, "R52 challenge hash record"
+    )
+    if (
+        challenge_path != R52_CHALLENGE_MANIFEST_PATH
+        or hashes_path != R52_CHALLENGE_HASHES_PATH
+        or arguments.challenge_state_root != R52_STATE_ROOT
+        or _sha256(challenge_bytes) != R52_CHALLENGE_MANIFEST_SHA256
+        or _sha256(challenge_hash_bytes) != R52_CHALLENGE_HASHES_SHA256
+        or [entry.get("id") for entry in challenge.get("entries", [])]
+        != R52_CHALLENGE_IDS + R52_SUPPLEMENTAL_IDS
+        or challenge_hashes.get("manifest_sha256") != R52_CHALLENGE_MANIFEST_SHA256
+    ):
+        raise LedgerError("R52 challenge inventory drift")
+    _r52_validate_challenge_manifest(challenge)
+    challenge_terminal_bytes, _ = _r52_validate_challenge_receipts(
+        arguments.challenge_state_root,
+        evidence_root,
+        arguments.b0_sha,
+        selected_candidate_id,
+        _sha256(recall_bytes),
+    )
+    adoption_bytes, adoption = _r52_validate_adoption(
+        arguments.holdout_adoption, arguments.b0_sha
+    )
+    contract_hashes = _r51_validate_contract_files(arguments)
+    frozen = _r51_validate_freeze(arguments, contract_hashes, authorized=True)
+    if (
+        frozen["ciphertext_sha256"] != R52_CIPHERTEXT_SHA256
+        or adoption["custody_root_st_dev"]
+        != os.stat(os.path.dirname(frozen["ciphertext_path"])).st_dev
+        or adoption["custody_root_st_ino"]
+        != os.stat(os.path.dirname(frozen["ciphertext_path"])).st_ino
+    ):
+        raise LedgerError("R52 adopted custody identity drift")
+    custody_paths = {
+        "historical-inventory.json": frozen["historical_path"],
+        "holdout-header.json": frozen["header_path"],
+        "holdout.enc": frozen["ciphertext_path"],
+        "holdout-freeze-receipt.json": frozen["freeze_path"],
+    }
+    for name, path in custody_paths.items():
+        _, current_bytes = _r51_read(path, f"R52 adopted custody {name}", mode=0o600)
+        current_stat = os.stat(path, follow_symlinks=False)
+        expected = adoption["custody_files"][name]
+        if set(expected) != {
+            "st_dev",
+            "st_ino",
+            "uid",
+            "mode",
+            "byte_length",
+            "sha256",
+        } or expected != {
+            "st_dev": current_stat.st_dev,
+            "st_ino": current_stat.st_ino,
+            "uid": current_stat.st_uid,
+            "mode": _mode(current_stat),
+            "byte_length": len(current_bytes),
+            "sha256": _sha256(current_bytes),
+        }:
+            raise LedgerError(f"R52 adopted custody {name} identity drift")
+    holdout_lock_bytes = _r52_validate_holdout_lock(
+        arguments.holdout_use_lock,
+        arguments.b0_sha,
+        _sha256(adoption_bytes),
+        selected_candidate_id,
+        _sha256(recall_bytes),
+        _sha256(challenge_terminal_bytes),
+        pre_holdout[1],
+    )
+    _, open_bytes, open_marker = _r51_json(
+        arguments.open_marker,
+        "imported R51 holdout open marker",
+        keys=R51_OPEN_KEYS,
+    )
+    _, bundle_bytes, bundle = _r51_json(
+        arguments.bundle_validation_receipt,
+        "imported R51 bundle validation receipt",
+        keys=R51_BUNDLE_KEYS,
+    )
+    _validate_hash(bundle["test_executable_sha256"], "R52 imported test executable")
+    if (
+        open_marker["contract"] != "hanonly-r51-encrypted-holdout-open-v1"
+        or open_marker["plan_revision"] != R51_PLAN_REVISION
+        or open_marker["b0_sha"] != arguments.b0_sha
+        or open_marker["selected_candidate_id"] != selected_candidate_id
+        or open_marker["freeze_receipt_sha256"] != frozen["freeze_sha256"]
+        or open_marker["ciphertext_sha256"] != R52_CIPHERTEXT_SHA256
+        or open_marker["pre_holdout_attestation_sha256"] != pre_holdout[1]
+        or open_marker["result"] != "opened"
+        or not re.fullmatch(r"[0-9a-f]{64}", open_marker["nonce_hex"] or "")
+        or bundle["contract"] != "hanonly-r51-bundle-validation-v1"
+        or bundle["plan_revision"] != R51_PLAN_REVISION
+        or bundle["b0_sha"] != arguments.b0_sha
+        or bundle["enabled_cargo_features"] != R51_FEATURES
+        or bundle["r51_contract_sha256"] != R51_CONTRACT_SHA256
+        or bundle["freeze_receipt_sha256"] != frozen["freeze_sha256"]
+        or bundle["plaintext_archive_sha256"]
+        != frozen["freeze"]["plaintext_archive_sha256_commitment"]
+        or bundle["manifest_sha256"] != pre_holdout[2]["manifest_sha256"]
+        or bundle["oracle_sha256"] != frozen["freeze"]["oracle_sha256_commitment"]
+        or bundle["hashes_sha256"] != frozen["freeze"]["hashes_sha256_commitment"]
+        or any(
+            bundle[key] is not True
+            for key in (
+                "schema_validation_pass",
+                "asset_binding_pass",
+                "mask_source_clean_equality_pass",
+                "oracle_semantics_pass",
+            )
+        )
+        or bundle["result"] != "pass"
+    ):
+        raise LedgerError("R52 imported R51 open or bundle drift")
+    _, diagnostic_bytes, _, diagnostic_cells = _r51_validate_terminal_diagnostic_index(
+        arguments.terminal_diagnostic_index,
+        arguments.b0_sha,
+        selected_candidate_id,
+        projection["inner_manifest_sha256"],
+        pre_holdout[2]["source_gate_fixture_manifest_sha256"],
+        calibration,
+        arguments.bundle_validation_receipt,
+        _sha256(bundle_bytes),
+        bundle,
+    )
+    _, terminal_bytes, terminal = _r51_json(
+        arguments.terminal_receipt,
+        "imported R51 terminal receipt",
+        keys=R51_TERMINAL_KEYS,
+    )
+    terminal_cells = _r51_validate_terminal(
+        terminal,
+        {
+            "b0_sha": arguments.b0_sha,
+            "selected_candidate_id": selected_candidate_id,
+            "freeze_receipt_sha256": frozen["freeze_sha256"],
+            "open_marker_sha256": _sha256(open_bytes),
+            "ciphertext_sha256": R52_CIPHERTEXT_SHA256,
+            "pre_holdout_attestation_sha256": pre_holdout[1],
+            "bundle_validation_receipt_sha256": _sha256(bundle_bytes),
+        },
+    )
+    _r51_validate_terminal_projection(terminal_cells, diagnostic_cells)
+    if terminal["terminal_diagnostic_index_sha256"] != _sha256(diagnostic_bytes):
+        raise LedgerError("R52 imported R51 terminal diagnostic binding drift")
+    expected_paths = {
+        "calibration_selection_artifact": arguments.calibration_ledger,
+        "frozen_recall_contract": arguments.frozen_recall_contract,
+        "bundle_validation_receipt": arguments.bundle_validation_receipt,
+        "terminal_diagnostic_index": arguments.terminal_diagnostic_index,
+        "r51_terminal_receipt": arguments.terminal_receipt,
+    }
+    inner_index_bytes = _r52_validate_inner_index(
+        arguments.imported_inner_evidence_index,
+        evidence_root,
+        os.path.dirname(frozen["ciphertext_path"]),
+        arguments.b0_sha,
+        expected_paths,
+    )
+    _r51_scan_diagnostic_tree(evidence_root)
+    forbidden_r51_outputs = {
+        "r51-b0-authorization.json",
+        "hanonly-r51-b0-artifact.json",
+    }
+    if any(
+        forbidden_r51_outputs.intersection(files)
+        for _, _, files in os.walk(evidence_root, followlinks=False)
+    ):
+        raise LedgerError("R52 evidence root contains an R51 authorization output")
+    payload = {
+        "contract": "hanonly-r52-b0-artifact-v1",
+        "version": B0_VERSION,
+        "plan_revision": R52_PLAN_REVISION,
+        "b0_sha": arguments.b0_sha,
+        "parent_b0_sha": R52_PARENT_B0_SHA,
+        "r52_contract_sha256": R52_CONTRACT_SHA256,
+        "r52_test_spec_sha256": R52_TEST_SPEC_SHA256,
+        "calibration_manifest_sha256": R52_CALIBRATION_MANIFEST_SHA256,
+        "calibration_hash_inventory_sha256": R52_CALIBRATION_HASHES_SHA256,
+        "calibration_projection_receipt_sha256": _sha256(projection_bytes),
+        "selected_candidate_id": selected_candidate_id,
+        "frozen_recall_contract_sha256": _sha256(recall_bytes),
+        "challenge_manifest_sha256": R52_CHALLENGE_MANIFEST_SHA256,
+        "challenge_terminal_sha256": _sha256(challenge_terminal_bytes),
+        "holdout_adoption_sha256": _sha256(adoption_bytes),
+        "holdout_use_lock_sha256": _sha256(holdout_lock_bytes),
+        "imported_r51_holdout_revision": R51_PLAN_REVISION,
+        "imported_r51_terminal_sha256": _sha256(terminal_bytes),
+        "imported_inner_evidence_index_sha256": _sha256(inner_index_bytes),
+        "pre_calibration_attestation_sha256": pre_calibration[1],
+        "pre_holdout_attestation_sha256": pre_holdout[1],
+        "result": "pass",
+    }
+    _require_keys(payload, R52_ARTIFACT_PAYLOAD_KEYS, "R52 artifact payload")
+    return payload
+
+
+def _r52_hold_authorization_inputs(arguments, stack, output_dir):
+    held = []
+    digests = {}
+    excluded = {
+        os.path.realpath(arguments.artifact_payload_out),
+        os.path.realpath(arguments.authorization_record_out),
+        os.path.realpath(arguments.artifact_out),
+    }
+    paths = set()
+    for value in vars(arguments).values():
+        if not isinstance(value, str) or not os.path.isabs(value):
+            continue
+        canonical = os.path.realpath(value)
+        if canonical in excluded or canonical == output_dir:
+            continue
+        try:
+            value_stat = os.stat(canonical, follow_symlinks=False)
+        except OSError:
+            continue
+        if stat.S_ISREG(value_stat.st_mode):
+            paths.add(canonical)
+
+    def add_tree(root_path, excluded_name=None):
+        root_path = os.path.realpath(root_path)
+        if not os.path.isdir(root_path):
+            return
+
+        def scan(directory):
+            for name in sorted(os.listdir(directory.fd)):
+                if directory.path == root_path and name == excluded_name:
+                    continue
+                value = os.stat(name, dir_fd=directory.fd, follow_symlinks=False)
+                if stat.S_ISDIR(value.st_mode):
+                    child = _open_child(directory, name, directory=True, stack=stack)
+                    scan(child)
+                elif stat.S_ISREG(value.st_mode):
+                    paths.add(os.path.join(directory.path, name))
+                else:
+                    raise LedgerError("R52 authorization input tree is unsafe")
+
+        directory = _open_absolute(root_path, directory=True, stack=stack)
+        scan(directory)
+
+    add_tree(arguments.evidence_root, "authorization")
+    add_tree(arguments.challenge_state_root)
+    add_tree(os.path.dirname(arguments.ciphertext))
+    for path in sorted(paths):
+        item = _open_absolute(path, directory=False, stack=stack)
+        if item.stat.st_uid != os.geteuid():
+            raise LedgerError("R52 authorization input owner drift")
+        os.lseek(item.fd, 0, os.SEEK_SET)
+        data = _read_all(item.fd)
+        held.append(item)
+        digests[item.path] = (len(data), _sha256(data))
+    return held, digests
+
+
+def _r52_revalidate_authorization_inputs(held, digests):
+    for item in held:
+        _revalidate_held_path(item, "R52 held authorization input")
+        os.lseek(item.fd, 0, os.SEEK_SET)
+        data = _read_all(item.fd)
+        if (len(data), _sha256(data)) != digests[item.path]:
+            raise LedgerError("R52 held authorization input bytes drift")
+
+
+def _r52_validate_authorization(arguments):
+    payload_out = _canonical_future_path(
+        arguments.artifact_payload_out, "R52 artifact payload"
+    )
+    authorization_out = _canonical_future_path(
+        arguments.authorization_record_out, "R52 authorization record"
+    )
+    artifact_out = _canonical_future_path(arguments.artifact_out, "R52 artifact")
+    output_dir = os.path.dirname(payload_out)
+    evidence_root = _canonical_existing_path(
+        arguments.evidence_root, "R52 evidence root"
+    )
+    if (
+        os.path.basename(output_dir) != "authorization"
+        or os.path.dirname(output_dir) != evidence_root
+        or os.path.dirname(authorization_out) != output_dir
+        or os.path.dirname(artifact_out) != output_dir
+        or os.path.basename(payload_out) != "r52-b0-artifact-payload.json"
+        or os.path.basename(authorization_out) != "hanonly-r52-b0-authorization.json"
+        or os.path.basename(artifact_out) != "hanonly-r52-b0-artifact.json"
+    ):
+        raise LedgerError("R52 authorization output path drift")
+    with contextlib.ExitStack() as stack:
+        authorization_dir = _open_absolute(output_dir, directory=True, stack=stack)
+        _require_owned_mode(authorization_dir.path, authorization_dir.stat, 0o700)
+        names = set(os.listdir(authorization_dir.fd))
+        finals = {
+            "r52-b0-artifact-payload.json",
+            "hanonly-r52-b0-authorization.json",
+            "hanonly-r52-b0-artifact.json",
+        }
+        temps = {
+            ".r52-b0-artifact-payload.json.tmp",
+            ".hanonly-r52-b0-authorization.json.tmp",
+            ".hanonly-r52-b0-artifact.json.tmp",
+        }
+        if names & temps or not names <= finals:
+            raise LedgerError("R52 authorization output namespace drift")
+        if (
+            "r52-b0-artifact-payload.json" not in names
+            and names
+            or "hanonly-r52-b0-artifact.json" in names
+            and "hanonly-r52-b0-authorization.json" not in names
+        ):
+            raise LedgerError("R52 authorization publication state is illegal")
+        held, digests = _r52_hold_authorization_inputs(
+            arguments, stack, authorization_dir.path
+        )
+        payload = _r52_validate_authorization_inputs(arguments)
+        _r52_revalidate_authorization_inputs(held, digests)
+
+        def revalidate_publication_inputs():
+            _revalidate_held_path(
+                authorization_dir, "R52 held authorization output directory"
+            )
+            _r52_revalidate_authorization_inputs(held, digests)
+
+        _, payload_sha256, _ = _publish_canonical_held(
+            authorization_dir,
+            payload_out,
+            payload,
+            "R52 artifact payload",
+            allowed_names={"r52-b0-artifact-payload.json"},
+            temp_name=".r52-b0-artifact-payload.json.tmp",
+            existing_ok=True,
+            pre_link=revalidate_publication_inputs,
+            stack=stack,
+        )
+        _checkpoint("r52_payload_published")
+        _r52_revalidate_authorization_inputs(held, digests)
+        payload_bytes = _r51_canonical_json(payload)
+        authorized_at = arguments.authorized_at_utc
+        _validate_utc_seconds(authorized_at, "R52 authorization time")
+        record = {
+            "contract": "hanonly-r52-b0-authorization-v1",
+            "plan_revision": R52_PLAN_REVISION,
+            "b0_sha": arguments.b0_sha,
+            "parent_b0_sha": R52_PARENT_B0_SHA,
+            "r52_contract_sha256": R52_CONTRACT_SHA256,
+            "r52_test_spec_sha256": R52_TEST_SPEC_SHA256,
+            "artifact_payload_path": "authorization/r52-b0-artifact-payload.json",
+            "artifact_payload_byte_length": len(payload_bytes),
+            "artifact_payload_sha256": payload_sha256,
+            "calibration_projection_receipt_sha256": payload[
+                "calibration_projection_receipt_sha256"
+            ],
+            "challenge_terminal_sha256": payload["challenge_terminal_sha256"],
+            "holdout_adoption_sha256": payload["holdout_adoption_sha256"],
+            "holdout_use_lock_sha256": payload["holdout_use_lock_sha256"],
+            "imported_r51_terminal_sha256": payload["imported_r51_terminal_sha256"],
+            "imported_inner_evidence_index_sha256": payload[
+                "imported_inner_evidence_index_sha256"
+            ],
+            "pre_calibration_attestation_sha256": payload[
+                "pre_calibration_attestation_sha256"
+            ],
+            "pre_holdout_attestation_sha256": payload["pre_holdout_attestation_sha256"],
+            "authorized_at_utc": authorized_at,
+            "result": "pass",
+        }
+        _require_keys(record, R52_AUTHORIZATION_KEYS, "R52 authorization record")
+        _r52_revalidate_authorization_inputs(held, digests)
+        _, authorization_sha256, _ = _publish_canonical_held(
+            authorization_dir,
+            authorization_out,
+            record,
+            "R52 authorization record",
+            allowed_names={"hanonly-r52-b0-authorization.json"},
+            temp_name=".hanonly-r52-b0-authorization.json.tmp",
+            existing_ok=True,
+            pre_link=revalidate_publication_inputs,
+            stack=stack,
+        )
+        _checkpoint("r52_authorization_published")
+        _checkpoint("r52_before_artifact")
+        _r52_revalidate_authorization_inputs(held, digests)
+        _revalidate_held_path(
+            authorization_dir, "R52 held authorization output directory"
+        )
+        artifact = {**payload, "authorization_record_sha256": authorization_sha256}
+        _, artifact_sha256, _ = _publish_canonical_held(
+            authorization_dir,
+            artifact_out,
+            artifact,
+            "R52 artifact",
+            allowed_names={"hanonly-r52-b0-artifact.json"},
+            temp_name=".hanonly-r52-b0-artifact.json.tmp",
+            existing_ok=True,
+            pre_link=revalidate_publication_inputs,
+            stack=stack,
+        )
+        _checkpoint("r52_artifact_published")
+        return (
+            _r51_canonical_json(
+                {
+                    "authorization_record_sha256": authorization_sha256,
+                    "artifact_path": artifact_out,
+                    "artifact_sha256": artifact_sha256,
+                }
+            )
+            + b"\n"
+        )
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message):
         raise LedgerError(message)
@@ -3998,6 +6495,138 @@ def _parse_arguments(argv):
     r51_authorization.add_argument("--artifact-payload", required=True)
     r51_authorization.add_argument("--authorization-record-out", required=True)
     r51_authorization.add_argument("--artifact-out", required=True)
+    r52_projection = subparsers.add_parser("project-r52-calibration-manifest")
+    r52_projection.add_argument("--repo-root", required=True)
+    r52_projection.add_argument("--b0-sha", required=True)
+    r52_projection.add_argument("--outer-manifest", required=True)
+    r52_projection.add_argument("--hash-inventory", required=True)
+    r52_projection.add_argument("--inner-manifest-out", required=True)
+    r52_projection.add_argument("--projection-receipt-out", required=True)
+    r52_preflight = subparsers.add_parser("write-r52-b0-preflight-attestation")
+    for option in (
+        "repo-root",
+        "output",
+        "b0-sha",
+        "r52-contract",
+        "r52-test-spec",
+        "r51-failure-summary",
+        "calibration-manifest",
+        "calibration-hash-inventory",
+        "gate-results",
+        "evidence-test-executable",
+    ):
+        r52_preflight.add_argument(f"--{option}", required=True)
+    r52_adoption = subparsers.add_parser("write-r52-r51-holdout-adoption")
+    for option in (
+        "repo-root",
+        "b0-sha",
+        "r52-contract",
+        "r52-test-spec",
+        "r51-failure-summary",
+        "r51-contract",
+        "operative-plan",
+        "r51-test-spec",
+        "base-production-contract",
+        "freeze-receipt",
+        "historical-inventory",
+        "ciphertext",
+        "key-capability",
+        "output",
+    ):
+        r52_adoption.add_argument(f"--{option}", required=True)
+    r52_challenge = subparsers.add_parser("run-r52-challenge")
+    for option in (
+        "repo-root",
+        "b0-sha",
+        "evidence-root",
+        "challenge-state-root",
+        "b0-preflight-attestation",
+        "challenge-manifest",
+        "challenge-hash-record",
+        "calibration-ledger",
+        "frozen-recall-contract",
+        "source-gate-fixture-manifest-sha256",
+        "created-at-utc",
+        "started-at-utc",
+        "completed-at-utc",
+    ):
+        r52_challenge.add_argument(f"--{option}", required=True)
+    r52_holdout = subparsers.add_parser("run-r52-holdout")
+    for option in (
+        "repo-root",
+        "b0-sha",
+        "evidence-root",
+        "r52-contract",
+        "r52-test-spec",
+        "b0-preflight-attestation",
+        "pre-calibration-attestation",
+        "pre-holdout-attestation",
+        "calibration-manifest",
+        "calibration-hash-inventory",
+        "calibration-projection-receipt",
+        "calibration-ledger",
+        "frozen-recall-contract",
+        "challenge-manifest",
+        "challenge-hash-record",
+        "challenge-state-root",
+        "holdout-adoption",
+        "holdout-use-lock",
+        "r51-contract",
+        "operative-plan",
+        "r51-test-spec",
+        "base-production-contract",
+        "freeze-receipt",
+        "historical-inventory",
+        "ciphertext",
+        "open-marker",
+        "plaintext-directory",
+        "plaintext-archive",
+        "source-gate-fixture-manifest-sha256",
+        "bundle-validation-receipt",
+        "terminal-receipt",
+        "terminal-diagnostic-index",
+        "imported-inner-evidence-index",
+        "created-at-utc",
+    ):
+        r52_holdout.add_argument(f"--{option}", required=True)
+    r52_authorization = subparsers.add_parser("validate-r52-b0-authorization")
+    for option in (
+        "repo-root",
+        "b0-sha",
+        "evidence-root",
+        "r52-contract",
+        "r52-test-spec",
+        "b0-preflight-attestation",
+        "pre-calibration-attestation",
+        "pre-holdout-attestation",
+        "calibration-manifest",
+        "calibration-hash-inventory",
+        "calibration-projection-receipt",
+        "calibration-ledger",
+        "frozen-recall-contract",
+        "challenge-manifest",
+        "challenge-hash-record",
+        "challenge-state-root",
+        "holdout-adoption",
+        "holdout-use-lock",
+        "r51-contract",
+        "operative-plan",
+        "r51-test-spec",
+        "base-production-contract",
+        "freeze-receipt",
+        "historical-inventory",
+        "ciphertext",
+        "open-marker",
+        "bundle-validation-receipt",
+        "terminal-receipt",
+        "terminal-diagnostic-index",
+        "imported-inner-evidence-index",
+        "artifact-payload-out",
+        "authorization-record-out",
+        "artifact-out",
+        "authorized-at-utc",
+    ):
+        r52_authorization.add_argument(f"--{option}", required=True)
     return parser.parse_args(argv)
 
 
@@ -4013,7 +6642,19 @@ def execute(argv):
         return _r51_write_preflight(arguments)
     if arguments.command == "snapshot-r51-preflight-custody":
         return _r51_canonical_json(_r51_preflight_custody_snapshot(arguments)) + b"\n"
-    return _r51_validate_authorization(arguments)
+    if arguments.command == "validate-r51-b0-authorization":
+        return _r51_validate_authorization(arguments)
+    if arguments.command == "project-r52-calibration-manifest":
+        return _r52_project_calibration(arguments)
+    if arguments.command == "write-r52-b0-preflight-attestation":
+        return _r52_write_preflight(arguments)
+    if arguments.command == "write-r52-r51-holdout-adoption":
+        return _r52_write_adoption(arguments)
+    if arguments.command == "run-r52-challenge":
+        return _r52_run_challenge(arguments)
+    if arguments.command == "run-r52-holdout":
+        return _r52_run_holdout(arguments)
+    return _r52_validate_authorization(arguments)
 
 
 def main(argv=None, *, stdout=None, stderr=None):

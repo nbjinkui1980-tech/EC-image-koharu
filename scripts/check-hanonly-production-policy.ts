@@ -1593,6 +1593,24 @@ function r51Python(
   return result.stdout.toString()
 }
 
+function r52Python(
+  root: string,
+  command: string,
+  args: readonly string[],
+  category: string,
+): string {
+  const result = Bun.spawnSync({
+    cmd: ['python3', 'scripts/hanonly_evidence_ledger.py', command, '--repo-root', root, ...args],
+    cwd: root,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  if (result.exitCode !== 0) {
+    fail(category, 'R52 evidence ledger validation failed')
+  }
+  return result.stdout.toString()
+}
+
 export function r51EvidenceExecutable(cargoJson: string): string {
   const artifacts: CargoCompilerArtifact[] = []
   for (const line of cargoJson.split('\n')) {
@@ -2025,6 +2043,103 @@ export async function validateR51B0Authorization(
   )
 }
 
+export async function projectR52CalibrationManifest(
+  root: string,
+  args: readonly string[],
+): Promise<string> {
+  const forwarded = r51Args(args, '--project-r52-calibration-manifest')
+  if (hasR51Option(forwarded, '--repo-root')) {
+    fail('r52-argv', 'R52 projection reserves --repo-root')
+  }
+  return r52Python(
+    await realpath(root),
+    'project-r52-calibration-manifest',
+    forwarded,
+    'r52-calibration-projection',
+  )
+}
+
+function r52OneShotArgs(args: readonly string[], endpoint: string): string[] {
+  const forwarded = r51Args(args, endpoint)
+  for (const reserved of [
+    '--repo-root',
+    '--command',
+    '--argv',
+    '--runner',
+    '--runner-command',
+    '--runner-argv',
+    '--environment',
+    '--env',
+  ]) {
+    if (hasR51Option(forwarded, reserved)) {
+      fail('r52-argv', `${endpoint} reserves ${reserved}`)
+    }
+  }
+  return forwarded
+}
+
+export async function writeR52B0PreflightAttestation(
+  root: string,
+  args: readonly string[],
+): Promise<string> {
+  return r52Python(
+    await realpath(root),
+    'write-r52-b0-preflight-attestation',
+    r52OneShotArgs(args, '--write-r52-b0-preflight-attestation'),
+    'r52-b0-preflight',
+  )
+}
+
+export async function runR52Challenge(root: string, args: readonly string[]): Promise<string> {
+  return r52Python(
+    await realpath(root),
+    'run-r52-challenge',
+    r52OneShotArgs(args, '--run-r52-challenge'),
+    'r52-challenge',
+  )
+}
+
+export async function runR52Holdout(root: string, args: readonly string[]): Promise<string> {
+  return r52Python(
+    await realpath(root),
+    'run-r52-holdout',
+    r52OneShotArgs(args, '--run-r52-holdout'),
+    'r52-holdout',
+  )
+}
+
+export async function writeR52R51HoldoutAdoption(
+  root: string,
+  args: readonly string[],
+): Promise<string> {
+  const forwarded = r51Args(args, '--write-r52-r51-holdout-adoption')
+  if (hasR51Option(forwarded, '--repo-root')) {
+    fail('r52-argv', 'R52 adoption reserves --repo-root')
+  }
+  return r52Python(
+    await realpath(root),
+    'write-r52-r51-holdout-adoption',
+    forwarded,
+    'r52-holdout-adoption',
+  )
+}
+
+export async function validateR52B0Authorization(
+  root: string,
+  args: readonly string[],
+): Promise<string> {
+  const forwarded = r51Args(args, '--validate-r52-b0-authorization')
+  if (hasR51Option(forwarded, '--repo-root')) {
+    fail('r52-argv', 'R52 authorization reserves --repo-root')
+  }
+  return r52Python(
+    await realpath(root),
+    'validate-r52-b0-authorization',
+    forwarded,
+    'r52-b0-authorization',
+  )
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
   if (deepEqual(args, ['--test-dependency-inventory'])) {
@@ -2077,6 +2192,30 @@ async function main(): Promise<void> {
   }
   if (args.includes('--validate-r51-b0-authorization')) {
     process.stdout.write(await validateR51B0Authorization(repoRoot, args))
+    return
+  }
+  if (args.includes('--project-r52-calibration-manifest')) {
+    process.stdout.write(await projectR52CalibrationManifest(repoRoot, args))
+    return
+  }
+  if (args.includes('--write-r52-b0-preflight-attestation')) {
+    process.stdout.write(await writeR52B0PreflightAttestation(repoRoot, args))
+    return
+  }
+  if (args.includes('--write-r52-r51-holdout-adoption')) {
+    process.stdout.write(await writeR52R51HoldoutAdoption(repoRoot, args))
+    return
+  }
+  if (args.includes('--run-r52-challenge')) {
+    process.stdout.write(await runR52Challenge(repoRoot, args))
+    return
+  }
+  if (args.includes('--run-r52-holdout')) {
+    process.stdout.write(await runR52Holdout(repoRoot, args))
+    return
+  }
+  if (args.includes('--validate-r52-b0-authorization')) {
+    process.stdout.write(await validateR52B0Authorization(repoRoot, args))
     return
   }
   if (deepEqual(args, ['--b0-source-gate-anti-fixture'])) {
