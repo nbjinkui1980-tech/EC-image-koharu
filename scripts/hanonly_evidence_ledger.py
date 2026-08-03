@@ -777,10 +777,10 @@ R59_AUTHORIZATION_KEYS = {
 R60_PLAN_REVISION = 60
 R60_BASE_B0_SHA = "693597c955a481e57f8df79a09bc5462314c634a"
 R60_CONTRACT_SHA256 = (
-    "f7b7f03a213447e407d72d16816a7bf1f9275607b078956ef484b5c7f934467c"
+    "e5e05571e21711e81611adec9e2838f60fe361b4cf25cc0dadb7a47b9a2f9f59"
 )
 R60_TEST_SPEC_SHA256 = (
-    "7d37b69ce7bae86420ae4dde44906eba56fbb006fba3c0d33173f0409307a7d9"
+    "1daf3ce086f0b3a6ac705b9ee25d812bbde9d4b396acd0dd8ebafa9ba9043187"
 )
 R60_CALIBRATION_ARTIFACT_PATH = R59_CALIBRATION_ARTIFACT_PATH
 R60_CALIBRATION_ARTIFACT_SHA256 = R59_CALIBRATION_ARTIFACT_SHA256
@@ -802,6 +802,7 @@ R60_ALLOWED_CHANGED_PATHS = (
     ".omx/plans/hanonly-r60-b0-custody-contract.json",
     ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
     "crates/koharu-app/src/pipeline/d0_r59_holdout_bundle.rs",
+    "crates/koharu-app/src/pipeline/d0_visual_manifest_harness.rs",
     "scripts/check-hanonly-production-policy.test.ts",
     "scripts/check-hanonly-production-policy.ts",
     "scripts/hanonly_evidence_ledger.py",
@@ -862,6 +863,101 @@ R60_SUCCESSOR_KEYS = {
     "successor_b0_sha",
     "test_spec_sha256",
 }
+R60_START_KEYS = {
+    "b0_sha",
+    "calibration_artifact_sha256",
+    "entry_ids",
+    "nonce_hex",
+    "plan_revision",
+    "pre_holdout_attestation_sha256",
+    "public_commitment_sha256",
+    "schema",
+    "selected_candidate_id",
+    "state",
+    "successor_commitment_sha256",
+}
+R60_RUNTIME_KEYS = {
+    "b0_sha",
+    "calibration_artifact_sha256",
+    "ciphertext_sha256",
+    "decrypt_pass",
+    "entry_ids",
+    "hashes_sha256",
+    "layout_receipt_sha256",
+    "layout_validator_sha256",
+    "manifest_sha256",
+    "member_name_digest_sha256",
+    "oracle_sha256",
+    "package_unchanged",
+    "plaintext_archive_sha256",
+    "plan_revision",
+    "private_manifest_commitment_sha256",
+    "restricted_values_disclosed",
+    "schema",
+    "selected_candidate_id",
+    "start_marker_sha256",
+    "state",
+    "successor_commitment_sha256",
+}
+R60_TERMINAL_KEYS = {
+    "artifact_sha256",
+    "b0_sha",
+    "bundle_validation_receipt_sha256",
+    "calibration_artifact_sha256",
+    "cell_results",
+    "cleanup_receipt_sha256",
+    "first_failed_cell",
+    "plan_revision",
+    "runtime_receipt_sha256",
+    "schema",
+    "selected_candidate_id",
+    "start_marker_sha256",
+    "state",
+    "unexecuted_cells",
+}
+R60_TERMINAL_CELL_KEYS = {"cell", "result"}
+R60_CLEANUP_KEYS = {
+    "b0_sha",
+    "cleanup_pass",
+    "descriptors_closed",
+    "nonce_hex",
+    "plaintext_root",
+    "plaintext_root_absent",
+    "plan_revision",
+    "restricted_values_disclosed",
+    "runner_pid",
+    "runner_process_exited",
+    "runtime_receipt_sha256",
+    "schema",
+    "start_marker_sha256",
+    "successor_commitment_sha256",
+}
+R60_AUTHORIZATION_KEYS = {
+    "artifact_sha256",
+    "b0_sha",
+    "bundle_validation_receipt_sha256",
+    "calibration_artifact_sha256",
+    "cleanup_receipt_sha256",
+    "contract_sha256",
+    "plan_revision",
+    "pre_holdout_attestation_sha256",
+    "public_commitment_sha256",
+    "result",
+    "runtime_receipt_sha256",
+    "selected_candidate_id",
+    "start_marker_sha256",
+    "successor_commitment_sha256",
+    "terminal_receipt_sha256",
+    "test_spec_sha256",
+}
+R60_CELLS = [
+    f"{entry_id}/{device}"
+    for entry_id in R60_ENTRY_IDS
+    for device in ("cpu", "actual-metal")
+]
+R60_READINESS_ROOT_PREFIX = "/Users/Shared/hanonly-r60-readiness-"
+R60_HOLDOUT_ARTIFACT_NAME = "crop-policy-selection.json.holdout.json"
+R60_BUNDLE_RECEIPT_COMPONENTS = ("formal-report", "r60", "bundle-validation.json")
 JPEG_SOF_MARKERS = {
     0xC0,
     0xC1,
@@ -5112,6 +5208,26 @@ def _r60_require_plaintext_absent():
     raise LedgerError("R60 plaintext root already exists")
 
 
+def _r60_require_runner_process_absent(pid):
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise LedgerError("R60 cleanup receipt runner_pid must be a positive integer")
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return
+    except PermissionError as error:
+        raise LedgerError(
+            "cannot prove R60 runner PID exited or descriptor lifecycle closed"
+        ) from error
+    except (OSError, NotImplementedError) as error:
+        if isinstance(error, OSError) and error.errno == errno.ESRCH:
+            return
+        raise LedgerError(
+            "cannot prove R60 runner PID exited or descriptor lifecycle closed"
+        ) from error
+    raise LedgerError("R60 runner PID is live or reused")
+
+
 def _r60_validate_preflight_values(
     layout_data,
     layout,
@@ -5296,6 +5412,249 @@ def _r60_validate_preflight(arguments):
     return _r59_canonical_json({"result": "pass"}) + b"\n"
 
 
+def _r60_open_authorization_evidence(requested_b0_sha, stack):
+    root = _open_absolute(
+        R60_READINESS_ROOT_PREFIX + requested_b0_sha, directory=True, stack=stack
+    )
+    directories = [
+        (
+            root,
+            "R60 readiness directory",
+            _r59_validate_custody_directory_held(root, "R60 readiness directory"),
+        )
+    ]
+    artifact, artifact_held, artifact_metadata = _r59_read_custody_file(
+        root, R60_HOLDOUT_ARTIFACT_NAME, "R60 holdout artifact", stack
+    )
+    current = root
+    for component in R60_BUNDLE_RECEIPT_COMPONENTS[:-1]:
+        current = _open_child(current, component, directory=True, stack=stack)
+        label = f"R60 readiness directory {component}"
+        directories.append(
+            (current, label, _r59_validate_custody_directory_held(current, label))
+        )
+    bundle, bundle_held, bundle_metadata = _r59_read_custody_file(
+        current,
+        R60_BUNDLE_RECEIPT_COMPONENTS[-1],
+        "R60 bundle validation receipt",
+        stack,
+    )
+    files = [
+        (artifact_held, "R60 holdout artifact", artifact_metadata),
+        (bundle_held, "R60 bundle validation receipt", bundle_metadata),
+    ]
+    return _sha256(bundle), _sha256(artifact), files, directories
+
+
+def _r60_validate_authorization_values(
+    layout_data,
+    layout,
+    public_data,
+    public,
+    successor_data,
+    successor,
+    start_data,
+    start,
+    runtime_data,
+    runtime,
+    terminal_data,
+    terminal,
+    cleanup_data,
+    cleanup,
+    requested_b0_sha,
+    validator_sha256,
+    bundle_sha256,
+    artifact_sha256,
+):
+    _r60_validate_preflight_values(
+        layout_data,
+        layout,
+        public_data,
+        public,
+        successor_data,
+        successor,
+        requested_b0_sha,
+        validator_sha256,
+    )
+    for value, keys, label in (
+        (start, R60_START_KEYS, "R60 start receipt"),
+        (runtime, R60_RUNTIME_KEYS, "R60 runtime receipt"),
+        (terminal, R60_TERMINAL_KEYS, "R60 terminal receipt"),
+        (cleanup, R60_CLEANUP_KEYS, "R60 cleanup receipt"),
+    ):
+        _require_keys(value, keys, label)
+    for data, value, label in (
+        (start_data, start, "R60 start receipt"),
+        (runtime_data, runtime, "R60 runtime receipt"),
+        (terminal_data, terminal, "R60 terminal receipt"),
+        (cleanup_data, cleanup, "R60 cleanup receipt"),
+    ):
+        if _r59_canonical_json(value) != data:
+            raise LedgerError(f"{label} is not canonical JSON")
+
+    public_sha256 = _sha256(public_data)
+    successor_sha256 = _sha256(successor_data)
+    start_sha256 = _sha256(start_data)
+    runtime_sha256 = _sha256(runtime_data)
+    cleanup_sha256 = _sha256(cleanup_data)
+    for key in ("pre_holdout_attestation_sha256", "successor_commitment_sha256"):
+        _validate_hash(start[key], f"R60 start receipt {key}")
+    if (
+        start["schema"] != "hanonly.r60.holdout-start.v1"
+        or start["plan_revision"] != R60_PLAN_REVISION
+        or start["b0_sha"] != requested_b0_sha
+        or start["calibration_artifact_sha256"] != R60_CALIBRATION_ARTIFACT_SHA256
+        or start["entry_ids"] != R60_ENTRY_IDS
+        or start["public_commitment_sha256"] != public_sha256
+        or start["selected_candidate_id"] != R60_SELECTED_CANDIDATE_ID
+        or start["successor_commitment_sha256"] != successor_sha256
+        or start["state"] != "started"
+        or not isinstance(start["nonce_hex"], str)
+        or re.fullmatch(r"[0-9a-f]{32,}", start["nonce_hex"]) is None
+    ):
+        raise LedgerError("R60 start receipt binding or state drift")
+
+    for key in (
+        "ciphertext_sha256",
+        "hashes_sha256",
+        "layout_receipt_sha256",
+        "layout_validator_sha256",
+        "manifest_sha256",
+        "member_name_digest_sha256",
+        "oracle_sha256",
+        "plaintext_archive_sha256",
+        "private_manifest_commitment_sha256",
+        "start_marker_sha256",
+        "successor_commitment_sha256",
+    ):
+        _validate_hash(runtime[key], f"R60 runtime receipt {key}")
+    if (
+        runtime["schema"] != "hanonly.r60.runtime-commitment.v1"
+        or runtime["plan_revision"] != R60_PLAN_REVISION
+        or runtime["b0_sha"] != requested_b0_sha
+        or runtime["calibration_artifact_sha256"] != R60_CALIBRATION_ARTIFACT_SHA256
+        or runtime["ciphertext_sha256"] != public["ciphertext_sha256"]
+        or runtime["decrypt_pass"] is not True
+        or runtime["entry_ids"] != R60_ENTRY_IDS
+        or runtime["layout_receipt_sha256"] != public["layout_receipt_sha256"]
+        or runtime["layout_validator_sha256"] != validator_sha256
+        or runtime["manifest_sha256"] != public["manifest_sha256"]
+        or runtime["member_name_digest_sha256"] != public["member_name_digest_sha256"]
+        or runtime["package_unchanged"] is not True
+        or runtime["plaintext_archive_sha256"]
+        != layout["plaintext_archive_sha256"]
+        or runtime["private_manifest_commitment_sha256"]
+        != public["private_manifest_commitment_sha256"]
+        or runtime["restricted_values_disclosed"] is not False
+        or runtime["selected_candidate_id"] != R60_SELECTED_CANDIDATE_ID
+        or runtime["start_marker_sha256"] != start_sha256
+        or runtime["state"] != "runtime_committed"
+        or runtime["successor_commitment_sha256"] != successor_sha256
+    ):
+        raise LedgerError("R60 runtime receipt binding or state drift")
+
+    for cell in terminal["cell_results"]:
+        _require_keys(cell, R60_TERMINAL_CELL_KEYS, "R60 terminal cell")
+    if (
+        [cell["cell"] for cell in terminal["cell_results"]] != R60_CELLS
+        or any(cell["result"] != "pass" for cell in terminal["cell_results"])
+        or terminal["schema"] != "hanonly.r60.holdout-terminal.v1"
+        or terminal["plan_revision"] != R60_PLAN_REVISION
+        or terminal["artifact_sha256"] != artifact_sha256
+        or terminal["b0_sha"] != requested_b0_sha
+        or terminal["bundle_validation_receipt_sha256"] != bundle_sha256
+        or terminal["calibration_artifact_sha256"] != R60_CALIBRATION_ARTIFACT_SHA256
+        or terminal["cleanup_receipt_sha256"] != cleanup_sha256
+        or terminal["first_failed_cell"] is not None
+        or terminal["runtime_receipt_sha256"] != runtime_sha256
+        or terminal["selected_candidate_id"] != R60_SELECTED_CANDIDATE_ID
+        or terminal["start_marker_sha256"] != start_sha256
+        or terminal["state"] != "completed_pass"
+        or terminal["unexecuted_cells"] != []
+    ):
+        raise LedgerError("R60 terminal receipt is non-authorizing")
+
+    if (
+        cleanup["schema"] != "hanonly.r60.cleanup-receipt.v1"
+        or cleanup["plan_revision"] != R60_PLAN_REVISION
+        or cleanup["b0_sha"] != requested_b0_sha
+        or cleanup["cleanup_pass"] is not True
+        or cleanup["descriptors_closed"] is not True
+        or cleanup["nonce_hex"] != start["nonce_hex"]
+        or cleanup["plaintext_root"] != R60_PLAINTEXT_ROOT
+        or cleanup["plaintext_root_absent"] is not True
+        or cleanup["restricted_values_disclosed"] is not False
+        or cleanup["runner_process_exited"] is not True
+        or cleanup["runtime_receipt_sha256"] != runtime_sha256
+        or cleanup["start_marker_sha256"] != start_sha256
+        or cleanup["successor_commitment_sha256"] != successor_sha256
+    ):
+        raise LedgerError("R60 cleanup receipt is non-authorizing")
+    _r60_require_runner_process_absent(cleanup["runner_pid"])
+    _r60_require_plaintext_absent()
+
+    record = {
+        "artifact_sha256": artifact_sha256,
+        "b0_sha": requested_b0_sha,
+        "bundle_validation_receipt_sha256": bundle_sha256,
+        "calibration_artifact_sha256": R60_CALIBRATION_ARTIFACT_SHA256,
+        "cleanup_receipt_sha256": cleanup_sha256,
+        "contract_sha256": R60_CONTRACT_SHA256,
+        "plan_revision": R60_PLAN_REVISION,
+        "pre_holdout_attestation_sha256": start[
+            "pre_holdout_attestation_sha256"
+        ],
+        "public_commitment_sha256": public_sha256,
+        "result": "authorized",
+        "runtime_receipt_sha256": runtime_sha256,
+        "selected_candidate_id": R60_SELECTED_CANDIDATE_ID,
+        "start_marker_sha256": start_sha256,
+        "successor_commitment_sha256": successor_sha256,
+        "terminal_receipt_sha256": _sha256(terminal_data),
+        "test_spec_sha256": R60_TEST_SPEC_SHA256,
+    }
+    _require_keys(record, R60_AUTHORIZATION_KEYS, "R60 authorization record")
+    return record
+
+
+def _r60_validate_authorization(arguments):
+    repo_root = _canonical_existing_path(_r60_repo_root(), "R60 repository root")
+    _r60_validate_git_state(repo_root, arguments.requested_b0_sha)
+    validator_sha256 = _r60_validate_protocol_files(repo_root)
+    _r60_validate_calibration_artifact()
+    with contextlib.ExitStack() as stack:
+        public_root = _open_absolute(R60_PUBLIC_ROOT, directory=True, stack=stack)
+        public_metadata = _r60_validate_public_directory_held(public_root)
+        names = (
+            (R60_LAYOUT_RECEIPT_NAME, "R60 layout receipt"),
+            (R60_PUBLIC_COMMITMENT_NAME, "R60 public commitment"),
+            (R60_SUCCESSOR_COMMITMENT_NAME, "R60 successor commitment"),
+            ("r60-holdout-start.json", "R60 start receipt"),
+            ("r60-runtime-commitment.json", "R60 runtime receipt"),
+            ("r60-holdout-terminal.json", "R60 terminal receipt"),
+            ("r60-cleanup-receipt.json", "R60 cleanup receipt"),
+        )
+        inputs = [
+            _r60_read_public_json(public_root, name, label, stack)
+            for name, label in names
+        ]
+        bundle_sha256, artifact_sha256, held_files, held_directories = (
+            _r60_open_authorization_evidence(arguments.requested_b0_sha, stack)
+        )
+        record = _r60_validate_authorization_values(
+            *(item for value in inputs for item in value[:2]),
+            arguments.requested_b0_sha,
+            validator_sha256,
+            bundle_sha256,
+            artifact_sha256,
+        )
+        for value, (_, label) in zip(inputs, names):
+            _r59_revalidate_custody_file(value[2], label, value[3])
+        _r59_revalidate_authorization_evidence(held_files, held_directories)
+        _r60_revalidate_public_directory_held(public_root, public_metadata)
+    return _r59_canonical_json(record) + b"\n"
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message):
         raise LedgerError(message)
@@ -5331,6 +5690,8 @@ def _parse_arguments(argv):
     r59_authorization.add_argument("--requested-b0-sha", required=True)
     r60_preflight = subparsers.add_parser("validate-r60-b0-preflight")
     r60_preflight.add_argument("--requested-b0-sha", required=True)
+    r60_authorization = subparsers.add_parser("validate-r60-b0-authorization")
+    r60_authorization.add_argument("--requested-b0-sha", required=True)
     return parser.parse_args(argv)
 
 
@@ -5350,6 +5711,8 @@ def execute(argv):
         return _r59_validate_authorization(arguments)
     if arguments.command == "validate-r60-b0-preflight":
         return _r60_validate_preflight(arguments)
+    if arguments.command == "validate-r60-b0-authorization":
+        return _r60_validate_authorization(arguments)
     raise LedgerError("unknown ledger command")
 
 

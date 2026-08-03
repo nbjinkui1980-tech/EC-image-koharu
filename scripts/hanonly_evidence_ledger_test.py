@@ -1,5 +1,7 @@
+import argparse
 import contextlib
 import base64
+import errno
 import hashlib
 import io
 import json
@@ -3013,6 +3015,260 @@ class R60PreflightTests(unittest.TestCase):
 
     def test_exact_receipts_pass(self):
         self.assertIsNone(self.validate())
+
+    def authorization_values(self):
+        public_sha = self.sha(self.public)
+        successor_sha = self.sha(self.successor)
+        start = {
+            "b0_sha": self.REQUESTED_B0,
+            "calibration_artifact_sha256": ledger.R60_CALIBRATION_ARTIFACT_SHA256,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "nonce_hex": "6" * 64,
+            "plan_revision": 60,
+            "pre_holdout_attestation_sha256": "7" * 64,
+            "public_commitment_sha256": public_sha,
+            "schema": "hanonly.r60.holdout-start.v1",
+            "selected_candidate_id": "S25L4",
+            "state": "started",
+            "successor_commitment_sha256": successor_sha,
+        }
+        start_sha = self.sha(start)
+        runtime = {
+            "b0_sha": self.REQUESTED_B0,
+            "calibration_artifact_sha256": ledger.R60_CALIBRATION_ARTIFACT_SHA256,
+            "ciphertext_sha256": self.public["ciphertext_sha256"],
+            "decrypt_pass": True,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "hashes_sha256": "8" * 64,
+            "layout_receipt_sha256": self.public["layout_receipt_sha256"],
+            "layout_validator_sha256": self.VALIDATOR_SHA,
+            "manifest_sha256": self.public["manifest_sha256"],
+            "member_name_digest_sha256": self.public["member_name_digest_sha256"],
+            "oracle_sha256": "9" * 64,
+            "package_unchanged": True,
+            "plaintext_archive_sha256": self.layout["plaintext_archive_sha256"],
+            "plan_revision": 60,
+            "private_manifest_commitment_sha256": self.public[
+                "private_manifest_commitment_sha256"
+            ],
+            "restricted_values_disclosed": False,
+            "schema": "hanonly.r60.runtime-commitment.v1",
+            "selected_candidate_id": "S25L4",
+            "start_marker_sha256": start_sha,
+            "state": "runtime_committed",
+            "successor_commitment_sha256": successor_sha,
+        }
+        runtime_sha = self.sha(runtime)
+        cleanup = {
+            "b0_sha": self.REQUESTED_B0,
+            "cleanup_pass": True,
+            "descriptors_closed": True,
+            "nonce_hex": start["nonce_hex"],
+            "plaintext_root": ledger.R60_PLAINTEXT_ROOT,
+            "plaintext_root_absent": True,
+            "plan_revision": 60,
+            "restricted_values_disclosed": False,
+            "runner_pid": 424242,
+            "runner_process_exited": True,
+            "runtime_receipt_sha256": runtime_sha,
+            "schema": "hanonly.r60.cleanup-receipt.v1",
+            "start_marker_sha256": start_sha,
+            "successor_commitment_sha256": successor_sha,
+        }
+        bundle_sha = "a" * 64
+        artifact_sha = "b" * 64
+        terminal = {
+            "artifact_sha256": artifact_sha,
+            "b0_sha": self.REQUESTED_B0,
+            "bundle_validation_receipt_sha256": bundle_sha,
+            "calibration_artifact_sha256": ledger.R60_CALIBRATION_ARTIFACT_SHA256,
+            "cell_results": [
+                {"cell": cell, "result": "pass"} for cell in ledger.R60_CELLS
+            ],
+            "cleanup_receipt_sha256": self.sha(cleanup),
+            "first_failed_cell": None,
+            "plan_revision": 60,
+            "runtime_receipt_sha256": runtime_sha,
+            "schema": "hanonly.r60.holdout-terminal.v1",
+            "selected_candidate_id": "S25L4",
+            "start_marker_sha256": start_sha,
+            "state": "completed_pass",
+            "unexecuted_cells": [],
+        }
+        return start, runtime, terminal, cleanup, bundle_sha, artifact_sha
+
+    def authorize(self, *, mutate=None):
+        start, runtime, terminal, cleanup, bundle_sha, artifact_sha = (
+            self.authorization_values()
+        )
+        if mutate:
+            mutate(start, runtime, terminal, cleanup)
+        with (
+            mock.patch.object(ledger, "_r60_require_plaintext_absent"),
+            mock.patch.object(ledger, "_r60_require_runner_process_absent"),
+        ):
+            return ledger._r60_validate_authorization_values(
+                self.bytes(self.layout),
+                self.layout,
+                self.bytes(self.public),
+                self.public,
+                self.bytes(self.successor),
+                self.successor,
+                self.bytes(start),
+                start,
+                self.bytes(runtime),
+                runtime,
+                self.bytes(terminal),
+                terminal,
+                self.bytes(cleanup),
+                cleanup,
+                self.REQUESTED_B0,
+                self.VALIDATOR_SHA,
+                bundle_sha,
+                artifact_sha,
+            )
+
+    def test_authorization_requires_exact_eight_cells_and_cleanup_bindings(self):
+        self.assertEqual(self.authorize()["result"], "authorized")
+        with self.assertRaisesRegex(ledger.LedgerError, "terminal receipt"):
+            self.authorize(
+                mutate=lambda _s, _r, terminal, _c: terminal["cell_results"].reverse()
+            )
+        def fail_cleanup(_start, _runtime, terminal, cleanup):
+            cleanup["plaintext_root_absent"] = False
+            terminal["cleanup_receipt_sha256"] = self.sha(cleanup)
+
+        with self.assertRaisesRegex(ledger.LedgerError, "cleanup receipt"):
+            self.authorize(mutate=fail_cleanup)
+
+    def test_authorization_rejects_runtime_plaintext_archive_hash_mutation(self):
+        with self.assertRaisesRegex(ledger.LedgerError, "runtime receipt"):
+            self.authorize(
+                mutate=lambda _s, runtime, _t, _c: runtime.__setitem__(
+                    "plaintext_archive_sha256", "f" * 64
+                )
+            )
+
+    def test_cleanup_runner_pid_lifecycle_checks_fail_closed(self):
+        with mock.patch.object(ledger.os, "kill", side_effect=ProcessLookupError):
+            self.assertIsNone(ledger._r60_require_runner_process_absent(424242))
+        with mock.patch.object(
+            ledger.os, "kill", side_effect=OSError(errno.ESRCH, "not found")
+        ):
+            self.assertIsNone(ledger._r60_require_runner_process_absent(424242))
+
+        for error in (None, PermissionError(), OSError(errno.EIO, "unavailable")):
+            with self.subTest(error=error):
+                patcher = mock.patch.object(
+                    ledger.os,
+                    "kill",
+                    return_value=None,
+                    side_effect=error,
+                )
+                with patcher, self.assertRaisesRegex(
+                    ledger.LedgerError, "live or reused|cannot prove"
+                ):
+                    ledger._r60_require_runner_process_absent(424242)
+
+        for invalid in (True, 0, -1, "424242"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                ledger.LedgerError, "positive integer"
+            ):
+                ledger._r60_require_runner_process_absent(invalid)
+
+    def test_cleanup_runner_pid_is_required_by_closed_schema(self):
+        def remove_runner_pid(_start, _runtime, terminal, cleanup):
+            del cleanup["runner_pid"]
+            terminal["cleanup_receipt_sha256"] = self.sha(cleanup)
+
+        with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+            self.authorize(mutate=remove_runner_pid)
+
+    def test_authorization_keeps_evidence_open_through_semantic_revalidation(self):
+        events = []
+
+        class TrackingStack:
+            active = False
+
+            def __enter__(self):
+                self.active = True
+                events.append("open")
+                return self
+
+            def __exit__(self, *_args):
+                events.append("close")
+                self.active = False
+
+        stack = TrackingStack()
+
+        def during(label):
+            def check(*_args):
+                self.assertTrue(stack.active)
+                events.append(label)
+
+            return check
+
+        inputs = []
+        for value in (
+            self.layout,
+            self.public,
+            self.successor,
+            *self.authorization_values()[:4],
+        ):
+            inputs.append((self.bytes(value), value, object(), object()))
+
+        arguments = argparse.Namespace(requested_b0_sha=self.REQUESTED_B0)
+        with (
+            mock.patch.object(
+                ledger,
+                "contextlib",
+                mock.Mock(ExitStack=mock.Mock(return_value=stack)),
+            ),
+            mock.patch.object(ledger, "_canonical_existing_path", return_value="/repo"),
+            mock.patch.object(ledger, "_r60_repo_root", return_value="/repo"),
+            mock.patch.object(ledger, "_r60_validate_git_state"),
+            mock.patch.object(
+                ledger, "_r60_validate_protocol_files", return_value=self.VALIDATOR_SHA
+            ),
+            mock.patch.object(ledger, "_r60_validate_calibration_artifact"),
+            mock.patch.object(ledger, "_open_absolute", return_value=object()),
+            mock.patch.object(
+                ledger, "_r60_validate_public_directory_held", return_value=object()
+            ),
+            mock.patch.object(ledger, "_r60_read_public_json", side_effect=inputs),
+            mock.patch.object(
+                ledger,
+                "_r60_open_authorization_evidence",
+                return_value=("a" * 64, "b" * 64, [], []),
+            ),
+            mock.patch.object(
+                ledger,
+                "_r60_validate_authorization_values",
+                side_effect=lambda *_args: (
+                    during("semantic")(),
+                    {"result": "authorized"},
+                )[1],
+            ),
+            mock.patch.object(
+                ledger, "_r59_revalidate_custody_file", side_effect=during("file")
+            ),
+            mock.patch.object(
+                ledger,
+                "_r59_revalidate_authorization_evidence",
+                side_effect=during("evidence"),
+            ),
+            mock.patch.object(
+                ledger,
+                "_r60_revalidate_public_directory_held",
+                side_effect=during("root"),
+            ),
+        ):
+            ledger._r60_validate_authorization(arguments)
+
+        self.assertEqual(
+            events,
+            ["open", "semantic", *("file" for _ in range(7)), "evidence", "root", "close"],
+        )
 
     def test_closed_schemas_and_canonical_bytes_reject(self):
         for label, value in (

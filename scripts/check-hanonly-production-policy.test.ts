@@ -1269,6 +1269,12 @@ describe('CLI contract', () => {
       '--requested-b0-sha',
       sha,
     ])
+    expect(
+      r60Args(
+        ['--validate-r60-b0-authorization', '--requested-b0-sha', sha],
+        '--validate-r60-b0-authorization',
+      ),
+    ).toEqual(['--requested-b0-sha', sha])
 
     for (const extra of [
       ['--public-root', '/tmp/public'],

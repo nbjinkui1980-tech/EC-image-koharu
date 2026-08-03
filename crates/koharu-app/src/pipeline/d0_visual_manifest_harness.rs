@@ -426,7 +426,7 @@ mod source_gate_selection {
     use super::super::d0_r59_holdout_bundle::{
         R59FreezeCommitments as R59BundleFreezeCommitments, R59ValidatedExecutionEntry,
         R59ValidatedExecutionTarget, R59ValidatedExecutionView, R59ValidatedReceiptData,
-        validate_r59_plaintext_holdout_bundle,
+        validate_r59_plaintext_holdout_bundle, validate_r60_plaintext_holdout_bundle,
     };
     use super::super::d0_visual_manifest_oracles::{
         OracleValidatedEntry, OracleValidatedTarget, ValidatedHalfOpenRect,
@@ -482,6 +482,7 @@ mod source_gate_selection {
 
     const PHASE_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_PHASE";
     const R59_FORMAL_CUSTODY_ENV: &str = "HANONLY_R59_FORMAL_CUSTODY";
+    const R60_FORMAL_CUSTODY_ENV: &str = "HANONLY_R60_FORMAL_CUSTODY";
     #[cfg(test)]
     const R59_PUBLIC_COMMITMENT_ENV: &str = "HANONLY_R59_PUBLIC_COMMITMENT";
     #[cfg(test)]
@@ -490,7 +491,9 @@ mod source_gate_selection {
     const R59_SUCCESSOR_COMMITMENT_ENV: &str = "HANONLY_R59_SUCCESSOR_COMMITMENT";
     const R59_CALIBRATION_MANIFEST_SHA256_ENV: &str = "HANONLY_R59_CALIBRATION_MANIFEST_SHA256";
     const R59_START_MARKER_SHA256_ENV: &str = "HANONLY_R59_START_MARKER_SHA256";
+    const R60_START_MARKER_SHA256_ENV: &str = "HANONLY_R60_START_MARKER_SHA256";
     const R59_COMPLETION_SUMMARY_STDOUT_PREFIX: &str = "HANONLY_R59_COMPLETION_SUMMARY=";
+    const R60_COMPLETION_SUMMARY_STDOUT_PREFIX: &str = "HANONLY_R60_COMPLETION_SUMMARY=";
     const R59_PUBLIC_COMMITMENT_PATH: &str =
         "/Users/Shared/hanonly-r59-public/r59-public-commitment.json";
     const R59_PUBLIC_DIRECTORY: &str = "/Users/Shared/hanonly-r59-public";
@@ -511,7 +514,23 @@ mod source_gate_selection {
     const R59_PUBLIC_COMMITMENT_JSON: &[u8] = br#"{"B0_SHA":"4c0e0d25d4de3be2809e8c749a6858a1bb724fa4","age_public_recipient":"age1pzaxrtkwu424yrz2s4kck0avakx5y57u2qm2u2h30ya7s4fxaanqst09sw","ciphertext_sha256":"1985675aae9ec857f97e42e3942cd9d0d717563cd384b5d2f642222701376b72","created_at":"2026-08-02T10:25:51.592320Z","opaque_ids":["r59-h01","r59-h02","r59-h03","r59-h04"],"plaintext_cleanup":true,"private_manifest_commitment_sha256":"b9bf0d416d38e4adcd8d34e07666d365e4652582437979d986cdb68bae7e764d","restricted_content_disclosed":false,"schema":"hanonly.r59.public-commitment.v1","start_marker_absent":true}
 "#;
     const R59_PLAINTEXT_ROOT: &str = "/Users/koharu-custody/r59-plaintext";
+    const R60_PUBLIC_DIRECTORY: &str = "/Users/Shared/hanonly-r60-public";
+    const R60_PUBLIC_COMMITMENT_PATH: &str =
+        "/Users/Shared/hanonly-r60-public/r60-public-commitment.json";
+    const R60_SUCCESSOR_COMMITMENT_PATH: &str =
+        "/Users/Shared/hanonly-r60-public/r60-successor-commitment.json";
+    const R60_START_MARKER_NAME: &str = "r60-holdout-start.json";
+    const R60_LAYOUT_RECEIPT_NAME: &str = "r60-layout-receipt.json";
+    const R60_RUNTIME_COMMITMENT_NAME: &str = "r60-runtime-commitment.json";
+    const R60_TERMINAL_RECEIPT_NAME: &str = "r60-holdout-terminal.json";
+    const R60_CLEANUP_RECEIPT_NAME: &str = "r60-cleanup-receipt.json";
+    const R60_PLAINTEXT_ROOT: &str = "/Users/koharu-custody/r60-plaintext";
     const R59_RUNTIME_ARCHIVE_NAME: &str = "bundle.tar";
+    const R60_CONTRACT_SHA256: &str =
+        "e5e05571e21711e81611adec9e2838f60fe361b4cf25cc0dadb7a47b9a2f9f59";
+    const R60_TEST_SPEC_SHA256: &str =
+        "1daf3ce086f0b3a6ac705b9ee25d812bbde9d4b396acd0dd8ebafa9ba9043187";
+    const R60_SOURCE_B0_SHA: &str = "693597c955a481e57f8df79a09bc5462314c634a";
     const B0_SHA_ENV: &str = "HANONLY_B0_SHA";
     const ARTIFACT_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT";
     const REPORT_DIR_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_REPORT_DIR";
@@ -559,6 +578,165 @@ mod source_gate_selection {
         Holdout,
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum FormalRevision {
+        R59,
+        R60,
+    }
+
+    impl FormalRevision {
+        fn plan_revision(self) -> u32 {
+            match self {
+                Self::R59 => 59,
+                Self::R60 => 60,
+            }
+        }
+
+        fn entry_ids(self) -> Vec<String> {
+            let revision = self.plan_revision();
+            (1..=4)
+                .map(|slot| format!("r{revision}-h0{slot}"))
+                .collect()
+        }
+
+        fn plaintext_root(self) -> &'static str {
+            match self {
+                Self::R59 => R59_PLAINTEXT_ROOT,
+                Self::R60 => R60_PLAINTEXT_ROOT,
+            }
+        }
+
+        fn start_marker_name(self) -> &'static str {
+            match self {
+                Self::R59 => R59_START_MARKER_NAME,
+                Self::R60 => R60_START_MARKER_NAME,
+            }
+        }
+
+        fn runtime_commitment_name(self) -> &'static str {
+            match self {
+                Self::R59 => R59_RUNTIME_COMMITMENT_NAME,
+                Self::R60 => R60_RUNTIME_COMMITMENT_NAME,
+            }
+        }
+
+        fn terminal_receipt_name(self) -> &'static str {
+            match self {
+                Self::R59 => R59_TERMINAL_RECEIPT_NAME,
+                Self::R60 => R60_TERMINAL_RECEIPT_NAME,
+            }
+        }
+
+        fn cleanup_receipt_name(self) -> &'static str {
+            match self {
+                Self::R59 => R59_CLEANUP_RECEIPT_NAME,
+                Self::R60 => R60_CLEANUP_RECEIPT_NAME,
+            }
+        }
+
+        fn artifact_namespace(self) -> &'static str {
+            match self {
+                Self::R59 => "r59",
+                Self::R60 => "r60",
+            }
+        }
+
+        fn contract_sha256(self) -> &'static str {
+            match self {
+                Self::R59 => R59_CONTRACT_SHA256,
+                Self::R60 => R60_CONTRACT_SHA256,
+            }
+        }
+
+        fn test_spec_sha256(self) -> &'static str {
+            match self {
+                Self::R59 => R59_TEST_SPEC_SHA256,
+                Self::R60 => R60_TEST_SPEC_SHA256,
+            }
+        }
+
+        fn contract_path(self) -> &'static str {
+            match self {
+                Self::R59 => ".omx/plans/hanonly-r59-b0-custody-contract.json",
+                Self::R60 => ".omx/plans/hanonly-r60-b0-custody-contract.json",
+            }
+        }
+
+        fn test_spec_path(self) -> &'static str {
+            match self {
+                Self::R59 => ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+                Self::R60 => ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+            }
+        }
+
+        fn start_marker_sha256_env(self) -> &'static str {
+            match self {
+                Self::R59 => R59_START_MARKER_SHA256_ENV,
+                Self::R60 => R60_START_MARKER_SHA256_ENV,
+            }
+        }
+
+        fn external_device(self, device: &str) -> &str {
+            if self == Self::R60 && device == "metal" {
+                "actual-metal"
+            } else {
+                device
+            }
+        }
+
+        fn completion_summary_contract(self) -> &'static str {
+            match self {
+                Self::R59 => "hanonly-r59-b0-completion-summary-v1",
+                Self::R60 => "hanonly-r60-b0-completion-summary-v1",
+            }
+        }
+
+        fn completion_summary_stdout_prefix(self) -> &'static str {
+            match self {
+                Self::R59 => R59_COMPLETION_SUMMARY_STDOUT_PREFIX,
+                Self::R60 => R60_COMPLETION_SUMMARY_STDOUT_PREFIX,
+            }
+        }
+
+        fn formal_cell_keys(self) -> Vec<String> {
+            self.entry_ids()
+                .into_iter()
+                .flat_map(|entry| {
+                    ["cpu", "metal"]
+                        .into_iter()
+                        .map(move |device| format!("{entry}/{}", self.external_device(device)))
+                })
+                .collect()
+        }
+
+        fn diagnostic_generation_bounds(self) -> (u64, u64) {
+            match self {
+                Self::R59 => (64, 80),
+                Self::R60 => (0, 16),
+            }
+        }
+    }
+
+    fn select_formal_revision(
+        r59: Option<&str>,
+        r60: Option<&str>,
+    ) -> io::Result<Option<FormalRevision>> {
+        let enabled = |value: Option<&str>, name| match value {
+            None | Some("0") => Ok(false),
+            Some("1") => Ok(true),
+            Some(_) => Err(invalid_data(name)),
+        };
+        match (
+            enabled(r59, "invalid R59 formal custody mode")?,
+            enabled(r60, "invalid R60 formal custody mode")?,
+        ) {
+            (false, false) => Ok(None),
+            (true, false) => Ok(Some(FormalRevision::R59)),
+            (false, true) => Ok(Some(FormalRevision::R60)),
+            (true, true) => Err(invalid_data("formal custody revision is ambiguous")),
+        }
+    }
+
     #[derive(Deserialize)]
     struct SelectionManifest {
         entries: Vec<SelectionManifestEntry>,
@@ -572,7 +750,7 @@ mod source_gate_selection {
 
     struct SelectionEnvironment {
         phase: Phase,
-        r59_formal_custody: Option<R59FormalCustody>,
+        formal_custody: Option<FormalCustody>,
         b0_sha: String,
         visual_input: PathBuf,
         visual_input_sha256: String,
@@ -591,22 +769,23 @@ mod source_gate_selection {
         frozen_candidate_id: OnceCell<String>,
     }
 
-    struct R59FormalCustody {
+    struct FormalCustody {
+        revision: FormalRevision,
         contract_sha256: String,
-        holdout: Option<R59HoldoutCustody>,
+        holdout: Option<HoldoutCustody>,
     }
 
-    struct R59HoldoutCustody {
+    struct HoldoutCustody {
         directory: PathBuf,
         plaintext_directory: PathBuf,
         plaintext_archive: PathBuf,
-        freeze: R59FreezeCommitments,
+        freeze: FreezeCommitments,
         expected_start_marker_sha256: String,
         open_marker: OnceCell<PublishedArtifact>,
-        runtime_commitment: OnceCell<R59RuntimeCommitments>,
+        runtime_commitment: OnceCell<RuntimeCommitments>,
     }
 
-    struct R59FreezeCommitments {
+    struct FreezeCommitments {
         receipt_sha256: String,
         original_public_commitment_sha256: String,
         original_b0_sha: String,
@@ -614,9 +793,18 @@ mod source_gate_selection {
         calibration_artifact_sha256: String,
         ciphertext_sha256: String,
         private_manifest_commitment_sha256: String,
+        r60_layout: Option<R60LayoutBindings>,
     }
 
-    impl R59FreezeCommitments {
+    struct R60LayoutBindings {
+        layout_receipt_sha256: String,
+        layout_validator_sha256: String,
+        plaintext_archive_sha256: String,
+        manifest_sha256: String,
+        member_name_digest_sha256: String,
+    }
+
+    impl FreezeCommitments {
         fn accepts_calibration_artifact(
             &self,
             artifact_b0_sha: &str,
@@ -629,7 +817,7 @@ mod source_gate_selection {
         }
     }
 
-    struct R59RuntimeCommitments {
+    struct RuntimeCommitments {
         receipt: PublishedArtifact,
         plaintext_archive_sha256: String,
         manifest_sha256: String,
@@ -637,30 +825,37 @@ mod source_gate_selection {
         hashes_sha256: String,
     }
 
-    struct R59PublicPaths {
+    struct FormalPublicPaths {
         original: PathBuf,
         directory: PathBuf,
         successor: PathBuf,
     }
 
-    impl R59PublicPaths {
-        fn frozen() -> Self {
-            Self {
-                original: R59_PUBLIC_COMMITMENT_PATH.into(),
-                directory: R59_PUBLIC_DIRECTORY.into(),
-                successor: R59_SUCCESSOR_COMMITMENT_PATH.into(),
+    impl FormalPublicPaths {
+        fn frozen(revision: FormalRevision) -> Self {
+            match revision {
+                FormalRevision::R59 => Self {
+                    original: R59_PUBLIC_COMMITMENT_PATH.into(),
+                    directory: R59_PUBLIC_DIRECTORY.into(),
+                    successor: R59_SUCCESSOR_COMMITMENT_PATH.into(),
+                },
+                FormalRevision::R60 => Self {
+                    original: R60_PUBLIC_COMMITMENT_PATH.into(),
+                    directory: R60_PUBLIC_DIRECTORY.into(),
+                    successor: R60_SUCCESSOR_COMMITMENT_PATH.into(),
+                },
             }
         }
     }
 
     impl SelectionEnvironment {
         fn parse(get: impl FnMut(&str) -> Option<String>) -> io::Result<Self> {
-            Self::parse_with_r59_paths(get, R59PublicPaths::frozen())
+            Self::parse_with_formal_paths(get, None)
         }
 
-        fn parse_with_r59_paths(
+        fn parse_with_formal_paths(
             mut get: impl FnMut(&str) -> Option<String>,
-            r59_paths: R59PublicPaths,
+            test_paths: Option<FormalPublicPaths>,
         ) -> io::Result<Self> {
             let phase = match required(&mut get, PHASE_ENV)?.as_str() {
                 "calibration-freeze" => Phase::CalibrationFreeze,
@@ -669,50 +864,55 @@ mod source_gate_selection {
             };
             let b0_sha = required(&mut get, B0_SHA_ENV)?;
             require_git_sha(&b0_sha)?;
-            let r59_formal_custody = match get(R59_FORMAL_CUSTODY_ENV).as_deref() {
-                None | Some("0") => None,
-                Some("1") => {
-                    let contract_path =
-                        repository_root()?.join(".omx/plans/hanonly-r59-b0-custody-contract.json");
-                    let contract_sha256 = sha256_file(&contract_path)?;
-                    require(
-                        contract_sha256 == R59_CONTRACT_SHA256,
-                        "R59 custody contract hash drift",
-                    )?;
-                    let holdout = if phase == Phase::Holdout {
-                        let plaintext_directory = PathBuf::from(R59_PLAINTEXT_ROOT);
-                        let plaintext_archive = plaintext_directory.join(R59_RUNTIME_ARCHIVE_NAME);
-                        require_absolute_canonical(&r59_paths.directory)?;
-                        Some(R59HoldoutCustody {
-                            freeze: load_r59_successor_commitments(
-                                &r59_paths.original,
-                                &r59_paths.successor,
-                                &b0_sha,
-                                &contract_sha256,
-                                &repository_root()?
-                                    .join(".omx/plans/test-spec-hanonly-r59-b0-custody.md"),
-                            )?,
-                            directory: r59_paths.directory,
-                            plaintext_directory,
-                            plaintext_archive,
-                            expected_start_marker_sha256: required_hash(
-                                &mut get,
-                                R59_START_MARKER_SHA256_ENV,
-                            )?,
-                            open_marker: OnceCell::new(),
-                            runtime_commitment: OnceCell::new(),
+            let r59_mode = get(R59_FORMAL_CUSTODY_ENV);
+            let r60_mode = get(R60_FORMAL_CUSTODY_ENV);
+            let formal_custody =
+                match select_formal_revision(r59_mode.as_deref(), r60_mode.as_deref())? {
+                    None => None,
+                    Some(revision) => {
+                        let paths =
+                            test_paths.unwrap_or_else(|| FormalPublicPaths::frozen(revision));
+                        let contract_path = repository_root()?.join(revision.contract_path());
+                        let contract_sha256 = sha256_file(&contract_path)?;
+                        require(
+                            contract_sha256 == revision.contract_sha256(),
+                            "formal custody contract hash drift",
+                        )?;
+                        let holdout = if phase == Phase::Holdout {
+                            let plaintext_directory = PathBuf::from(revision.plaintext_root());
+                            let plaintext_archive =
+                                plaintext_directory.join(R59_RUNTIME_ARCHIVE_NAME);
+                            require_absolute_canonical(&paths.directory)?;
+                            Some(HoldoutCustody {
+                                freeze: load_formal_successor_commitments(
+                                    revision,
+                                    &paths.original,
+                                    &paths.successor,
+                                    &b0_sha,
+                                    &contract_sha256,
+                                    &repository_root()?.join(revision.test_spec_path()),
+                                )?,
+                                directory: paths.directory,
+                                plaintext_directory,
+                                plaintext_archive,
+                                expected_start_marker_sha256: required_hash(
+                                    &mut get,
+                                    revision.start_marker_sha256_env(),
+                                )?,
+                                open_marker: OnceCell::new(),
+                                runtime_commitment: OnceCell::new(),
+                            })
+                        } else {
+                            None
+                        };
+                        Some(FormalCustody {
+                            revision,
+                            contract_sha256,
+                            holdout,
                         })
-                    } else {
-                        None
-                    };
-                    Some(R59FormalCustody {
-                        contract_sha256,
-                        holdout,
-                    })
-                }
-                Some(_) => return Err(invalid_data("invalid R59 formal custody mode")),
-            };
-            let formal_holdout = r59_formal_custody
+                    }
+                };
+            let formal_holdout = formal_custody
                 .as_ref()
                 .and_then(|custody| custody.holdout.as_ref());
             let visual_manifest_sha256 = match formal_holdout {
@@ -723,7 +923,7 @@ mod source_gate_selection {
                     value
                 }
             };
-            let calibration_manifest_sha256 = if r59_formal_custody.is_some() {
+            let calibration_manifest_sha256 = if formal_custody.is_some() {
                 let value = required_hash(&mut get, R59_CALIBRATION_MANIFEST_SHA256_ENV)?;
                 if phase == Phase::CalibrationFreeze {
                     require(
@@ -748,7 +948,11 @@ mod source_gate_selection {
                     holdout.freeze.ciphertext_sha256.clone(),
                     holdout.plaintext_directory.join("manifest.json"),
                     Vec::new(),
-                    r59_entry_ids('h'),
+                    formal_custody
+                        .as_ref()
+                        .expect("formal custody")
+                        .revision
+                        .entry_ids(),
                     true,
                 )
             } else {
@@ -777,13 +981,18 @@ mod source_gate_selection {
                     .filter(|entry| entry.role == EntryRole::Holdout)
                     .map(|entry| entry.id.clone())
                     .collect::<Vec<_>>();
-                let phase_partition_valid = if r59_formal_custody.is_some() {
+                let phase_partition_valid = if formal_custody.is_some() {
                     if phase == Phase::CalibrationFreeze {
                         calibration_entry_ids = calibration_slot_entry_ids(&manifest.entries)?;
                         holdout_entry_ids.is_empty()
                     } else {
                         manifest.entries.len() == 4
-                            && holdout_entry_ids == r59_entry_ids('h')
+                            && holdout_entry_ids
+                                == formal_custody
+                                    .as_ref()
+                                    .expect("formal custody")
+                                    .revision
+                                    .entry_ids()
                             && calibration_entry_ids.is_empty()
                     }
                 } else {
@@ -837,7 +1046,7 @@ mod source_gate_selection {
                 )?;
             }
             let required_check_path = PathBuf::from(required(&mut get, REQUIRED_CHECK_ENV)?);
-            let required_check_manifest_sha256 = r59_formal_custody
+            let required_check_manifest_sha256 = formal_custody
                 .as_ref()
                 .and_then(|custody| custody.holdout.as_ref())
                 .map_or(visual_manifest_sha256.as_str(), |holdout| {
@@ -853,7 +1062,7 @@ mod source_gate_selection {
             )?;
             Ok(Self {
                 phase,
-                r59_formal_custody,
+                formal_custody,
                 b0_sha,
                 visual_input,
                 visual_input_sha256,
@@ -1055,7 +1264,7 @@ mod source_gate_selection {
         selected_candidate_id: String,
         process_evidence: Vec<ProcessEvidence>,
         results: Vec<SelectionResult>,
-        r59_formal: Option<R59FormalRunEvidence>,
+        formal: Option<R59FormalRunEvidence>,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1208,6 +1417,33 @@ mod source_gate_selection {
         result: &'static str,
     }
 
+    #[derive(Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct R60BundleValidationReceipt<'a> {
+        contract: &'static str,
+        runtime_bundle_schema: &'static str,
+        plan_revision: u32,
+        b0_sha: &'a str,
+        test_executable_sha256: &'a str,
+        enabled_cargo_features: [&'static str; 1],
+        r60_contract_sha256: &'a str,
+        public_commitment_sha256: &'a str,
+        successor_commitment_sha256: &'a str,
+        source_b0_sha: &'a str,
+        successor_b0_sha: &'a str,
+        private_manifest_commitment_sha256: &'a str,
+        runtime_commitment_receipt_sha256: &'a str,
+        plaintext_archive_sha256: &'a str,
+        manifest_sha256: &'a str,
+        oracle_sha256: &'a str,
+        hashes_sha256: &'a str,
+        schema_validation_pass: bool,
+        asset_binding_pass: bool,
+        mask_source_clean_equality_pass: bool,
+        oracle_semantics_pass: bool,
+        result: &'static str,
+    }
+
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct R59PublicCommitment {
@@ -1244,6 +1480,68 @@ mod source_gate_selection {
 
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
+    struct R60PublicCommitment {
+        schema: String,
+        plan_revision: u32,
+        source_b0_sha: String,
+        ciphertext_sha256: String,
+        layout_receipt_sha256: String,
+        layout_validator_sha256: String,
+        manifest_sha256: String,
+        member_name_digest_sha256: String,
+        private_manifest_commitment_sha256: String,
+        entry_ids: Vec<String>,
+        cleanup_pass: bool,
+        restricted_values_disclosed: bool,
+        start_marker_absent: bool,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct R60SuccessorCommitment {
+        schema: String,
+        plan_revision: u32,
+        public_commitment_sha256: String,
+        source_b0_sha: String,
+        successor_b0_sha: String,
+        contract_sha256: String,
+        test_spec_sha256: String,
+        calibration_artifact_sha256: String,
+        selected_candidate_id: String,
+        ciphertext_sha256: String,
+        layout_receipt_sha256: String,
+        layout_validator_sha256: String,
+        manifest_sha256: String,
+        member_name_digest_sha256: String,
+        private_manifest_commitment_sha256: String,
+        entry_ids: Vec<String>,
+        package_unchanged: bool,
+        start_marker_absent: bool,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct R60LayoutReceipt {
+        schema: String,
+        plan_revision: u32,
+        plaintext_archive_sha256: String,
+        manifest_sha256: String,
+        private_manifest_commitment_sha256: String,
+        member_name_digest_sha256: String,
+        ciphertext_sha256: String,
+        layout_validator_sha256: String,
+        entry_ids: Vec<String>,
+        required_root_present: bool,
+        wrapper_absent: bool,
+        canonical_ustar_pass: bool,
+        manifest_binding_pass: bool,
+        same_archive_object_pass: bool,
+        layout_pass: bool,
+        restricted_values_disclosed: bool,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
     struct R59OpenMarker {
         schema: String,
         plan_revision: u32,
@@ -1252,6 +1550,22 @@ mod source_gate_selection {
         original_public_commitment_sha256: String,
         successor_commitment_sha256: String,
         ciphertext_sha256: String,
+        pre_holdout_attestation_sha256: String,
+        nonce_hex: String,
+        state: String,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct R60OpenMarker {
+        schema: String,
+        plan_revision: u32,
+        b0_sha: String,
+        public_commitment_sha256: String,
+        successor_commitment_sha256: String,
+        calibration_artifact_sha256: String,
+        selected_candidate_id: String,
+        entry_ids: Vec<String>,
         pre_holdout_attestation_sha256: String,
         nonce_hex: String,
         state: String,
@@ -1273,6 +1587,32 @@ mod source_gate_selection {
         runtime_hashes_sha256: String,
         entry_ids: Vec<String>,
         decrypt_result: String,
+        package_unchanged: bool,
+        restricted_values_disclosed: bool,
+        state: String,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct R60RuntimeCommitment {
+        schema: String,
+        plan_revision: u32,
+        b0_sha: String,
+        start_marker_sha256: String,
+        successor_commitment_sha256: String,
+        ciphertext_sha256: String,
+        layout_receipt_sha256: String,
+        layout_validator_sha256: String,
+        member_name_digest_sha256: String,
+        private_manifest_commitment_sha256: String,
+        calibration_artifact_sha256: String,
+        selected_candidate_id: String,
+        plaintext_archive_sha256: String,
+        manifest_sha256: String,
+        oracle_sha256: String,
+        hashes_sha256: String,
+        entry_ids: Vec<String>,
+        decrypt_pass: bool,
         package_unchanged: bool,
         restricted_values_disclosed: bool,
         state: String,
@@ -1545,11 +1885,15 @@ mod source_gate_selection {
         )
     }
 
-    fn require_r59_plaintext_root(path: &Path) -> io::Result<()> {
+    fn require_formal_plaintext_root(revision: FormalRevision, path: &Path) -> io::Result<()> {
         require(
-            path == Path::new(R59_PLAINTEXT_ROOT),
-            "R59 plaintext root must be the fixed custody path",
+            path == Path::new(revision.plaintext_root()),
+            "formal plaintext root must be the fixed custody path",
         )
+    }
+
+    fn require_r59_plaintext_root(path: &Path) -> io::Result<()> {
+        require_formal_plaintext_root(FormalRevision::R59, path)
     }
 
     fn r59_entry_ids(kind: char) -> Vec<String> {
@@ -1781,9 +2125,9 @@ mod source_gate_selection {
                     evidence.selected_candidate_id == selected_candidate_id,
                     "runner selected candidate does not match independent selection",
                 )?;
-                if environment.r59_formal_custody.is_some() {
+                if environment.formal_custody.is_some() {
                     let formal = evidence
-                        .r59_formal
+                        .formal
                         .as_ref()
                         .ok_or_else(|| invalid_data("R59 calibration evidence is missing"))?;
                     write_r59_calibration_diagnostic_generations(&environment, formal)?;
@@ -1833,10 +2177,10 @@ mod source_gate_selection {
                 )?;
                 hold_calibration_artifact(&environment, &artifact_input, &artifact)?;
                 validate_artifact(&artifact, Phase::CalibrationFreeze, &environment)?;
-                let formal_holdout = environment.r59_formal_custody.is_some();
+                let formal_holdout = environment.formal_custody.is_some();
                 if formal_holdout {
-                    validate_r59_runner_open(&environment, &artifact.selected_candidate_id)?;
-                    validate_r59_runtime_commitment(&environment)?;
+                    validate_formal_runner_open(&environment, &artifact.selected_candidate_id)?;
+                    validate_formal_runtime_commitment(&environment)?;
                 }
                 let result = (|| {
                     let evidence =
@@ -1848,7 +2192,7 @@ mod source_gate_selection {
                     )?;
                     if formal_holdout {
                         let formal = evidence
-                            .r59_formal
+                            .formal
                             .as_ref()
                             .ok_or_else(|| invalid_data("R59 formal evidence is missing"))?;
                         write_r59_diagnostic_generations(
@@ -1869,7 +2213,7 @@ mod source_gate_selection {
                         .required_checks
                         .push(environment.required_check.clone());
                     artifact.holdout_manifest_sha256 =
-                        Some(environment.r59_formal_custody.as_ref().map_or_else(
+                        Some(environment.formal_custody.as_ref().map_or_else(
                             || environment.visual_manifest_sha256.clone(),
                             |custody| {
                                 custody
@@ -1883,6 +2227,7 @@ mod source_gate_selection {
                                     .clone()
                             },
                         ));
+                    artifact.holdout_entry_ids = terminal_holdout_entry_ids(&environment);
                     artifact.process_evidence.extend(evidence.process_evidence);
                     artifact.holdout_results = evidence.results;
                     let frozen_at = chrono::DateTime::parse_from_rfc3339(&artifact.frozen_at_utc)
@@ -1952,8 +2297,7 @@ mod source_gate_selection {
 
     fn run_erase_stage_probe(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
         require(
-            environment.phase == Phase::CalibrationFreeze
-                && environment.r59_formal_custody.is_none(),
+            environment.phase == Phase::CalibrationFreeze && environment.formal_custody.is_none(),
             "erase-stage probe only accepts public calibration input",
         )?;
         run_real_model_with_mode(environment, RealModelRunMode::EraseStageProbe)
@@ -1963,12 +2307,12 @@ mod source_gate_selection {
         environment: &SelectionEnvironment,
         mode: RealModelRunMode,
     ) -> io::Result<RunnerEvidence> {
-        if environment.r59_formal_custody.is_some() && environment.phase == Phase::Holdout {
+        if environment.formal_custody.is_some() && environment.phase == Phase::Holdout {
             require(
                 mode == RealModelRunMode::Matrix,
                 "erase-stage probe cannot enter formal holdout",
             )?;
-            return run_r59_real_model(environment);
+            return run_formal_model(environment);
         }
         let selected_input = HeldInput::open_bounded(&environment.visual_input, BYTE_CEILING)?;
         require(
@@ -2074,12 +2418,26 @@ mod source_gate_selection {
         }
     }
 
-    fn run_r59_real_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
-        let holdout = environment
-            .r59_formal_custody
+    fn dispatch_formal_validator<T>(
+        revision: FormalRevision,
+        r59: impl FnOnce() -> T,
+        r60: impl FnOnce() -> T,
+    ) -> T {
+        match revision {
+            FormalRevision::R59 => r59(),
+            FormalRevision::R60 => r60(),
+        }
+    }
+
+    fn run_formal_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvidence> {
+        let custody = environment
+            .formal_custody
             .as_ref()
-            .and_then(|custody| custody.holdout.as_ref())
-            .ok_or_else(|| invalid_data("R59 holdout custody is unavailable"))?;
+            .ok_or_else(|| invalid_data("formal custody is unavailable"))?;
+        let holdout = custody
+            .holdout
+            .as_ref()
+            .ok_or_else(|| invalid_data("formal holdout custody is unavailable"))?;
         require(
             holdout.open_marker.get().is_some() && holdout.runtime_commitment.get().is_some(),
             "R59 start marker and runtime commitment must be validated before bundle access",
@@ -2088,17 +2446,31 @@ mod source_gate_selection {
             .runtime_commitment
             .get()
             .ok_or_else(|| invalid_data("R59 runtime commitment is unavailable"))?;
-        require_r59_plaintext_root(&holdout.plaintext_directory)?;
+        require_formal_plaintext_root(custody.revision, &holdout.plaintext_directory)?;
         let archive = HeldInput::open(&holdout.plaintext_archive)?;
-        let validated = validate_r59_plaintext_holdout_bundle(
-            &holdout.plaintext_directory,
-            &holdout.plaintext_archive,
-            archive.bytes(),
-            R59BundleFreezeCommitments {
-                plaintext_archive_sha256: &runtime.plaintext_archive_sha256,
-                manifest_sha256: &runtime.manifest_sha256,
-                oracle_sha256: &runtime.oracle_sha256,
-                hashes_sha256: &runtime.hashes_sha256,
+        let freeze = || R59BundleFreezeCommitments {
+            plaintext_archive_sha256: &runtime.plaintext_archive_sha256,
+            manifest_sha256: &runtime.manifest_sha256,
+            oracle_sha256: &runtime.oracle_sha256,
+            hashes_sha256: &runtime.hashes_sha256,
+        };
+        let validated = dispatch_formal_validator(
+            custody.revision,
+            || {
+                validate_r59_plaintext_holdout_bundle(
+                    &holdout.plaintext_directory,
+                    &holdout.plaintext_archive,
+                    archive.bytes(),
+                    freeze(),
+                )
+            },
+            || {
+                validate_r60_plaintext_holdout_bundle(
+                    &holdout.plaintext_directory,
+                    &holdout.plaintext_archive,
+                    archive.bytes(),
+                    freeze(),
+                )
             },
         )?;
         let prepared = prepare_r59_execution_entries(validated.execution)?;
@@ -2351,6 +2723,7 @@ mod source_gate_selection {
         let mut runners = Vec::with_capacity(2);
 
         for (device, cpu) in [("cpu", true), ("metal", false)] {
+            let evidence_device = formal_revision(environment).external_device(device);
             let mut logs = NativeLogCaptureGuard::start();
             let vl = PaddleOcrVl::load(&runtime, cpu, backend.clone())
                 .await
@@ -2360,7 +2733,7 @@ mod source_gate_selection {
             let parsed_load = parse_native_load_log(&load_bytes)?;
             let load_log = write_raw_log(
                 environment,
-                &format!("source-gate/{phase}/{device}/load.log"),
+                &format!("source-gate/{phase}/{evidence_device}/load.log"),
                 &load_bytes,
             )?;
             let enumerated_devices = enumerated_devices()?;
@@ -2422,6 +2795,7 @@ mod source_gate_selection {
             let schema_entry = entry.schema;
             let oracle_entry = entry.oracle;
             for (device, vl, vl_evidence, segmenter, bubble_segmenter, process) in &mut runners {
+                let evidence_device = formal_revision(environment).external_device(device);
                 let image = DynamicImage::ImageRgba8(entry.source.clone());
                 let bubble_result = bubble_segmenter
                     .inference(&image)
@@ -2523,7 +2897,7 @@ mod source_gate_selection {
                     let inference_log = write_raw_log(
                         environment,
                         &format!(
-                            "source-gate/{phase}/{}/{device}/{candidate_id}.log",
+                            "source-gate/{phase}/{}/{evidence_device}/{candidate_id}.log",
                             schema_entry.id
                         ),
                         &inference_bytes,
@@ -2531,7 +2905,7 @@ mod source_gate_selection {
                     let source_gate_diagnostic = write_raw_log(
                         environment,
                         &format!(
-                            "source-gate/{phase}/{}/{device}/{candidate_id}.source-gate.json",
+                            "source-gate/{phase}/{}/{evidence_device}/{candidate_id}.source-gate.json",
                             schema_entry.id
                         ),
                         &canonical_json(&source_gate_events)?,
@@ -2570,7 +2944,7 @@ mod source_gate_selection {
                         runtime_nodes,
                         derived,
                     };
-                    if environment.r59_formal_custody.is_some() {
+                    if environment.formal_custody.is_some() {
                         let cell = match environment.phase {
                             Phase::CalibrationFreeze => write_r59_calibration_cell_evidence(
                                 environment,
@@ -2623,8 +2997,8 @@ mod source_gate_selection {
             }
             RealModelRunMode::Matrix => selected[0].0.clone(),
         };
-        let r59_formal = environment
-            .r59_formal_custody
+        let formal = environment
+            .formal_custody
             .as_ref()
             .map(|_| R59FormalRunEvidence {
                 bundle_validation_receipt,
@@ -2635,7 +3009,7 @@ mod source_gate_selection {
             selected_candidate_id,
             process_evidence,
             results,
-            r59_formal,
+            formal,
         })
     }
 
@@ -2654,11 +3028,17 @@ mod source_gate_selection {
     }
 
     fn frozen_holdout_entry_ids(environment: &SelectionEnvironment) -> Vec<String> {
-        if environment.r59_formal_custody.is_some() {
-            r59_entry_ids('h')
-        } else {
-            environment.holdout_entry_ids.clone()
-        }
+        environment.formal_custody.as_ref().map_or_else(
+            || environment.holdout_entry_ids.clone(),
+            |_| r59_entry_ids('h'),
+        )
+    }
+
+    fn terminal_holdout_entry_ids(environment: &SelectionEnvironment) -> Vec<String> {
+        environment.formal_custody.as_ref().map_or_else(
+            || environment.holdout_entry_ids.clone(),
+            |custody| custody.revision.entry_ids(),
+        )
     }
 
     fn selected_candidates(
@@ -3268,6 +3648,7 @@ mod source_gate_selection {
         bytes: &[u8],
     ) -> io::Result<(String, String)> {
         require(!bytes.is_empty(), "native log capture is empty")?;
+        let suffix = formal_external_evidence_suffix(formal_revision(environment), suffix);
         let path = environment.report_dir.join(suffix);
         require(
             path.starts_with(&environment.evidence_root),
@@ -3304,7 +3685,7 @@ mod source_gate_selection {
         validated: &R59ValidatedReceiptData,
     ) -> io::Result<PublishedArtifact> {
         let custody = environment
-            .r59_formal_custody
+            .formal_custody
             .as_ref()
             .ok_or_else(|| invalid_data("R59 formal custody is not enabled"))?;
         let holdout = custody
@@ -3315,65 +3696,115 @@ mod source_gate_selection {
             environment.phase == Phase::Holdout && holdout.open_marker.get().is_some(),
             "R59 bundle receipt is holdout-only",
         )?;
-        let receipt = R59BundleValidationReceipt {
-            contract: "hanonly-r59-bundle-validation-v1",
-            runtime_bundle_schema: "hanonly-r59-runtime-bundle-v1",
-            plan_revision: PLAN_REVISION,
-            b0_sha: &environment.b0_sha,
-            test_executable_sha256: executable_sha256,
-            enabled_cargo_features: ["hanonly-test-evidence"],
-            r59_contract_sha256: &custody.contract_sha256,
-            original_public_commitment_sha256: &holdout.freeze.original_public_commitment_sha256,
-            successor_commitment_sha256: &holdout.freeze.receipt_sha256,
-            original_b0_sha: &holdout.freeze.original_b0_sha,
-            successor_b0_sha: &holdout.freeze.successor_b0_sha,
-            private_manifest_commitment_sha256: &holdout.freeze.private_manifest_commitment_sha256,
-            runtime_commitment_receipt_sha256: &holdout
-                .runtime_commitment
-                .get()
-                .ok_or_else(|| invalid_data("R59 runtime commitment is unavailable"))?
-                .receipt
-                .sha256,
-            plaintext_archive_sha256: &validated.plaintext_archive_sha256,
-            manifest_sha256: &validated.manifest_sha256,
-            oracle_sha256: &validated.oracle_sha256,
-            hashes_sha256: &validated.hashes_sha256,
-            schema_validation_pass: validated.schema_validation_pass,
-            asset_binding_pass: validated.asset_binding_pass,
-            mask_source_clean_equality_pass: validated.mask_source_clean_equality_pass,
-            oracle_semantics_pass: validated.oracle_semantics_pass,
-            result: "pass",
+        let runtime_receipt_sha256 = &holdout
+            .runtime_commitment
+            .get()
+            .ok_or_else(|| invalid_data("formal runtime commitment is unavailable"))?
+            .receipt
+            .sha256;
+        let bytes = match custody.revision {
+            FormalRevision::R59 => canonical_json(&R59BundleValidationReceipt {
+                contract: "hanonly-r59-bundle-validation-v1",
+                runtime_bundle_schema: "hanonly-r59-runtime-bundle-v1",
+                plan_revision: PLAN_REVISION,
+                b0_sha: &environment.b0_sha,
+                test_executable_sha256: executable_sha256,
+                enabled_cargo_features: ["hanonly-test-evidence"],
+                r59_contract_sha256: &custody.contract_sha256,
+                original_public_commitment_sha256: &holdout
+                    .freeze
+                    .original_public_commitment_sha256,
+                successor_commitment_sha256: &holdout.freeze.receipt_sha256,
+                original_b0_sha: &holdout.freeze.original_b0_sha,
+                successor_b0_sha: &holdout.freeze.successor_b0_sha,
+                private_manifest_commitment_sha256: &holdout
+                    .freeze
+                    .private_manifest_commitment_sha256,
+                runtime_commitment_receipt_sha256: runtime_receipt_sha256,
+                plaintext_archive_sha256: &validated.plaintext_archive_sha256,
+                manifest_sha256: &validated.manifest_sha256,
+                oracle_sha256: &validated.oracle_sha256,
+                hashes_sha256: &validated.hashes_sha256,
+                schema_validation_pass: validated.schema_validation_pass,
+                asset_binding_pass: validated.asset_binding_pass,
+                mask_source_clean_equality_pass: validated.mask_source_clean_equality_pass,
+                oracle_semantics_pass: validated.oracle_semantics_pass,
+                result: "pass",
+            })?,
+            FormalRevision::R60 => canonical_json(&R60BundleValidationReceipt {
+                contract: "hanonly-r60-bundle-validation-v1",
+                runtime_bundle_schema: "hanonly-r60-runtime-bundle-v1",
+                plan_revision: 60,
+                b0_sha: &environment.b0_sha,
+                test_executable_sha256: executable_sha256,
+                enabled_cargo_features: ["hanonly-test-evidence"],
+                r60_contract_sha256: &custody.contract_sha256,
+                public_commitment_sha256: &holdout.freeze.original_public_commitment_sha256,
+                successor_commitment_sha256: &holdout.freeze.receipt_sha256,
+                source_b0_sha: &holdout.freeze.original_b0_sha,
+                successor_b0_sha: &holdout.freeze.successor_b0_sha,
+                private_manifest_commitment_sha256: &holdout
+                    .freeze
+                    .private_manifest_commitment_sha256,
+                runtime_commitment_receipt_sha256: runtime_receipt_sha256,
+                plaintext_archive_sha256: &validated.plaintext_archive_sha256,
+                manifest_sha256: &validated.manifest_sha256,
+                oracle_sha256: &validated.oracle_sha256,
+                hashes_sha256: &validated.hashes_sha256,
+                schema_validation_pass: validated.schema_validation_pass,
+                asset_binding_pass: validated.asset_binding_pass,
+                mask_source_clean_equality_pass: validated.mask_source_clean_equality_pass,
+                oracle_semantics_pass: validated.oracle_semantics_pass,
+                result: "pass",
+            })?,
         };
-        publish_r59_artifact(
-            environment,
-            "r59/bundle-validation.json",
-            &canonical_json(&receipt)?,
-        )
+        publish_r59_artifact(environment, "r59/bundle-validation.json", &bytes)
     }
 
-    fn load_r59_successor_commitments(
+    fn load_formal_successor_commitments(
+        revision: FormalRevision,
         original_path: &Path,
         successor_path: &Path,
         requested_b0_sha: &str,
         contract_sha256: &str,
         test_spec_path: &Path,
-    ) -> io::Result<R59FreezeCommitments> {
+    ) -> io::Result<FreezeCommitments> {
         let original = HeldInput::open(original_path)?;
         let successor = HeldInput::open(successor_path)?;
         let test_spec_sha256 = sha256_file(test_spec_path)?;
         require(
-            test_spec_sha256 == R59_TEST_SPEC_SHA256,
-            "R59 custody test spec hash drift",
+            test_spec_sha256 == revision.test_spec_sha256(),
+            "formal custody test spec hash drift",
         )?;
-        validate_r59_successor_commitments(
-            original.bytes(),
-            &hex_sha256(original.sha256()),
-            successor.bytes(),
-            &hex_sha256(successor.sha256()),
-            requested_b0_sha,
-            contract_sha256,
-            &test_spec_sha256,
-        )
+        match revision {
+            FormalRevision::R59 => validate_r59_successor_commitments(
+                original.bytes(),
+                &hex_sha256(original.sha256()),
+                successor.bytes(),
+                &hex_sha256(successor.sha256()),
+                requested_b0_sha,
+                contract_sha256,
+                &test_spec_sha256,
+            ),
+            FormalRevision::R60 => {
+                let layout = HeldInput::open(
+                    &original_path
+                        .parent()
+                        .ok_or_else(|| invalid_data("R60 public commitment has no parent"))?
+                        .join(R60_LAYOUT_RECEIPT_NAME),
+                )?;
+                validate_r60_successor_commitments(
+                    layout.bytes(),
+                    original.bytes(),
+                    &hex_sha256(original.sha256()),
+                    successor.bytes(),
+                    &hex_sha256(successor.sha256()),
+                    requested_b0_sha,
+                    contract_sha256,
+                    &test_spec_sha256,
+                )
+            }
+        }
     }
 
     fn validate_r59_successor_commitments(
@@ -3384,7 +3815,7 @@ mod source_gate_selection {
         requested_b0_sha: &str,
         contract_sha256: &str,
         test_spec_sha256: &str,
-    ) -> io::Result<R59FreezeCommitments> {
+    ) -> io::Result<FreezeCommitments> {
         require(
             original_sha256 == R59_PUBLIC_COMMITMENT_SHA256,
             "R59 original public commitment hash drift",
@@ -3434,7 +3865,7 @@ mod source_gate_selection {
         }
         require_git_sha(&receipt.original_b0_sha)?;
         require_git_sha(&receipt.successor_b0_sha)?;
-        Ok(R59FreezeCommitments {
+        Ok(FreezeCommitments {
             receipt_sha256: successor_sha256.to_owned(),
             original_public_commitment_sha256: receipt.original_public_commitment_sha256,
             original_b0_sha: receipt.original_b0_sha,
@@ -3442,6 +3873,114 @@ mod source_gate_selection {
             calibration_artifact_sha256: receipt.calibration_artifact_sha256,
             ciphertext_sha256: receipt.ciphertext_sha256,
             private_manifest_commitment_sha256: receipt.private_manifest_commitment_sha256,
+            r60_layout: None,
+        })
+    }
+
+    fn validate_r60_successor_commitments(
+        layout_bytes: &[u8],
+        public_bytes: &[u8],
+        public_sha256: &str,
+        successor_bytes: &[u8],
+        successor_sha256: &str,
+        requested_b0_sha: &str,
+        contract_sha256: &str,
+        test_spec_sha256: &str,
+    ) -> io::Result<FreezeCommitments> {
+        let layout: R60LayoutReceipt = serde_json::from_slice(layout_bytes)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        let layout_sha256 = sha256_hex(layout_bytes);
+        let public: R60PublicCommitment = serde_json::from_slice(public_bytes)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            canonical_json(&layout)? == layout_bytes
+                && layout.schema == "hanonly.r60.layout-receipt.v1"
+                && layout.plan_revision == 60
+                && layout.manifest_sha256 == layout.private_manifest_commitment_sha256
+                && layout.entry_ids == FormalRevision::R60.entry_ids()
+                && layout.required_root_present
+                && layout.wrapper_absent
+                && layout.canonical_ustar_pass
+                && layout.manifest_binding_pass
+                && layout.same_archive_object_pass
+                && layout.layout_pass
+                && !layout.restricted_values_disclosed
+                && canonical_json(&public)? == public_bytes
+                && public.schema == "hanonly.r60.public-commitment.v1"
+                && public.plan_revision == 60
+                && public.source_b0_sha == R60_SOURCE_B0_SHA
+                && public.manifest_sha256 == public.private_manifest_commitment_sha256
+                && public.entry_ids == FormalRevision::R60.entry_ids()
+                && public.cleanup_pass
+                && !public.restricted_values_disclosed
+                && public.start_marker_absent,
+            "R60 layout or public commitment drift",
+        )?;
+        let successor: R60SuccessorCommitment = serde_json::from_slice(successor_bytes)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            canonical_json(&successor)? == successor_bytes
+                && successor.schema == "hanonly.r60.successor-commitment.v1"
+                && successor.plan_revision == 60
+                && successor.public_commitment_sha256 == public_sha256
+                && successor.source_b0_sha == public.source_b0_sha
+                && successor.successor_b0_sha == requested_b0_sha
+                && successor.contract_sha256 == contract_sha256
+                && successor.test_spec_sha256 == test_spec_sha256
+                && successor.calibration_artifact_sha256 == R59_CALIBRATION_ARTIFACT_SHA256
+                && successor.selected_candidate_id == "S25L4"
+                && successor.ciphertext_sha256 == public.ciphertext_sha256
+                && successor.ciphertext_sha256 == layout.ciphertext_sha256
+                && successor.layout_receipt_sha256 == layout_sha256
+                && successor.layout_receipt_sha256 == public.layout_receipt_sha256
+                && successor.layout_validator_sha256 == layout.layout_validator_sha256
+                && successor.layout_validator_sha256 == public.layout_validator_sha256
+                && successor.manifest_sha256 == layout.manifest_sha256
+                && successor.manifest_sha256 == public.manifest_sha256
+                && successor.member_name_digest_sha256 == layout.member_name_digest_sha256
+                && successor.member_name_digest_sha256 == public.member_name_digest_sha256
+                && successor.private_manifest_commitment_sha256
+                    == layout.private_manifest_commitment_sha256
+                && successor.private_manifest_commitment_sha256
+                    == public.private_manifest_commitment_sha256
+                && successor.entry_ids == FormalRevision::R60.entry_ids()
+                && successor.package_unchanged
+                && successor.start_marker_absent,
+            "R60 successor commitment drift",
+        )?;
+        for hash in [
+            public_sha256,
+            successor_sha256,
+            &layout.plaintext_archive_sha256,
+            &successor.contract_sha256,
+            &successor.test_spec_sha256,
+            &successor.calibration_artifact_sha256,
+            &successor.ciphertext_sha256,
+            &successor.layout_receipt_sha256,
+            &successor.layout_validator_sha256,
+            &successor.manifest_sha256,
+            &successor.member_name_digest_sha256,
+            &successor.private_manifest_commitment_sha256,
+        ] {
+            decode_sha256(hash)?;
+        }
+        require_git_sha(&successor.source_b0_sha)?;
+        require_git_sha(&successor.successor_b0_sha)?;
+        Ok(FreezeCommitments {
+            receipt_sha256: successor_sha256.to_owned(),
+            original_public_commitment_sha256: public_sha256.to_owned(),
+            original_b0_sha: successor.source_b0_sha,
+            successor_b0_sha: successor.successor_b0_sha,
+            calibration_artifact_sha256: successor.calibration_artifact_sha256,
+            ciphertext_sha256: successor.ciphertext_sha256,
+            private_manifest_commitment_sha256: successor.private_manifest_commitment_sha256,
+            r60_layout: Some(R60LayoutBindings {
+                layout_receipt_sha256: successor.layout_receipt_sha256,
+                layout_validator_sha256: successor.layout_validator_sha256,
+                plaintext_archive_sha256: layout.plaintext_archive_sha256,
+                manifest_sha256: successor.manifest_sha256,
+                member_name_digest_sha256: successor.member_name_digest_sha256,
+            }),
         })
     }
 
@@ -3449,24 +3988,27 @@ mod source_gate_selection {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
-    fn validate_r59_runner_open(
+    fn validate_formal_runner_open(
         environment: &SelectionEnvironment,
         selected_candidate_id: &str,
     ) -> io::Result<()> {
-        let holdout = environment
-            .r59_formal_custody
+        let formal = environment
+            .formal_custody
             .as_ref()
-            .and_then(|custody| custody.holdout.as_ref())
-            .ok_or_else(|| invalid_data("R59 holdout custody is unavailable"))?;
+            .ok_or_else(|| invalid_data("formal custody is unavailable"))?;
+        let holdout = formal
+            .holdout
+            .as_ref()
+            .ok_or_else(|| invalid_data("formal holdout custody is unavailable"))?;
         require(
             holdout.open_marker.get().is_none(),
             "R59 runner open marker was already consumed",
         )?;
         let custody = R59HeldDirectory::open(&holdout.directory)?;
-        validate_r59_custody_entry_state(custody.descriptor.as_fd())?;
+        validate_formal_custody_entry_state(formal.revision, custody.descriptor.as_fd())?;
         let descriptor = openat(
             custody.descriptor.as_fd(),
-            R59_START_MARKER_NAME,
+            formal.revision.start_marker_name(),
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )
@@ -3486,35 +4028,39 @@ mod source_gate_selection {
             actual_sha256 == holdout.expected_start_marker_sha256,
             "R59 start marker hash drift",
         )?;
-        let marker: R59OpenMarker = serde_json::from_slice(&bytes)
-            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
-        require(
-            canonical_json(&marker)? == bytes,
-            "R59 start marker is not canonical JSON",
-        )?;
-        require(
-            marker.schema == "hanonly-r59-holdout-start-v1"
-                && marker.plan_revision == PLAN_REVISION
-                && marker.b0_sha == environment.b0_sha
-                && marker.selected_candidate_id == selected_candidate_id
-                && marker.original_public_commitment_sha256
-                    == holdout.freeze.original_public_commitment_sha256
-                && marker.successor_commitment_sha256 == holdout.freeze.receipt_sha256
-                && marker.ciphertext_sha256 == holdout.freeze.ciphertext_sha256
-                && marker.pre_holdout_attestation_sha256
-                    == environment.required_check.attestation_sha256
-                && marker.nonce_hex.len() == 64
-                && marker
-                    .nonce_hex
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                && marker.state == "started",
-            "R59 start marker binding drift",
-        )?;
+        match formal.revision {
+            FormalRevision::R59 => {
+                let marker: R59OpenMarker = serde_json::from_slice(&bytes)
+                    .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+                require(
+                    canonical_json(&marker)? == bytes
+                        && marker.schema == "hanonly-r59-holdout-start-v1"
+                        && marker.plan_revision == PLAN_REVISION
+                        && marker.b0_sha == environment.b0_sha
+                        && marker.selected_candidate_id == selected_candidate_id
+                        && marker.original_public_commitment_sha256
+                            == holdout.freeze.original_public_commitment_sha256
+                        && marker.successor_commitment_sha256 == holdout.freeze.receipt_sha256
+                        && marker.ciphertext_sha256 == holdout.freeze.ciphertext_sha256
+                        && marker.pre_holdout_attestation_sha256
+                            == environment.required_check.attestation_sha256
+                        && valid_nonce(&marker.nonce_hex)
+                        && marker.state == "started",
+                    "R59 start marker binding drift",
+                )?;
+            }
+            FormalRevision::R60 => validate_r60_start_receipt(
+                &bytes,
+                &environment.b0_sha,
+                selected_candidate_id,
+                &holdout.freeze,
+                &environment.required_check.attestation_sha256,
+            )?,
+        }
         let fresh = custody.revalidate_descriptor()?;
         let named = statat(
             fresh.as_fd(),
-            R59_START_MARKER_NAME,
+            formal.revision.start_marker_name(),
             AtFlags::SYMLINK_NOFOLLOW,
         )
         .map_err(io::Error::from)?;
@@ -3532,19 +4078,69 @@ mod source_gate_selection {
         holdout
             .open_marker
             .set(PublishedArtifact {
-                path: R59_START_MARKER_NAME.into(),
+                path: formal.revision.start_marker_name().into(),
                 sha256: actual_sha256,
                 byte_length: bytes.len() as u64,
             })
             .map_err(|_| invalid_data("R59 start marker was already consumed"))
     }
 
-    fn validate_r59_runtime_commitment(environment: &SelectionEnvironment) -> io::Result<()> {
-        let holdout = environment
-            .r59_formal_custody
+    fn valid_nonce(value: &str) -> bool {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+
+    fn validate_r60_start_receipt(
+        bytes: &[u8],
+        b0_sha: &str,
+        selected_candidate_id: &str,
+        freeze: &FreezeCommitments,
+        pre_holdout_attestation_sha256: &str,
+    ) -> io::Result<()> {
+        let marker: R60OpenMarker = serde_json::from_slice(bytes)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        require(
+            canonical_json(&marker)? == bytes
+                && marker.schema == "hanonly.r60.holdout-start.v1"
+                && marker.plan_revision == 60
+                && marker.b0_sha == b0_sha
+                && marker.public_commitment_sha256 == freeze.original_public_commitment_sha256
+                && marker.successor_commitment_sha256 == freeze.receipt_sha256
+                && marker.calibration_artifact_sha256 == freeze.calibration_artifact_sha256
+                && marker.selected_candidate_id == selected_candidate_id
+                && marker.entry_ids == FormalRevision::R60.entry_ids()
+                && marker.pre_holdout_attestation_sha256 == pre_holdout_attestation_sha256
+                && valid_nonce(&marker.nonce_hex)
+                && marker.state == "started",
+            "R60 start marker binding drift",
+        )
+    }
+
+    fn validate_r59_runner_open(
+        environment: &SelectionEnvironment,
+        selected_candidate_id: &str,
+    ) -> io::Result<()> {
+        validate_formal_runner_open(environment, selected_candidate_id)
+    }
+
+    struct ValidatedRuntimeReceipt {
+        plaintext_archive_sha256: String,
+        manifest_sha256: String,
+        oracle_sha256: String,
+        hashes_sha256: String,
+    }
+
+    fn validate_formal_runtime_commitment(environment: &SelectionEnvironment) -> io::Result<()> {
+        let formal = environment
+            .formal_custody
             .as_ref()
-            .and_then(|custody| custody.holdout.as_ref())
-            .ok_or_else(|| invalid_data("R59 holdout custody is unavailable"))?;
+            .ok_or_else(|| invalid_data("formal custody is unavailable"))?;
+        let holdout = formal
+            .holdout
+            .as_ref()
+            .ok_or_else(|| invalid_data("formal holdout custody is unavailable"))?;
         require(
             holdout.runtime_commitment.get().is_none(),
             "R59 runtime commitment was already consumed",
@@ -3556,7 +4152,7 @@ mod source_gate_selection {
         let custody = R59HeldDirectory::open(&holdout.directory)?;
         let descriptor = openat(
             custody.descriptor.as_fd(),
-            R59_RUNTIME_COMMITMENT_NAME,
+            formal.revision.runtime_commitment_name(),
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )
@@ -3571,41 +4167,57 @@ mod source_gate_selection {
         let mut file = fs::File::from(descriptor);
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
-        let receipt: R59RuntimeCommitment = serde_json::from_slice(&bytes)
-            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
-        require(
-            canonical_json(&receipt)? == bytes
-                && receipt.schema == "hanonly.r59.runtime-commitment.v1"
-                && receipt.plan_revision == PLAN_REVISION
-                && receipt.b0_sha == environment.b0_sha
-                && receipt.start_marker_sha256 == marker.sha256
-                && receipt.successor_commitment_sha256 == holdout.freeze.receipt_sha256
-                && receipt.ciphertext_sha256 == holdout.freeze.ciphertext_sha256
-                && receipt.private_manifest_commitment_sha256
-                    == holdout.freeze.private_manifest_commitment_sha256
-                && receipt.entry_ids == r59_entry_ids('h')
-                && receipt.decrypt_result == "pass"
-                && receipt.package_unchanged
-                && !receipt.restricted_values_disclosed
-                && receipt.state == "runtime_committed",
-            "R59 runtime commitment binding drift",
-        )?;
-        for hash in [
-            &receipt.start_marker_sha256,
-            &receipt.successor_commitment_sha256,
-            &receipt.ciphertext_sha256,
-            &receipt.private_manifest_commitment_sha256,
-            &receipt.runtime_archive_sha256,
-            &receipt.runtime_manifest_sha256,
-            &receipt.runtime_oracle_sha256,
-            &receipt.runtime_hashes_sha256,
-        ] {
-            decode_sha256(hash)?;
-        }
+        let validated = match formal.revision {
+            FormalRevision::R59 => {
+                let receipt: R59RuntimeCommitment = serde_json::from_slice(&bytes)
+                    .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+                require(
+                    canonical_json(&receipt)? == bytes
+                        && receipt.schema == "hanonly.r59.runtime-commitment.v1"
+                        && receipt.plan_revision == PLAN_REVISION
+                        && receipt.b0_sha == environment.b0_sha
+                        && receipt.start_marker_sha256 == marker.sha256
+                        && receipt.successor_commitment_sha256 == holdout.freeze.receipt_sha256
+                        && receipt.ciphertext_sha256 == holdout.freeze.ciphertext_sha256
+                        && receipt.private_manifest_commitment_sha256
+                            == holdout.freeze.private_manifest_commitment_sha256
+                        && receipt.entry_ids == r59_entry_ids('h')
+                        && receipt.decrypt_result == "pass"
+                        && receipt.package_unchanged
+                        && !receipt.restricted_values_disclosed
+                        && receipt.state == "runtime_committed",
+                    "R59 runtime commitment binding drift",
+                )?;
+                for hash in [
+                    &receipt.start_marker_sha256,
+                    &receipt.successor_commitment_sha256,
+                    &receipt.ciphertext_sha256,
+                    &receipt.private_manifest_commitment_sha256,
+                    &receipt.runtime_archive_sha256,
+                    &receipt.runtime_manifest_sha256,
+                    &receipt.runtime_oracle_sha256,
+                    &receipt.runtime_hashes_sha256,
+                ] {
+                    decode_sha256(hash)?;
+                }
+                ValidatedRuntimeReceipt {
+                    plaintext_archive_sha256: receipt.runtime_archive_sha256,
+                    manifest_sha256: receipt.runtime_manifest_sha256,
+                    oracle_sha256: receipt.runtime_oracle_sha256,
+                    hashes_sha256: receipt.runtime_hashes_sha256,
+                }
+            }
+            FormalRevision::R60 => validate_r60_runtime_receipt(
+                &bytes,
+                &environment.b0_sha,
+                &marker.sha256,
+                &holdout.freeze,
+            )?,
+        };
         let fresh = custody.revalidate_descriptor()?;
         let named = statat(
             fresh.as_fd(),
-            R59_RUNTIME_COMMITMENT_NAME,
+            formal.revision.runtime_commitment_name(),
             AtFlags::SYMLINK_NOFOLLOW,
         )
         .map_err(io::Error::from)?;
@@ -3622,21 +4234,88 @@ mod source_gate_selection {
         )?;
         holdout
             .runtime_commitment
-            .set(R59RuntimeCommitments {
+            .set(RuntimeCommitments {
                 receipt: PublishedArtifact {
-                    path: R59_RUNTIME_COMMITMENT_NAME.into(),
+                    path: formal.revision.runtime_commitment_name().into(),
                     sha256: sha256_hex(&bytes),
                     byte_length: bytes.len() as u64,
                 },
-                plaintext_archive_sha256: receipt.runtime_archive_sha256,
-                manifest_sha256: receipt.runtime_manifest_sha256,
-                oracle_sha256: receipt.runtime_oracle_sha256,
-                hashes_sha256: receipt.runtime_hashes_sha256,
+                plaintext_archive_sha256: validated.plaintext_archive_sha256,
+                manifest_sha256: validated.manifest_sha256,
+                oracle_sha256: validated.oracle_sha256,
+                hashes_sha256: validated.hashes_sha256,
             })
             .map_err(|_| invalid_data("R59 runtime commitment was already consumed"))
     }
 
-    fn validate_r59_custody_entry_state(directory: BorrowedFd<'_>) -> io::Result<()> {
+    fn validate_r60_runtime_receipt(
+        bytes: &[u8],
+        b0_sha: &str,
+        start_marker_sha256: &str,
+        freeze: &FreezeCommitments,
+    ) -> io::Result<ValidatedRuntimeReceipt> {
+        let receipt: R60RuntimeCommitment = serde_json::from_slice(bytes)
+            .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+        let layout = freeze
+            .r60_layout
+            .as_ref()
+            .ok_or_else(|| invalid_data("R60 layout bindings are unavailable"))?;
+        require(
+            canonical_json(&receipt)? == bytes
+                && receipt.schema == "hanonly.r60.runtime-commitment.v1"
+                && receipt.plan_revision == 60
+                && receipt.b0_sha == b0_sha
+                && receipt.start_marker_sha256 == start_marker_sha256
+                && receipt.successor_commitment_sha256 == freeze.receipt_sha256
+                && receipt.ciphertext_sha256 == freeze.ciphertext_sha256
+                && receipt.layout_receipt_sha256 == layout.layout_receipt_sha256
+                && receipt.layout_validator_sha256 == layout.layout_validator_sha256
+                && receipt.plaintext_archive_sha256 == layout.plaintext_archive_sha256
+                && receipt.member_name_digest_sha256 == layout.member_name_digest_sha256
+                && receipt.private_manifest_commitment_sha256
+                    == freeze.private_manifest_commitment_sha256
+                && receipt.calibration_artifact_sha256 == freeze.calibration_artifact_sha256
+                && receipt.selected_candidate_id == "S25L4"
+                && receipt.manifest_sha256 == layout.manifest_sha256
+                && receipt.entry_ids == FormalRevision::R60.entry_ids()
+                && receipt.decrypt_pass
+                && receipt.package_unchanged
+                && !receipt.restricted_values_disclosed
+                && receipt.state == "runtime_committed",
+            "R60 runtime commitment binding drift",
+        )?;
+        for hash in [
+            &receipt.start_marker_sha256,
+            &receipt.successor_commitment_sha256,
+            &receipt.ciphertext_sha256,
+            &receipt.layout_receipt_sha256,
+            &receipt.layout_validator_sha256,
+            &receipt.member_name_digest_sha256,
+            &receipt.private_manifest_commitment_sha256,
+            &receipt.calibration_artifact_sha256,
+            &receipt.plaintext_archive_sha256,
+            &receipt.manifest_sha256,
+            &receipt.oracle_sha256,
+            &receipt.hashes_sha256,
+        ] {
+            decode_sha256(hash)?;
+        }
+        Ok(ValidatedRuntimeReceipt {
+            plaintext_archive_sha256: receipt.plaintext_archive_sha256,
+            manifest_sha256: receipt.manifest_sha256,
+            oracle_sha256: receipt.oracle_sha256,
+            hashes_sha256: receipt.hashes_sha256,
+        })
+    }
+
+    fn validate_r59_runtime_commitment(environment: &SelectionEnvironment) -> io::Result<()> {
+        validate_formal_runtime_commitment(environment)
+    }
+
+    fn validate_formal_custody_entry_state(
+        revision: FormalRevision,
+        directory: BorrowedFd<'_>,
+    ) -> io::Result<()> {
         let mut names = Dir::read_from(directory)?
             .map(|entry| {
                 entry.map(|entry| OsStr::from_bytes(entry.file_name().to_bytes()).to_owned())
@@ -3644,16 +4323,23 @@ mod source_gate_selection {
             .collect::<rustix::io::Result<Vec<_>>>()
             .map_err(io::Error::from)?;
         names.retain(|name| name != "." && name != "..");
+        let namespace = revision.artifact_namespace();
+        let start_temporary = format!(".{namespace}-holdout-start.");
+        let terminal_temporary = format!(".{namespace}-holdout-terminal.");
+        let cleanup_temporary = format!(".{namespace}-cleanup-receipt.");
         let invalid = names.iter().any(|name| {
             let bytes = name.as_bytes();
-            name == R59_TERMINAL_RECEIPT_NAME
-                || name == R59_CLEANUP_RECEIPT_NAME
-                || (bytes.starts_with(b".r59-holdout-start.") && bytes.ends_with(b".tmp"))
-                || (bytes.starts_with(b".r59-holdout-terminal.") && bytes.ends_with(b".tmp"))
-                || (bytes.starts_with(b".r59-cleanup-receipt.") && bytes.ends_with(b".tmp"))
+            name == revision.terminal_receipt_name()
+                || name == revision.cleanup_receipt_name()
+                || (bytes.starts_with(start_temporary.as_bytes()) && bytes.ends_with(b".tmp"))
+                || (bytes.starts_with(terminal_temporary.as_bytes()) && bytes.ends_with(b".tmp"))
+                || (bytes.starts_with(cleanup_temporary.as_bytes()) && bytes.ends_with(b".tmp"))
         });
         require(
-            names.iter().any(|name| name == R59_START_MARKER_NAME) && !invalid,
+            names
+                .iter()
+                .any(|name| name == revision.start_marker_name())
+                && !invalid,
             "R59 custody entry state is not started",
         )
     }
@@ -3665,17 +4351,42 @@ mod source_gate_selection {
         }
     }
 
+    fn formal_revision(environment: &SelectionEnvironment) -> FormalRevision {
+        environment
+            .formal_custody
+            .as_ref()
+            .map_or(FormalRevision::R59, |custody| custody.revision)
+    }
+
+    fn formal_external_evidence_suffix(revision: FormalRevision, suffix: &str) -> String {
+        match revision {
+            FormalRevision::R59 => suffix.to_owned(),
+            FormalRevision::R60 => format!("r60/{suffix}"),
+        }
+    }
+
+    fn formal_artifact_suffix(revision: FormalRevision, suffix: &str) -> String {
+        suffix.strip_prefix("r59/").map_or_else(
+            || suffix.to_owned(),
+            |rest| format!("{}/{rest}", revision.artifact_namespace()),
+        )
+    }
+
     fn r59_contract_path(
         environment: &SelectionEnvironment,
         artifact: &PublishedArtifact,
     ) -> io::Result<String> {
+        let namespace = environment
+            .formal_custody
+            .as_ref()
+            .map_or("r59", |custody| custody.revision.artifact_namespace());
         let artifact_parent = environment
             .artifact
             .parent()
             .ok_or_else(|| invalid_data("selection artifact has no parent"))?;
         artifact_parent
             .join(&artifact.path)
-            .strip_prefix(environment.report_dir.join("r59"))
+            .strip_prefix(environment.report_dir.join(namespace))
             .map_err(|_| invalid_data("R59 artifact is outside diagnostic root"))?
             .to_str()
             .ok_or_else(|| invalid_data("R59 contract path is not utf-8"))
@@ -4118,7 +4829,8 @@ mod source_gate_selection {
         coverage_index: Option<&PublishedArtifact>,
     ) -> io::Result<R59TerminalCellResult> {
         let phase = r59_phase_name(environment.phase);
-        let device = process.requested_device.as_str();
+        let revision = formal_revision(environment);
+        let device = revision.external_device(&process.requested_device);
         let diagnostic_cell_key = format!(
             "{phase}/{}/{device}/{}",
             result.candidate_id, result.entry_id
@@ -4210,11 +4922,11 @@ mod source_gate_selection {
         });
         let diagnostic = serde_json::json!({
             "contract": "hanonly-r50-cell-diagnostic-v1",
-            "plan_revision": PLAN_REVISION,
+            "plan_revision": revision.plan_revision(),
             "b0_sha": &environment.b0_sha,
             "calibration_manifest_sha256": &environment.calibration_manifest_sha256,
             "holdout_manifest_sha256": environment
-                .r59_formal_custody
+                .formal_custody
                 .as_ref()
                 .and_then(|custody| custody.holdout.as_ref())
                 .and_then(|holdout| holdout.runtime_commitment.get())
@@ -4299,7 +5011,7 @@ mod source_gate_selection {
         supports: &CellSupportEvidence,
     ) -> io::Result<R59TerminalCellResult> {
         require(
-            environment.r59_formal_custody.is_some()
+            environment.formal_custody.is_some()
                 && environment.phase == Phase::CalibrationFreeze
                 && result.entry_id == schema.id,
             "invalid R59 calibration cell context",
@@ -4410,18 +5122,19 @@ mod source_gate_selection {
         bundle_validation_receipt: &PublishedArtifact,
     ) -> io::Result<R59TerminalCellResult> {
         require(
-            environment.r59_formal_custody.is_some()
+            environment.formal_custody.is_some()
                 && environment.phase == Phase::Holdout
                 && result.entry_id == schema.id,
             "invalid R59 formal cell context",
         )?;
         let custody = environment
-            .r59_formal_custody
+            .formal_custody
             .as_ref()
             .and_then(|custody| custody.holdout.as_ref())
             .and_then(|holdout| holdout.runtime_commitment.get())
             .ok_or_else(|| invalid_data("R59 runtime commitment is unavailable"))?;
-        let device = process.requested_device.as_str();
+        let revision = formal_revision(environment);
+        let device = revision.external_device(&process.requested_device);
         let cell_key = format!(
             "holdout/{}/{device}/{}",
             result.candidate_id, result.entry_id
@@ -4453,7 +5166,7 @@ mod source_gate_selection {
         };
         let captured = serde_json::json!({
             "contract": "hanonly-r59-cell-capture-v1",
-            "plan_revision": PLAN_REVISION,
+            "plan_revision": revision.plan_revision(),
             "b0_sha": &environment.b0_sha,
             "cell_key": &cell_key,
             "manifest_sha256": &custody.manifest_sha256,
@@ -4542,7 +5255,7 @@ mod source_gate_selection {
             coverage_passed &= passed;
             let proof = R57SourceInkCoverageProof {
                 contract: "hanonly-r57-source-ink-coverage-proof-v1",
-                plan_revision: PLAN_REVISION,
+                plan_revision: revision.plan_revision(),
                 b0_sha: &environment.b0_sha,
                 cell_key: &cell_key,
                 entry_id: &result.entry_id,
@@ -4603,7 +5316,7 @@ mod source_gate_selection {
         });
         let coverage_index = R59TargetCoverageIndex {
             contract: "hanonly-r57-source-ink-coverage-index-v1",
-            plan_revision: PLAN_REVISION,
+            plan_revision: revision.plan_revision(),
             b0_sha: &environment.b0_sha,
             cell_key: &cell_key,
             manifest_sha256: &custody.manifest_sha256,
@@ -4719,6 +5432,7 @@ mod source_gate_selection {
         suffix: &str,
         bytes: &[u8],
     ) -> io::Result<PublishedArtifact> {
+        let suffix = formal_artifact_suffix(formal_revision(environment), suffix);
         require(
             !bytes.is_empty()
                 && !suffix.starts_with('/')
@@ -4731,7 +5445,7 @@ mod source_gate_selection {
             .report_dir
             .strip_prefix(&environment.evidence_root)
             .map_err(|_| invalid_data("R59 report directory escaped evidence root"))?;
-        let suffix_path = Path::new(suffix);
+        let suffix_path = Path::new(&suffix);
         let parent_relative = report_relative.join(
             suffix_path
                 .parent()
@@ -4746,7 +5460,7 @@ mod source_gate_selection {
             file_name,
             bytes,
         )?;
-        let path = environment.report_dir.join(suffix);
+        let path = environment.report_dir.join(&suffix);
         let sha256 = published.sha256;
         let artifact_parent = environment
             .artifact
@@ -5213,48 +5927,14 @@ mod source_gate_selection {
         calibration_manifest_sha256: &str,
         formal: &R59FormalRunEvidence,
     ) -> io::Result<PublishedArtifact> {
-        let expected = r59_entry_ids('h')
-            .into_iter()
-            .flat_map(|entry| {
-                ["cpu", "metal"]
-                    .into_iter()
-                    .map(move |device| format!("{entry}/{device}"))
-            })
-            .collect::<Vec<_>>();
-        require(
-            !formal.cells.is_empty()
-                && formal.cells.len() <= expected.len()
-                && formal
-                    .cells
-                    .iter()
-                    .zip(&expected)
-                    .all(|(cell, expected)| &cell.cell_key == expected)
-                && formal.cells.iter().all(|cell| {
-                    cell.diagnostic_cell_key
-                        == format!(
-                            "holdout/{selected_candidate_id}/{}/{}",
-                            cell.device, cell.entry_id
-                        )
-                }),
-            "R59 formal cells are not an exact ordered prefix",
-        )?;
-        let first_failure = formal.cells.iter().position(|cell| cell.result != "pass");
-        require(
-            match (first_failure, formal.first_failed_cell.as_deref()) {
-                (None, None) => formal.cells.len() == expected.len(),
-                (Some(index), Some(key)) => {
-                    index + 1 == formal.cells.len() && formal.cells[index].cell_key == key
-                }
-                _ => false,
-            },
-            "R59 formal first-failure boundary drift",
-        )?;
+        let revision = formal_revision(environment);
+        let expected = validate_formal_terminal_closure(revision, selected_candidate_id, formal)?;
         let bundle = formal
             .bundle_validation_receipt
             .as_ref()
             .ok_or_else(|| invalid_data("R59 bundle validation receipt is missing"))?;
         let custody = environment
-            .r59_formal_custody
+            .formal_custody
             .as_ref()
             .ok_or_else(|| invalid_data("R59 formal custody is not enabled"))?;
         let holdout = custody
@@ -5269,13 +5949,29 @@ mod source_gate_selection {
             .runtime_commitment
             .get()
             .ok_or_else(|| invalid_data("R59 runtime commitment was not validated"))?;
-        let (previous, mut records) =
-            read_r59_calibration_terminal(environment, calibration_manifest_sha256)?;
-        let terminal_generation = 64 + formal.cells.len() as u64 * 2;
+        let (previous, mut records) = match revision {
+            FormalRevision::R59 => {
+                read_r59_calibration_terminal(environment, calibration_manifest_sha256)?
+            }
+            FormalRevision::R60 => (
+                write_r59_diagnostic_generation(
+                    environment,
+                    0,
+                    None,
+                    calibration_manifest_sha256,
+                    Some(&runtime.manifest_sha256),
+                    Some(bundle),
+                    &[],
+                )?,
+                Vec::new(),
+            ),
+        };
+        let (starting_generation, complete_generation) = revision.diagnostic_generation_bounds();
+        let terminal_generation = starting_generation + formal.cells.len() as u64 * 2;
         let terminal_generation_artifact = write_r59_cell_transitions(
             environment,
             &formal.cells,
-            64,
+            starting_generation,
             Some(previous),
             &mut records,
             calibration_manifest_sha256,
@@ -5292,8 +5988,14 @@ mod source_gate_selection {
         let terminal_index =
             publish_r59_artifact(environment, "r59/diagnostic-index.json", &generation_bytes)?;
         require(
-            records.len() == 32 + formal.cells.len()
-                && terminal_generation == 64 + formal.cells.len() as u64 * 2,
+            records.len()
+                == match revision {
+                    FormalRevision::R59 => 32 + formal.cells.len(),
+                    FormalRevision::R60 => formal.cells.len(),
+                }
+                && terminal_generation == starting_generation + formal.cells.len() as u64 * 2
+                && (formal.cells.len() != expected.len()
+                    || terminal_generation == complete_generation),
             "R59 terminal diagnostic count drift",
         )?;
         let unexecuted_cell_keys = expected[formal.cells.len()..].to_vec();
@@ -5303,8 +6005,8 @@ mod source_gate_selection {
         let bundle_path = r59_contract_path(environment, bundle)?;
         let terminal_index_path = r59_contract_path(environment, &terminal_index)?;
         let completion_summary = R59CompletionSummary {
-            contract: "hanonly-r59-b0-completion-summary-v1",
-            plan_revision: PLAN_REVISION,
+            contract: revision.completion_summary_contract(),
+            plan_revision: revision.plan_revision(),
             b0_sha: &environment.b0_sha,
             selected_candidate_id,
             original_public_commitment_sha256: &holdout.freeze.original_public_commitment_sha256,
@@ -5345,8 +6047,48 @@ mod source_gate_selection {
             "r59/completion-summary.json",
             &canonical_json(&completion_summary)?,
         )?;
-        println!("{}", r59_completion_summary_stdout_line(&summary)?);
+        println!(
+            "{}",
+            formal_completion_summary_stdout_line(revision, &summary)?
+        );
         Ok(terminal_index)
+    }
+
+    fn validate_formal_terminal_closure(
+        revision: FormalRevision,
+        selected_candidate_id: &str,
+        formal: &R59FormalRunEvidence,
+    ) -> io::Result<Vec<String>> {
+        let expected = revision.formal_cell_keys();
+        require(
+            !formal.cells.is_empty()
+                && formal.cells.len() <= expected.len()
+                && formal
+                    .cells
+                    .iter()
+                    .zip(&expected)
+                    .all(|(cell, expected)| &cell.cell_key == expected)
+                && formal.cells.iter().all(|cell| {
+                    cell.diagnostic_cell_key
+                        == format!(
+                            "holdout/{selected_candidate_id}/{}/{}",
+                            cell.device, cell.entry_id
+                        )
+                }),
+            "R59 formal cells are not an exact ordered prefix",
+        )?;
+        let first_failure = formal.cells.iter().position(|cell| cell.result != "pass");
+        require(
+            match (first_failure, formal.first_failed_cell.as_deref()) {
+                (None, None) => formal.cells.len() == expected.len(),
+                (Some(index), Some(key)) => {
+                    index + 1 == formal.cells.len() && formal.cells[index].cell_key == key
+                }
+                _ => false,
+            },
+            "R59 formal first-failure boundary drift",
+        )?;
+        Ok(expected)
     }
 
     fn r59_pre_cleanup_completion_state(all_cells_passed: bool) -> (&'static str, &'static str) {
@@ -5361,9 +6103,19 @@ mod source_gate_selection {
     }
 
     fn r59_completion_summary_stdout_line(summary: &PublishedArtifact) -> io::Result<String> {
+        formal_completion_summary_stdout_line(FormalRevision::R59, summary)
+    }
+
+    fn formal_completion_summary_stdout_line(
+        revision: FormalRevision,
+        summary: &PublishedArtifact,
+    ) -> io::Result<String> {
         let binding = String::from_utf8(canonical_json(summary)?)
             .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
-        Ok(format!("{R59_COMPLETION_SUMMARY_STDOUT_PREFIX}{binding}"))
+        Ok(format!(
+            "{}{binding}",
+            revision.completion_summary_stdout_prefix()
+        ))
     }
 
     fn write_r59_diagnostic_generation(
@@ -5380,7 +6132,7 @@ mod source_gate_selection {
             .transpose()?;
         let index = serde_json::json!({
             "contract": "hanonly-r50-diagnostic-index-v1",
-            "plan_revision": PLAN_REVISION,
+            "plan_revision": formal_revision(environment).plan_revision(),
             "b0_sha": &environment.b0_sha,
             "calibration_manifest_sha256": calibration_manifest_sha256,
             "holdout_manifest_sha256": holdout_manifest_sha256,
@@ -5619,7 +6371,7 @@ mod source_gate_selection {
         artifact: &FrozenArtifact,
     ) -> io::Result<()> {
         if let Some(holdout) = environment
-            .r59_formal_custody
+            .formal_custody
             .as_ref()
             .and_then(|custody| custody.holdout.as_ref())
         {
@@ -5655,7 +6407,7 @@ mod source_gate_selection {
         let b0_binding_valid = if artifact.b0_sha == environment.b0_sha {
             true
         } else if let Some(holdout) = environment
-            .r59_formal_custody
+            .formal_custody
             .as_ref()
             .and_then(|custody| custody.holdout.as_ref())
         {
@@ -5686,7 +6438,7 @@ mod source_gate_selection {
             }
             Phase::Holdout => {
                 let expected_manifest = environment
-                    .r59_formal_custody
+                    .formal_custody
                     .as_ref()
                     .and_then(|custody| custody.holdout.as_ref())
                     .and_then(|holdout| holdout.runtime_commitment.get())
@@ -5694,7 +6446,7 @@ mod source_gate_selection {
                         runtime.manifest_sha256.as_str()
                     });
                 artifact.holdout_manifest_sha256.as_deref() == Some(expected_manifest)
-                    && artifact.holdout_entry_ids == r59_entry_ids('h')
+                    && artifact.holdout_entry_ids == formal_revision(environment).entry_ids()
             }
         };
         require(manifest_binding_valid, "selection manifest binding drift")?;
@@ -5753,8 +6505,15 @@ mod source_gate_selection {
             ) == expected,
             "selection artifact matrix counts mismatch",
         )?;
+        let frozen_holdout_entry_ids =
+            if phase == Phase::Holdout && formal_revision(environment) == FormalRevision::R60 {
+                r59_entry_ids('h')
+            } else {
+                artifact.holdout_entry_ids.clone()
+            };
         require(
-            frozen_projection_sha256(artifact)? == artifact.frozen_payload_sha256,
+            frozen_projection_sha256_with_holdout_ids(artifact, &frozen_holdout_entry_ids)?
+                == artifact.frozen_payload_sha256,
             "frozen payload sha256 mismatch",
         )?;
         validate_result_matrix(artifact)
@@ -5802,6 +6561,13 @@ mod source_gate_selection {
     }
 
     fn frozen_projection_sha256(artifact: &FrozenArtifact) -> io::Result<String> {
+        frozen_projection_sha256_with_holdout_ids(artifact, &artifact.holdout_entry_ids)
+    }
+
+    fn frozen_projection_sha256_with_holdout_ids(
+        artifact: &FrozenArtifact,
+        holdout_entry_ids: &[String],
+    ) -> io::Result<String> {
         let mut process_evidence = artifact
             .process_evidence
             .iter()
@@ -5839,7 +6605,7 @@ mod source_gate_selection {
             "frozen_recall_contract": &artifact.frozen_recall_contract,
             "candidates": &artifact.candidates,
             "calibration_entry_ids": &artifact.calibration_entry_ids,
-            "holdout_entry_ids": &artifact.holdout_entry_ids,
+            "holdout_entry_ids": holdout_entry_ids,
             "process_evidence": process_evidence,
             "calibration_results": calibration_results,
             "selected_candidate_id": &artifact.selected_candidate_id,
@@ -6415,15 +7181,15 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let paths = if values.get(R59_FORMAL_CUSTODY_ENV).map(String::as_str) == Some("1")
             && values.get(PHASE_ENV).map(String::as_str) == Some("holdout")
         {
-            R59PublicPaths {
+            FormalPublicPaths {
                 original: values[R59_PUBLIC_COMMITMENT_ENV].as_str().into(),
                 directory: values[R59_CUSTODY_DIRECTORY_ENV].as_str().into(),
                 successor: values[R59_SUCCESSOR_COMMITMENT_ENV].as_str().into(),
             }
         } else {
-            R59PublicPaths::frozen()
+            FormalPublicPaths::frozen(FormalRevision::R59)
         };
-        SelectionEnvironment::parse_with_r59_paths(|name| values.get(name).cloned(), paths)
+        SelectionEnvironment::parse_with_formal_paths(|name| values.get(name).cloned(), Some(paths))
     }
 
     fn formal_environment(root: &Path, phase: Phase) -> HashMap<&'static str, String> {
@@ -6582,7 +7348,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
 
     fn validate_test_successor(
         values: &HashMap<&'static str, String>,
-    ) -> io::Result<R59FreezeCommitments> {
+    ) -> io::Result<FreezeCommitments> {
         let successor_path = PathBuf::from(values.get(R59_SUCCESSOR_COMMITMENT_ENV).unwrap());
         let successor_bytes = fs::read(successor_path)?;
         validate_r59_successor_commitments(
@@ -6598,6 +7364,271 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                 &repository_root()?.join(".omx/plans/test-spec-hanonly-r59-b0-custody.md"),
             )?,
         )
+    }
+
+    #[test]
+    fn formal_protocol_selection_is_closed_and_mutually_exclusive() {
+        assert_eq!(select_formal_revision(None, None).unwrap(), None);
+        assert_eq!(
+            select_formal_revision(Some("1"), Some("0")).unwrap(),
+            Some(FormalRevision::R59)
+        );
+        assert_eq!(
+            select_formal_revision(Some("0"), Some("1")).unwrap(),
+            Some(FormalRevision::R60)
+        );
+        assert!(select_formal_revision(Some("1"), Some("1")).is_err());
+        assert!(select_formal_revision(None, Some("true")).is_err());
+    }
+
+    #[test]
+    fn r60_receipts_are_strict_and_dispatch_to_the_r60_bundle_validator() {
+        let layout = R60LayoutReceipt {
+            schema: "hanonly.r60.layout-receipt.v1".into(),
+            plan_revision: 60,
+            plaintext_archive_sha256: synthetic_hash(8),
+            manifest_sha256: synthetic_hash(4),
+            private_manifest_commitment_sha256: synthetic_hash(4),
+            member_name_digest_sha256: synthetic_hash(5),
+            ciphertext_sha256: synthetic_hash(1),
+            layout_validator_sha256: synthetic_hash(3),
+            entry_ids: FormalRevision::R60.entry_ids(),
+            required_root_present: true,
+            wrapper_absent: true,
+            canonical_ustar_pass: true,
+            manifest_binding_pass: true,
+            same_archive_object_pass: true,
+            layout_pass: true,
+            restricted_values_disclosed: false,
+        };
+        let layout_bytes = canonical_json(&layout).unwrap();
+        let layout_sha256 = sha256_hex(&layout_bytes);
+        let public = R60PublicCommitment {
+            schema: "hanonly.r60.public-commitment.v1".into(),
+            plan_revision: 60,
+            source_b0_sha: R60_SOURCE_B0_SHA.into(),
+            ciphertext_sha256: synthetic_hash(1),
+            layout_receipt_sha256: layout_sha256.clone(),
+            layout_validator_sha256: synthetic_hash(3),
+            manifest_sha256: synthetic_hash(4),
+            member_name_digest_sha256: synthetic_hash(5),
+            private_manifest_commitment_sha256: synthetic_hash(4),
+            entry_ids: FormalRevision::R60.entry_ids(),
+            cleanup_pass: true,
+            restricted_values_disclosed: false,
+            start_marker_absent: true,
+        };
+        let public_bytes = canonical_json(&public).unwrap();
+        let public_sha256 = sha256_hex(&public_bytes);
+        let successor = R60SuccessorCommitment {
+            schema: "hanonly.r60.successor-commitment.v1".into(),
+            plan_revision: 60,
+            public_commitment_sha256: public_sha256.clone(),
+            source_b0_sha: R60_SOURCE_B0_SHA.into(),
+            successor_b0_sha: "b".repeat(40),
+            contract_sha256: R60_CONTRACT_SHA256.into(),
+            test_spec_sha256: R60_TEST_SPEC_SHA256.into(),
+            calibration_artifact_sha256: R59_CALIBRATION_ARTIFACT_SHA256.into(),
+            selected_candidate_id: "S25L4".into(),
+            ciphertext_sha256: synthetic_hash(1),
+            layout_receipt_sha256: layout_sha256.clone(),
+            layout_validator_sha256: synthetic_hash(3),
+            manifest_sha256: synthetic_hash(4),
+            member_name_digest_sha256: synthetic_hash(5),
+            private_manifest_commitment_sha256: synthetic_hash(4),
+            entry_ids: FormalRevision::R60.entry_ids(),
+            package_unchanged: true,
+            start_marker_absent: true,
+        };
+        let successor_bytes = canonical_json(&successor).unwrap();
+        let freeze = validate_r60_successor_commitments(
+            &layout_bytes,
+            &public_bytes,
+            &public_sha256,
+            &successor_bytes,
+            &sha256_hex(&successor_bytes),
+            &successor.successor_b0_sha,
+            R60_CONTRACT_SHA256,
+            R60_TEST_SPEC_SHA256,
+        )
+        .unwrap();
+
+        let start = R60OpenMarker {
+            schema: "hanonly.r60.holdout-start.v1".into(),
+            plan_revision: 60,
+            b0_sha: successor.successor_b0_sha.clone(),
+            public_commitment_sha256: public_sha256,
+            successor_commitment_sha256: freeze.receipt_sha256.clone(),
+            calibration_artifact_sha256: R59_CALIBRATION_ARTIFACT_SHA256.into(),
+            selected_candidate_id: "S25L4".into(),
+            entry_ids: FormalRevision::R60.entry_ids(),
+            pre_holdout_attestation_sha256: synthetic_hash(6),
+            nonce_hex: synthetic_hash(7),
+            state: "started".into(),
+        };
+        let start_bytes = canonical_json(&start).unwrap();
+        validate_r60_start_receipt(
+            &start_bytes,
+            &successor.successor_b0_sha,
+            "S25L4",
+            &freeze,
+            &start.pre_holdout_attestation_sha256,
+        )
+        .unwrap();
+
+        let runtime = R60RuntimeCommitment {
+            schema: "hanonly.r60.runtime-commitment.v1".into(),
+            plan_revision: 60,
+            b0_sha: successor.successor_b0_sha.clone(),
+            start_marker_sha256: sha256_hex(&start_bytes),
+            successor_commitment_sha256: freeze.receipt_sha256.clone(),
+            ciphertext_sha256: synthetic_hash(1),
+            layout_receipt_sha256: layout_sha256,
+            layout_validator_sha256: synthetic_hash(3),
+            member_name_digest_sha256: synthetic_hash(5),
+            private_manifest_commitment_sha256: synthetic_hash(4),
+            calibration_artifact_sha256: R59_CALIBRATION_ARTIFACT_SHA256.into(),
+            selected_candidate_id: "S25L4".into(),
+            plaintext_archive_sha256: synthetic_hash(8),
+            manifest_sha256: synthetic_hash(4),
+            oracle_sha256: synthetic_hash(9),
+            hashes_sha256: synthetic_hash(10),
+            entry_ids: FormalRevision::R60.entry_ids(),
+            decrypt_pass: true,
+            package_unchanged: true,
+            restricted_values_disclosed: false,
+            state: "runtime_committed".into(),
+        };
+        let runtime_bytes = canonical_json(&runtime).unwrap();
+        let validated = validate_r60_runtime_receipt(
+            &runtime_bytes,
+            &successor.successor_b0_sha,
+            &runtime.start_marker_sha256,
+            &freeze,
+        )
+        .unwrap();
+        assert_eq!(validated.manifest_sha256, runtime.manifest_sha256);
+        assert_eq!(validated.oracle_sha256, runtime.oracle_sha256);
+        assert_eq!(validated.hashes_sha256, runtime.hashes_sha256);
+        assert!(serde_json::from_slice::<R59RuntimeCommitment>(&runtime_bytes).is_err());
+
+        let mut archive_mismatch: serde_json::Value =
+            serde_json::from_slice(&runtime_bytes).unwrap();
+        archive_mismatch["plaintext_archive_sha256"] = serde_json::json!(synthetic_hash(11));
+        assert!(
+            validate_r60_runtime_receipt(
+                &canonical_json(&archive_mismatch).unwrap(),
+                &successor.successor_b0_sha,
+                &runtime.start_marker_sha256,
+                &freeze,
+            )
+            .is_err()
+        );
+
+        let mut open_runtime: serde_json::Value = serde_json::from_slice(&runtime_bytes).unwrap();
+        open_runtime["runtime_manifest_sha256"] = serde_json::json!(synthetic_hash(12));
+        assert!(
+            validate_r60_runtime_receipt(
+                &canonical_json(&open_runtime).unwrap(),
+                &successor.successor_b0_sha,
+                &runtime.start_marker_sha256,
+                &freeze,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            dispatch_formal_validator(FormalRevision::R59, || "r59", || "r60"),
+            "r59"
+        );
+        assert_eq!(
+            dispatch_formal_validator(FormalRevision::R60, || "r59", || "r60"),
+            "r60"
+        );
+    }
+
+    #[test]
+    fn r60_cells_use_actual_metal_and_execution_only_generations() {
+        let expected = vec![
+            "r60-h01/cpu",
+            "r60-h01/actual-metal",
+            "r60-h02/cpu",
+            "r60-h02/actual-metal",
+            "r60-h03/cpu",
+            "r60-h03/actual-metal",
+            "r60-h04/cpu",
+            "r60-h04/actual-metal",
+        ];
+        assert_eq!(FormalRevision::R60.formal_cell_keys(), expected);
+        assert_eq!(FormalRevision::R60.diagnostic_generation_bounds(), (0, 16));
+        assert_eq!(FormalRevision::R59.diagnostic_generation_bounds(), (64, 80));
+        assert_eq!(FormalRevision::R60.artifact_namespace(), "r60");
+        assert_eq!(
+            FormalRevision::R60.completion_summary_contract(),
+            "hanonly-r60-b0-completion-summary-v1"
+        );
+        assert_eq!(
+            FormalRevision::R60.completion_summary_stdout_prefix(),
+            R60_COMPLETION_SUMMARY_STDOUT_PREFIX
+        );
+        assert_eq!(
+            formal_external_evidence_suffix(
+                FormalRevision::R60,
+                &format!(
+                    "source-gate/holdout/{}/load.log",
+                    FormalRevision::R60.external_device("metal")
+                ),
+            ),
+            "r60/source-gate/holdout/actual-metal/load.log"
+        );
+        assert_eq!(
+            formal_external_evidence_suffix(
+                FormalRevision::R59,
+                "source-gate/holdout/metal/load.log"
+            ),
+            "source-gate/holdout/metal/load.log"
+        );
+        assert_eq!(
+            formal_artifact_suffix(FormalRevision::R60, "r59/diagnostic-index.json"),
+            "r60/diagnostic-index.json"
+        );
+        assert_eq!(
+            formal_artifact_suffix(FormalRevision::R59, "r59/diagnostic-index.json"),
+            "r59/diagnostic-index.json"
+        );
+
+        let pass = synthetic_formal_run(
+            expected
+                .iter()
+                .map(|key| {
+                    let (entry, device) = key.split_once('/').unwrap();
+                    synthetic_formal_cell(entry, device, true)
+                })
+                .collect(),
+        );
+        assert_eq!(
+            validate_formal_terminal_closure(FormalRevision::R60, "S25L4", &pass).unwrap(),
+            expected
+        );
+
+        let mut cells = pass.cells[..2].to_vec();
+        cells[1] = synthetic_formal_cell("r60-h01", "actual-metal", false);
+        assert!(
+            validate_formal_terminal_closure(
+                FormalRevision::R60,
+                "S25L4",
+                &synthetic_formal_run(cells.clone()),
+            )
+            .is_ok()
+        );
+        cells.push(synthetic_formal_cell("r60-h02", "cpu", true));
+        assert!(
+            validate_formal_terminal_closure(
+                FormalRevision::R60,
+                "S25L4",
+                &synthetic_formal_run(cells),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -6632,7 +7663,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let original_b0_sha = "a".repeat(40);
         let successor_b0_sha = "b".repeat(40);
         let artifact_sha256 = synthetic_hash(5);
-        let freeze = R59FreezeCommitments {
+        let freeze = FreezeCommitments {
             receipt_sha256: synthetic_hash(1),
             original_public_commitment_sha256: synthetic_hash(2),
             original_b0_sha: original_b0_sha.clone(),
@@ -6640,6 +7671,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
             calibration_artifact_sha256: artifact_sha256.clone(),
             ciphertext_sha256: synthetic_hash(3),
             private_manifest_commitment_sha256: synthetic_hash(4),
+            r60_layout: None,
         };
 
         assert!(freeze.accepts_calibration_artifact(
@@ -6686,13 +7718,14 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let mut environment = parse_test_environment(&values).unwrap();
         environment.phase = Phase::Holdout;
         environment.b0_sha.clone_from(&successor_b0_sha);
-        environment.r59_formal_custody = Some(R59FormalCustody {
+        environment.formal_custody = Some(FormalCustody {
+            revision: FormalRevision::R59,
             contract_sha256: synthetic_hash(7),
-            holdout: Some(R59HoldoutCustody {
+            holdout: Some(HoldoutCustody {
                 directory: root.join("custody"),
                 plaintext_directory: root.join("plaintext"),
                 plaintext_archive: root.join("plaintext/bundle.tar"),
-                freeze: R59FreezeCommitments {
+                freeze: FreezeCommitments {
                     receipt_sha256: synthetic_hash(8),
                     original_public_commitment_sha256: synthetic_hash(9),
                     original_b0_sha: original_b0_sha.clone(),
@@ -6700,6 +7733,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                     calibration_artifact_sha256: hex_sha256(input.sha256()),
                     ciphertext_sha256: synthetic_hash(10),
                     private_manifest_commitment_sha256: synthetic_hash(11),
+                    r60_layout: None,
                 },
                 expected_start_marker_sha256: synthetic_hash(12),
                 open_marker: OnceCell::new(),
@@ -7836,7 +8870,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                     })
                 })
                 .collect(),
-            r59_formal: None,
+            formal: None,
         }
     }
 
@@ -7854,7 +8888,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
                         .map(move |device| synthetic_result("holdout", entry_id, device, "S25L4"))
                 })
                 .collect(),
-            r59_formal: None,
+            formal: None,
         }
     }
 
@@ -7933,7 +8967,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
     }
 
     #[test]
-    fn r59_formal_custody_is_default_off_and_accepts_only_phase_manifest_ids() {
+    fn formal_custody_is_default_off_and_accepts_only_phase_manifest_ids() {
         let temp = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(temp.path()).unwrap();
         let default_values = valid_environment(&root);
@@ -8056,7 +9090,7 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         validate_r59_runner_open(&environment, "S25L4").unwrap();
         validate_r59_runtime_commitment(&environment).unwrap();
         let custody = environment
-            .r59_formal_custody
+            .formal_custody
             .as_ref()
             .unwrap()
             .holdout
