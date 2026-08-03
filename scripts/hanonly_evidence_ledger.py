@@ -777,10 +777,10 @@ R59_AUTHORIZATION_KEYS = {
 R60_PLAN_REVISION = 60
 R60_BASE_B0_SHA = "693597c955a481e57f8df79a09bc5462314c634a"
 R60_CONTRACT_SHA256 = (
-    "e5e05571e21711e81611adec9e2838f60fe361b4cf25cc0dadb7a47b9a2f9f59"
+    "e657fddb8a4a8ff4cdc072659e8a1a0dddba9485de5bee29c12860341e1b0d06"
 )
 R60_TEST_SPEC_SHA256 = (
-    "1daf3ce086f0b3a6ac705b9ee25d812bbde9d4b396acd0dd8ebafa9ba9043187"
+    "2687df3a291802bb146ac2c4530c303871ee691aab46e5806a2ee8808340cda9"
 )
 R60_CALIBRATION_ARTIFACT_PATH = R59_CALIBRATION_ARTIFACT_PATH
 R60_CALIBRATION_ARTIFACT_SHA256 = R59_CALIBRATION_ARTIFACT_SHA256
@@ -4856,65 +4856,6 @@ def _r59_validate_preflight_values(
     return successor_sha256
 
 
-def _r59_path_exists_fail_closed(root, path, label):
-    if os.path.dirname(path) != root.path:
-        raise LedgerError(f"{label} must remain in the R59 public directory")
-    try:
-        os.stat(os.path.basename(path), dir_fd=root.fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise LedgerError(f"cannot prove {label} absence") from error
-    return True
-
-
-def _r59_validate_preflight(arguments):
-    repo_root = _canonical_existing_path(arguments.repo_root, "repository root")
-    _r59_validate_clean_detached_head(repo_root, arguments.requested_b0_sha)
-    _r59_validate_protocol_files(repo_root)
-    _r59_validate_calibration_artifact()
-    with contextlib.ExitStack() as stack:
-        public, public_metadata = _r59_open_public_directory(stack)
-        original_data, original, original_held, original_metadata = _r59_read_public_json(
-            public,
-            R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
-            R59_ORIGINAL_PUBLIC_COMMITMENT_PATH,
-            "R59 original public commitment",
-            stack,
-        )
-        successor_data, successor, successor_held, successor_metadata = _r59_read_public_json(
-            public,
-            R59_SUCCESSOR_COMMITMENT_PATH,
-            R59_SUCCESSOR_COMMITMENT_PATH,
-            "R59 successor commitment",
-            stack,
-        )
-        successor_sha256 = _r59_validate_preflight_values(
-            original_data,
-            original,
-            successor_data,
-            successor,
-            arguments.requested_b0_sha,
-            marker_exists=_r59_path_exists_fail_closed(
-                public, R59_START_MARKER_PATH, "R59 start marker"
-            ),
-            runtime_exists=_r59_path_exists_fail_closed(
-                public, R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"
-            ),
-        )
-        _r59_revalidate_custody_file(
-            original_held, "R59 original public commitment", original_metadata
-        )
-        _r59_revalidate_custody_file(
-            successor_held, "R59 successor commitment", successor_metadata
-        )
-        _r59_revalidate_custody_directory_held(
-            public, "R59 public directory", public_metadata
-        )
-    return _r59_canonical_json(
-        {"result": "pass", "successor_commitment_sha256": successor_sha256}
-    ) + b"\n"
-
 
 def _r59_validate_authorization_values(
     original_data,
@@ -5054,52 +4995,6 @@ def _r59_validate_authorization_values(
     _require_keys(record, R59_AUTHORIZATION_KEYS, "R59 authorization record")
     return record
 
-
-def _r59_validate_authorization(arguments):
-    repo_root = _canonical_existing_path(arguments.repo_root, "repository root")
-    _r59_validate_clean_detached_head(repo_root, arguments.requested_b0_sha)
-    _r59_validate_protocol_files(repo_root)
-    _r59_validate_calibration_artifact()
-    with contextlib.ExitStack() as stack:
-        public, public_metadata = _r59_open_public_directory(stack)
-        inputs = []
-        public_inputs = (
-            (R59_ORIGINAL_PUBLIC_COMMITMENT_PATH, "R59 original public commitment"),
-            (R59_SUCCESSOR_COMMITMENT_PATH, "R59 successor commitment"),
-            (R59_START_MARKER_PATH, "R59 start marker"),
-            (R59_RUNTIME_COMMITMENT_PATH, "R59 runtime commitment"),
-            (R59_TERMINAL_RECEIPT_PATH, "R59 terminal receipt"),
-            (R59_CLEANUP_RECEIPT_PATH, "R59 cleanup receipt"),
-        )
-        for path, label in public_inputs:
-            inputs.append(_r59_read_public_json(public, path, path, label, stack))
-        bundle_sha256, artifact_sha256, held_files, held_directories = (
-            _r59_open_authorization_evidence(arguments.requested_b0_sha, stack)
-        )
-        for value, (_, label) in zip(inputs, public_inputs):
-            _r59_revalidate_custody_file(value[2], label, value[3])
-        _r59_revalidate_authorization_evidence(held_files, held_directories)
-        _r59_revalidate_custody_directory_held(
-            public, "R59 public directory", public_metadata
-        )
-    record = _r59_validate_authorization_values(
-        inputs[0][0],
-        inputs[0][1],
-        inputs[1][0],
-        inputs[1][1],
-        inputs[2][0],
-        inputs[2][1],
-        inputs[3][0],
-        inputs[3][1],
-        inputs[4][0],
-        inputs[4][1],
-        inputs[5][0],
-        inputs[5][1],
-        arguments.requested_b0_sha,
-        bundle_sha256,
-        artifact_sha256,
-    )
-    return _r59_canonical_json(record) + b"\n"
 
 
 def _r60_repo_root():
@@ -5682,12 +5577,6 @@ def _parse_arguments(argv):
     validate_b0.add_argument("--visual-manifest-sha256", required=True)
     validate_b0.add_argument("--source-gate-fixture-manifest-sha256", required=True)
     subparsers.add_parser("r57-validate-source-ink")
-    r59_preflight = subparsers.add_parser("validate-r59-b0-preflight")
-    r59_preflight.add_argument("--repo-root", required=True)
-    r59_preflight.add_argument("--requested-b0-sha", required=True)
-    r59_authorization = subparsers.add_parser("validate-r59-b0-authorization")
-    r59_authorization.add_argument("--repo-root", required=True)
-    r59_authorization.add_argument("--requested-b0-sha", required=True)
     r60_preflight = subparsers.add_parser("validate-r60-b0-preflight")
     r60_preflight.add_argument("--requested-b0-sha", required=True)
     r60_authorization = subparsers.add_parser("validate-r60-b0-authorization")
@@ -5705,10 +5594,6 @@ def execute(argv):
         return _validate_b0_artifact(arguments)
     if arguments.command == "r57-validate-source-ink":
         return _r57_validate_source_ink(sys.stdin.buffer.read())
-    if arguments.command == "validate-r59-b0-preflight":
-        return _r59_validate_preflight(arguments)
-    if arguments.command == "validate-r59-b0-authorization":
-        return _r59_validate_authorization(arguments)
     if arguments.command == "validate-r60-b0-preflight":
         return _r60_validate_preflight(arguments)
     if arguments.command == "validate-r60-b0-authorization":

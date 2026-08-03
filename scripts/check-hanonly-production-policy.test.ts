@@ -1243,16 +1243,13 @@ describe('CLI contract', () => {
     })
   })
 
-  test('rejects caller-supplied R59 custody inputs', async () => {
-    const callerRuntimeHash = await runCli([
-      '--validate-r59-b0-preflight',
-      '--requested-b0-sha',
-      'a'.repeat(40),
-      '--runtime-commitment-sha256',
-      'b'.repeat(64),
-    ])
-    expect(callerRuntimeHash.exitCode).not.toBe(0)
-    expect(callerRuntimeHash.stderr).toStartWith('FAIL [r59-argv]:')
+  test('rejects retired R59 custody commands', async () => {
+    for (const command of ['--validate-r59-b0-preflight', '--validate-r59-b0-authorization']) {
+      const result = await runCli([command, '--requested-b0-sha', 'a'.repeat(40)])
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stdout).toBe('')
+      expect(result.stderr).toStartWith('FAIL [argv]:')
+    }
 
     const retired = await runCli([
       '--write-r51-b0-preflight-attestation',
@@ -1293,29 +1290,6 @@ describe('CLI contract', () => {
       expect(result.stderr).toStartWith('FAIL [r60-argv]:')
     }
   })
-
-  test.skipIf(process.env.HANONLY_R59_REAL_PREFLIGHT !== '1')(
-    'runs the real R59 CLI preflight against public-only evidence',
-    async () => {
-      const head = (await Bun.$`git rev-parse HEAD`.text()).trim()
-      const maliciousRoot = await realpath(
-        await mkdtemp(path.join(os.tmpdir(), 'hanonly-r59-pythonpath-')),
-      )
-      temporaryRoots.push(maliciousRoot)
-      await writeFile(
-        path.join(maliciousRoot, 'json.py'),
-        "raise SystemExit('PYTHONPATH injection executed')\n",
-      )
-      const result = await runCli(['--validate-r59-b0-preflight', '--requested-b0-sha', head], {
-        PATH: maliciousRoot,
-        PYTHONPATH: maliciousRoot,
-      })
-
-      expect(result.exitCode).toBe(0)
-      expect(JSON.parse(result.stdout).result).toBe('pass')
-      expect(result.stderr).toBe('')
-    },
-  )
 
   test('uses the exact cargo metadata argv and prints only PASS on success', async () => {
     const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-cli-')))

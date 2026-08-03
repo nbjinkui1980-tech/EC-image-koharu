@@ -1550,64 +1550,18 @@ export async function validateB0Authorization(
   return flag(args, '--emit-artifact-sha256') ? artifactSha256 : undefined
 }
 
-function r59Args(args: readonly string[], endpoint: string): string[] {
-  const filtered = args.filter((value) => value !== endpoint)
-  if (filtered.length !== args.length - 1) {
-    fail('r59-argv', `${endpoint} must appear exactly once`)
-  }
-  if (
-    filtered.length !== 2 ||
-    filtered[0] !== '--requested-b0-sha' ||
-    !/^[0-9a-f]{40}$/.test(filtered[1] ?? '')
-  ) {
-    fail('r59-argv', `${endpoint} accepts only --requested-b0-sha <sha>`)
-  }
-  return filtered
-}
-
-function r59Python(root: string, command: string, args: readonly string[]): string {
+function ledgerPython(root: string, command: string, args: readonly string[]): string {
   const result = Bun.spawnSync({
-    cmd: [
-      '/usr/bin/python3',
-      '-I',
-      '-B',
-      'scripts/hanonly_evidence_ledger.py',
-      command,
-      '--repo-root',
-      root,
-      ...args,
-    ],
+    cmd: ['/usr/bin/python3', '-I', '-B', 'scripts/hanonly_evidence_ledger.py', command, ...args],
     cwd: root,
     env: { LC_ALL: 'C', PATH: '/usr/bin:/bin' },
     stdout: 'pipe',
     stderr: 'pipe',
   })
   if (result.exitCode !== 0) {
-    fail('r59-b0-custody', result.stderr.toString().trim() || 'R59 ledger validation failed')
+    fail('r60-b0-custody', result.stderr.toString().trim() || 'R60 ledger validation failed')
   }
   return result.stdout.toString()
-}
-
-export async function validateR59B0Preflight(
-  root: string,
-  args: readonly string[],
-): Promise<string> {
-  return r59Python(
-    await realpath(root),
-    'validate-r59-b0-preflight',
-    r59Args(args, '--validate-r59-b0-preflight'),
-  )
-}
-
-export async function validateR59B0Authorization(
-  root: string,
-  args: readonly string[],
-): Promise<string> {
-  return r59Python(
-    await realpath(root),
-    'validate-r59-b0-authorization',
-    r59Args(args, '--validate-r59-b0-authorization'),
-  )
 }
 
 export function r60Args(
@@ -1632,48 +1586,22 @@ export async function validateR60B0Preflight(
   root: string,
   args: readonly string[],
 ): Promise<string> {
-  const result = Bun.spawnSync({
-    cmd: [
-      '/usr/bin/python3',
-      '-I',
-      '-B',
-      'scripts/hanonly_evidence_ledger.py',
-      'validate-r60-b0-preflight',
-      ...r60Args(args, '--validate-r60-b0-preflight'),
-    ],
-    cwd: await realpath(root),
-    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin' },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
-  if (result.exitCode !== 0) {
-    fail('r60-b0-custody', result.stderr.toString().trim() || 'R60 ledger validation failed')
-  }
-  return result.stdout.toString()
+  return ledgerPython(
+    await realpath(root),
+    'validate-r60-b0-preflight',
+    r60Args(args, '--validate-r60-b0-preflight'),
+  )
 }
 
 export async function validateR60B0Authorization(
   root: string,
   args: readonly string[],
 ): Promise<string> {
-  const result = Bun.spawnSync({
-    cmd: [
-      '/usr/bin/python3',
-      '-I',
-      '-B',
-      'scripts/hanonly_evidence_ledger.py',
-      'validate-r60-b0-authorization',
-      ...r60Args(args, '--validate-r60-b0-authorization'),
-    ],
-    cwd: await realpath(root),
-    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin' },
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
-  if (result.exitCode !== 0) {
-    fail('r60-b0-custody', result.stderr.toString().trim() || 'R60 ledger validation failed')
-  }
-  return result.stdout.toString()
+  return ledgerPython(
+    await realpath(root),
+    'validate-r60-b0-authorization',
+    r60Args(args, '--validate-r60-b0-authorization'),
+  )
 }
 
 async function main(): Promise<void> {
@@ -1720,14 +1648,6 @@ async function main(): Promise<void> {
   if (args.includes('--validate-b0-authorization')) {
     const digest = await validateB0Authorization(repoRoot, args)
     if (digest) process.stdout.write(`${digest}\n`)
-    return
-  }
-  if (args.includes('--validate-r59-b0-preflight')) {
-    process.stdout.write(await validateR59B0Preflight(repoRoot, args))
-    return
-  }
-  if (args.includes('--validate-r59-b0-authorization')) {
-    process.stdout.write(await validateR59B0Authorization(repoRoot, args))
     return
   }
   if (args.includes('--validate-r60-b0-preflight')) {
