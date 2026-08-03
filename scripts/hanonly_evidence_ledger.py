@@ -777,10 +777,10 @@ R59_AUTHORIZATION_KEYS = {
 R60_PLAN_REVISION = 60
 R60_BASE_B0_SHA = "693597c955a481e57f8df79a09bc5462314c634a"
 R60_CONTRACT_SHA256 = (
-    "7497c04ac82506723690832f7acd4a0d8955e4a108712b8d4f8f9b2141af5dcc"
+    "f7b7f03a213447e407d72d16816a7bf1f9275607b078956ef484b5c7f934467c"
 )
 R60_TEST_SPEC_SHA256 = (
-    "a0ac56d8b696ca2137cf123a885c56145362f2b7ad7440d15f15d876d2925462"
+    "7d37b69ce7bae86420ae4dde44906eba56fbb006fba3c0d33173f0409307a7d9"
 )
 R60_CALIBRATION_ARTIFACT_PATH = R59_CALIBRATION_ARTIFACT_PATH
 R60_CALIBRATION_ARTIFACT_SHA256 = R59_CALIBRATION_ARTIFACT_SHA256
@@ -801,6 +801,7 @@ R60_LAYOUT_VALIDATOR_PATH = "scripts/hanonly_tar_layout.py"
 R60_ALLOWED_CHANGED_PATHS = (
     ".omx/plans/hanonly-r60-b0-custody-contract.json",
     ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+    "crates/koharu-app/src/pipeline/d0_r59_holdout_bundle.rs",
     "scripts/check-hanonly-production-policy.test.ts",
     "scripts/check-hanonly-production-policy.ts",
     "scripts/hanonly_evidence_ledger.py",

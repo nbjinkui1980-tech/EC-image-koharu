@@ -23,13 +23,46 @@ use zip::read::ZipReadOptions;
 
 use super::d0_held_input::HeldInput;
 
-const PLAN_REVISION: u32 = 59;
-const ENTRY_IDS: [&str; 4] = ["r59-h01", "r59-h02", "r59-h03", "r59-h04"];
+const R59_ENTRY_IDS: [&str; 4] = ["r59-h01", "r59-h02", "r59-h03", "r59-h04"];
+const R60_ENTRY_IDS: [&str; 4] = ["r60-h01", "r60-h02", "r60-h03", "r60-h04"];
 const MANIFEST_NAME: &str = "manifest.json";
 const ORACLE_NAME: &str = "oracle.json";
 const HASHES_NAME: &str = "hashes.json";
 const PYTHON_SHA256: &str = "3e7d30871a9740446f33a907b14d28f10ebe6d4e1c146a4c0788308f573a6609";
 const SIPS_SHA256: &str = "e893abb712ee4799b10f4756943d9310229ddbaebea752ca9cd39a58240edcdf";
+
+struct BundleContract {
+    plan_revision: u32,
+    entry_ids: [&'static str; 4],
+    manifest_contract: &'static str,
+    oracle_contract: &'static str,
+    hashes_contract: &'static str,
+    mask_identity_domain: &'static [u8],
+    grayscale_masks_only: bool,
+    protected_texts_required: bool,
+}
+
+const R59_BUNDLE_CONTRACT: BundleContract = BundleContract {
+    plan_revision: 59,
+    entry_ids: R59_ENTRY_IDS,
+    manifest_contract: "hanonly-r59-holdout-manifest-v1",
+    oracle_contract: "hanonly-r59-holdout-oracle-v1",
+    hashes_contract: "hanonly-r59-holdout-hashes-v1",
+    mask_identity_domain: b"hanonly-r59-binary-mask-v1\0",
+    grayscale_masks_only: false,
+    protected_texts_required: false,
+};
+
+const R60_BUNDLE_CONTRACT: BundleContract = BundleContract {
+    plan_revision: 60,
+    entry_ids: R60_ENTRY_IDS,
+    manifest_contract: "hanonly-r60-holdout-manifest-v1",
+    oracle_contract: "hanonly-r60-holdout-oracle-v1",
+    hashes_contract: "hanonly-r60-holdout-hashes-v1",
+    mask_identity_domain: b"hanonly-r60-binary-mask-v1\0",
+    grayscale_masks_only: true,
+    protected_texts_required: true,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct R59FreezeCommitments<'a> {
@@ -172,7 +205,18 @@ struct Oracle {
 #[serde(deny_unknown_fields)]
 struct OracleEntry {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protected_texts: Option<Vec<OracleProtectedText>>,
     targets: Vec<OracleTarget>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OracleProtectedText {
+    roi: Rect,
+    source_script_class: String,
+    source_text_sha256: String,
+    source_text_utf8: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -245,6 +289,37 @@ pub(super) fn validate_r59_plaintext_holdout_bundle(
     canonical_plaintext_archive_bytes: &[u8],
     freeze: R59FreezeCommitments<'_>,
 ) -> io::Result<R59ValidatedBundle> {
+    validate_plaintext_holdout_bundle(
+        plaintext_root,
+        canonical_plaintext_archive_path,
+        canonical_plaintext_archive_bytes,
+        freeze,
+        &R59_BUNDLE_CONTRACT,
+    )
+}
+
+pub(super) fn validate_r60_plaintext_holdout_bundle(
+    plaintext_root: &Path,
+    canonical_plaintext_archive_path: &Path,
+    canonical_plaintext_archive_bytes: &[u8],
+    freeze: R59FreezeCommitments<'_>,
+) -> io::Result<R59ValidatedBundle> {
+    validate_plaintext_holdout_bundle(
+        plaintext_root,
+        canonical_plaintext_archive_path,
+        canonical_plaintext_archive_bytes,
+        freeze,
+        &R60_BUNDLE_CONTRACT,
+    )
+}
+
+fn validate_plaintext_holdout_bundle(
+    plaintext_root: &Path,
+    canonical_plaintext_archive_path: &Path,
+    canonical_plaintext_archive_bytes: &[u8],
+    freeze: R59FreezeCommitments<'_>,
+    contract: &BundleContract,
+) -> io::Result<R59ValidatedBundle> {
     validate_pinned_tool("/usr/bin/python3", PYTHON_SHA256, b"Python 3.9.6\n")?;
     validate_pinned_tool("/usr/bin/sips", SIPS_SHA256, b"sips-316\n")?;
     for commitment in [
@@ -286,32 +361,33 @@ pub(super) fn validate_r59_plaintext_holdout_bundle(
     let oracle: Oracle = canonical_json(&oracle_asset.bytes)?;
     let hashes: Hashes = canonical_json(&hashes_asset.bytes)?;
     require(
-        manifest.contract == "hanonly-r59-holdout-manifest-v1"
-            && manifest.plan_revision == PLAN_REVISION
+        manifest.contract == contract.manifest_contract
+            && manifest.plan_revision == contract.plan_revision
             && manifest.role == "holdout"
-            && oracle.contract == "hanonly-r59-holdout-oracle-v1"
-            && oracle.plan_revision == PLAN_REVISION
+            && oracle.contract == contract.oracle_contract
+            && oracle.plan_revision == contract.plan_revision
             && oracle.manifest_sha256 == manifest_sha256
-            && hashes.contract == "hanonly-r59-holdout-hashes-v1"
-            && hashes.plan_revision == PLAN_REVISION
+            && hashes.contract == contract.hashes_contract
+            && hashes.plan_revision == contract.plan_revision
             && hashes.manifest_sha256 == manifest_sha256
             && hashes.oracle_sha256 == oracle_sha256,
         "R59 manifest/oracle/hashes mutual binding drift",
     )?;
     require(
-        manifest.entries.len() == ENTRY_IDS.len() && oracle.entries.len() == ENTRY_IDS.len(),
+        manifest.entries.len() == contract.entry_ids.len()
+            && oracle.entries.len() == contract.entry_ids.len(),
         "R59 entry cardinality drift",
     )?;
 
     let mut expected_paths = BTreeSet::new();
-    let mut execution_entries = Vec::with_capacity(ENTRY_IDS.len());
+    let mut execution_entries = Vec::with_capacity(contract.entry_ids.len());
     let mut seen_inodes = HashSet::from([
         (manifest_asset.metadata.dev, manifest_asset.metadata.ino),
         (oracle_asset.metadata.dev, oracle_asset.metadata.ino),
         (hashes_asset.metadata.dev, hashes_asset.metadata.ino),
     ]);
 
-    for (index, expected_id) in ENTRY_IDS.iter().enumerate() {
+    for (index, expected_id) in contract.entry_ids.iter().enumerate() {
         let entry = &manifest.entries[index];
         let oracle_entry = &oracle.entries[index];
         validate_entry_schema(entry, expected_id)?;
@@ -325,6 +401,7 @@ pub(super) fn validate_r59_plaintext_holdout_bundle(
                     .all(|(left, right)| left.id == right.id),
             "R59 oracle order or identity drift",
         )?;
+        validate_protected_texts(entry, oracle_entry, contract)?;
 
         let source_path = validate_source_path(&entry.source_relpath, expected_id)?;
         let clean_path = format!("assets/clean/{expected_id}.png");
@@ -386,8 +463,8 @@ pub(super) fn validate_r59_plaintext_holdout_bundle(
                 &mut expected_paths,
                 &mut seen_inodes,
             )?;
-            let erase_mask = decode_mask(&erase.bytes)?;
-            let residual_mask = decode_mask(&residual.bytes)?;
+            let erase_mask = decode_mask(&erase.bytes, contract)?;
+            let residual_mask = decode_mask(&residual.bytes, contract)?;
             require(
                 erase_mask.width == width
                     && erase_mask.height == height
@@ -592,6 +669,50 @@ fn validate_oracle_entry(entry: &OracleEntry) -> io::Result<()> {
                 && target.expected_decision == "select"
                 && target.expected_rejection_reason.is_none(),
             "R59 oracle semantic drift",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_protected_texts(
+    manifest: &ManifestEntry,
+    oracle: &OracleEntry,
+    contract: &BundleContract,
+) -> io::Result<()> {
+    if !contract.protected_texts_required {
+        return require(
+            oracle.protected_texts.is_none(),
+            "R59 protected-text schema drift",
+        );
+    }
+    let protected = oracle
+        .protected_texts
+        .as_ref()
+        .ok_or_else(|| invalid_data("R60 protected-text ground truth is missing"))?;
+    require(
+        protected.len() == manifest.protected_rois.len()
+            && protected
+                .iter()
+                .zip(&manifest.protected_rois)
+                .all(|(text, roi)| text.roi == *roi),
+        "R60 protected-text ROI binding drift",
+    )?;
+    let scripts = CodePointMapData::<Script>::new();
+    for text in protected {
+        let source = text.source_text_utf8.as_str();
+        require(
+            !source.is_empty()
+                && is_nfc(source)?
+                && source
+                    .chars()
+                    .any(|character| scripts.get(character) == Script::Latin)
+                && source.chars().all(|character| {
+                    scripts.get(character) == Script::Latin
+                        || character.is_ascii() && (' '..='~').contains(&character)
+                })
+                && text.source_script_class == "latin_or_ascii"
+                && text.source_text_sha256 == sha256_hex(source.as_bytes()),
+            "R60 protected-text semantic drift",
         )?;
     }
     Ok(())
@@ -967,10 +1088,10 @@ fn adler32(bytes: &[u8]) -> u32 {
     b << 16 | a
 }
 
-fn decode_mask(bytes: &[u8]) -> io::Result<DecodedMask> {
+fn decode_mask(bytes: &[u8], contract: &BundleContract) -> io::Result<DecodedMask> {
     let (width, height, color_type) = png_ihdr(bytes)?;
     require(
-        matches!(color_type, 0 | 6),
+        color_type == 0 || !contract.grayscale_masks_only && color_type == 6,
         "R59 mask must be grayscale or RGBA PNG",
     )?;
     let dynamic = image::load_from_memory_with_format(bytes, ImageFormat::Png)
@@ -995,7 +1116,7 @@ fn decode_mask(bytes: &[u8]) -> io::Result<DecodedMask> {
         _ => return Err(invalid_data("R59 mask PNG decode kind drift")),
     };
     let mut identity = Sha256::new();
-    identity.update(b"hanonly-r59-binary-mask-v1\0");
+    identity.update(contract.mask_identity_domain);
     identity.update(width.to_be_bytes());
     identity.update(height.to_be_bytes());
     identity.update(&bits);
@@ -1553,10 +1674,19 @@ mod tests {
         archive: std::path::PathBuf,
         archive_bytes: Vec<u8>,
         freeze: [String; 4],
+        contract: &'static BundleContract,
     }
 
     impl Fixture {
         fn build() -> Self {
+            Self::build_for(&R59_BUNDLE_CONTRACT)
+        }
+
+        fn build_r60() -> Self {
+            Self::build_for(&R60_BUNDLE_CONTRACT)
+        }
+
+        fn build_for(contract: &'static BundleContract) -> Self {
             let temp = TempDir::new().unwrap();
             let base = fs::canonicalize(temp.path()).unwrap();
             chmod(&base, 0o700);
@@ -1571,7 +1701,7 @@ mod tests {
             let mut manifest_entries = Vec::new();
             let mut oracle_entries = Vec::new();
             let mut assets = BTreeMap::new();
-            for id in ENTRY_IDS {
+            for id in contract.entry_ids {
                 let mask_directory = root.join(format!("assets/masks/{id}"));
                 fs::create_dir(&mask_directory).unwrap();
                 chmod(&mask_directory, 0o700);
@@ -1593,8 +1723,8 @@ mod tests {
                 write_asset(&root, &residual_path, &mask_bytes);
                 assets.insert(source_path.clone(), image_record(&source_bytes));
                 assets.insert(clean_path.clone(), image_record(&clean_bytes));
-                assets.insert(erase_path.clone(), mask_record(&mask_bytes));
-                assets.insert(residual_path.clone(), mask_record(&mask_bytes));
+                assets.insert(erase_path.clone(), mask_record(&mask_bytes, contract));
+                assets.insert(residual_path.clone(), mask_record(&mask_bytes, contract));
                 manifest_entries.push(json!({
                     "aspect": "square_or_near",
                     "background": "pure",
@@ -1619,7 +1749,7 @@ mod tests {
                     }]
                 }));
                 let text = "汉";
-                oracle_entries.push(json!({
+                let mut oracle_entry = json!({
                     "id": id,
                     "targets": [{
                         "expected_decision": "select",
@@ -1630,26 +1760,36 @@ mod tests {
                         "source_text_sha256": sha256_hex(text.as_bytes()),
                         "source_text_utf8": text
                     }]
-                }));
+                });
+                if contract.protected_texts_required {
+                    let protected_text = "Product ID";
+                    oracle_entry["protected_texts"] = json!([{
+                        "roi": [3, 3, 4, 4],
+                        "source_script_class": "latin_or_ascii",
+                        "source_text_sha256": sha256_hex(protected_text.as_bytes()),
+                        "source_text_utf8": protected_text
+                    }]);
+                }
+                oracle_entries.push(oracle_entry);
             }
             let manifest = canonical_value(json!({
-                "contract": "hanonly-r59-holdout-manifest-v1",
+                "contract": contract.manifest_contract,
                 "entries": manifest_entries,
-                "plan_revision": 59,
+                "plan_revision": contract.plan_revision,
                 "role": "holdout"
             }));
             let oracle = canonical_value(json!({
-                "contract": "hanonly-r59-holdout-oracle-v1",
+                "contract": contract.oracle_contract,
                 "entries": oracle_entries,
                 "manifest_sha256": sha256_hex(&manifest),
-                "plan_revision": 59
+                "plan_revision": contract.plan_revision
             }));
             let hashes = canonical_value(json!({
                 "assets": assets,
-                "contract": "hanonly-r59-holdout-hashes-v1",
+                "contract": contract.hashes_contract,
                 "manifest_sha256": sha256_hex(&manifest),
                 "oracle_sha256": sha256_hex(&oracle),
-                "plan_revision": 59
+                "plan_revision": contract.plan_revision
             }));
             write_asset(&root, MANIFEST_NAME, &manifest);
             write_asset(&root, ORACLE_NAME, &oracle);
@@ -1671,6 +1811,7 @@ mod tests {
                     sha256_hex(&hashes),
                 ],
                 archive_bytes,
+                contract,
             }
         }
 
@@ -1684,12 +1825,36 @@ mod tests {
         }
 
         fn validate(&self) -> io::Result<R59ValidatedBundle> {
-            validate_r59_plaintext_holdout_bundle(
-                &self.root,
-                &self.archive,
-                &self.archive_bytes,
-                self.commitments(),
-            )
+            match self.contract.plan_revision {
+                59 => validate_r59_plaintext_holdout_bundle(
+                    &self.root,
+                    &self.archive,
+                    &self.archive_bytes,
+                    self.commitments(),
+                ),
+                60 => validate_r60_plaintext_holdout_bundle(
+                    &self.root,
+                    &self.archive,
+                    &self.archive_bytes,
+                    self.commitments(),
+                ),
+                _ => unreachable!(),
+            }
+        }
+
+        fn rewrite_oracle(&mut self, mutate: impl FnOnce(&mut serde_json::Value)) {
+            self.rewrite_json(ORACLE_NAME, mutate);
+            let oracle_sha256 = self.freeze[2].clone();
+            self.rewrite_json(HASHES_NAME, |value| {
+                value["oracle_sha256"] = serde_json::Value::String(oracle_sha256);
+            });
+        }
+
+        fn replace_image(&mut self, relative: &str, bytes: &[u8]) {
+            fs::write(self.root.join(relative), bytes).unwrap();
+            chmod(&self.root.join(relative), 0o600);
+            let record = image_record(bytes);
+            self.rewrite_json(HASHES_NAME, |value| value["assets"][relative] = record);
         }
 
         fn rewrite_json(&mut self, name: &str, mutate: impl FnOnce(&mut serde_json::Value)) {
@@ -1731,7 +1896,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.id.as_str())
                 .collect::<Vec<_>>(),
-            ENTRY_IDS
+            R59_ENTRY_IDS
         );
         for entry in &validated.execution.entries {
             assert_eq!(
@@ -1759,6 +1924,79 @@ mod tests {
             assert_eq!(entry.validated_source_rgba.dimensions(), (4, 4));
             assert!(!entry.source_encoded_bytes.is_empty());
         }
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_accepts_closed_synthetic_bundle() {
+        let fixture = Fixture::build_r60();
+        let validated = fixture.validate().unwrap();
+        assert_eq!(
+            validated
+                .execution
+                .entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            R60_ENTRY_IDS
+        );
+        assert!(validated.receipt.schema_validation_pass);
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_keeps_r59_mask_contract_distinct() {
+        let mut gray = GrayImage::from_pixel(2, 2, Luma([0]));
+        gray.put_pixel(0, 0, Luma([255]));
+        let gray = encode_gray(&gray);
+        let r59 = decode_mask(&gray, &R59_BUNDLE_CONTRACT).unwrap();
+        let r60 = decode_mask(&gray, &R60_BUNDLE_CONTRACT).unwrap();
+        assert_ne!(
+            r59.normalized_identity_sha256,
+            r60.normalized_identity_sha256
+        );
+
+        let mut rgba = RgbaImage::from_pixel(2, 2, Rgba([0, 0, 0, 255]));
+        rgba.put_pixel(0, 0, Rgba([255, 255, 255, 255]));
+        let rgba = encode_rgba(&rgba);
+        assert!(decode_mask(&rgba, &R59_BUNDLE_CONTRACT).is_ok());
+        assert!(decode_mask(&rgba, &R60_BUNDLE_CONTRACT).is_err());
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_rejects_schema_geometry_and_latin_drift() {
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| {
+            value["entries"][0]["targets"][0]["id"] = json!("different");
+        });
+        assert!(fixture.validate().is_err());
+
+        for invalid in ["A😀", "A\n", "汉A"] {
+            let mut fixture = Fixture::build_r60();
+            fixture.rewrite_oracle(|value| {
+                value["entries"][0]["protected_texts"][0]["source_text_utf8"] = json!(invalid);
+                value["entries"][0]["protected_texts"][0]["source_text_sha256"] =
+                    json!(sha256_hex(invalid.as_bytes()));
+            });
+            assert!(fixture.validate().is_err());
+        }
+
+        let mut fixture = Fixture::build_r60();
+        let clean = encode_rgba(&RgbaImage::from_pixel(5, 4, Rgba([255, 255, 255, 255])));
+        fixture.replace_image("assets/clean/r60-h01.png", &clean);
+        assert!(fixture.validate().is_err());
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_rejects_pure_latin_target() {
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| {
+            let text = "Product";
+            let target = &mut value["entries"][0]["targets"][0];
+            target["source_text_utf8"] = json!(text);
+            target["source_text_sha256"] = json!(sha256_hex(text.as_bytes()));
+            target["source_han_scalar_count"] = json!(0);
+            target["source_script_class"] = json!("latin_or_ascii");
+        });
+        assert!(fixture.validate().is_err());
     }
 
     #[test]
@@ -1844,8 +2082,8 @@ mod tests {
         })
     }
 
-    fn mask_record(bytes: &[u8]) -> serde_json::Value {
-        let decoded = decode_mask(bytes).unwrap();
+    fn mask_record(bytes: &[u8], contract: &BundleContract) -> serde_json::Value {
+        let decoded = decode_mask(bytes, contract).unwrap();
         json!({
             "byte_length": bytes.len(),
             "decoded_kind": "binary-mask-v1",
