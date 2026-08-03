@@ -391,16 +391,7 @@ fn validate_plaintext_holdout_bundle(
         let entry = &manifest.entries[index];
         let oracle_entry = &oracle.entries[index];
         validate_entry_schema(entry, expected_id)?;
-        require(
-            oracle_entry.id == *expected_id
-                && oracle_entry.targets.len() == entry.targets.len()
-                && oracle_entry
-                    .targets
-                    .iter()
-                    .zip(&entry.targets)
-                    .all(|(left, right)| left.id == right.id),
-            "R59 oracle order or identity drift",
-        )?;
+        validate_oracle_alignment(entry, oracle_entry, expected_id)?;
         validate_protected_texts(entry, oracle_entry, contract)?;
 
         let source_path = validate_source_path(&entry.source_relpath, expected_id)?;
@@ -672,6 +663,23 @@ fn validate_oracle_entry(entry: &OracleEntry) -> io::Result<()> {
         )?;
     }
     Ok(())
+}
+
+fn validate_oracle_alignment(
+    manifest: &ManifestEntry,
+    oracle: &OracleEntry,
+    expected_id: &str,
+) -> io::Result<()> {
+    require(
+        oracle.id == expected_id
+            && oracle.targets.len() == manifest.targets.len()
+            && oracle
+                .targets
+                .iter()
+                .zip(&manifest.targets)
+                .all(|(left, right)| left.id == right.id),
+        "R59 oracle order or identity drift",
+    )
 }
 
 fn validate_protected_texts(
@@ -1848,6 +1856,26 @@ mod tests {
             self.rewrite_json(HASHES_NAME, |value| {
                 value["oracle_sha256"] = serde_json::Value::String(oracle_sha256);
             });
+            self.refresh_archive();
+        }
+
+        fn rewrite_manifest(&mut self, mutate: impl FnOnce(&mut serde_json::Value)) {
+            self.rewrite_json(MANIFEST_NAME, mutate);
+            let manifest_sha256 = self.freeze[1].clone();
+            self.rewrite_json(ORACLE_NAME, |value| {
+                value["manifest_sha256"] = serde_json::Value::String(manifest_sha256.clone());
+            });
+            let oracle_sha256 = self.freeze[2].clone();
+            self.rewrite_json(HASHES_NAME, |value| {
+                value["manifest_sha256"] = serde_json::Value::String(manifest_sha256);
+                value["oracle_sha256"] = serde_json::Value::String(oracle_sha256);
+            });
+            self.refresh_archive();
+        }
+
+        fn rewrite_hashes(&mut self, mutate: impl FnOnce(&mut serde_json::Value)) {
+            self.rewrite_json(HASHES_NAME, mutate);
+            self.refresh_archive();
         }
 
         fn replace_image(&mut self, relative: &str, bytes: &[u8]) {
@@ -1855,6 +1883,22 @@ mod tests {
             chmod(&self.root.join(relative), 0o600);
             let record = image_record(bytes);
             self.rewrite_json(HASHES_NAME, |value| value["assets"][relative] = record);
+            self.refresh_archive();
+        }
+
+        fn replace_mask(&mut self, relative: &str, bytes: &[u8]) {
+            fs::write(self.root.join(relative), bytes).unwrap();
+            chmod(&self.root.join(relative), 0o600);
+            let record = mask_record(bytes, self.contract);
+            self.rewrite_json(HASHES_NAME, |value| value["assets"][relative] = record);
+            self.refresh_archive();
+        }
+
+        fn refresh_archive(&mut self) {
+            self.archive_bytes = tar(&self.root, &snapshot_fs(&self.root));
+            fs::write(&self.archive, &self.archive_bytes).unwrap();
+            chmod(&self.archive, 0o600);
+            self.freeze[0] = sha256_hex(&self.archive_bytes);
         }
 
         fn rewrite_json(&mut self, name: &str, mutate: impl FnOnce(&mut serde_json::Value)) {
@@ -1871,6 +1915,13 @@ mod tests {
                 HASHES_NAME => self.freeze[3] = sha256_hex(&bytes),
                 _ => unreachable!(),
             }
+        }
+    }
+
+    fn rejection(fixture: &Fixture) -> String {
+        match fixture.validate() {
+            Ok(_) => panic!("fixture unexpectedly passed"),
+            Err(error) => error.to_string(),
         }
     }
 
@@ -1967,7 +2018,7 @@ mod tests {
         fixture.rewrite_oracle(|value| {
             value["entries"][0]["targets"][0]["id"] = json!("different");
         });
-        assert!(fixture.validate().is_err());
+        assert_eq!(rejection(&fixture), "R59 oracle order or identity drift");
 
         for invalid in ["A😀", "A\n", "汉A"] {
             let mut fixture = Fixture::build_r60();
@@ -1976,13 +2027,13 @@ mod tests {
                 value["entries"][0]["protected_texts"][0]["source_text_sha256"] =
                     json!(sha256_hex(invalid.as_bytes()));
             });
-            assert!(fixture.validate().is_err());
+            assert_eq!(rejection(&fixture), "R60 protected-text semantic drift");
         }
 
         let mut fixture = Fixture::build_r60();
         let clean = encode_rgba(&RgbaImage::from_pixel(5, 4, Rgba([255, 255, 255, 255])));
         fixture.replace_image("assets/clean/r60-h01.png", &clean);
-        assert!(fixture.validate().is_err());
+        assert_eq!(rejection(&fixture), "R59 Source/Clean dimensions drift");
     }
 
     #[test]
@@ -1996,7 +2047,233 @@ mod tests {
             target["source_han_scalar_count"] = json!(0);
             target["source_script_class"] = json!("latin_or_ascii");
         });
-        assert!(fixture.validate().is_err());
+        assert_eq!(rejection(&fixture), "R59 oracle semantic drift");
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_rejects_closed_schema_and_mask_drift() {
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_manifest(|value| value["plan_revision"] = json!(59));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_manifest(|value| value["contract"] = json!("wrong"));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| value["contract"] = json!("wrong"));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| value["plan_revision"] = json!(59));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_hashes(|value| value["contract"] = json!("wrong"));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_hashes(|value| value["plan_revision"] = json!(59));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_manifest(|value| value["entries"][0]["id"] = json!("r60-h05"));
+        assert_eq!(rejection(&fixture), "R59 manifest entry drift");
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_hashes(|value| {
+            value["assets"]["assets/source/r60-h01.png"]["normalized_identity_sha256"] =
+                json!("0".repeat(64));
+        });
+        assert_eq!(rejection(&fixture), "R59 decoded image identity drift");
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_hashes(|value| {
+            value["assets"]["assets/source/r60-h01.png"]["decoded_kind"] = json!("wrong");
+        });
+        assert_eq!(rejection(&fixture), "R59 asset hash record drift");
+
+        let mut non_binary = GrayImage::from_pixel(4, 4, Luma([0]));
+        non_binary.put_pixel(1, 1, Luma([1]));
+        let error = match decode_mask(&encode_gray(&non_binary), &R60_BUNDLE_CONTRACT) {
+            Ok(_) => panic!("non-binary mask unexpectedly passed"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "R59 mask is not binary");
+
+        let mut fixture = Fixture::build_r60();
+        let mut residual = GrayImage::from_pixel(4, 4, Luma([0]));
+        residual.put_pixel(2, 2, Luma([255]));
+        fixture.replace_mask(
+            "assets/masks/r60-h01/text-residual.png",
+            &encode_gray(&residual),
+        );
+        assert_eq!(rejection(&fixture), "R59 erase/residual mask drift");
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_rejects_pixel_and_protected_text_drift() {
+        let mut fixture = Fixture::build_r60();
+        let mut clean = RgbaImage::from_pixel(4, 4, Rgba([255, 255, 255, 255]));
+        clean.put_pixel(2, 2, Rgba([0, 0, 0, 255]));
+        fixture.replace_image("assets/clean/r60-h01.png", &encode_rgba(&clean));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 Source/Clean delta exists outside target masks"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| {
+            value["entries"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("protected_texts");
+        });
+        assert_eq!(
+            rejection(&fixture),
+            "R60 protected-text ground truth is missing"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        let text = "Δelta";
+        fixture.rewrite_oracle(|value| {
+            let protected = &mut value["entries"][0]["protected_texts"][0];
+            protected["source_text_utf8"] = json!(text);
+            protected["source_text_sha256"] = json!(sha256_hex(text.as_bytes()));
+        });
+        assert_eq!(rejection(&fixture), "R60 protected-text semantic drift");
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_checks_alignment_pixels_and_protected_order() {
+        let fixture = Fixture::build_r60();
+        let mut manifest: Manifest =
+            serde_json::from_slice(&fs::read(fixture.root.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let mut oracle: Oracle =
+            serde_json::from_slice(&fs::read(fixture.root.join(ORACLE_NAME)).unwrap()).unwrap();
+        let manifest_entry = &mut manifest.entries[0];
+        let oracle_entry = &mut oracle.entries[0];
+
+        let mut second_target: ManifestTarget =
+            serde_json::from_value(serde_json::to_value(&manifest_entry.targets[0]).unwrap())
+                .unwrap();
+        second_target.id = "text2".into();
+        manifest_entry.targets.push(second_target);
+        let mut second_oracle: OracleTarget =
+            serde_json::from_value(serde_json::to_value(&oracle_entry.targets[0]).unwrap())
+                .unwrap();
+        second_oracle.id = "text2".into();
+        oracle_entry.targets.push(second_oracle);
+        validate_oracle_alignment(manifest_entry, oracle_entry, "r60-h01").unwrap();
+        oracle_entry.targets.swap(0, 1);
+        assert_eq!(
+            validate_oracle_alignment(manifest_entry, oracle_entry, "r60-h01")
+                .unwrap_err()
+                .to_string(),
+            "R59 oracle order or identity drift"
+        );
+        oracle_entry.targets.pop();
+        assert_eq!(
+            validate_oracle_alignment(manifest_entry, oracle_entry, "r60-h01")
+                .unwrap_err()
+                .to_string(),
+            "R59 oracle order or identity drift"
+        );
+
+        let fixture = Fixture::build_r60();
+        let manifest: Manifest =
+            serde_json::from_slice(&fs::read(fixture.root.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let entry = &manifest.entries[0];
+        let source =
+            decode_image(&fs::read(fixture.root.join("assets/source/r60-h01.png")).unwrap())
+                .unwrap()
+                .rgba;
+        let mask = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            validate_pixels(
+                entry,
+                &source,
+                &source,
+                &[(mask.clone(), Box::new([]), Box::new([]))],
+            )
+            .unwrap_err()
+            .to_string(),
+            "R59 mask foreground is outside exact Source/Clean delta"
+        );
+
+        let mut entry_value = serde_json::to_value(entry).unwrap();
+        let mut second = entry_value["targets"][0].clone();
+        second["id"] = json!("text2");
+        entry_value["targets"].as_array_mut().unwrap().push(second);
+        let entry: ManifestEntry = serde_json::from_value(entry_value).unwrap();
+        assert_eq!(
+            validate_pixels(
+                &entry,
+                &source,
+                &RgbaImage::from_pixel(4, 4, Rgba([255, 255, 255, 255])),
+                &[
+                    (mask.clone(), Box::new([]), Box::new([])),
+                    (mask, Box::new([]), Box::new([])),
+                ],
+            )
+            .unwrap_err()
+            .to_string(),
+            "R59 target masks overlap"
+        );
+
+        let fixture = Fixture::build_r60();
+        let mut manifest: Manifest =
+            serde_json::from_slice(&fs::read(fixture.root.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let mut oracle: Oracle =
+            serde_json::from_slice(&fs::read(fixture.root.join(ORACLE_NAME)).unwrap()).unwrap();
+        let manifest_entry = &mut manifest.entries[0];
+        let oracle_entry = &mut oracle.entries[0];
+        manifest_entry.protected_rois.insert(0, Rect([2, 3, 3, 4]));
+        let mut second: OracleProtectedText = serde_json::from_value(
+            serde_json::to_value(&oracle_entry.protected_texts.as_ref().unwrap()[0]).unwrap(),
+        )
+        .unwrap();
+        second.roi = Rect([2, 3, 3, 4]);
+        second.source_text_utf8 = "SKU-42!".into();
+        second.source_text_sha256 = sha256_hex(second.source_text_utf8.as_bytes());
+        oracle_entry
+            .protected_texts
+            .as_mut()
+            .unwrap()
+            .insert(0, second);
+        validate_protected_texts(manifest_entry, oracle_entry, &R60_BUNDLE_CONTRACT).unwrap();
+        oracle_entry.protected_texts.as_mut().unwrap().swap(0, 1);
+        assert_eq!(
+            validate_protected_texts(manifest_entry, oracle_entry, &R60_BUNDLE_CONTRACT)
+                .unwrap_err()
+                .to_string(),
+            "R60 protected-text ROI binding drift"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| {
+            let extra = value["entries"][0]["protected_texts"][0].clone();
+            value["entries"][0]["protected_texts"]
+                .as_array_mut()
+                .unwrap()
+                .push(extra);
+        });
+        assert_eq!(rejection(&fixture), "R60 protected-text ROI binding drift");
     }
 
     #[test]
