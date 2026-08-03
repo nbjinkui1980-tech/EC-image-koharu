@@ -25,6 +25,7 @@ import {
   readRepoText,
   readStableFile,
   repoRoot,
+  r60Args,
   validateB0Authorization,
   validateB0SourceGateAntiFixture,
   validateDependencyInventory,
@@ -1260,6 +1261,31 @@ describe('CLI contract', () => {
     ])
     expect(retired.exitCode).not.toBe(0)
     expect(retired.stderr).toStartWith('FAIL [argv]:')
+  })
+
+  test('accepts only the fixed R60 preflight argument shape', async () => {
+    const sha = 'a'.repeat(40)
+    expect(r60Args(['--validate-r60-b0-preflight', '--requested-b0-sha', sha])).toEqual([
+      '--requested-b0-sha',
+      sha,
+    ])
+
+    for (const extra of [
+      ['--public-root', '/tmp/public'],
+      ['--layout-validator-sha256', 'b'.repeat(64)],
+      ['--contract-sha256', 'c'.repeat(64)],
+      ['--repo-root', '/tmp/repo'],
+    ]) {
+      const result = await runCli([
+        '--validate-r60-b0-preflight',
+        '--requested-b0-sha',
+        sha,
+        ...extra,
+      ])
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stdout).toBe('')
+      expect(result.stderr).toStartWith('FAIL [r60-argv]:')
+    }
   })
 
   test.skipIf(process.env.HANONLY_R59_REAL_PREFLIGHT !== '1')(

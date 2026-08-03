@@ -2917,5 +2917,305 @@ class R59CustodyBoundaryTests(unittest.TestCase):
                     ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0)
 
 
+class R60PreflightTests(unittest.TestCase):
+    REQUESTED_B0 = "a" * 40
+    VALIDATOR_SHA = "5" * 64
+
+    def setUp(self):
+        self.layout = {
+            "canonical_ustar_pass": True,
+            "ciphertext_sha256": "1" * 64,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "layout_pass": True,
+            "layout_validator_sha256": self.VALIDATOR_SHA,
+            "manifest_binding_pass": True,
+            "manifest_sha256": "2" * 64,
+            "member_name_digest_sha256": "3" * 64,
+            "plaintext_archive_sha256": "4" * 64,
+            "plan_revision": 60,
+            "private_manifest_commitment_sha256": "2" * 64,
+            "required_root_present": True,
+            "restricted_values_disclosed": False,
+            "same_archive_object_pass": True,
+            "schema": "hanonly.r60.layout-receipt.v1",
+            "wrapper_absent": True,
+        }
+        self.public = {
+            "ciphertext_sha256": self.layout["ciphertext_sha256"],
+            "cleanup_pass": True,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "layout_receipt_sha256": self.sha(self.layout),
+            "layout_validator_sha256": self.VALIDATOR_SHA,
+            "manifest_sha256": self.layout["manifest_sha256"],
+            "member_name_digest_sha256": self.layout[
+                "member_name_digest_sha256"
+            ],
+            "plan_revision": 60,
+            "private_manifest_commitment_sha256": self.layout[
+                "private_manifest_commitment_sha256"
+            ],
+            "restricted_values_disclosed": False,
+            "schema": "hanonly.r60.public-commitment.v1",
+            "source_b0_sha": ledger.R60_BASE_B0_SHA,
+            "start_marker_absent": True,
+        }
+        self.successor = {
+            "calibration_artifact_sha256": ledger.R60_CALIBRATION_ARTIFACT_SHA256,
+            "ciphertext_sha256": self.layout["ciphertext_sha256"],
+            "contract_sha256": ledger.R60_CONTRACT_SHA256,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "layout_receipt_sha256": self.sha(self.layout),
+            "layout_validator_sha256": self.VALIDATOR_SHA,
+            "manifest_sha256": self.layout["manifest_sha256"],
+            "member_name_digest_sha256": self.layout[
+                "member_name_digest_sha256"
+            ],
+            "package_unchanged": True,
+            "plan_revision": 60,
+            "private_manifest_commitment_sha256": self.layout[
+                "private_manifest_commitment_sha256"
+            ],
+            "public_commitment_sha256": self.sha(self.public),
+            "schema": "hanonly.r60.successor-commitment.v1",
+            "selected_candidate_id": "S25L4",
+            "source_b0_sha": ledger.R60_BASE_B0_SHA,
+            "start_marker_absent": True,
+            "successor_b0_sha": self.REQUESTED_B0,
+            "test_spec_sha256": ledger.R60_TEST_SPEC_SHA256,
+        }
+
+    @staticmethod
+    def clone(value):
+        return json.loads(json.dumps(value))
+
+    @staticmethod
+    def bytes(value):
+        return ledger._r59_canonical_json(value)
+
+    @classmethod
+    def sha(cls, value):
+        return hashlib.sha256(cls.bytes(value)).hexdigest()
+
+    def validate(self, *, layout=None, public=None, successor=None):
+        layout = layout or self.layout
+        public = public or self.public
+        successor = successor or self.successor
+        return ledger._r60_validate_preflight_values(
+            self.bytes(layout),
+            layout,
+            self.bytes(public),
+            public,
+            self.bytes(successor),
+            successor,
+            self.REQUESTED_B0,
+            self.VALIDATOR_SHA,
+        )
+
+    def test_exact_receipts_pass(self):
+        self.assertIsNone(self.validate())
+
+    def test_closed_schemas_and_canonical_bytes_reject(self):
+        for label, value in (
+            ("layout", self.layout),
+            ("public", self.public),
+            ("successor", self.successor),
+        ):
+            with self.subTest(label=label):
+                changed = self.clone(value)
+                changed["unknown"] = True
+                arguments = {label: changed}
+                with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+                    self.validate(**arguments)
+        with self.assertRaisesRegex(ledger.LedgerError, "canonical JSON"):
+            ledger._r60_validate_preflight_values(
+                self.bytes(self.layout) + b"\n",
+                self.layout,
+                self.bytes(self.public),
+                self.public,
+                self.bytes(self.successor),
+                self.successor,
+                self.REQUESTED_B0,
+                self.VALIDATOR_SHA,
+            )
+
+    def test_hash_boolean_and_binding_drift_reject(self):
+        changed = self.clone(self.layout)
+        changed["manifest_binding_pass"] = False
+        with self.assertRaisesRegex(ledger.LedgerError, "layout receipt binding"):
+            self.validate(layout=changed)
+
+        changed = self.clone(self.public)
+        changed["manifest_sha256"] = "9" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "cross-binding"):
+            self.validate(public=changed)
+
+        changed = self.clone(self.successor)
+        changed["contract_sha256"] = "8" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "successor commitment binding"):
+            self.validate(successor=changed)
+
+        with self.assertRaisesRegex(ledger.LedgerError, "cross-binding"):
+            ledger._r60_validate_preflight_values(
+                self.bytes(self.layout),
+                self.layout,
+                self.bytes(self.public),
+                self.public,
+                self.bytes(self.successor),
+                self.successor,
+                self.REQUESTED_B0,
+                "0" * 64,
+            )
+
+    def test_fixed_protocol_and_calibration_hashes(self):
+        source_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for relative in (
+                ".omx/plans/hanonly-r60-b0-custody-contract.json",
+                ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+                "scripts/hanonly_tar_layout.py",
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((source_root / relative).read_bytes())
+            self.assertEqual(
+                ledger._r60_validate_protocol_files(str(root)),
+                hashlib.sha256((root / "scripts/hanonly_tar_layout.py").read_bytes()).hexdigest(),
+            )
+            spec = root / ".omx/plans/test-spec-hanonly-r60-b0-custody.md"
+            spec.write_bytes(spec.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ledger.LedgerError, "test spec SHA drift"):
+                ledger._r60_validate_protocol_files(str(root))
+
+            calibration = root / "calibration.json"
+            calibration.write_bytes(b"calibration")
+            calibration.chmod(0o600)
+            with (
+                mock.patch.object(
+                    ledger, "R60_CALIBRATION_ARTIFACT_PATH", str(calibration)
+                ),
+                mock.patch.object(
+                    ledger,
+                    "R60_CALIBRATION_ARTIFACT_SHA256",
+                    hashlib.sha256(b"calibration").hexdigest(),
+                ),
+            ):
+                ledger._r60_validate_calibration_artifact()
+                calibration.write_bytes(b"drift")
+                with self.assertRaisesRegex(ledger.LedgerError, "artifact SHA drift"):
+                    ledger._r60_validate_calibration_artifact()
+
+    def test_git_state_requires_detached_clean_exact_diff(self):
+        def result(code=0, stdout=b""):
+            return subprocess.CompletedProcess([], code, stdout, b"")
+
+        valid = [
+            result(stdout=(self.REQUESTED_B0 + "\n").encode()),
+            result(code=1),
+            result(),
+            result(stdout=("\n".join(ledger.R60_ALLOWED_CHANGED_PATHS) + "\n").encode()),
+        ]
+        with mock.patch.object(ledger, "_run_git", side_effect=valid):
+            ledger._r60_validate_git_state("/repo", self.REQUESTED_B0)
+
+        for changed_paths in (
+            ledger.R60_ALLOWED_CHANGED_PATHS[:-1],
+            ledger.R60_ALLOWED_CHANGED_PATHS + ("crates/product.rs",),
+        ):
+            responses = [
+                result(stdout=(self.REQUESTED_B0 + "\n").encode()),
+                result(code=1),
+                result(),
+                result(stdout=("\n".join(changed_paths) + "\n").encode()),
+            ]
+            with (
+                self.subTest(paths=changed_paths),
+                mock.patch.object(ledger, "_run_git", side_effect=responses),
+                self.assertRaisesRegex(ledger.LedgerError, "diff path set drift"),
+            ):
+                ledger._r60_validate_git_state("/repo", self.REQUESTED_B0)
+
+    def test_fixed_endpoint_pass_and_all_pre_start_markers_reject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            public_root = Path(directory).resolve() / "public"
+            public_root.mkdir(mode=0o700)
+            receipts = (
+                (ledger.R60_LAYOUT_RECEIPT_NAME, self.layout),
+                (ledger.R60_PUBLIC_COMMITMENT_NAME, self.public),
+                (ledger.R60_SUCCESSOR_COMMITMENT_NAME, self.successor),
+            )
+            for name, value in receipts:
+                path = public_root / name
+                path.write_bytes(self.bytes(value))
+                path.chmod(0o600)
+            patches = (
+                mock.patch.object(ledger, "R60_PUBLIC_ROOT", str(public_root)),
+                mock.patch.object(ledger, "_r60_repo_root", return_value=str(Path(directory).resolve())),
+                mock.patch.object(ledger, "_r60_validate_git_state"),
+                mock.patch.object(
+                    ledger,
+                    "_r60_validate_protocol_files",
+                    return_value=self.VALIDATOR_SHA,
+                ),
+                mock.patch.object(ledger, "_r60_validate_calibration_artifact"),
+                mock.patch.object(ledger, "_r60_require_plaintext_absent"),
+                mock.patch.object(ledger, "_r59_custody_uid", return_value=os.geteuid()),
+                mock.patch.object(ledger, "_r59_require_acl"),
+            )
+            with contextlib.ExitStack() as stack:
+                for patcher in patches:
+                    stack.enter_context(patcher)
+                self.assertEqual(
+                    json.loads(
+                        ledger.execute(
+                            [
+                                "validate-r60-b0-preflight",
+                                "--requested-b0-sha",
+                                self.REQUESTED_B0,
+                            ]
+                        )
+                    ),
+                    {"result": "pass"},
+                )
+                for marker in ledger.R60_ABSENT_RECEIPT_NAMES:
+                    with self.subTest(marker=marker):
+                        marker_path = public_root / marker
+                        marker_path.write_bytes(b"marker")
+                        with self.assertRaisesRegex(
+                            ledger.LedgerError, "pre-start receipt already exists"
+                        ):
+                            ledger.execute(
+                                [
+                                    "validate-r60-b0-preflight",
+                                    "--requested-b0-sha",
+                                    self.REQUESTED_B0,
+                                ]
+                            )
+                        marker_path.unlink()
+
+    def test_endpoint_rejects_paths_hashes_and_plaintext_presence(self):
+        for extra in (
+            ("--repo-root", "/tmp/repo"),
+            ("--layout-validator-sha256", "0" * 64),
+            ("--public-root", "/tmp/public"),
+        ):
+            with self.subTest(extra=extra), self.assertRaises(ledger.LedgerError):
+                ledger.execute(
+                    [
+                        "validate-r60-b0-preflight",
+                        "--requested-b0-sha",
+                        self.REQUESTED_B0,
+                        *extra,
+                    ]
+                )
+        with tempfile.TemporaryDirectory() as directory:
+            plaintext = Path(directory) / "plaintext"
+            with mock.patch.object(ledger, "R60_PLAINTEXT_ROOT", str(plaintext)):
+                ledger._r60_require_plaintext_absent()
+                plaintext.mkdir()
+                with self.assertRaisesRegex(ledger.LedgerError, "already exists"):
+                    ledger._r60_require_plaintext_absent()
+
+
 if __name__ == "__main__":
     unittest.main()

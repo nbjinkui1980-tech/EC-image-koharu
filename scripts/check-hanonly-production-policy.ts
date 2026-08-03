@@ -1610,6 +1610,46 @@ export async function validateR59B0Authorization(
   )
 }
 
+export function r60Args(args: readonly string[]): string[] {
+  const endpoint = '--validate-r60-b0-preflight'
+  const filtered = args.filter((value) => value !== endpoint)
+  if (filtered.length !== args.length - 1) {
+    fail('r60-argv', `${endpoint} must appear exactly once`)
+  }
+  if (
+    filtered.length !== 2 ||
+    filtered[0] !== '--requested-b0-sha' ||
+    !/^[0-9a-f]{40}$/.test(filtered[1] ?? '')
+  ) {
+    fail('r60-argv', `${endpoint} accepts only --requested-b0-sha <sha>`)
+  }
+  return filtered
+}
+
+export async function validateR60B0Preflight(
+  root: string,
+  args: readonly string[],
+): Promise<string> {
+  const result = Bun.spawnSync({
+    cmd: [
+      '/usr/bin/python3',
+      '-I',
+      '-B',
+      'scripts/hanonly_evidence_ledger.py',
+      'validate-r60-b0-preflight',
+      ...r60Args(args),
+    ],
+    cwd: await realpath(root),
+    env: { LC_ALL: 'C', PATH: '/usr/bin:/bin' },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+  if (result.exitCode !== 0) {
+    fail('r60-b0-custody', result.stderr.toString().trim() || 'R60 ledger validation failed')
+  }
+  return result.stdout.toString()
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
   if (deepEqual(args, ['--test-dependency-inventory'])) {
@@ -1662,6 +1702,10 @@ async function main(): Promise<void> {
   }
   if (args.includes('--validate-r59-b0-authorization')) {
     process.stdout.write(await validateR59B0Authorization(repoRoot, args))
+    return
+  }
+  if (args.includes('--validate-r60-b0-preflight')) {
+    process.stdout.write(await validateR60B0Preflight(repoRoot, args))
     return
   }
   if (deepEqual(args, ['--b0-source-gate-anti-fixture'])) {

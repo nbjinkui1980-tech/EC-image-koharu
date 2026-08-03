@@ -774,6 +774,93 @@ R59_AUTHORIZATION_KEYS = {
     "runtime_commitment_receipt_sha256",
     "result",
 }
+R60_PLAN_REVISION = 60
+R60_BASE_B0_SHA = "693597c955a481e57f8df79a09bc5462314c634a"
+R60_CONTRACT_SHA256 = (
+    "7497c04ac82506723690832f7acd4a0d8955e4a108712b8d4f8f9b2141af5dcc"
+)
+R60_TEST_SPEC_SHA256 = (
+    "a0ac56d8b696ca2137cf123a885c56145362f2b7ad7440d15f15d876d2925462"
+)
+R60_CALIBRATION_ARTIFACT_PATH = R59_CALIBRATION_ARTIFACT_PATH
+R60_CALIBRATION_ARTIFACT_SHA256 = R59_CALIBRATION_ARTIFACT_SHA256
+R60_SELECTED_CANDIDATE_ID = "S25L4"
+R60_ENTRY_IDS = [f"r60-h0{index}" for index in range(1, 5)]
+R60_PUBLIC_ROOT = "/Users/Shared/hanonly-r60-public"
+R60_LAYOUT_RECEIPT_NAME = "r60-layout-receipt.json"
+R60_PUBLIC_COMMITMENT_NAME = "r60-public-commitment.json"
+R60_SUCCESSOR_COMMITMENT_NAME = "r60-successor-commitment.json"
+R60_ABSENT_RECEIPT_NAMES = (
+    "r60-holdout-start.json",
+    "r60-runtime-commitment.json",
+    "r60-holdout-terminal.json",
+    "r60-cleanup-receipt.json",
+)
+R60_PLAINTEXT_ROOT = "/Users/koharu-custody/r60-plaintext"
+R60_LAYOUT_VALIDATOR_PATH = "scripts/hanonly_tar_layout.py"
+R60_ALLOWED_CHANGED_PATHS = (
+    ".omx/plans/hanonly-r60-b0-custody-contract.json",
+    ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+    "scripts/check-hanonly-production-policy.test.ts",
+    "scripts/check-hanonly-production-policy.ts",
+    "scripts/hanonly_evidence_ledger.py",
+    "scripts/hanonly_evidence_ledger_test.py",
+    "scripts/hanonly_tar_layout.py",
+    "scripts/hanonly_tar_layout_test.py",
+)
+R60_LAYOUT_KEYS = {
+    "canonical_ustar_pass",
+    "ciphertext_sha256",
+    "entry_ids",
+    "layout_pass",
+    "layout_validator_sha256",
+    "manifest_binding_pass",
+    "manifest_sha256",
+    "member_name_digest_sha256",
+    "plaintext_archive_sha256",
+    "plan_revision",
+    "private_manifest_commitment_sha256",
+    "required_root_present",
+    "restricted_values_disclosed",
+    "same_archive_object_pass",
+    "schema",
+    "wrapper_absent",
+}
+R60_PUBLIC_KEYS = {
+    "ciphertext_sha256",
+    "cleanup_pass",
+    "entry_ids",
+    "layout_receipt_sha256",
+    "layout_validator_sha256",
+    "manifest_sha256",
+    "member_name_digest_sha256",
+    "plan_revision",
+    "private_manifest_commitment_sha256",
+    "restricted_values_disclosed",
+    "schema",
+    "source_b0_sha",
+    "start_marker_absent",
+}
+R60_SUCCESSOR_KEYS = {
+    "calibration_artifact_sha256",
+    "ciphertext_sha256",
+    "contract_sha256",
+    "entry_ids",
+    "layout_receipt_sha256",
+    "layout_validator_sha256",
+    "manifest_sha256",
+    "member_name_digest_sha256",
+    "package_unchanged",
+    "plan_revision",
+    "private_manifest_commitment_sha256",
+    "public_commitment_sha256",
+    "schema",
+    "selected_candidate_id",
+    "source_b0_sha",
+    "start_marker_absent",
+    "successor_b0_sha",
+    "test_spec_sha256",
+}
 JPEG_SOF_MARKERS = {
     0xC0,
     0xC1,
@@ -4918,6 +5005,296 @@ def _r59_validate_authorization(arguments):
     return _r59_canonical_json(record) + b"\n"
 
 
+def _r60_repo_root():
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def _r60_validate_git_state(repo_root, requested_b0_sha):
+    if not B0_SHA_RE.fullmatch(requested_b0_sha):
+        raise LedgerError("R60 requested B0 SHA is invalid")
+    head = _run_git(repo_root, ["rev-parse", "HEAD"])
+    if head.returncode != 0 or head.stdout.decode().strip() != requested_b0_sha:
+        raise LedgerError("R60 successor B0 does not equal HEAD")
+    symbolic = _run_git(repo_root, ["symbolic-ref", "-q", "HEAD"])
+    if symbolic.returncode != 1:
+        raise LedgerError("R60 B0 requires detached HEAD")
+    status_result = _run_git(
+        repo_root, ["status", "--porcelain=v1", "--untracked-files=all"]
+    )
+    if status_result.returncode != 0 or status_result.stdout:
+        raise LedgerError("R60 B0 worktree must be clean")
+    diff_result = _run_git(
+        repo_root, ["diff", "--name-only", f"{R60_BASE_B0_SHA}..HEAD"]
+    )
+    try:
+        changed_paths = tuple(diff_result.stdout.decode("utf-8").splitlines())
+    except UnicodeDecodeError as error:
+        raise LedgerError("R60 git diff path output is not UTF-8") from error
+    if diff_result.returncode != 0 or changed_paths != R60_ALLOWED_CHANGED_PATHS:
+        raise LedgerError("R60 B0 git diff path set drift")
+
+
+def _r60_validate_protocol_files(repo_root):
+    for relative, expected, label in (
+        (
+            ".omx/plans/hanonly-r60-b0-custody-contract.json",
+            R60_CONTRACT_SHA256,
+            "R60 custody contract",
+        ),
+        (
+            ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+            R60_TEST_SPEC_SHA256,
+            "R60 custody test spec",
+        ),
+    ):
+        _, data = _r51_read(os.path.join(repo_root, relative), label, mode=None)
+        if _sha256(data) != expected:
+            raise LedgerError(f"{label} SHA drift")
+    _, validator = _r51_read(
+        os.path.join(repo_root, R60_LAYOUT_VALIDATOR_PATH),
+        "R60 layout validator",
+        mode=None,
+    )
+    return _sha256(validator)
+
+
+def _r60_validate_calibration_artifact():
+    _, data = _r51_read(
+        R60_CALIBRATION_ARTIFACT_PATH, "R60 calibration artifact", mode=0o600
+    )
+    if _sha256(data) != R60_CALIBRATION_ARTIFACT_SHA256:
+        raise LedgerError("R60 calibration artifact SHA drift")
+
+
+def _r60_validate_public_directory_held(held):
+    before = os.fstat(held.fd)
+    if before.st_uid != _r59_custody_uid():
+        raise LedgerError("R60 public root owner must be koharu-custody")
+    if _mode(before) != 0o700:
+        raise LedgerError("R60 public root mode must be 0700")
+    _r59_require_acl(held.fd, "execute,readattr", "R60 public root")
+    metadata = _r59_secure_metadata(before)
+    if _r59_secure_metadata(os.fstat(held.fd)) != metadata:
+        raise LedgerError("R60 public root metadata changed during ACL validation")
+    return metadata
+
+
+def _r60_revalidate_public_directory_held(held, expected_metadata):
+    _r59_require_acl(held.fd, "execute,readattr", "R60 public root")
+    if _r59_secure_metadata(os.fstat(held.fd)) != expected_metadata:
+        raise LedgerError("R60 public root metadata changed while evidence was read")
+
+
+def _r60_read_public_json(root, name, label, stack):
+    data, held, metadata = _r59_read_custody_file(root, name, label, stack)
+    return data, _parse_json(data, label), held, metadata
+
+
+def _r60_require_absent_receipts(root):
+    for name in R60_ABSENT_RECEIPT_NAMES:
+        try:
+            os.stat(name, dir_fd=root.fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise LedgerError(f"cannot prove R60 receipt absence: {name}") from error
+        raise LedgerError(f"R60 pre-start receipt already exists: {name}")
+
+
+def _r60_require_plaintext_absent():
+    try:
+        os.lstat(R60_PLAINTEXT_ROOT)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise LedgerError("cannot prove R60 plaintext root absence") from error
+    raise LedgerError("R60 plaintext root already exists")
+
+
+def _r60_validate_preflight_values(
+    layout_data,
+    layout,
+    public_data,
+    public,
+    successor_data,
+    successor,
+    requested_b0_sha,
+    validator_sha256,
+):
+    _require_keys(layout, R60_LAYOUT_KEYS, "R60 layout receipt")
+    _require_keys(public, R60_PUBLIC_KEYS, "R60 public commitment")
+    _require_keys(successor, R60_SUCCESSOR_KEYS, "R60 successor commitment")
+    for data, value, label in (
+        (layout_data, layout, "R60 layout receipt"),
+        (public_data, public, "R60 public commitment"),
+        (successor_data, successor, "R60 successor commitment"),
+    ):
+        if _r59_canonical_json(value) != data:
+            raise LedgerError(f"{label} is not canonical JSON")
+
+    for label, value, fields in (
+        (
+            "R60 layout receipt",
+            layout,
+            (
+                "ciphertext_sha256",
+                "layout_validator_sha256",
+                "manifest_sha256",
+                "member_name_digest_sha256",
+                "plaintext_archive_sha256",
+                "private_manifest_commitment_sha256",
+            ),
+        ),
+        (
+            "R60 public commitment",
+            public,
+            (
+                "ciphertext_sha256",
+                "layout_receipt_sha256",
+                "layout_validator_sha256",
+                "manifest_sha256",
+                "member_name_digest_sha256",
+                "private_manifest_commitment_sha256",
+            ),
+        ),
+        (
+            "R60 successor commitment",
+            successor,
+            (
+                "calibration_artifact_sha256",
+                "ciphertext_sha256",
+                "contract_sha256",
+                "layout_receipt_sha256",
+                "layout_validator_sha256",
+                "manifest_sha256",
+                "member_name_digest_sha256",
+                "private_manifest_commitment_sha256",
+                "public_commitment_sha256",
+                "test_spec_sha256",
+            ),
+        ),
+    ):
+        for field in fields:
+            _validate_hash(value[field], f"{label} {field}")
+    _validate_hash(validator_sha256, "R60 layout validator")
+
+    if (
+        layout["schema"] != "hanonly.r60.layout-receipt.v1"
+        or type(layout["plan_revision"]) is not int
+        or layout["plan_revision"] != R60_PLAN_REVISION
+        or layout["entry_ids"] != R60_ENTRY_IDS
+        or any(
+            layout[field] is not True
+            for field in (
+                "canonical_ustar_pass",
+                "layout_pass",
+                "manifest_binding_pass",
+                "required_root_present",
+                "same_archive_object_pass",
+                "wrapper_absent",
+            )
+        )
+        or layout["restricted_values_disclosed"] is not False
+        or layout["manifest_sha256"]
+        != layout["private_manifest_commitment_sha256"]
+    ):
+        raise LedgerError("R60 layout receipt binding drift")
+    if (
+        public["schema"] != "hanonly.r60.public-commitment.v1"
+        or type(public["plan_revision"]) is not int
+        or public["plan_revision"] != R60_PLAN_REVISION
+        or public["source_b0_sha"] != R60_BASE_B0_SHA
+        or public["entry_ids"] != R60_ENTRY_IDS
+        or public["cleanup_pass"] is not True
+        or public["start_marker_absent"] is not True
+        or public["restricted_values_disclosed"] is not False
+    ):
+        raise LedgerError("R60 public commitment binding drift")
+    if (
+        successor["schema"] != "hanonly.r60.successor-commitment.v1"
+        or type(successor["plan_revision"]) is not int
+        or successor["plan_revision"] != R60_PLAN_REVISION
+        or successor["source_b0_sha"] != R60_BASE_B0_SHA
+        or successor["successor_b0_sha"] != requested_b0_sha
+        or successor["contract_sha256"] != R60_CONTRACT_SHA256
+        or successor["test_spec_sha256"] != R60_TEST_SPEC_SHA256
+        or successor["calibration_artifact_sha256"]
+        != R60_CALIBRATION_ARTIFACT_SHA256
+        or successor["selected_candidate_id"] != R60_SELECTED_CANDIDATE_ID
+        or successor["entry_ids"] != R60_ENTRY_IDS
+        or successor["package_unchanged"] is not True
+        or successor["start_marker_absent"] is not True
+    ):
+        raise LedgerError("R60 successor commitment binding drift")
+
+    layout_sha256 = _sha256(layout_data)
+    public_sha256 = _sha256(public_data)
+    if (
+        public["layout_receipt_sha256"] != layout_sha256
+        or successor["layout_receipt_sha256"] != layout_sha256
+        or successor["public_commitment_sha256"] != public_sha256
+        or any(
+            layout[field] != public[field] or layout[field] != successor[field]
+            for field in (
+                "ciphertext_sha256",
+                "layout_validator_sha256",
+                "manifest_sha256",
+                "member_name_digest_sha256",
+                "private_manifest_commitment_sha256",
+            )
+        )
+        or layout["entry_ids"] != public["entry_ids"]
+        or layout["entry_ids"] != successor["entry_ids"]
+        or layout["layout_validator_sha256"] != validator_sha256
+    ):
+        raise LedgerError("R60 receipt cross-binding drift")
+
+
+def _r60_validate_preflight(arguments):
+    repo_root = _canonical_existing_path(_r60_repo_root(), "R60 repository root")
+    _r60_validate_git_state(repo_root, arguments.requested_b0_sha)
+    validator_sha256 = _r60_validate_protocol_files(repo_root)
+    _r60_validate_calibration_artifact()
+    _r60_require_plaintext_absent()
+    with contextlib.ExitStack() as stack:
+        public_root = _open_absolute(R60_PUBLIC_ROOT, directory=True, stack=stack)
+        public_metadata = _r60_validate_public_directory_held(public_root)
+        layout = _r60_read_public_json(
+            public_root, R60_LAYOUT_RECEIPT_NAME, "R60 layout receipt", stack
+        )
+        public = _r60_read_public_json(
+            public_root,
+            R60_PUBLIC_COMMITMENT_NAME,
+            "R60 public commitment",
+            stack,
+        )
+        successor = _r60_read_public_json(
+            public_root,
+            R60_SUCCESSOR_COMMITMENT_NAME,
+            "R60 successor commitment",
+            stack,
+        )
+        _r60_require_absent_receipts(public_root)
+        _r60_validate_preflight_values(
+            layout[0],
+            layout[1],
+            public[0],
+            public[1],
+            successor[0],
+            successor[1],
+            arguments.requested_b0_sha,
+            validator_sha256,
+        )
+        for value, label in (
+            (layout, "R60 layout receipt"),
+            (public, "R60 public commitment"),
+            (successor, "R60 successor commitment"),
+        ):
+            _r59_revalidate_custody_file(value[2], label, value[3])
+        _r60_revalidate_public_directory_held(public_root, public_metadata)
+    return _r59_canonical_json({"result": "pass"}) + b"\n"
+
+
 class _Parser(argparse.ArgumentParser):
     def error(self, message):
         raise LedgerError(message)
@@ -4951,6 +5328,8 @@ def _parse_arguments(argv):
     r59_authorization = subparsers.add_parser("validate-r59-b0-authorization")
     r59_authorization.add_argument("--repo-root", required=True)
     r59_authorization.add_argument("--requested-b0-sha", required=True)
+    r60_preflight = subparsers.add_parser("validate-r60-b0-preflight")
+    r60_preflight.add_argument("--requested-b0-sha", required=True)
     return parser.parse_args(argv)
 
 
@@ -4968,6 +5347,8 @@ def execute(argv):
         return _r59_validate_preflight(arguments)
     if arguments.command == "validate-r59-b0-authorization":
         return _r59_validate_authorization(arguments)
+    if arguments.command == "validate-r60-b0-preflight":
+        return _r60_validate_preflight(arguments)
     raise LedgerError("unknown ledger command")
 
 
