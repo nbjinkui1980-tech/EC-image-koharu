@@ -777,10 +777,10 @@ R59_AUTHORIZATION_KEYS = {
 R60_PLAN_REVISION = 60
 R60_BASE_B0_SHA = "693597c955a481e57f8df79a09bc5462314c634a"
 R60_CONTRACT_SHA256 = (
-    "e657fddb8a4a8ff4cdc072659e8a1a0dddba9485de5bee29c12860341e1b0d06"
+    "4bc1a9d74e2f9e7b705159ead282fe1517b1737e49a09a4962f74bac921cba79"
 )
 R60_TEST_SPEC_SHA256 = (
-    "2687df3a291802bb146ac2c4530c303871ee691aab46e5806a2ee8808340cda9"
+    "22d901ec1b96d96ec7b063422c9d7292b0cb3ba13074f407844886bdce3e80d7"
 )
 R60_CALIBRATION_ARTIFACT_PATH = R59_CALIBRATION_ARTIFACT_PATH
 R60_CALIBRATION_ARTIFACT_SHA256 = R59_CALIBRATION_ARTIFACT_SHA256
@@ -819,7 +819,6 @@ R60_LAYOUT_KEYS = {
     "manifest_binding_pass",
     "manifest_sha256",
     "member_name_digest_sha256",
-    "plaintext_archive_sha256",
     "plan_revision",
     "private_manifest_commitment_sha256",
     "required_root_present",
@@ -991,7 +990,7 @@ def _checkpoint(_point):
 
 
 def _platform_capabilities():
-    flags = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    flags = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK", "O_SEARCH")
     functions = (os.open, os.mkdir, os.rename, os.unlink)
     return (
         all(hasattr(os, flag) for flag in flags)
@@ -1146,7 +1145,7 @@ def _parts(path):
     return tuple(part for part in path.split("/") if part)
 
 
-def _open_absolute(path, *, directory, stack):
+def _open_absolute(path, *, directory, stack, search_only=False):
     path = _canonical_existing_path(path, "path")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     current = os.open("/", flags)
@@ -1159,7 +1158,11 @@ def _open_absolute(path, *, directory, stack):
         return HeldPath(path, current, value)
     for index, child in enumerate(parts):
         final = index == len(parts) - 1
-        child_flags = os.O_RDONLY | os.O_NOFOLLOW
+        child_flags = os.O_NOFOLLOW
+        if final and directory and search_only:
+            child_flags |= os.O_SEARCH
+        else:
+            child_flags |= os.O_RDONLY
         if not final or directory:
             child_flags |= os.O_DIRECTORY
         else:
@@ -5153,7 +5156,6 @@ def _r60_validate_preflight_values(
                 "layout_validator_sha256",
                 "manifest_sha256",
                 "member_name_digest_sha256",
-                "plaintext_archive_sha256",
                 "private_manifest_commitment_sha256",
             ),
         ),
@@ -5269,7 +5271,9 @@ def _r60_validate_preflight(arguments):
     _r60_validate_calibration_artifact()
     _r60_require_plaintext_absent()
     with contextlib.ExitStack() as stack:
-        public_root = _open_absolute(R60_PUBLIC_ROOT, directory=True, stack=stack)
+        public_root = _open_absolute(
+            R60_PUBLIC_ROOT, directory=True, stack=stack, search_only=True
+        )
         public_metadata = _r60_validate_public_directory_held(public_root)
         layout = _r60_read_public_json(
             public_root, R60_LAYOUT_RECEIPT_NAME, "R60 layout receipt", stack
@@ -5436,8 +5440,6 @@ def _r60_validate_authorization_values(
         or runtime["manifest_sha256"] != public["manifest_sha256"]
         or runtime["member_name_digest_sha256"] != public["member_name_digest_sha256"]
         or runtime["package_unchanged"] is not True
-        or runtime["plaintext_archive_sha256"]
-        != layout["plaintext_archive_sha256"]
         or runtime["private_manifest_commitment_sha256"]
         != public["private_manifest_commitment_sha256"]
         or runtime["restricted_values_disclosed"] is not False
@@ -5518,7 +5520,9 @@ def _r60_validate_authorization(arguments):
     validator_sha256 = _r60_validate_protocol_files(repo_root)
     _r60_validate_calibration_artifact()
     with contextlib.ExitStack() as stack:
-        public_root = _open_absolute(R60_PUBLIC_ROOT, directory=True, stack=stack)
+        public_root = _open_absolute(
+            R60_PUBLIC_ROOT, directory=True, stack=stack, search_only=True
+        )
         public_metadata = _r60_validate_public_directory_held(public_root)
         names = (
             (R60_LAYOUT_RECEIPT_NAME, "R60 layout receipt"),

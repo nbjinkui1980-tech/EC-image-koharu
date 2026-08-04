@@ -500,9 +500,9 @@ mod source_gate_selection {
     const R60_PLAINTEXT_ROOT: &str = "/Users/koharu-custody/r60-plaintext";
     const R59_RUNTIME_ARCHIVE_NAME: &str = "bundle.tar";
     const R60_CONTRACT_SHA256: &str =
-        "e657fddb8a4a8ff4cdc072659e8a1a0dddba9485de5bee29c12860341e1b0d06";
+        "4bc1a9d74e2f9e7b705159ead282fe1517b1737e49a09a4962f74bac921cba79";
     const R60_TEST_SPEC_SHA256: &str =
-        "2687df3a291802bb146ac2c4530c303871ee691aab46e5806a2ee8808340cda9";
+        "22d901ec1b96d96ec7b063422c9d7292b0cb3ba13074f407844886bdce3e80d7";
     const R60_SOURCE_B0_SHA: &str = "693597c955a481e57f8df79a09bc5462314c634a";
     const B0_SHA_ENV: &str = "HANONLY_B0_SHA";
     const ARTIFACT_ENV: &str = "HANONLY_SOURCE_GATE_SELECTION_ARTIFACT";
@@ -715,7 +715,6 @@ mod source_gate_selection {
     struct R60LayoutBindings {
         layout_receipt_sha256: String,
         layout_validator_sha256: String,
-        plaintext_archive_sha256: String,
         manifest_sha256: String,
         member_name_digest_sha256: String,
     }
@@ -1374,7 +1373,6 @@ mod source_gate_selection {
     struct R60LayoutReceipt {
         schema: String,
         plan_revision: u32,
-        plaintext_archive_sha256: String,
         manifest_sha256: String,
         private_manifest_commitment_sha256: String,
         member_name_digest_sha256: String,
@@ -3623,7 +3621,6 @@ mod source_gate_selection {
         for hash in [
             public_sha256,
             successor_sha256,
-            &layout.plaintext_archive_sha256,
             &successor.contract_sha256,
             &successor.test_spec_sha256,
             &successor.calibration_artifact_sha256,
@@ -3649,7 +3646,6 @@ mod source_gate_selection {
             r60_layout: Some(R60LayoutBindings {
                 layout_receipt_sha256: successor.layout_receipt_sha256,
                 layout_validator_sha256: successor.layout_validator_sha256,
-                plaintext_archive_sha256: layout.plaintext_archive_sha256,
                 manifest_sha256: successor.manifest_sha256,
                 member_name_digest_sha256: successor.member_name_digest_sha256,
             }),
@@ -3872,7 +3868,6 @@ mod source_gate_selection {
                 && receipt.ciphertext_sha256 == freeze.ciphertext_sha256
                 && receipt.layout_receipt_sha256 == layout.layout_receipt_sha256
                 && receipt.layout_validator_sha256 == layout.layout_validator_sha256
-                && receipt.plaintext_archive_sha256 == layout.plaintext_archive_sha256
                 && receipt.member_name_digest_sha256 == layout.member_name_digest_sha256
                 && receipt.private_manifest_commitment_sha256
                     == freeze.private_manifest_commitment_sha256
@@ -6753,7 +6748,6 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         let layout = R60LayoutReceipt {
             schema: "hanonly.r60.layout-receipt.v1".into(),
             plan_revision: 60,
-            plaintext_archive_sha256: synthetic_hash(8),
             manifest_sha256: synthetic_hash(4),
             private_manifest_commitment_sha256: synthetic_hash(4),
             member_name_digest_sha256: synthetic_hash(5),
@@ -6878,12 +6872,12 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
         assert_eq!(validated.oracle_sha256, runtime.oracle_sha256);
         assert_eq!(validated.hashes_sha256, runtime.hashes_sha256);
 
-        let mut archive_mismatch: serde_json::Value =
+        let mut invalid_archive_hash: serde_json::Value =
             serde_json::from_slice(&runtime_bytes).unwrap();
-        archive_mismatch["plaintext_archive_sha256"] = serde_json::json!(synthetic_hash(11));
+        invalid_archive_hash["plaintext_archive_sha256"] = serde_json::json!("not-a-sha");
         assert!(
             validate_r60_runtime_receipt(
-                &canonical_json(&archive_mismatch).unwrap(),
+                &canonical_json(&invalid_archive_hash).unwrap(),
                 &successor.successor_b0_sha,
                 &runtime.start_marker_sha256,
                 &freeze,

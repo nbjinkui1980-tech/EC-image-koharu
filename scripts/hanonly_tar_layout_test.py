@@ -436,10 +436,11 @@ class TarLayoutTest(unittest.TestCase):
         self.assertEqual(set(values), {
             "canonical_ustar_pass", "ciphertext_sha256", "entry_ids", "layout_pass",
             "layout_validator_sha256", "manifest_binding_pass", "manifest_sha256",
-            "member_name_digest_sha256", "plaintext_archive_sha256", "plan_revision",
+            "member_name_digest_sha256", "plan_revision",
             "private_manifest_commitment_sha256", "required_root_present",
             "restricted_values_disclosed", "same_archive_object_pass", "schema", "wrapper_absent",
         })
+        self.assertNotIn("plaintext_archive_sha256", values)
         with self.assertRaises(TypeError):
             layout.public_layout_values(validation, "b" * 64)
         with self.assertRaises(TypeError):

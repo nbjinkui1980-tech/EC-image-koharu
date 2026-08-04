@@ -2637,7 +2637,6 @@ class R60PreflightTests(unittest.TestCase):
             "manifest_binding_pass": True,
             "manifest_sha256": "2" * 64,
             "member_name_digest_sha256": "3" * 64,
-            "plaintext_archive_sha256": "4" * 64,
             "plan_revision": 60,
             "private_manifest_commitment_sha256": "2" * 64,
             "required_root_present": True,
@@ -2720,6 +2719,23 @@ class R60PreflightTests(unittest.TestCase):
     def test_exact_receipts_pass(self):
         self.assertIsNone(self.validate())
 
+    def test_search_only_directory_uses_o_search_for_final_component(self):
+        directory_stat = mock.Mock(st_mode=stat.S_IFDIR)
+        with (
+            contextlib.ExitStack() as stack,
+            mock.patch.object(
+                ledger, "_canonical_existing_path", return_value="/public/root"
+            ),
+            mock.patch.object(ledger.os, "open", side_effect=(10, 11, 12)) as opened,
+            mock.patch.object(ledger.os, "fstat", return_value=directory_stat),
+            mock.patch.object(ledger.os, "close"),
+        ):
+            ledger._open_absolute(
+                "/public/root", directory=True, stack=stack, search_only=True
+            )
+        final_flags = opened.call_args_list[-1].args[1]
+        self.assertTrue(final_flags & os.O_SEARCH)
+
     def authorization_values(self):
         public_sha = self.sha(self.public)
         successor_sha = self.sha(self.successor)
@@ -2750,7 +2766,7 @@ class R60PreflightTests(unittest.TestCase):
             "member_name_digest_sha256": self.public["member_name_digest_sha256"],
             "oracle_sha256": "9" * 64,
             "package_unchanged": True,
-            "plaintext_archive_sha256": self.layout["plaintext_archive_sha256"],
+            "plaintext_archive_sha256": "4" * 64,
             "plan_revision": 60,
             "private_manifest_commitment_sha256": self.public[
                 "private_manifest_commitment_sha256"
@@ -2845,11 +2861,11 @@ class R60PreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ledger.LedgerError, "cleanup receipt"):
             self.authorize(mutate=fail_cleanup)
 
-    def test_authorization_rejects_runtime_plaintext_archive_hash_mutation(self):
-        with self.assertRaisesRegex(ledger.LedgerError, "runtime receipt"):
+    def test_authorization_rejects_invalid_runtime_plaintext_archive_hash(self):
+        with self.assertRaisesRegex(ledger.LedgerError, "plaintext_archive_sha256"):
             self.authorize(
                 mutate=lambda _s, runtime, _t, _c: runtime.__setitem__(
-                    "plaintext_archive_sha256", "f" * 64
+                    "plaintext_archive_sha256", "not-a-sha"
                 )
             )
 
@@ -2986,6 +3002,10 @@ class R60PreflightTests(unittest.TestCase):
                 arguments = {label: changed}
                 with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
                     self.validate(**arguments)
+        changed = self.clone(self.layout)
+        changed["plaintext_archive_sha256"] = "4" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+            self.validate(layout=changed)
         with self.assertRaisesRegex(ledger.LedgerError, "canonical JSON"):
             ledger._r60_validate_preflight_values(
                 self.bytes(self.layout) + b"\n",

@@ -535,7 +535,6 @@ def public_layout_values(result: EncryptionResult, validator_sha256: str) -> dic
         "manifest_binding_pass": True,
         "manifest_sha256": validation.manifest_sha256,
         "member_name_digest_sha256": validation.member_name_digest_sha256,
-        "plaintext_archive_sha256": validation.archive_sha256,
         "plan_revision": 60,
         "private_manifest_commitment_sha256": validation.private_manifest_commitment_sha256,
         "required_root_present": True,
