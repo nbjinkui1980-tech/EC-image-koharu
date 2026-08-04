@@ -5580,7 +5580,9 @@ def _r60_validate_authorization(arguments):
         public_root = _open_absolute(
             R60_PUBLIC_ROOT, directory=True, stack=stack, search_only=True
         )
-        public_metadata = _r60_validate_public_directory_held(public_root)
+        public_metadata, implementation_identity = (
+            _r60_validate_public_directory_held(public_root)
+        )
         names = (
             (R60_LAYOUT_RECEIPT_NAME, "R60 layout receipt"),
             (R60_PUBLIC_COMMITMENT_NAME, "R60 public commitment"),
@@ -5591,7 +5593,9 @@ def _r60_validate_authorization(arguments):
             ("r60-cleanup-receipt.json", "R60 cleanup receipt"),
         )
         inputs = [
-            _r60_read_public_json(public_root, name, label, stack)
+            _r60_read_public_json(
+                public_root, name, label, stack, implementation_identity
+            )
             for name, label in names
         ]
         bundle_sha256, artifact_sha256, held_files, held_directories = (
@@ -5605,9 +5609,13 @@ def _r60_validate_authorization(arguments):
             artifact_sha256,
         )
         for value, (_, label) in zip(inputs, names):
-            _r59_revalidate_custody_file(value[2], label, value[3])
+            _r59_revalidate_custody_file(
+                value[2], label, value[3], implementation_identity
+            )
         _r59_revalidate_authorization_evidence(held_files, held_directories)
-        _r60_revalidate_public_directory_held(public_root, public_metadata)
+        _r60_revalidate_public_directory_held(
+            public_root, public_metadata, implementation_identity
+        )
     return _r59_canonical_json(record) + b"\n"
 
 

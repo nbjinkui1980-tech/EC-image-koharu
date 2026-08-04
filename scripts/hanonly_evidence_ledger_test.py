@@ -2938,6 +2938,20 @@ class R60PreflightTests(unittest.TestCase):
             inputs.append((self.bytes(value), value, object(), object()))
 
         arguments = argparse.Namespace(requested_b0_sha=self.REQUESTED_B0)
+        implementation_identity = ("implementation", 501)
+
+        def read_public_json(_root, _name, _label, _stack, identity):
+            self.assertEqual(identity, implementation_identity)
+            return inputs.pop(0)
+
+        def revalidate_file(_held, _label, _metadata, identity):
+            self.assertEqual(identity, implementation_identity)
+            during("file")()
+
+        def revalidate_root(_root, _metadata, identity):
+            self.assertEqual(identity, implementation_identity)
+            during("root")()
+
         with (
             mock.patch.object(
                 ledger,
@@ -2953,9 +2967,13 @@ class R60PreflightTests(unittest.TestCase):
             mock.patch.object(ledger, "_r60_validate_calibration_artifact"),
             mock.patch.object(ledger, "_open_absolute", return_value=object()),
             mock.patch.object(
-                ledger, "_r60_validate_public_directory_held", return_value=object()
+                ledger,
+                "_r60_validate_public_directory_held",
+                return_value=(object(), implementation_identity),
             ),
-            mock.patch.object(ledger, "_r60_read_public_json", side_effect=inputs),
+            mock.patch.object(
+                ledger, "_r60_read_public_json", side_effect=read_public_json
+            ),
             mock.patch.object(
                 ledger,
                 "_r60_open_authorization_evidence",
@@ -2970,7 +2988,7 @@ class R60PreflightTests(unittest.TestCase):
                 )[1],
             ),
             mock.patch.object(
-                ledger, "_r59_revalidate_custody_file", side_effect=during("file")
+                ledger, "_r59_revalidate_custody_file", side_effect=revalidate_file
             ),
             mock.patch.object(
                 ledger,
@@ -2980,7 +2998,7 @@ class R60PreflightTests(unittest.TestCase):
             mock.patch.object(
                 ledger,
                 "_r60_revalidate_public_directory_held",
-                side_effect=during("root"),
+                side_effect=revalidate_root,
             ),
         ):
             ledger._r60_validate_authorization(arguments)
