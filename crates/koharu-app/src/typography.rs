@@ -872,12 +872,21 @@ fn build_typography_ops_inner(
             .ok_or_else(|| anyhow::anyhow!("missing Typography response node"))?;
         #[cfg(test)]
         let proposed = ProposedTypographyDiagnostic::from_node(&node);
-        validate_lines(target, &node.lines)?;
-        anyhow::ensure!(
-            !target.preserve_lines || node.style.font_size.is_none(),
-            "Typography font size is not allowed for fixed lines"
-        );
-        let translation = node.lines.join("\n");
+        let preserve_manual_style = target.preserve_lines && target.manual_font_size.is_some();
+        let translation = if preserve_manual_style {
+            target.translation.clone()
+        } else {
+            validate_lines(target, &node.lines)?;
+            anyhow::ensure!(
+                !target.preserve_lines || node.style.font_size.is_none(),
+                "Typography font size is not allowed for fixed lines"
+            );
+            if target.preserve_lines {
+                target.translation.clone()
+            } else {
+                node.lines.join("\n")
+            }
+        };
         let font_family = font_lookup
             .get(&node.style.font_family.trim().to_lowercase())
             .ok_or_else(|| anyhow::anyhow!("unknown Typography font"))?
@@ -1133,9 +1142,6 @@ fn lines_preserve_text(original: &str, lines: &[String]) -> bool {
         let next = offset + line.len();
         if line_index + 1 == lines.len() {
             return next == original.len();
-        }
-        if matches_from(original, lines, line_index + 1, next, seen) {
-            return true;
         }
         let Some(separator) = original.get(next..).and_then(|rest| rest.chars().next()) else {
             return false;
