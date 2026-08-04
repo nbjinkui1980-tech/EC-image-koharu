@@ -3085,6 +3085,29 @@ class R60PreflightTests(unittest.TestCase):
                 with self.assertRaisesRegex(ledger.LedgerError, "artifact SHA drift"):
                     ledger._r60_validate_calibration_artifact()
 
+    def test_r60_calibration_artifact_allows_frozen_source_owner(self):
+        digest = hashlib.sha256(b"calibration").hexdigest()
+        with (
+            mock.patch.object(
+                ledger,
+                "R60_CALIBRATION_ARTIFACT_SHA256",
+                digest,
+            ),
+            mock.patch.object(
+                ledger,
+                "_r51_read",
+                return_value=(ledger.R60_CALIBRATION_ARTIFACT_PATH, b"calibration"),
+            ) as read_artifact,
+        ):
+            ledger._r60_validate_calibration_artifact()
+
+        read_artifact.assert_called_once_with(
+            ledger.R60_CALIBRATION_ARTIFACT_PATH,
+            "R60 calibration artifact",
+            mode=0o600,
+            owner_required=False,
+        )
+
     def test_git_state_requires_detached_clean_exact_diff(self):
         def result(code=0, stdout=b""):
             return subprocess.CompletedProcess([], code, stdout, b"")

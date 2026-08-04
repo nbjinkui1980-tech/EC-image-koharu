@@ -2406,11 +2406,11 @@ def _rehydrate(arguments):
         return _nul_output(value)
 
 
-def _r51_read(path, label, *, mode=None):
+def _r51_read(path, label, *, mode=None, owner_required=True):
     path = _canonical_existing_path(path, label)
     with contextlib.ExitStack() as stack:
         held = _open_absolute(path, directory=False, stack=stack)
-        if held.stat.st_uid != os.geteuid():
+        if owner_required and held.stat.st_uid != os.geteuid():
             raise LedgerError(f"{label} owner mismatch")
         if mode is not None and _mode(held.stat) != mode:
             raise LedgerError(f"{label} mode must be {mode:04o}")
@@ -5055,7 +5055,10 @@ def _r60_validate_protocol_files(repo_root):
 
 def _r60_validate_calibration_artifact():
     _, data = _r51_read(
-        R60_CALIBRATION_ARTIFACT_PATH, "R60 calibration artifact", mode=0o600
+        R60_CALIBRATION_ARTIFACT_PATH,
+        "R60 calibration artifact",
+        mode=0o600,
+        owner_required=False,
     )
     if _sha256(data) != R60_CALIBRATION_ARTIFACT_SHA256:
         raise LedgerError("R60 calibration artifact SHA drift")
