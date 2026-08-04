@@ -4562,28 +4562,38 @@ def _r51_validate_authorization(arguments):
     )
 
 
-def _r59_read_custody_file(root, name, label, stack):
+def _r59_read_custody_file(
+    root, name, label, stack, implementation_identity=None
+):
     held = _open_child(root, name, directory=False, stack=stack)
     before = os.fstat(held.fd)
     if before.st_uid != _r59_custody_uid():
         raise LedgerError(f"{label} owner must be koharu-custody")
     if _mode(before) != 0o600:
         raise LedgerError(f"{label} mode must be 0600")
-    _r59_require_acl(held.fd, "read,readattr", label)
+    _r59_require_acl(
+        held.fd, "read,readattr", label, implementation_identity
+    )
     if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
         raise LedgerError(f"{label} metadata changed during ACL validation")
     data = _read_all(held.fd)
     after = os.fstat(held.fd)
     if _r59_secure_metadata(after) != _r59_secure_metadata(before):
         raise LedgerError(f"{label} changed while being read")
-    _r59_require_acl(held.fd, "read,readattr", label)
+    _r59_require_acl(
+        held.fd, "read,readattr", label, implementation_identity
+    )
     if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
         raise LedgerError(f"{label} metadata changed during final ACL validation")
     return data, held, _r59_secure_metadata(before)
 
 
-def _r59_revalidate_custody_file(held, label, expected_metadata):
-    _r59_require_acl(held.fd, "read,readattr", label)
+def _r59_revalidate_custody_file(
+    held, label, expected_metadata, implementation_identity=None
+):
+    _r59_require_acl(
+        held.fd, "read,readattr", label, implementation_identity
+    )
     if _r59_secure_metadata(os.fstat(held.fd)) != expected_metadata:
         raise LedgerError(f"{label} changed while evidence was read")
 
@@ -4637,7 +4647,7 @@ def _r59_acl_text(fd):
         libc.acl_free(acl)
 
 
-def _r59_require_acl(fd, permissions, label):
+def _r59_acl_fields(fd, permissions, label):
     lines = _r59_acl_text(fd).splitlines()
     if len(lines) != 2 or lines[0] != "!#acl 1":
         raise LedgerError(f"{label} ACL drift")
@@ -4647,12 +4657,33 @@ def _r59_require_acl(fd, permissions, label):
         or fields[0] != "user"
         or re.fullmatch(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}", fields[1])
         is None
-        or fields[2] != _r59_implementation_user()
-        or fields[3] != str(os.geteuid())
         or fields[4] != "allow"
         or fields[5] != permissions
     ):
         raise LedgerError(f"{label} ACL drift")
+    return fields
+
+
+def _r59_require_acl(fd, permissions, label, implementation_identity=None):
+    fields = _r59_acl_fields(fd, permissions, label)
+    expected_user, expected_uid = implementation_identity or (
+        _r59_implementation_user(),
+        os.geteuid(),
+    )
+    if fields[2] != expected_user or fields[3] != str(expected_uid):
+        raise LedgerError(f"{label} ACL drift")
+
+
+def _r60_implementation_identity(fd, permissions, label):
+    fields = _r59_acl_fields(fd, permissions, label)
+    try:
+        uid = int(fields[3])
+        user = pwd.getpwuid(uid).pw_name
+    except (KeyError, ValueError) as error:
+        raise LedgerError(f"{label} ACL drift") from error
+    if user != fields[2] or uid == _r59_custody_uid():
+        raise LedgerError(f"{label} ACL drift")
+    return user, uid
 
 
 def _r59_secure_metadata(value):
@@ -5070,21 +5101,32 @@ def _r60_validate_public_directory_held(held):
         raise LedgerError("R60 public root owner must be koharu-custody")
     if _mode(before) != 0o700:
         raise LedgerError("R60 public root mode must be 0700")
-    _r59_require_acl(held.fd, "execute,readattr", "R60 public root")
+    implementation_identity = _r60_implementation_identity(
+        held.fd, "execute,readattr", "R60 public root"
+    )
     metadata = _r59_secure_metadata(before)
     if _r59_secure_metadata(os.fstat(held.fd)) != metadata:
         raise LedgerError("R60 public root metadata changed during ACL validation")
-    return metadata
+    return metadata, implementation_identity
 
 
-def _r60_revalidate_public_directory_held(held, expected_metadata):
-    _r59_require_acl(held.fd, "execute,readattr", "R60 public root")
+def _r60_revalidate_public_directory_held(
+    held, expected_metadata, implementation_identity
+):
+    _r59_require_acl(
+        held.fd,
+        "execute,readattr",
+        "R60 public root",
+        implementation_identity,
+    )
     if _r59_secure_metadata(os.fstat(held.fd)) != expected_metadata:
         raise LedgerError("R60 public root metadata changed while evidence was read")
 
 
-def _r60_read_public_json(root, name, label, stack):
-    data, held, metadata = _r59_read_custody_file(root, name, label, stack)
+def _r60_read_public_json(root, name, label, stack, implementation_identity):
+    data, held, metadata = _r59_read_custody_file(
+        root, name, label, stack, implementation_identity
+    )
     return data, _parse_json(data, label), held, metadata
 
 
@@ -5277,21 +5319,29 @@ def _r60_validate_preflight(arguments):
         public_root = _open_absolute(
             R60_PUBLIC_ROOT, directory=True, stack=stack, search_only=True
         )
-        public_metadata = _r60_validate_public_directory_held(public_root)
+        public_metadata, implementation_identity = (
+            _r60_validate_public_directory_held(public_root)
+        )
         layout = _r60_read_public_json(
-            public_root, R60_LAYOUT_RECEIPT_NAME, "R60 layout receipt", stack
+            public_root,
+            R60_LAYOUT_RECEIPT_NAME,
+            "R60 layout receipt",
+            stack,
+            implementation_identity,
         )
         public = _r60_read_public_json(
             public_root,
             R60_PUBLIC_COMMITMENT_NAME,
             "R60 public commitment",
             stack,
+            implementation_identity,
         )
         successor = _r60_read_public_json(
             public_root,
             R60_SUCCESSOR_COMMITMENT_NAME,
             "R60 successor commitment",
             stack,
+            implementation_identity,
         )
         _r60_require_absent_receipts(public_root)
         _r60_validate_preflight_values(
@@ -5309,8 +5359,12 @@ def _r60_validate_preflight(arguments):
             (public, "R60 public commitment"),
             (successor, "R60 successor commitment"),
         ):
-            _r59_revalidate_custody_file(value[2], label, value[3])
-        _r60_revalidate_public_directory_held(public_root, public_metadata)
+            _r59_revalidate_custody_file(
+                value[2], label, value[3], implementation_identity
+            )
+        _r60_revalidate_public_directory_held(
+            public_root, public_metadata, implementation_identity
+        )
     return _r59_canonical_json({"result": "pass"}) + b"\n"
 
 

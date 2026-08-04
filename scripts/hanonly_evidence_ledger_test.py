@@ -3108,6 +3108,41 @@ class R60PreflightTests(unittest.TestCase):
             owner_required=False,
         )
 
+    def test_r60_acl_identity_is_non_custody_local_principal(self):
+        acl = (
+            "!#acl 1\n"
+            "user:8DEDC8B4-0346-412C-818D-F63BC34B2CF0:"
+            "implementation:501:allow:execute,readattr\n"
+        )
+        principal = mock.Mock(pw_name="implementation")
+        with (
+            mock.patch.object(ledger, "_r59_acl_text", return_value=acl),
+            mock.patch.object(ledger.pwd, "getpwuid", return_value=principal),
+            mock.patch.object(ledger, "_r59_custody_uid", return_value=502),
+        ):
+            self.assertEqual(
+                ledger._r60_implementation_identity(
+                    1, "execute,readattr", "R60 public root"
+                ),
+                ("implementation", 501),
+            )
+            ledger._r59_require_acl(
+                1,
+                "execute,readattr",
+                "R60 public root",
+                ("implementation", 501),
+            )
+
+        with (
+            mock.patch.object(ledger, "_r59_acl_text", return_value=acl),
+            mock.patch.object(ledger.pwd, "getpwuid", return_value=principal),
+            mock.patch.object(ledger, "_r59_custody_uid", return_value=501),
+            self.assertRaisesRegex(ledger.LedgerError, "ACL drift"),
+        ):
+            ledger._r60_implementation_identity(
+                1, "execute,readattr", "R60 public root"
+            )
+
     def test_git_state_requires_detached_clean_exact_diff(self):
         def result(code=0, stdout=b""):
             return subprocess.CompletedProcess([], code, stdout, b"")
@@ -3163,6 +3198,11 @@ class R60PreflightTests(unittest.TestCase):
                 mock.patch.object(ledger, "_r60_validate_calibration_artifact"),
                 mock.patch.object(ledger, "_r60_require_plaintext_absent"),
                 mock.patch.object(ledger, "_r59_custody_uid", return_value=os.geteuid()),
+                mock.patch.object(
+                    ledger,
+                    "_r60_implementation_identity",
+                    return_value=(ledger._r59_implementation_user(), os.geteuid()),
+                ),
                 mock.patch.object(ledger, "_r59_require_acl"),
             )
             with contextlib.ExitStack() as stack:
