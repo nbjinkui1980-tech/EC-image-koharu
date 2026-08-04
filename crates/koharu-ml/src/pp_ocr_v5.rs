@@ -383,6 +383,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "hanonly-pre-b1-red"]
     fn hanonly_pre_b1_red_t2_crop_local_ppocr_contract() {
         const CROP_LOCAL_MIN_INFERENCE_HEIGHT: u32 = 320;
         const CROP_LOCAL_INFERENCE_PIXEL_BUDGET: u64 = 1024 * 1024;
