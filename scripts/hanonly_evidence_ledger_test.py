@@ -2861,6 +2861,18 @@ class R60PreflightTests(unittest.TestCase):
         with self.assertRaisesRegex(ledger.LedgerError, "cleanup receipt"):
             self.authorize(mutate=fail_cleanup)
 
+    def test_authorization_requires_exact_lowercase_64_hex_nonce(self):
+        for nonce in ("6" * 32, "6" * 65, "A" * 64):
+            with self.subTest(nonce=nonce), self.assertRaisesRegex(
+                ledger.LedgerError, "start receipt binding"
+            ):
+                self.authorize(
+                    mutate=lambda start, _r, _t, cleanup, nonce=nonce: (
+                        start.__setitem__("nonce_hex", nonce),
+                        cleanup.__setitem__("nonce_hex", nonce),
+                    )
+                )
+
     def test_authorization_rejects_invalid_runtime_plaintext_archive_hash(self):
         with self.assertRaisesRegex(ledger.LedgerError, "plaintext_archive_sha256"):
             self.authorize(

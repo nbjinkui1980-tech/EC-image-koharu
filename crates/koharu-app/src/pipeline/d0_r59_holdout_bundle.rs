@@ -535,6 +535,7 @@ fn validate_plaintext_holdout_bundle(
         &root,
         &all_paths,
         &expected_directories,
+        contract.plan_revision == 60,
     )?;
 
     Ok(R59ValidatedBundle {
@@ -1363,6 +1364,7 @@ fn validate_archive(
     root: &HeldRoot,
     files: &BTreeSet<String>,
     directories: &BTreeSet<String>,
+    strict_raw_ustar: bool,
 ) -> io::Result<()> {
     require(
         bytes.len() >= 1024 && bytes.len().is_multiple_of(512),
@@ -1436,6 +1438,20 @@ fn validate_archive(
                 held.bytes.as_ref() == &bytes[data_start..data_end],
                 "R59 archive/file byte drift",
             )?;
+            if strict_raw_ustar {
+                let padded = size
+                    .checked_add(511)
+                    .map(|size| size / 512 * 512)
+                    .ok_or_else(|| invalid_data("R59 archive size overflow"))?;
+                let padded_end = data_start
+                    .checked_add(padded)
+                    .filter(|end| *end <= bytes.len())
+                    .ok_or_else(|| invalid_data("R59 archive is truncated"))?;
+                require(
+                    bytes[data_end..padded_end].iter().all(|byte| *byte == 0),
+                    "R59 archive file padding drift",
+                )?;
+            }
         }
         let padded = usize::try_from(size)
             .ok()
@@ -1450,7 +1466,8 @@ fn validate_archive(
         archive_files == *files
             && archive_directories == *directories
             && offset + 1024 <= bytes.len()
-            && bytes[offset..].iter().all(|byte| *byte == 0),
+            && bytes[offset..].iter().all(|byte| *byte == 0)
+            && (!strict_raw_ustar || offset + 1024 == bytes.len()),
         "R59 archive entry set or terminator drift",
     )
 }
@@ -1994,6 +2011,59 @@ mod tests {
     }
 
     #[test]
+    fn d0_r60_archive_accepts_exact_ustar_terminator() {
+        let fixture = Fixture::build_r60();
+        validate_synthetic_archive(&fixture, &fixture.archive_bytes).unwrap();
+    }
+
+    #[test]
+    fn d0_r60_archive_rejects_nonzero_file_padding() {
+        let fixture = Fixture::build_r60();
+        let mut archive = fixture.archive_bytes.clone();
+        let padding_offset = first_file_padding_offset(&archive);
+        archive[padding_offset] = 1;
+        assert_eq!(
+            validate_synthetic_archive(&fixture, &archive)
+                .unwrap_err()
+                .to_string(),
+            "R59 archive file padding drift"
+        );
+    }
+
+    #[test]
+    fn d0_r60_archive_rejects_one_zero_block_terminator() {
+        let fixture = Fixture::build_r60();
+        let archive = &fixture.archive_bytes[..fixture.archive_bytes.len() - 512];
+        assert!(validate_synthetic_archive(&fixture, archive).is_err());
+    }
+
+    #[test]
+    fn d0_r60_archive_rejects_three_zero_block_terminator() {
+        let fixture = Fixture::build_r60();
+        let mut archive = fixture.archive_bytes.clone();
+        archive.extend_from_slice(&[0; 512]);
+        assert!(validate_synthetic_archive(&fixture, &archive).is_err());
+    }
+
+    #[test]
+    fn d0_r60_archive_rejects_trailing_bytes() {
+        let fixture = Fixture::build_r60();
+        let mut archive = fixture.archive_bytes.clone();
+        archive.push(0);
+        assert!(validate_synthetic_archive(&fixture, &archive).is_err());
+    }
+
+    #[test]
+    fn d0_r59_archive_keeps_legacy_padding_and_terminator_compatibility() {
+        let fixture = Fixture::build();
+        let mut archive = fixture.archive_bytes.clone();
+        let padding_offset = first_file_padding_offset(&archive);
+        archive[padding_offset] = 1;
+        archive.extend_from_slice(&[0; 512]);
+        validate_synthetic_archive(&fixture, &archive).unwrap();
+    }
+
+    #[test]
     fn d0_r60_holdout_bundle_keeps_r59_mask_contract_distinct() {
         let mut gray = GrayImage::from_pixel(2, 2, Luma([0]));
         gray.put_pixel(0, 0, Luma([255]));
@@ -2432,6 +2502,39 @@ mod tests {
         visit(root, Path::new(""), &mut output);
         output.sort_by(|left, right| left.0.cmp(&right.0));
         output
+    }
+
+    fn validate_synthetic_archive(fixture: &Fixture, archive: &[u8]) -> io::Result<()> {
+        let paths = snapshot_fs(&fixture.root);
+        let files = paths
+            .iter()
+            .filter(|(_, directory)| !directory)
+            .map(|(path, _)| path.clone())
+            .collect();
+        let directories = paths
+            .iter()
+            .filter(|(_, directory)| *directory)
+            .map(|(path, _)| path.clone())
+            .collect();
+        validate_archive(
+            archive,
+            &HeldRoot::open(&fixture.root).unwrap(),
+            &files,
+            &directories,
+            fixture.contract.plan_revision == 60,
+        )
+    }
+
+    fn first_file_padding_offset(archive: &[u8]) -> usize {
+        let mut offset = 0;
+        loop {
+            let header = &archive[offset..offset + 512];
+            let size = usize::try_from(parse_tar_number(&header[124..136]).unwrap()).unwrap();
+            if header[156] == b'0' && !size.is_multiple_of(512) {
+                return offset + 512 + size;
+            }
+            offset += 512 + size.div_ceil(512) * 512;
+        }
     }
 
     fn tar(root: &Path, paths: &[(String, bool)]) -> Vec<u8> {

@@ -5466,7 +5466,7 @@ def _r60_validate_authorization_values(
         or start["successor_commitment_sha256"] != successor_sha256
         or start["state"] != "started"
         or not isinstance(start["nonce_hex"], str)
-        or re.fullmatch(r"[0-9a-f]{32,}", start["nonce_hex"]) is None
+        or SHA256_RE.fullmatch(start["nonce_hex"]) is None
     ):
         raise LedgerError("R60 start receipt binding or state drift")
 

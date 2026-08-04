@@ -446,6 +446,24 @@ class TarLayoutTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             layout.public_layout_values(result, "a" * 64, "b" * 64)
 
+    def test_public_values_publish_validation_digests(self):
+        validation, result, _ = self.encrypt()
+        values = layout.public_layout_values(result, "b" * 64)
+
+        self.assertEqual(values["manifest_sha256"], validation.manifest_sha256)
+        self.assertEqual(
+            values["private_manifest_commitment_sha256"],
+            validation.private_manifest_commitment_sha256,
+        )
+        self.assertEqual(
+            values["member_name_digest_sha256"],
+            validation.member_name_digest_sha256,
+        )
+        self.assertEqual(
+            values["member_name_digest_sha256"],
+            hashlib.sha256(canonical(sorted(validation.member_names))).hexdigest(),
+        )
+
     def test_public_values_reject_tampered_stream_proof(self):
         _, result, _ = self.encrypt()
         changed_metadata = replace(
