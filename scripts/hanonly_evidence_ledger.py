@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import contextlib
+import ctypes
 import datetime
 import errno
 import hashlib
 import json
 import os
+import pwd
 import re
 import stat
 import struct
@@ -299,6 +302,7 @@ EXPECTED_GREEN_C_RED_IDS = [
 ]
 R51_CALIBRATION_IDS = [f"r51-c0{index}" for index in range(1, 5)]
 R51_HOLDOUT_IDS = [f"r51-h0{index}" for index in range(1, 5)]
+CALIBRATION_SLOT_RE = re.compile(r"\A(.+)-c(0[1-4])\Z")
 R51_PREFLIGHT_KEYS = {
     "contract",
     "plan_revision",
@@ -531,19 +535,20 @@ R51_COVERAGE_PROOF_KEYS = {
     "page_width",
     "page_height",
     "support_stride_bytes",
-    "selected_support_relpath",
-    "selected_support_byte_length",
-    "selected_support_sha256",
-    "downstream_support_relpath",
-    "downstream_support_byte_length",
-    "downstream_support_sha256",
+    "runtime_removal_support_relpath",
+    "runtime_removal_support_byte_length",
+    "runtime_removal_support_sha256",
+    "spatial_validation_receipt_relpath",
+    "spatial_validation_receipt_byte_length",
+    "spatial_validation_receipt_sha256",
+    "protected_geometry_sha256",
+    "runtime_inpainter_id",
+    "bubble_segmenter_id",
+    "bubble_support_sha256",
     "oracle_foreground_pixels",
-    "selected_support_foreground_pixels",
-    "downstream_support_foreground_pixels",
-    "selected_covered_pixels",
-    "downstream_covered_pixels",
-    "missing_selected_pixels",
-    "missing_downstream_pixels",
+    "runtime_removal_support_foreground_pixels",
+    "runtime_removal_covered_pixels",
+    "missing_runtime_removal_pixels",
     "protected_overlap_pixels",
     "target_selected",
     "result",
@@ -570,6 +575,13 @@ R51_CELL_DIAGNOSTIC_KEYS = {
     "raw_detector_count",
     "raw_detector_f32_bits_multiset_sha256",
     "detector_support_records",
+    "detector_geometry_passed",
+    "selected_scene_rotations_zero",
+    "runtime_inpainter_id",
+    "bubble_segmenter_id",
+    "bubble_support_sha256",
+    "runtime_removal_support_sha256",
+    "protected_overlap_pixels",
     "device_evidence_sha256",
     "device_evidence_byte_length",
     "log_sha256",
@@ -597,7 +609,9 @@ R51_DETECTOR_SUPPORT_PREIMAGE_KEYS = {
     "emitted_scene_quad",
     "eligible_text_line_quad",
     "detector_support_mask",
+    "emitted_scene_support_mask",
     "line_support_mask",
+    "downstream_line_support_mask",
     "line_support_equals_detector",
     "agreed_mask",
     "agreed_mask_subset",
@@ -896,6 +910,335 @@ R52_FORBIDDEN_IDENTITY_TERMS = {
     "thread",
     "author",
 }
+R59_PLAN_REVISION = 59
+R59_ORIGINAL_PUBLIC_COMMITMENT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-public-commitment.json"
+)
+R59_SUCCESSOR_COMMITMENT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-successor-commitment.json"
+)
+R59_START_MARKER_PATH = "/Users/Shared/hanonly-r59-public/r59-holdout-start.json"
+R59_RUNTIME_COMMITMENT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-runtime-commitment.json"
+)
+R59_TERMINAL_RECEIPT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-holdout-terminal.json"
+)
+R59_CLEANUP_RECEIPT_PATH = (
+    "/Users/Shared/hanonly-r59-public/r59-cleanup-receipt.json"
+)
+R59_READINESS_ROOT_PREFIX = "/Users/Shared/hanonly-r59-readiness-"
+R59_HOLDOUT_ARTIFACT_NAME = "crop-policy-selection.json.holdout.json"
+R59_BUNDLE_RECEIPT_COMPONENTS = ("formal-report", "r59", "bundle-validation.json")
+R59_CALIBRATION_ARTIFACT_PATH = (
+    "/Users/jinkui/ec-image-Koharu/hanonly-r58-b0-evidence/"
+    "20260801T222538Z-4c0e0d25d4de-1/source-gate-selection/"
+    "crop-policy-selection.json"
+)
+R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256 = (
+    "d1ec5a35d01d716663df99cf8c4b153fd33b2934008c231813bd73b8f59aa927"
+)
+R59_ORIGINAL_B0_SHA = "4c0e0d25d4de3be2809e8c749a6858a1bb724fa4"
+R59_CONTRACT_SHA256 = (
+    "f3d2f057e2b248e2fcfd4d460afea845cc8c1dbcc7ed2153f54ca2e21ce671d6"
+)
+R59_TEST_SPEC_SHA256 = (
+    "950b34ec6a3672ba4760429a38dc3b383680d6a97512de32831fdc1422654665"
+)
+R59_CALIBRATION_ARTIFACT_SHA256 = (
+    "7006eecae1aab6a7f178fc64c0979db0ec155ce3239122c280db750b8f90a3dc"
+)
+R59_SELECTED_CANDIDATE_ID = "S25L4"
+R59_ENTRY_IDS = [f"r59-h0{index}" for index in range(1, 5)]
+R59_CELLS = [
+    f"{entry_id}/{device}"
+    for entry_id in R59_ENTRY_IDS
+    for device in ("cpu", "metal")
+]
+R59_ORIGINAL_KEYS = {
+    "B0_SHA",
+    "age_public_recipient",
+    "ciphertext_sha256",
+    "created_at",
+    "opaque_ids",
+    "plaintext_cleanup",
+    "private_manifest_commitment_sha256",
+    "restricted_content_disclosed",
+    "schema",
+    "start_marker_absent",
+}
+R59_SUCCESSOR_KEYS = {
+    "schema",
+    "original_public_commitment_sha256",
+    "original_b0_sha",
+    "successor_b0_sha",
+    "contract_sha256",
+    "test_spec_sha256",
+    "calibration_artifact_sha256",
+    "selected_candidate_id",
+    "ciphertext_sha256",
+    "private_manifest_commitment_sha256",
+    "entry_ids",
+    "package_unchanged",
+    "start_marker_absent",
+}
+R59_START_KEYS = {
+    "schema",
+    "plan_revision",
+    "b0_sha",
+    "selected_candidate_id",
+    "original_public_commitment_sha256",
+    "successor_commitment_sha256",
+    "ciphertext_sha256",
+    "pre_holdout_attestation_sha256",
+    "nonce_hex",
+    "state",
+}
+R59_RUNTIME_COMMITMENT_KEYS = {
+    "schema",
+    "plan_revision",
+    "b0_sha",
+    "start_marker_sha256",
+    "successor_commitment_sha256",
+    "ciphertext_sha256",
+    "private_manifest_commitment_sha256",
+    "runtime_archive_sha256",
+    "runtime_manifest_sha256",
+    "runtime_oracle_sha256",
+    "runtime_hashes_sha256",
+    "entry_ids",
+    "decrypt_result",
+    "package_unchanged",
+    "restricted_values_disclosed",
+    "state",
+}
+R59_TERMINAL_KEYS = {
+    "schema",
+    "plan_revision",
+    "b0_sha",
+    "start_marker_sha256",
+    "successor_commitment_sha256",
+    "selected_candidate_id",
+    "cell_results",
+    "first_failed_cell",
+    "unexecuted_cells",
+    "cleanup_receipt_sha256",
+    "bundle_validation_receipt_sha256",
+    "artifact_payload_sha256",
+    "runtime_commitment_receipt_sha256",
+    "state",
+}
+R59_TERMINAL_CELL_KEYS = {"cell", "result"}
+R59_CLEANUP_KEYS = {
+    "schema",
+    "plaintext_root",
+    "runner_process_exited",
+    "descriptors_closed",
+    "plaintext_root_absent",
+    "cleanup_pass",
+}
+R59_AUTHORIZATION_KEYS = {
+    "schema",
+    "plan_revision",
+    "b0_sha",
+    "contract_sha256",
+    "test_spec_sha256",
+    "original_public_commitment_sha256",
+    "successor_commitment_sha256",
+    "calibration_artifact_sha256",
+    "selected_candidate_id",
+    "pre_holdout_attestation_sha256",
+    "start_marker_sha256",
+    "bundle_validation_receipt_sha256",
+    "terminal_receipt_sha256",
+    "cleanup_receipt_sha256",
+    "artifact_payload_sha256",
+    "runtime_commitment_receipt_sha256",
+    "result",
+}
+R60_PLAN_REVISION = 60
+R60_BASE_B0_SHA = "693597c955a481e57f8df79a09bc5462314c634a"
+R60_CONTRACT_SHA256 = (
+    "4bc1a9d74e2f9e7b705159ead282fe1517b1737e49a09a4962f74bac921cba79"
+)
+R60_TEST_SPEC_SHA256 = (
+    "22d901ec1b96d96ec7b063422c9d7292b0cb3ba13074f407844886bdce3e80d7"
+)
+R60_CALIBRATION_ARTIFACT_PATH = R59_CALIBRATION_ARTIFACT_PATH
+R60_CALIBRATION_ARTIFACT_SHA256 = R59_CALIBRATION_ARTIFACT_SHA256
+R60_SELECTED_CANDIDATE_ID = "S25L4"
+R60_ENTRY_IDS = [f"r60-h0{index}" for index in range(1, 5)]
+R60_PUBLIC_ROOT = "/Users/Shared/hanonly-r60-public"
+R60_LAYOUT_RECEIPT_NAME = "r60-layout-receipt.json"
+R60_PUBLIC_COMMITMENT_NAME = "r60-public-commitment.json"
+R60_SUCCESSOR_COMMITMENT_NAME = "r60-successor-commitment.json"
+R60_ABSENT_RECEIPT_NAMES = (
+    "r60-holdout-start.json",
+    "r60-runtime-commitment.json",
+    "r60-holdout-terminal.json",
+    "r60-cleanup-receipt.json",
+)
+R60_PLAINTEXT_ROOT = "/Users/koharu-custody/r60-plaintext"
+R60_LAYOUT_VALIDATOR_PATH = "scripts/hanonly_tar_layout.py"
+R60_ALLOWED_CHANGED_PATHS = (
+    ".omx/plans/hanonly-r60-b0-custody-contract.json",
+    ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+    "crates/koharu-app/src/pipeline/d0_r59_holdout_bundle.rs",
+    "crates/koharu-app/src/pipeline/d0_visual_manifest_harness.rs",
+    "scripts/check-hanonly-production-policy.test.ts",
+    "scripts/check-hanonly-production-policy.ts",
+    "scripts/hanonly_evidence_ledger.py",
+    "scripts/hanonly_evidence_ledger_test.py",
+    "scripts/hanonly_tar_layout.py",
+    "scripts/hanonly_tar_layout_test.py",
+)
+R60_LAYOUT_KEYS = {
+    "canonical_ustar_pass",
+    "ciphertext_sha256",
+    "entry_ids",
+    "layout_pass",
+    "layout_validator_sha256",
+    "manifest_binding_pass",
+    "manifest_sha256",
+    "member_name_digest_sha256",
+    "plan_revision",
+    "private_manifest_commitment_sha256",
+    "required_root_present",
+    "restricted_values_disclosed",
+    "same_archive_object_pass",
+    "schema",
+    "wrapper_absent",
+}
+R60_PUBLIC_KEYS = {
+    "ciphertext_sha256",
+    "cleanup_pass",
+    "entry_ids",
+    "layout_receipt_sha256",
+    "layout_validator_sha256",
+    "manifest_sha256",
+    "member_name_digest_sha256",
+    "plan_revision",
+    "private_manifest_commitment_sha256",
+    "restricted_values_disclosed",
+    "schema",
+    "source_b0_sha",
+    "start_marker_absent",
+}
+R60_SUCCESSOR_KEYS = {
+    "calibration_artifact_sha256",
+    "ciphertext_sha256",
+    "contract_sha256",
+    "entry_ids",
+    "layout_receipt_sha256",
+    "layout_validator_sha256",
+    "manifest_sha256",
+    "member_name_digest_sha256",
+    "package_unchanged",
+    "plan_revision",
+    "private_manifest_commitment_sha256",
+    "public_commitment_sha256",
+    "schema",
+    "selected_candidate_id",
+    "source_b0_sha",
+    "start_marker_absent",
+    "successor_b0_sha",
+    "test_spec_sha256",
+}
+R60_START_KEYS = {
+    "b0_sha",
+    "calibration_artifact_sha256",
+    "entry_ids",
+    "nonce_hex",
+    "plan_revision",
+    "pre_holdout_attestation_sha256",
+    "public_commitment_sha256",
+    "schema",
+    "selected_candidate_id",
+    "state",
+    "successor_commitment_sha256",
+}
+R60_RUNTIME_KEYS = {
+    "b0_sha",
+    "calibration_artifact_sha256",
+    "ciphertext_sha256",
+    "decrypt_pass",
+    "entry_ids",
+    "hashes_sha256",
+    "layout_receipt_sha256",
+    "layout_validator_sha256",
+    "manifest_sha256",
+    "member_name_digest_sha256",
+    "oracle_sha256",
+    "package_unchanged",
+    "plaintext_archive_sha256",
+    "plan_revision",
+    "private_manifest_commitment_sha256",
+    "restricted_values_disclosed",
+    "schema",
+    "selected_candidate_id",
+    "start_marker_sha256",
+    "state",
+    "successor_commitment_sha256",
+}
+R60_TERMINAL_KEYS = {
+    "artifact_sha256",
+    "b0_sha",
+    "bundle_validation_receipt_sha256",
+    "calibration_artifact_sha256",
+    "cell_results",
+    "cleanup_receipt_sha256",
+    "first_failed_cell",
+    "plan_revision",
+    "runtime_receipt_sha256",
+    "schema",
+    "selected_candidate_id",
+    "start_marker_sha256",
+    "state",
+    "unexecuted_cells",
+}
+R60_TERMINAL_CELL_KEYS = {"cell", "result"}
+R60_CLEANUP_KEYS = {
+    "b0_sha",
+    "cleanup_pass",
+    "descriptors_closed",
+    "nonce_hex",
+    "plaintext_root",
+    "plaintext_root_absent",
+    "plan_revision",
+    "restricted_values_disclosed",
+    "runner_pid",
+    "runner_process_exited",
+    "runtime_receipt_sha256",
+    "schema",
+    "start_marker_sha256",
+    "successor_commitment_sha256",
+}
+R60_AUTHORIZATION_KEYS = {
+    "artifact_sha256",
+    "b0_sha",
+    "bundle_validation_receipt_sha256",
+    "calibration_artifact_sha256",
+    "cleanup_receipt_sha256",
+    "contract_sha256",
+    "plan_revision",
+    "pre_holdout_attestation_sha256",
+    "public_commitment_sha256",
+    "result",
+    "runtime_receipt_sha256",
+    "selected_candidate_id",
+    "start_marker_sha256",
+    "successor_commitment_sha256",
+    "terminal_receipt_sha256",
+    "test_spec_sha256",
+}
+R60_CELLS = [
+    f"{entry_id}/{device}"
+    for entry_id in R60_ENTRY_IDS
+    for device in ("cpu", "actual-metal")
+]
+R60_READINESS_ROOT_PREFIX = "/Users/Shared/hanonly-r60-readiness-"
+R60_HOLDOUT_ARTIFACT_NAME = "crop-policy-selection.json.holdout.json"
+R60_BUNDLE_RECEIPT_COMPONENTS = ("formal-report", "r60", "bundle-validation.json")
 JPEG_SOF_MARKERS = {
     0xC0,
     0xC1,
@@ -929,7 +1272,7 @@ def _checkpoint(_point):
 
 
 def _platform_capabilities():
-    flags = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    flags = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK", "O_SEARCH")
     functions = (os.open, os.mkdir, os.rename, os.unlink)
     return (
         all(hasattr(os, flag) for flag in flags)
@@ -1084,7 +1427,7 @@ def _parts(path):
     return tuple(part for part in path.split("/") if part)
 
 
-def _open_absolute(path, *, directory, stack):
+def _open_absolute(path, *, directory, stack, search_only=False):
     path = _canonical_existing_path(path, "path")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     current = os.open("/", flags)
@@ -1097,7 +1440,11 @@ def _open_absolute(path, *, directory, stack):
         return HeldPath(path, current, value)
     for index, child in enumerate(parts):
         final = index == len(parts) - 1
-        child_flags = os.O_RDONLY | os.O_NOFOLLOW
+        child_flags = os.O_NOFOLLOW
+        if final and directory and search_only:
+            child_flags |= os.O_SEARCH
+        else:
+            child_flags |= os.O_RDONLY
         if not final or directory:
             child_flags |= os.O_DIRECTORY
         else:
@@ -1179,6 +1526,15 @@ def canonical_json(value):
 
 
 def _r51_canonical_json(value):
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def _r59_canonical_json(value):
     return json.dumps(
         value,
         sort_keys=True,
@@ -1835,10 +2191,7 @@ def _parse_size(value):
     match = re.fullmatch(r"([1-9]\d*)x([1-9]\d*)", value or "")
     if not match:
         raise LedgerError("expected input size must be WIDTHxHEIGHT")
-    result = (int(match.group(1)), int(match.group(2)))
-    if result != EXPECTED_DIMENSIONS:
-        raise LedgerError("expected input size is not the approved regression size")
-    return result
+    return (int(match.group(1)), int(match.group(2)))
 
 
 def _validate_manifest_regression(value, input_path, input_sha256):
@@ -1850,13 +2203,24 @@ def _validate_manifest_regression(value, input_path, input_sha256):
         for entry in manifest["entries"]
         if isinstance(entry, dict) and entry.get("role") == "regression"
     ]
-    if len(regressions) != 1:
-        raise LedgerError("visual manifest must contain exactly one regression entry")
-    regression = regressions[0]
-    if regression.get("path") != input_path:
-        raise LedgerError("selected input does not match the regression manifest path")
-    if regression.get("sha256") != input_sha256:
-        raise LedgerError("selected input hash does not match the regression manifest")
+    if regressions:
+        if len(regressions) != 1:
+            raise LedgerError("visual manifest must contain exactly one regression entry")
+        selected = regressions[0]
+    else:
+        calibration = [
+            entry
+            for entry in manifest["entries"]
+            if isinstance(entry, dict) and entry.get("role") == "calibration"
+        ]
+        matches = [entry for entry in calibration if entry.get("path") == input_path]
+        if len(calibration) != 4 or len(matches) != 1:
+            raise LedgerError("visual manifest calibration input is not uniquely frozen")
+        selected = matches[0]
+    if selected.get("path") != input_path:
+        raise LedgerError("selected input does not match the visual manifest path")
+    if selected.get("sha256") != input_sha256:
+        raise LedgerError("selected input hash does not match the visual manifest")
 
 
 def _require_owned_mode(path, value, expected_mode):
@@ -1869,10 +2233,11 @@ def _require_owned_mode(path, value, expected_mode):
 def _run_git(repo_root, arguments):
     try:
         return subprocess.run(
-            ["git", "-C", repo_root, *arguments],
+            ["/usr/bin/git", "-C", repo_root, *arguments],
             check=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
             shell=False,
         )
     except OSError as error:
@@ -2323,11 +2688,11 @@ def _rehydrate(arguments):
         return _nul_output(value)
 
 
-def _r51_read(path, label, *, mode=None):
+def _r51_read(path, label, *, mode=None, owner_required=True):
     path = _canonical_existing_path(path, label)
     with contextlib.ExitStack() as stack:
         held = _open_absolute(path, directory=False, stack=stack)
-        if held.stat.st_uid != os.geteuid():
+        if owner_required and held.stat.st_uid != os.geteuid():
             raise LedgerError(f"{label} owner mismatch")
         if mode is not None and _mode(held.stat) != mode:
             raise LedgerError(f"{label} mode must be {mode:04o}")
@@ -3118,21 +3483,55 @@ def _r51_validate_process_evidence(process, phase, device, evidence_root):
             raise LedgerError("R51 actual Metal process evidence drift")
         _validate_backend_map(model_map, "R51 Metal model map", "Metal")
 
+def _r51_calibration_manifest_entry_ids(manifest_bytes):
+    manifest = _parse_json(manifest_bytes, "R51 calibration manifest")
+    _require_keys(manifest, {"entries"}, "R51 calibration manifest")
+    entries = manifest["entries"]
+    if not isinstance(entries, list) or len(entries) != 4:
+        raise LedgerError("R51 calibration manifest must contain exactly four entries")
+    prefix = None
+    slots = {}
+    for entry in entries:
+        _require_keys(entry, {"id", "role"}, "R51 calibration manifest entry")
+        if entry["role"] != "calibration" or not isinstance(entry["id"], str):
+            raise LedgerError("R51 calibration manifest entry role drift")
+        match = CALIBRATION_SLOT_RE.fullmatch(entry["id"])
+        if match is None:
+            raise LedgerError("R51 calibration manifest entry slot drift")
+        if prefix is None:
+            prefix = match.group(1)
+        elif prefix != match.group(1):
+            raise LedgerError("R51 calibration manifest revision prefix drift")
+        slot = match.group(2)
+        if slot in slots:
+            raise LedgerError("R51 calibration manifest duplicate slot")
+        slots[slot] = entry["id"]
+    expected = [slots.get(f"0{index}") for index in range(1, 5)]
+    if any(value is None for value in expected):
+        raise LedgerError("R51 calibration manifest missing slot")
+    return expected
 
-def _r51_validate_calibration(payload, calibration_ledger, evidence_root=None):
+
+def _r51_validate_calibration(
+    payload, calibration_ledger, expected_calibration_entry_ids, evidence_root=None
+):
     results = payload["calibration_results"]
     if not isinstance(results, list) or len(results) != 32:
         raise LedgerError("R51 calibration must contain exactly 32 terminal cells")
     if not isinstance(calibration_ledger, dict):
         raise LedgerError("R51 calibration ledger must be an object")
     if (
-        calibration_ledger.get("calibration_entry_ids") != R51_CALIBRATION_IDS
+        calibration_ledger.get("calibration_entry_ids") != expected_calibration_entry_ids
         or calibration_ledger.get("candidates") != B0_CANDIDATES
         or calibration_ledger.get("calibration_results") != results
         or calibration_ledger.get("selected_candidate_id")
         != payload["selected_candidate_id"]
     ):
         raise LedgerError("R51 calibration ledger binding drift")
+    if sorted({result.get("entry_id") for result in results if isinstance(result, dict)}) != sorted(
+        expected_calibration_entry_ids
+    ):
+        raise LedgerError("R51 calibration result entry binding drift")
     process_list = calibration_ledger.get("process_evidence")
     if not isinstance(process_list, list) or len(process_list) != 2:
         raise LedgerError("R51 calibration requires exact CPU and Metal processes")
@@ -3161,7 +3560,7 @@ def _r51_validate_calibration(payload, calibration_ledger, evidence_root=None):
         device = process.get("requested_device") if process else None
         cell = (entry_id, device, candidate_id)
         if (
-            entry_id not in R51_CALIBRATION_IDS
+            entry_id not in expected_calibration_entry_ids
             or device not in {"cpu", "metal"}
             or candidate_id not in pass_by_candidate
             or cell in seen
@@ -3170,7 +3569,7 @@ def _r51_validate_calibration(payload, calibration_ledger, evidence_root=None):
         _validate_result(
             result,
             processes,
-            R51_CALIBRATION_IDS,
+            expected_calibration_entry_ids,
             {candidate["id"] for candidate in B0_CANDIDATES},
             "calibration",
             evidence_root,
@@ -3180,7 +3579,7 @@ def _r51_validate_calibration(payload, calibration_ledger, evidence_root=None):
         pass_by_candidate[candidate_id] &= result["derived"]["passed"]
     expected = {
         (entry, device, candidate["id"])
-        for entry in R51_CALIBRATION_IDS
+        for entry in expected_calibration_entry_ids
         for device in ("cpu", "metal")
         for candidate in B0_CANDIDATES
     }
@@ -3297,6 +3696,132 @@ def _r51_validate_support_raster(
     return sum(data)
 
 
+def _r57_validate_source_ink(payload_bytes):
+    payload = _parse_json(payload_bytes, "R57 source-ink validation input")
+    keys = {
+        "contract",
+        "b0_sha",
+        "cell_key",
+        "entry_id",
+        "target_id",
+        "page_width",
+        "page_height",
+        "support_stride_bytes",
+        "oracle_mask_base64",
+        "oracle_mask_raw_sha256",
+        "oracle_mask_normalized_sha256",
+        "protected_rois",
+        "protected_geometry_sha256",
+        "runtime_inpainter_id",
+        "bubble_segmenter_id",
+        "bubble_support_sha256",
+        "runtime_removal_support_base64",
+        "runtime_removal_support_sha256",
+    }
+    _require_keys(payload, keys, "R57 source-ink validation input")
+    if _r51_canonical_json(payload) != payload_bytes:
+        raise LedgerError("R57 source-ink validation input is not canonical")
+    width = payload["page_width"]
+    height = payload["page_height"]
+    if (
+        payload["contract"] != "hanonly-r57-source-ink-validation-input-v1"
+        or not isinstance(payload["b0_sha"], str)
+        or len(payload["b0_sha"]) != 40
+        or type(width) is not int
+        or type(height) is not int
+        or width <= 0
+        or height <= 0
+        or payload["support_stride_bytes"] != width
+        or payload["runtime_inpainter_id"] != "lama-manga"
+        or payload["bubble_segmenter_id"] != "speech-bubble-segmentation"
+    ):
+        raise LedgerError("R57 source-ink validation input binding drift")
+    try:
+        oracle = base64.b64decode(payload["oracle_mask_base64"], validate=True)
+        runtime = base64.b64decode(
+            payload["runtime_removal_support_base64"], validate=True
+        )
+    except (TypeError, ValueError) as error:
+        raise LedgerError("R57 source-ink validation base64 is invalid") from error
+    expected_length = width * height
+    if (
+        len(oracle) != expected_length
+        or len(runtime) != expected_length
+        or any(value not in (0, 1) for value in oracle)
+        or any(value not in (0, 1) for value in runtime)
+    ):
+        raise LedgerError("R57 source-ink validation raster is invalid")
+    for key in (
+        "oracle_mask_raw_sha256",
+        "oracle_mask_normalized_sha256",
+        "protected_geometry_sha256",
+        "bubble_support_sha256",
+        "runtime_removal_support_sha256",
+    ):
+        _validate_hash(payload[key], f"R57 source-ink validation {key}")
+    protected = payload["protected_rois"]
+    if (
+        not isinstance(protected, list)
+        or any(
+            not isinstance(rect, list)
+            or len(rect) != 4
+            or any(type(value) is not int for value in rect)
+            or not (0 <= rect[0] < rect[2] <= width)
+            or not (0 <= rect[1] < rect[3] <= height)
+            for rect in protected
+        )
+        or _sha256(_r51_canonical_json(protected))
+        != payload["protected_geometry_sha256"]
+        or _sha256(
+            b"hanonly-r51-binary-mask-v1\0"
+            + struct.pack(">II", width, height)
+            + oracle
+        )
+        != payload["oracle_mask_normalized_sha256"]
+        or _sha256(runtime) != payload["runtime_removal_support_sha256"]
+    ):
+        raise LedgerError("R57 source-ink validation commitment drift")
+    oracle_foreground = sum(oracle)
+    covered = sum(left & right for left, right in zip(oracle, runtime))
+    protected_overlap = 0
+    for left, top, right, bottom in protected:
+        protected_overlap += sum(
+            runtime[y * width + x]
+            for y in range(top, bottom)
+            for x in range(left, right)
+        )
+    missing = oracle_foreground - covered
+    passed = oracle_foreground > 0 and missing == 0 and protected_overlap == 0
+    return _r51_canonical_json(
+        {
+            "contract": "hanonly-r57-source-ink-validation-receipt-v1",
+            "b0_sha": payload["b0_sha"],
+            "cell_key": payload["cell_key"],
+            "entry_id": payload["entry_id"],
+            "target_id": payload["target_id"],
+            "page_width": width,
+            "page_height": height,
+            "support_stride_bytes": width,
+            "oracle_mask_raw_sha256": payload["oracle_mask_raw_sha256"],
+            "oracle_mask_normalized_sha256": payload[
+                "oracle_mask_normalized_sha256"
+            ],
+            "protected_geometry_sha256": payload["protected_geometry_sha256"],
+            "runtime_inpainter_id": payload["runtime_inpainter_id"],
+            "bubble_segmenter_id": payload["bubble_segmenter_id"],
+            "bubble_support_sha256": payload["bubble_support_sha256"],
+            "runtime_removal_support_sha256": payload[
+                "runtime_removal_support_sha256"
+            ],
+            "oracle_foreground_pixels": oracle_foreground,
+            "runtime_removal_covered_pixels": covered,
+            "missing_runtime_removal_pixels": missing,
+            "protected_overlap_pixels": protected_overlap,
+            "result": "pass" if passed else "fail-closed",
+        }
+    )
+
+
 def _r51_register_bound_path(seen_paths, path, label):
     if path in seen_paths:
         raise LedgerError(f"{label} reuses an already bound diagnostic path")
@@ -3320,7 +3845,7 @@ def _r51_validate_coverage_index(root, record, bindings, target_total, seen_path
         raise LedgerError("R51 target coverage index is not canonical")
     records = index["records"]
     if (
-        index["contract"] != "hanonly-r51-target-coverage-index-v1"
+        index["contract"] != "hanonly-r57-source-ink-coverage-index-v1"
         or index["plan_revision"] != R51_PLAN_REVISION
         or index["b0_sha"] != bindings["b0_sha"]
         or index["cell_key"] != record["cell_key"]
@@ -3358,7 +3883,7 @@ def _r51_validate_coverage_index(root, record, bindings, target_total, seen_path
         width = proof["page_width"]
         height = proof["page_height"]
         if (
-            proof["contract"] != "hanonly-r51-target-coverage-proof-v1"
+            proof["contract"] != "hanonly-r57-source-ink-coverage-proof-v1"
             or proof["plan_revision"] != R51_PLAN_REVISION
             or proof["b0_sha"] != bindings["b0_sha"]
             or proof["cell_key"] != record["cell_key"]
@@ -3369,59 +3894,113 @@ def _r51_validate_coverage_index(root, record, bindings, target_total, seen_path
             raise LedgerError("R51 target coverage proof binding drift")
         for key in ("oracle_mask_raw_sha256", "oracle_mask_normalized_sha256"):
             _validate_hash(proof[key], f"R51 target coverage proof {key}")
-        selected_foreground = _r51_validate_support_raster(
+        runtime_removal_foreground = _r51_validate_support_raster(
             root,
-            proof["selected_support_relpath"],
-            proof["selected_support_sha256"],
-            proof["selected_support_byte_length"],
+            proof["runtime_removal_support_relpath"],
+            proof["runtime_removal_support_sha256"],
+            proof["runtime_removal_support_byte_length"],
             width,
             height,
-            "R51 selected support",
+            "R57 runtime removal support",
         )
         _r51_register_bound_path(
             seen_paths,
-            proof["selected_support_relpath"],
-            "R51 selected support",
+            proof["runtime_removal_support_relpath"],
+            "R57 runtime removal support",
         )
-        downstream_foreground = _r51_validate_support_raster(
+        _, receipt_bytes = _r51_bound_relative(
             root,
-            proof["downstream_support_relpath"],
-            proof["downstream_support_sha256"],
-            proof["downstream_support_byte_length"],
-            width,
-            height,
-            "R51 downstream support",
+            proof["spatial_validation_receipt_relpath"],
+            proof["spatial_validation_receipt_sha256"],
+            proof["spatial_validation_receipt_byte_length"],
+            "R57 source-ink spatial validation receipt",
         )
         _r51_register_bound_path(
             seen_paths,
-            proof["downstream_support_relpath"],
-            "R51 downstream support",
+            proof["spatial_validation_receipt_relpath"],
+            "R57 source-ink spatial validation receipt",
         )
+        receipt = _parse_json(
+            receipt_bytes, "R57 source-ink spatial validation receipt"
+        )
+        _require_keys(
+            receipt,
+            {
+                "contract",
+                "b0_sha",
+                "cell_key",
+                "entry_id",
+                "target_id",
+                "page_width",
+                "page_height",
+                "support_stride_bytes",
+                "oracle_mask_raw_sha256",
+                "oracle_mask_normalized_sha256",
+                "protected_geometry_sha256",
+                "runtime_inpainter_id",
+                "bubble_segmenter_id",
+                "bubble_support_sha256",
+                "runtime_removal_support_sha256",
+                "oracle_foreground_pixels",
+                "runtime_removal_covered_pixels",
+                "missing_runtime_removal_pixels",
+                "protected_overlap_pixels",
+                "result",
+            },
+            "R57 source-ink spatial validation receipt",
+        )
+        if (
+            _r51_canonical_json(receipt) != receipt_bytes
+            or receipt["contract"]
+            != "hanonly-r57-source-ink-validation-receipt-v1"
+            or receipt["b0_sha"] != proof["b0_sha"]
+            or receipt["cell_key"] != proof["cell_key"]
+            or receipt["entry_id"] != proof["entry_id"]
+            or receipt["target_id"] != proof["target_id"]
+            or receipt["page_width"] != width
+            or receipt["page_height"] != height
+            or receipt["support_stride_bytes"] != width
+            or receipt["oracle_mask_raw_sha256"]
+            != proof["oracle_mask_raw_sha256"]
+            or receipt["oracle_mask_normalized_sha256"]
+            != proof["oracle_mask_normalized_sha256"]
+            or receipt["protected_geometry_sha256"]
+            != proof["protected_geometry_sha256"]
+            or receipt["runtime_inpainter_id"] != proof["runtime_inpainter_id"]
+            or receipt["bubble_segmenter_id"] != proof["bubble_segmenter_id"]
+            or receipt["bubble_support_sha256"] != proof["bubble_support_sha256"]
+            or receipt["runtime_removal_support_sha256"]
+            != proof["runtime_removal_support_sha256"]
+            or receipt["oracle_foreground_pixels"]
+            != proof["oracle_foreground_pixels"]
+            or receipt["runtime_removal_covered_pixels"]
+            != proof["runtime_removal_covered_pixels"]
+            or receipt["missing_runtime_removal_pixels"]
+            != proof["missing_runtime_removal_pixels"]
+            or receipt["protected_overlap_pixels"]
+            != proof["protected_overlap_pixels"]
+            or receipt["result"] != "pass"
+        ):
+            raise LedgerError("R57 source-ink spatial validation receipt drift")
         oracle_foreground = proof["oracle_foreground_pixels"]
         if (
             any(
                 type(proof[key]) is not int or proof[key] < 0
                 for key in (
                     "oracle_foreground_pixels",
-                    "selected_support_foreground_pixels",
-                    "downstream_support_foreground_pixels",
-                    "selected_covered_pixels",
-                    "downstream_covered_pixels",
-                    "missing_selected_pixels",
-                    "missing_downstream_pixels",
+                    "runtime_removal_support_foreground_pixels",
+                    "runtime_removal_covered_pixels",
+                    "missing_runtime_removal_pixels",
                     "protected_overlap_pixels",
                 )
             )
             or oracle_foreground <= 0
             or oracle_foreground > width * height
-            or proof["selected_support_foreground_pixels"] != selected_foreground
-            or proof["downstream_support_foreground_pixels"] != downstream_foreground
-            or selected_foreground < oracle_foreground
-            or downstream_foreground < oracle_foreground
-            or proof["selected_covered_pixels"] != oracle_foreground
-            or proof["downstream_covered_pixels"] != oracle_foreground
-            or proof["missing_selected_pixels"] != 0
-            or proof["missing_downstream_pixels"] != 0
+            or proof["runtime_removal_support_foreground_pixels"]
+            != runtime_removal_foreground
+            or runtime_removal_foreground < oracle_foreground
+            or proof["runtime_removal_covered_pixels"] != oracle_foreground
+            or proof["missing_runtime_removal_pixels"] != 0
             or proof["protected_overlap_pixels"] != 0
             or proof["target_selected"] is not True
             or proof["result"] != "pass"
@@ -3476,8 +4055,27 @@ def _r51_validate_cell_diagnostic(root, record, bindings, seen_paths, *, holdout
         or diagnostic["pp_han_count"] < 0
         or type(diagnostic["vl_han_count"]) is not int
         or diagnostic["vl_han_count"] < 0
+        or type(diagnostic["detector_geometry_passed"]) is not bool
+        or type(diagnostic["selected_scene_rotations_zero"]) is not bool
+        or diagnostic["runtime_inpainter_id"] != "lama-manga"
+        or diagnostic["bubble_segmenter_id"] != "speech-bubble-segmentation"
+        or type(diagnostic["protected_overlap_pixels"]) is not int
+        or diagnostic["protected_overlap_pixels"] < 0
     ):
         raise LedgerError("R51 cell diagnostic binding drift")
+    protected_overlap = diagnostic["protected_overlap_pixels"]
+    if protected_overlap != 0 and (
+        record["state"] != "failed"
+        or record["terminal_reason"] != "protected_overlap"
+    ):
+        raise LedgerError("R51 protected overlap did not fail closed")
+    if record["state"] == "passed" and protected_overlap != 0:
+        raise LedgerError("R51 passed cell has protected overlap")
+    _validate_hash(diagnostic["bubble_support_sha256"], "R51 bubble support hash")
+    _validate_hash(
+        diagnostic["runtime_removal_support_sha256"],
+        "R51 runtime removal support hash",
+    )
     if holdout:
         if (
             record["state"] != "passed"
@@ -3488,6 +4086,9 @@ def _r51_validate_cell_diagnostic(root, record, bindings, seen_paths, *, holdout
             or recall["covered"] != recall["target_total"]
             or recall["uncovered"] != 0
             or recall["target_total"] <= 0
+            or diagnostic["detector_geometry_passed"] is not True
+            or diagnostic["selected_scene_rotations_zero"] is not True
+            or protected_overlap != 0
         ):
             raise LedgerError("R51 holdout cell diagnostic did not pass")
     elif any(
@@ -3600,6 +4201,39 @@ def _r51_validate_cell_diagnostic(root, record, bindings, seen_paths, *, holdout
             or raw_detector["source_scaled_quad_f32_bits"] != raw_bits[detector_index]
         ):
             raise LedgerError("R51 detector support preimage binding drift")
+        assignment = preimage["canonical_assignment"]
+        detector_rect = raw_detector["rect"]
+        expected_scene_quad = (
+            [
+                detector_rect[0],
+                detector_rect[1],
+                detector_rect[2],
+                detector_rect[1],
+                detector_rect[2],
+                detector_rect[3],
+                detector_rect[0],
+                detector_rect[3],
+            ]
+            if isinstance(detector_rect, list)
+            and len(detector_rect) == 4
+            and all(type(value) is int for value in detector_rect)
+            else None
+        )
+        if assignment == "selected_han":
+            if (
+                preimage["emitted_scene_quad"] != expected_scene_quad
+                or preimage["line_support_equals_detector"] is not True
+                or preimage["detector_support_mask"]
+                != preimage["emitted_scene_support_mask"]
+                or preimage["detector_support_mask"] != preimage["line_support_mask"]
+                or preimage["detector_support_mask"]
+                != preimage["downstream_line_support_mask"]
+                or preimage["detector_support_mask"] != preimage["agreed_mask"]
+                or preimage["agreed_mask_subset"] is not True
+            ):
+                raise LedgerError("R57 detector selection geometry did not pass")
+        elif preimage["emitted_scene_quad"] is not None:
+            raise LedgerError("R57 non-selected detector has emitted Scene geometry")
         support_indices.append(detector_index)
     if support_indices != list(range(raw_count)):
         raise LedgerError("R51 detector support record order drift")
@@ -5612,6 +6246,9 @@ def _r51_validate_authorization(arguments):
     calibration_manifest_path, calibration_manifest_bytes = _r51_read(
         arguments.calibration_manifest, "R51 calibration manifest", mode=0o600
     )
+    calibration_entry_ids = _r51_calibration_manifest_entry_ids(
+        calibration_manifest_bytes
+    )
     calibration_ledger_path, calibration_ledger_bytes, calibration_ledger = _r51_json(
         arguments.calibration_ledger,
         "R51 calibration ledger",
@@ -5771,6 +6408,7 @@ def _r51_validate_authorization(arguments):
     _r51_validate_calibration(
         payload,
         calibration_ledger,
+        calibration_entry_ids,
         os.path.dirname(calibration_ledger_path),
     )
     record = {
@@ -6419,6 +7057,1061 @@ def _r52_validate_authorization(arguments):
             )
             + b"\n"
         )
+def _r59_read_custody_file(
+    root, name, label, stack, implementation_identity=None
+):
+    held = _open_child(root, name, directory=False, stack=stack)
+    before = os.fstat(held.fd)
+    if before.st_uid != _r59_custody_uid():
+        raise LedgerError(f"{label} owner must be koharu-custody")
+    if _mode(before) != 0o600:
+        raise LedgerError(f"{label} mode must be 0600")
+    _r59_require_acl(
+        held.fd, "read,readattr", label, implementation_identity
+    )
+    if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
+        raise LedgerError(f"{label} metadata changed during ACL validation")
+    data = _read_all(held.fd)
+    after = os.fstat(held.fd)
+    if _r59_secure_metadata(after) != _r59_secure_metadata(before):
+        raise LedgerError(f"{label} changed while being read")
+    _r59_require_acl(
+        held.fd, "read,readattr", label, implementation_identity
+    )
+    if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
+        raise LedgerError(f"{label} metadata changed during final ACL validation")
+    return data, held, _r59_secure_metadata(before)
+
+
+def _r59_revalidate_custody_file(
+    held, label, expected_metadata, implementation_identity=None
+):
+    _r59_require_acl(
+        held.fd, "read,readattr", label, implementation_identity
+    )
+    if _r59_secure_metadata(os.fstat(held.fd)) != expected_metadata:
+        raise LedgerError(f"{label} changed while evidence was read")
+
+
+def _r59_read_public_json(root, path, expected_path, label, stack):
+    if path != expected_path:
+        raise LedgerError(f"{label} path drift")
+    if os.path.dirname(path) != root.path:
+        raise LedgerError(f"{label} must remain in the R59 public directory")
+    data, held, metadata = _r59_read_custody_file(
+        root, os.path.basename(path), label, stack
+    )
+    return data, _parse_json(data, label), held, metadata
+
+
+def _r59_custody_uid():
+    try:
+        return pwd.getpwnam("koharu-custody").pw_uid
+    except KeyError as error:
+        raise LedgerError("koharu-custody principal is unavailable") from error
+
+
+def _r59_implementation_user():
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError as error:
+        raise LedgerError("implementation principal is unavailable") from error
+
+
+def _r59_acl_text(fd):
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.acl_get_fd_np.argtypes = [ctypes.c_int, ctypes.c_int]
+    libc.acl_get_fd_np.restype = ctypes.c_void_p
+    libc.acl_to_text.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ssize_t)]
+    libc.acl_to_text.restype = ctypes.c_void_p
+    libc.acl_free.argtypes = [ctypes.c_void_p]
+    libc.acl_free.restype = ctypes.c_int
+    acl = libc.acl_get_fd_np(fd, 0x00000100)
+    if not acl:
+        raise LedgerError("cannot inspect R59 ACL")
+    text = None
+    try:
+        length = ctypes.c_ssize_t()
+        text = libc.acl_to_text(acl, ctypes.byref(length))
+        if not text:
+            raise LedgerError("cannot serialize R59 ACL")
+        return ctypes.string_at(text, length.value).decode("utf-8")
+    finally:
+        if text:
+            libc.acl_free(text)
+        libc.acl_free(acl)
+
+
+def _r59_acl_fields(fd, permissions, label):
+    lines = _r59_acl_text(fd).splitlines()
+    if len(lines) != 2 or lines[0] != "!#acl 1":
+        raise LedgerError(f"{label} ACL drift")
+    fields = lines[1].split(":")
+    if (
+        len(fields) != 6
+        or fields[0] != "user"
+        or re.fullmatch(r"[0-9A-F]{8}(?:-[0-9A-F]{4}){3}-[0-9A-F]{12}", fields[1])
+        is None
+        or fields[4] != "allow"
+        or fields[5] != permissions
+    ):
+        raise LedgerError(f"{label} ACL drift")
+    return fields
+
+
+def _r59_require_acl(fd, permissions, label, implementation_identity=None):
+    fields = _r59_acl_fields(fd, permissions, label)
+    expected_user, expected_uid = implementation_identity or (
+        _r59_implementation_user(),
+        os.geteuid(),
+    )
+    if fields[2] != expected_user or fields[3] != str(expected_uid):
+        raise LedgerError(f"{label} ACL drift")
+
+
+def _r60_implementation_identity(fd, permissions, label):
+    fields = _r59_acl_fields(fd, permissions, label)
+    try:
+        uid = int(fields[3])
+        user = pwd.getpwuid(uid).pw_name
+    except (KeyError, ValueError) as error:
+        raise LedgerError(f"{label} ACL drift") from error
+    if user != fields[2] or uid == _r59_custody_uid():
+        raise LedgerError(f"{label} ACL drift")
+    return user, uid
+
+
+def _r59_secure_metadata(value):
+    return (
+        _identity(value),
+        value.st_uid,
+        value.st_gid,
+        _mode(value),
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _r59_validate_custody_directory_held(held, label):
+    before = os.fstat(held.fd)
+    if before.st_uid != _r59_custody_uid():
+        raise LedgerError(f"{label} owner must be koharu-custody")
+    if _mode(before) != 0o700:
+        raise LedgerError(f"{label} mode must be 0700")
+    _r59_require_acl(held.fd, "read,execute,readattr", label)
+    if _r59_secure_metadata(os.fstat(held.fd)) != _r59_secure_metadata(before):
+        raise LedgerError(f"{label} metadata changed during ACL validation")
+    return _r59_secure_metadata(before)
+
+
+def _r59_revalidate_custody_directory_held(held, label, expected_metadata):
+    _r59_require_acl(held.fd, "read,execute,readattr", label)
+    if _r59_secure_metadata(os.fstat(held.fd)) != expected_metadata:
+        raise LedgerError(f"{label} metadata changed while evidence was read")
+
+
+def _r59_open_public_directory(stack):
+    root = os.path.dirname(R59_ORIGINAL_PUBLIC_COMMITMENT_PATH)
+    held = _open_absolute(root, directory=True, stack=stack)
+    metadata = _r59_validate_custody_directory_held(held, "R59 public directory")
+    return held, metadata
+
+
+def _r59_open_authorization_evidence(requested_b0_sha, stack):
+    root_path = R59_READINESS_ROOT_PREFIX + requested_b0_sha
+    root = _open_absolute(root_path, directory=True, stack=stack)
+    held_directories = [
+        (
+            root,
+            "R59 readiness directory",
+            _r59_validate_custody_directory_held(root, "R59 readiness directory"),
+        )
+    ]
+    artifact, artifact_held, artifact_metadata = _r59_read_custody_file(
+        root, R59_HOLDOUT_ARTIFACT_NAME, "R59 holdout artifact", stack
+    )
+    current = root
+    for component in R59_BUNDLE_RECEIPT_COMPONENTS[:-1]:
+        current = _open_child(current, component, directory=True, stack=stack)
+        label = f"R59 readiness directory {component}"
+        held_directories.append(
+            (
+                current,
+                label,
+                _r59_validate_custody_directory_held(current, label),
+            )
+        )
+    bundle, bundle_held, bundle_metadata = _r59_read_custody_file(
+        current,
+        R59_BUNDLE_RECEIPT_COMPONENTS[-1],
+        "R59 bundle validation receipt",
+        stack,
+    )
+    held_files = [
+        (artifact_held, "R59 holdout artifact", artifact_metadata),
+        (bundle_held, "R59 bundle validation receipt", bundle_metadata),
+    ]
+    return _sha256(bundle), _sha256(artifact), held_files, held_directories
+
+
+def _r59_revalidate_authorization_evidence(held_files, held_directories):
+    for held, label, metadata in held_files:
+        _r59_revalidate_custody_file(held, label, metadata)
+    for held, label, metadata in held_directories:
+        _r59_revalidate_custody_directory_held(held, label, metadata)
+
+
+def _r59_read_authorization_evidence(requested_b0_sha):
+    with contextlib.ExitStack() as stack:
+        bundle_sha256, artifact_sha256, held_files, held_directories = (
+            _r59_open_authorization_evidence(requested_b0_sha, stack)
+        )
+        _r59_revalidate_authorization_evidence(held_files, held_directories)
+    return bundle_sha256, artifact_sha256
+
+
+def _r59_validate_calibration_artifact():
+    _, data = _r51_read(
+        R59_CALIBRATION_ARTIFACT_PATH,
+        "R59 calibration artifact",
+        mode=0o600,
+    )
+    if _sha256(data) != R59_CALIBRATION_ARTIFACT_SHA256:
+        raise LedgerError("R59 calibration artifact SHA drift")
+
+
+def _r59_validate_original(data, value):
+    _require_keys(value, R59_ORIGINAL_KEYS, "R59 original public commitment")
+    if _sha256(data) != R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256:
+        raise LedgerError("R59 original public commitment SHA drift")
+    if (
+        value["schema"] != "hanonly.r59.public-commitment.v1"
+        or value["B0_SHA"] != R59_ORIGINAL_B0_SHA
+        or value["opaque_ids"] != R59_ENTRY_IDS
+        or value["plaintext_cleanup"] is not True
+        or value["restricted_content_disclosed"] is not False
+        or value["start_marker_absent"] is not True
+    ):
+        raise LedgerError("R59 original public commitment drift")
+    _validate_hash(value["ciphertext_sha256"], "R59 ciphertext")
+    _validate_hash(
+        value["private_manifest_commitment_sha256"],
+        "R59 private manifest commitment",
+    )
+    return value
+
+
+def _r59_validate_successor(data, value, original, requested_b0_sha):
+    _require_keys(value, R59_SUCCESSOR_KEYS, "R59 successor commitment")
+    if value["schema"] != "hanonly.r59.successor-commitment.v1":
+        raise LedgerError("R59 successor commitment schema drift")
+    if value["successor_b0_sha"] != requested_b0_sha:
+        raise LedgerError("R59 successor B0 does not equal requested B0")
+    if (
+        value["original_public_commitment_sha256"]
+        != R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256
+        or value["original_b0_sha"] != R59_ORIGINAL_B0_SHA
+        or value["contract_sha256"] != R59_CONTRACT_SHA256
+        or value["test_spec_sha256"] != R59_TEST_SPEC_SHA256
+        or value["calibration_artifact_sha256"]
+        != R59_CALIBRATION_ARTIFACT_SHA256
+        or value["selected_candidate_id"] != R59_SELECTED_CANDIDATE_ID
+        or value["ciphertext_sha256"] != original["ciphertext_sha256"]
+        or value["private_manifest_commitment_sha256"]
+        != original["private_manifest_commitment_sha256"]
+        or value["entry_ids"] != R59_ENTRY_IDS
+        or value["package_unchanged"] is not True
+        or value["start_marker_absent"] is not True
+    ):
+        raise LedgerError("R59 successor commitment binding drift")
+    if _r59_canonical_json(value) != data:
+        raise LedgerError("R59 successor commitment is not canonical JSON")
+    return _sha256(data)
+
+
+def _r59_validate_clean_detached_head(repo_root, requested_b0_sha):
+    if not B0_SHA_RE.fullmatch(requested_b0_sha):
+        raise LedgerError("R59 requested B0 SHA is invalid")
+    head = _run_git(repo_root, ["rev-parse", "HEAD"])
+    if head.returncode != 0 or head.stdout.decode().strip() != requested_b0_sha:
+        raise LedgerError("R59 successor B0 does not equal HEAD")
+    symbolic = _run_git(repo_root, ["symbolic-ref", "-q", "HEAD"])
+    if symbolic.returncode != 1:
+        raise LedgerError("R59 B0 requires detached HEAD")
+    status_result = _run_git(
+        repo_root, ["status", "--porcelain=v1", "--untracked-files=all"]
+    )
+    if status_result.returncode != 0 or status_result.stdout:
+        raise LedgerError("R59 B0 worktree must be clean")
+
+
+def _r59_validate_protocol_files(repo_root):
+    for relative, expected, label in (
+        (
+            ".omx/plans/hanonly-r59-b0-custody-contract.json",
+            R59_CONTRACT_SHA256,
+            "R59 custody contract",
+        ),
+        (
+            ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+            R59_TEST_SPEC_SHA256,
+            "R59 custody test spec",
+        ),
+    ):
+        _, data = _r51_read(os.path.join(repo_root, relative), label, mode=None)
+        if _sha256(data) != expected:
+            raise LedgerError(f"{label} SHA drift")
+
+
+def _r59_validate_preflight_values(
+    original_data,
+    original,
+    successor_data,
+    successor,
+    requested_b0_sha,
+    *,
+    marker_exists,
+    runtime_exists=False,
+):
+    original = _r59_validate_original(original_data, original)
+    successor_sha256 = _r59_validate_successor(
+        successor_data, successor, original, requested_b0_sha
+    )
+    if marker_exists:
+        raise LedgerError("R59 start marker already exists; retry is forbidden")
+    if runtime_exists:
+        raise LedgerError("R59 runtime commitment exists before start marker")
+    return successor_sha256
+
+
+
+def _r59_validate_authorization_values(
+    original_data,
+    original,
+    successor_data,
+    successor,
+    start_data,
+    start,
+    runtime_data,
+    runtime,
+    terminal_data,
+    terminal,
+    cleanup_data,
+    cleanup,
+    requested_b0_sha,
+    bundle_validation_receipt_sha256,
+    artifact_payload_sha256,
+):
+    original = _r59_validate_original(original_data, original)
+    successor_sha256 = _r59_validate_successor(
+        successor_data, successor, original, requested_b0_sha
+    )
+    _require_keys(start, R59_START_KEYS, "R59 start marker")
+    _require_keys(runtime, R59_RUNTIME_COMMITMENT_KEYS, "R59 runtime commitment")
+    _require_keys(terminal, R59_TERMINAL_KEYS, "R59 terminal receipt")
+    _require_keys(cleanup, R59_CLEANUP_KEYS, "R59 cleanup receipt")
+    if (
+        _r59_canonical_json(start) != start_data
+        or _r59_canonical_json(runtime) != runtime_data
+        or _r59_canonical_json(terminal) != terminal_data
+        or _r59_canonical_json(cleanup) != cleanup_data
+    ):
+        raise LedgerError("R59 receipt JSON is not canonical")
+    start_sha256 = _sha256(start_data)
+    runtime_sha256 = _sha256(runtime_data)
+    cleanup_sha256 = _sha256(cleanup_data)
+    if (
+        start["schema"] != "hanonly-r59-holdout-start-v1"
+        or start["plan_revision"] != R59_PLAN_REVISION
+        or start["b0_sha"] != requested_b0_sha
+        or start["selected_candidate_id"] != R59_SELECTED_CANDIDATE_ID
+        or start["original_public_commitment_sha256"]
+        != R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256
+        or start["successor_commitment_sha256"] != successor_sha256
+        or start["ciphertext_sha256"] != original["ciphertext_sha256"]
+        or start["state"] != "started"
+        or not isinstance(start["nonce_hex"], str)
+        or re.fullmatch(r"[0-9a-f]{32,}", start["nonce_hex"]) is None
+    ):
+        raise LedgerError("R59 start marker binding or state drift")
+    _validate_hash(
+        start["pre_holdout_attestation_sha256"],
+        "R59 pre-holdout attestation",
+    )
+    if (
+        runtime["schema"] != "hanonly.r59.runtime-commitment.v1"
+        or runtime["plan_revision"] != R59_PLAN_REVISION
+        or runtime["b0_sha"] != requested_b0_sha
+        or runtime["start_marker_sha256"] != start_sha256
+        or runtime["successor_commitment_sha256"] != successor_sha256
+        or runtime["ciphertext_sha256"] != original["ciphertext_sha256"]
+        or runtime["private_manifest_commitment_sha256"]
+        != original["private_manifest_commitment_sha256"]
+        or runtime["entry_ids"] != R59_ENTRY_IDS
+        or runtime["decrypt_result"] != "pass"
+        or runtime["package_unchanged"] is not True
+        or runtime["restricted_values_disclosed"] is not False
+        or runtime["state"] != "runtime_committed"
+    ):
+        raise LedgerError("R59 runtime commitment binding or state drift")
+    for key in (
+        "runtime_archive_sha256",
+        "runtime_manifest_sha256",
+        "runtime_oracle_sha256",
+        "runtime_hashes_sha256",
+    ):
+        _validate_hash(runtime[key], f"R59 runtime commitment {key}")
+    cells = terminal["cell_results"]
+    if not isinstance(cells, list) or len(cells) != len(R59_CELLS):
+        raise LedgerError("R59 terminal receipt must contain all eight cells")
+    for cell in cells:
+        _require_keys(cell, R59_TERMINAL_CELL_KEYS, "R59 terminal cell")
+    if [cell["cell"] for cell in cells] != R59_CELLS or any(
+        cell["result"] != "pass" for cell in cells
+    ):
+        raise LedgerError("R59 terminal cells are incomplete, reordered, or failed")
+    if (
+        terminal["schema"] != "hanonly-r59-holdout-terminal-v1"
+        or terminal["plan_revision"] != R59_PLAN_REVISION
+        or terminal["b0_sha"] != requested_b0_sha
+        or terminal["start_marker_sha256"] != start_sha256
+        or terminal["successor_commitment_sha256"] != successor_sha256
+        or terminal["selected_candidate_id"] != R59_SELECTED_CANDIDATE_ID
+        or terminal["first_failed_cell"] is not None
+        or terminal["unexecuted_cells"] != []
+        or terminal["cleanup_receipt_sha256"] != cleanup_sha256
+        or terminal["runtime_commitment_receipt_sha256"] != runtime_sha256
+        or terminal["state"] != "completed_pass"
+    ):
+        raise LedgerError("R59 terminal receipt binding or state drift")
+    if (
+        cleanup["schema"] != "hanonly-r59-cleanup-v1"
+        or cleanup["plaintext_root"] != "/Users/koharu-custody/r59-plaintext"
+        or cleanup["runner_process_exited"] is not True
+        or cleanup["descriptors_closed"] is not True
+        or cleanup["plaintext_root_absent"] is not True
+        or cleanup["cleanup_pass"] is not True
+    ):
+        raise LedgerError("R59 cleanup receipt is non-authorizing")
+    _validate_hash(bundle_validation_receipt_sha256, "R59 bundle validation receipt")
+    _validate_hash(artifact_payload_sha256, "R59 artifact payload")
+    if terminal["bundle_validation_receipt_sha256"] != bundle_validation_receipt_sha256:
+        raise LedgerError("R59 bundle validation receipt SHA drift")
+    if terminal["artifact_payload_sha256"] != artifact_payload_sha256:
+        raise LedgerError("R59 artifact payload SHA drift")
+    record = {
+        "schema": "hanonly-r59-b0-authorization-v1",
+        "plan_revision": R59_PLAN_REVISION,
+        "b0_sha": requested_b0_sha,
+        "contract_sha256": R59_CONTRACT_SHA256,
+        "test_spec_sha256": R59_TEST_SPEC_SHA256,
+        "original_public_commitment_sha256": R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256,
+        "successor_commitment_sha256": successor_sha256,
+        "calibration_artifact_sha256": R59_CALIBRATION_ARTIFACT_SHA256,
+        "selected_candidate_id": R59_SELECTED_CANDIDATE_ID,
+        "pre_holdout_attestation_sha256": start[
+            "pre_holdout_attestation_sha256"
+        ],
+        "start_marker_sha256": start_sha256,
+        "bundle_validation_receipt_sha256": bundle_validation_receipt_sha256,
+        "terminal_receipt_sha256": _sha256(terminal_data),
+        "cleanup_receipt_sha256": cleanup_sha256,
+        "artifact_payload_sha256": artifact_payload_sha256,
+        "runtime_commitment_receipt_sha256": runtime_sha256,
+        "result": "authorized",
+    }
+    _require_keys(record, R59_AUTHORIZATION_KEYS, "R59 authorization record")
+    return record
+
+
+
+def _r60_repo_root():
+    return os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def _r60_validate_git_state(repo_root, requested_b0_sha):
+    if not B0_SHA_RE.fullmatch(requested_b0_sha):
+        raise LedgerError("R60 requested B0 SHA is invalid")
+    head = _run_git(repo_root, ["rev-parse", "HEAD"])
+    if head.returncode != 0 or head.stdout.decode().strip() != requested_b0_sha:
+        raise LedgerError("R60 successor B0 does not equal HEAD")
+    symbolic = _run_git(repo_root, ["symbolic-ref", "-q", "HEAD"])
+    if symbolic.returncode != 1:
+        raise LedgerError("R60 B0 requires detached HEAD")
+    status_result = _run_git(
+        repo_root, ["status", "--porcelain=v1", "--untracked-files=all"]
+    )
+    if status_result.returncode != 0 or status_result.stdout:
+        raise LedgerError("R60 B0 worktree must be clean")
+    diff_result = _run_git(
+        repo_root, ["diff", "--name-only", f"{R60_BASE_B0_SHA}..HEAD"]
+    )
+    try:
+        changed_paths = tuple(diff_result.stdout.decode("utf-8").splitlines())
+    except UnicodeDecodeError as error:
+        raise LedgerError("R60 git diff path output is not UTF-8") from error
+    if diff_result.returncode != 0 or changed_paths != R60_ALLOWED_CHANGED_PATHS:
+        raise LedgerError("R60 B0 git diff path set drift")
+
+
+def _r60_validate_protocol_files(repo_root):
+    for relative, expected, label in (
+        (
+            ".omx/plans/hanonly-r60-b0-custody-contract.json",
+            R60_CONTRACT_SHA256,
+            "R60 custody contract",
+        ),
+        (
+            ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+            R60_TEST_SPEC_SHA256,
+            "R60 custody test spec",
+        ),
+    ):
+        _, data = _r51_read(os.path.join(repo_root, relative), label, mode=None)
+        if _sha256(data) != expected:
+            raise LedgerError(f"{label} SHA drift")
+    _, validator = _r51_read(
+        os.path.join(repo_root, R60_LAYOUT_VALIDATOR_PATH),
+        "R60 layout validator",
+        mode=None,
+    )
+    return _sha256(validator)
+
+
+def _r60_validate_calibration_artifact():
+    _, data = _r51_read(
+        R60_CALIBRATION_ARTIFACT_PATH,
+        "R60 calibration artifact",
+        mode=0o600,
+        owner_required=False,
+    )
+    if _sha256(data) != R60_CALIBRATION_ARTIFACT_SHA256:
+        raise LedgerError("R60 calibration artifact SHA drift")
+
+
+def _r60_validate_public_directory_held(held):
+    before = os.fstat(held.fd)
+    if before.st_uid != _r59_custody_uid():
+        raise LedgerError("R60 public root owner must be koharu-custody")
+    if _mode(before) != 0o700:
+        raise LedgerError("R60 public root mode must be 0700")
+    implementation_identity = _r60_implementation_identity(
+        held.fd, "execute,readattr", "R60 public root"
+    )
+    metadata = _r59_secure_metadata(before)
+    if _r59_secure_metadata(os.fstat(held.fd)) != metadata:
+        raise LedgerError("R60 public root metadata changed during ACL validation")
+    return metadata, implementation_identity
+
+
+def _r60_revalidate_public_directory_held(
+    held, expected_metadata, implementation_identity
+):
+    _r59_require_acl(
+        held.fd,
+        "execute,readattr",
+        "R60 public root",
+        implementation_identity,
+    )
+    if _r59_secure_metadata(os.fstat(held.fd)) != expected_metadata:
+        raise LedgerError("R60 public root metadata changed while evidence was read")
+
+
+def _r60_read_public_json(root, name, label, stack, implementation_identity):
+    data, held, metadata = _r59_read_custody_file(
+        root, name, label, stack, implementation_identity
+    )
+    return data, _parse_json(data, label), held, metadata
+
+
+def _r60_require_absent_receipts(root):
+    for name in R60_ABSENT_RECEIPT_NAMES:
+        try:
+            os.stat(name, dir_fd=root.fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise LedgerError(f"cannot prove R60 receipt absence: {name}") from error
+        raise LedgerError(f"R60 pre-start receipt already exists: {name}")
+
+
+def _r60_require_plaintext_absent():
+    try:
+        os.lstat(R60_PLAINTEXT_ROOT)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise LedgerError("cannot prove R60 plaintext root absence") from error
+    raise LedgerError("R60 plaintext root already exists")
+
+
+def _r60_require_runner_process_absent(pid):
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise LedgerError("R60 cleanup receipt runner_pid must be a positive integer")
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return
+    except PermissionError as error:
+        raise LedgerError(
+            "cannot prove R60 runner PID exited or descriptor lifecycle closed"
+        ) from error
+    except (OSError, NotImplementedError) as error:
+        if isinstance(error, OSError) and error.errno == errno.ESRCH:
+            return
+        raise LedgerError(
+            "cannot prove R60 runner PID exited or descriptor lifecycle closed"
+        ) from error
+    raise LedgerError("R60 runner PID is live or reused")
+
+
+def _r60_validate_preflight_values(
+    layout_data,
+    layout,
+    public_data,
+    public,
+    successor_data,
+    successor,
+    requested_b0_sha,
+    validator_sha256,
+):
+    _require_keys(layout, R60_LAYOUT_KEYS, "R60 layout receipt")
+    _require_keys(public, R60_PUBLIC_KEYS, "R60 public commitment")
+    _require_keys(successor, R60_SUCCESSOR_KEYS, "R60 successor commitment")
+    for data, value, label in (
+        (layout_data, layout, "R60 layout receipt"),
+        (public_data, public, "R60 public commitment"),
+        (successor_data, successor, "R60 successor commitment"),
+    ):
+        if _r59_canonical_json(value) != data:
+            raise LedgerError(f"{label} is not canonical JSON")
+
+    for label, value, fields in (
+        (
+            "R60 layout receipt",
+            layout,
+            (
+                "ciphertext_sha256",
+                "layout_validator_sha256",
+                "manifest_sha256",
+                "member_name_digest_sha256",
+                "private_manifest_commitment_sha256",
+            ),
+        ),
+        (
+            "R60 public commitment",
+            public,
+            (
+                "ciphertext_sha256",
+                "layout_receipt_sha256",
+                "layout_validator_sha256",
+                "manifest_sha256",
+                "member_name_digest_sha256",
+                "private_manifest_commitment_sha256",
+            ),
+        ),
+        (
+            "R60 successor commitment",
+            successor,
+            (
+                "calibration_artifact_sha256",
+                "ciphertext_sha256",
+                "contract_sha256",
+                "layout_receipt_sha256",
+                "layout_validator_sha256",
+                "manifest_sha256",
+                "member_name_digest_sha256",
+                "private_manifest_commitment_sha256",
+                "public_commitment_sha256",
+                "test_spec_sha256",
+            ),
+        ),
+    ):
+        for field in fields:
+            _validate_hash(value[field], f"{label} {field}")
+    _validate_hash(validator_sha256, "R60 layout validator")
+
+    if (
+        layout["schema"] != "hanonly.r60.layout-receipt.v1"
+        or type(layout["plan_revision"]) is not int
+        or layout["plan_revision"] != R60_PLAN_REVISION
+        or layout["entry_ids"] != R60_ENTRY_IDS
+        or any(
+            layout[field] is not True
+            for field in (
+                "canonical_ustar_pass",
+                "layout_pass",
+                "manifest_binding_pass",
+                "required_root_present",
+                "same_archive_object_pass",
+                "wrapper_absent",
+            )
+        )
+        or layout["restricted_values_disclosed"] is not False
+        or layout["manifest_sha256"]
+        != layout["private_manifest_commitment_sha256"]
+    ):
+        raise LedgerError("R60 layout receipt binding drift")
+    if (
+        public["schema"] != "hanonly.r60.public-commitment.v1"
+        or type(public["plan_revision"]) is not int
+        or public["plan_revision"] != R60_PLAN_REVISION
+        or public["source_b0_sha"] != R60_BASE_B0_SHA
+        or public["entry_ids"] != R60_ENTRY_IDS
+        or public["cleanup_pass"] is not True
+        or public["start_marker_absent"] is not True
+        or public["restricted_values_disclosed"] is not False
+    ):
+        raise LedgerError("R60 public commitment binding drift")
+    if (
+        successor["schema"] != "hanonly.r60.successor-commitment.v1"
+        or type(successor["plan_revision"]) is not int
+        or successor["plan_revision"] != R60_PLAN_REVISION
+        or successor["source_b0_sha"] != R60_BASE_B0_SHA
+        or successor["successor_b0_sha"] != requested_b0_sha
+        or successor["contract_sha256"] != R60_CONTRACT_SHA256
+        or successor["test_spec_sha256"] != R60_TEST_SPEC_SHA256
+        or successor["calibration_artifact_sha256"]
+        != R60_CALIBRATION_ARTIFACT_SHA256
+        or successor["selected_candidate_id"] != R60_SELECTED_CANDIDATE_ID
+        or successor["entry_ids"] != R60_ENTRY_IDS
+        or successor["package_unchanged"] is not True
+        or successor["start_marker_absent"] is not True
+    ):
+        raise LedgerError("R60 successor commitment binding drift")
+
+    layout_sha256 = _sha256(layout_data)
+    public_sha256 = _sha256(public_data)
+    if (
+        public["layout_receipt_sha256"] != layout_sha256
+        or successor["layout_receipt_sha256"] != layout_sha256
+        or successor["public_commitment_sha256"] != public_sha256
+        or any(
+            layout[field] != public[field] or layout[field] != successor[field]
+            for field in (
+                "ciphertext_sha256",
+                "layout_validator_sha256",
+                "manifest_sha256",
+                "member_name_digest_sha256",
+                "private_manifest_commitment_sha256",
+            )
+        )
+        or layout["entry_ids"] != public["entry_ids"]
+        or layout["entry_ids"] != successor["entry_ids"]
+        or layout["layout_validator_sha256"] != validator_sha256
+    ):
+        raise LedgerError("R60 receipt cross-binding drift")
+
+
+def _r60_validate_preflight(arguments):
+    repo_root = _canonical_existing_path(_r60_repo_root(), "R60 repository root")
+    _r60_validate_git_state(repo_root, arguments.requested_b0_sha)
+    validator_sha256 = _r60_validate_protocol_files(repo_root)
+    _r60_validate_calibration_artifact()
+    _r60_require_plaintext_absent()
+    with contextlib.ExitStack() as stack:
+        public_root = _open_absolute(
+            R60_PUBLIC_ROOT, directory=True, stack=stack, search_only=True
+        )
+        public_metadata, implementation_identity = (
+            _r60_validate_public_directory_held(public_root)
+        )
+        layout = _r60_read_public_json(
+            public_root,
+            R60_LAYOUT_RECEIPT_NAME,
+            "R60 layout receipt",
+            stack,
+            implementation_identity,
+        )
+        public = _r60_read_public_json(
+            public_root,
+            R60_PUBLIC_COMMITMENT_NAME,
+            "R60 public commitment",
+            stack,
+            implementation_identity,
+        )
+        successor = _r60_read_public_json(
+            public_root,
+            R60_SUCCESSOR_COMMITMENT_NAME,
+            "R60 successor commitment",
+            stack,
+            implementation_identity,
+        )
+        _r60_require_absent_receipts(public_root)
+        _r60_validate_preflight_values(
+            layout[0],
+            layout[1],
+            public[0],
+            public[1],
+            successor[0],
+            successor[1],
+            arguments.requested_b0_sha,
+            validator_sha256,
+        )
+        for value, label in (
+            (layout, "R60 layout receipt"),
+            (public, "R60 public commitment"),
+            (successor, "R60 successor commitment"),
+        ):
+            _r59_revalidate_custody_file(
+                value[2], label, value[3], implementation_identity
+            )
+        _r60_revalidate_public_directory_held(
+            public_root, public_metadata, implementation_identity
+        )
+    return _r59_canonical_json({"result": "pass"}) + b"\n"
+
+
+def _r60_open_authorization_evidence(requested_b0_sha, stack):
+    root = _open_absolute(
+        R60_READINESS_ROOT_PREFIX + requested_b0_sha, directory=True, stack=stack
+    )
+    directories = [
+        (
+            root,
+            "R60 readiness directory",
+            _r59_validate_custody_directory_held(root, "R60 readiness directory"),
+        )
+    ]
+    artifact, artifact_held, artifact_metadata = _r59_read_custody_file(
+        root, R60_HOLDOUT_ARTIFACT_NAME, "R60 holdout artifact", stack
+    )
+    current = root
+    for component in R60_BUNDLE_RECEIPT_COMPONENTS[:-1]:
+        current = _open_child(current, component, directory=True, stack=stack)
+        label = f"R60 readiness directory {component}"
+        directories.append(
+            (current, label, _r59_validate_custody_directory_held(current, label))
+        )
+    bundle, bundle_held, bundle_metadata = _r59_read_custody_file(
+        current,
+        R60_BUNDLE_RECEIPT_COMPONENTS[-1],
+        "R60 bundle validation receipt",
+        stack,
+    )
+    files = [
+        (artifact_held, "R60 holdout artifact", artifact_metadata),
+        (bundle_held, "R60 bundle validation receipt", bundle_metadata),
+    ]
+    return _sha256(bundle), _sha256(artifact), files, directories
+
+
+def _r60_validate_authorization_values(
+    layout_data,
+    layout,
+    public_data,
+    public,
+    successor_data,
+    successor,
+    start_data,
+    start,
+    runtime_data,
+    runtime,
+    terminal_data,
+    terminal,
+    cleanup_data,
+    cleanup,
+    requested_b0_sha,
+    validator_sha256,
+    bundle_sha256,
+    artifact_sha256,
+):
+    _r60_validate_preflight_values(
+        layout_data,
+        layout,
+        public_data,
+        public,
+        successor_data,
+        successor,
+        requested_b0_sha,
+        validator_sha256,
+    )
+    for value, keys, label in (
+        (start, R60_START_KEYS, "R60 start receipt"),
+        (runtime, R60_RUNTIME_KEYS, "R60 runtime receipt"),
+        (terminal, R60_TERMINAL_KEYS, "R60 terminal receipt"),
+        (cleanup, R60_CLEANUP_KEYS, "R60 cleanup receipt"),
+    ):
+        _require_keys(value, keys, label)
+    for data, value, label in (
+        (start_data, start, "R60 start receipt"),
+        (runtime_data, runtime, "R60 runtime receipt"),
+        (terminal_data, terminal, "R60 terminal receipt"),
+        (cleanup_data, cleanup, "R60 cleanup receipt"),
+    ):
+        if _r59_canonical_json(value) != data:
+            raise LedgerError(f"{label} is not canonical JSON")
+
+    public_sha256 = _sha256(public_data)
+    successor_sha256 = _sha256(successor_data)
+    start_sha256 = _sha256(start_data)
+    runtime_sha256 = _sha256(runtime_data)
+    cleanup_sha256 = _sha256(cleanup_data)
+    for key in ("pre_holdout_attestation_sha256", "successor_commitment_sha256"):
+        _validate_hash(start[key], f"R60 start receipt {key}")
+    if (
+        start["schema"] != "hanonly.r60.holdout-start.v1"
+        or start["plan_revision"] != R60_PLAN_REVISION
+        or start["b0_sha"] != requested_b0_sha
+        or start["calibration_artifact_sha256"] != R60_CALIBRATION_ARTIFACT_SHA256
+        or start["entry_ids"] != R60_ENTRY_IDS
+        or start["public_commitment_sha256"] != public_sha256
+        or start["selected_candidate_id"] != R60_SELECTED_CANDIDATE_ID
+        or start["successor_commitment_sha256"] != successor_sha256
+        or start["state"] != "started"
+        or not isinstance(start["nonce_hex"], str)
+        or SHA256_RE.fullmatch(start["nonce_hex"]) is None
+    ):
+        raise LedgerError("R60 start receipt binding or state drift")
+
+    for key in (
+        "ciphertext_sha256",
+        "hashes_sha256",
+        "layout_receipt_sha256",
+        "layout_validator_sha256",
+        "manifest_sha256",
+        "member_name_digest_sha256",
+        "oracle_sha256",
+        "plaintext_archive_sha256",
+        "private_manifest_commitment_sha256",
+        "start_marker_sha256",
+        "successor_commitment_sha256",
+    ):
+        _validate_hash(runtime[key], f"R60 runtime receipt {key}")
+    if (
+        runtime["schema"] != "hanonly.r60.runtime-commitment.v1"
+        or runtime["plan_revision"] != R60_PLAN_REVISION
+        or runtime["b0_sha"] != requested_b0_sha
+        or runtime["calibration_artifact_sha256"] != R60_CALIBRATION_ARTIFACT_SHA256
+        or runtime["ciphertext_sha256"] != public["ciphertext_sha256"]
+        or runtime["decrypt_pass"] is not True
+        or runtime["entry_ids"] != R60_ENTRY_IDS
+        or runtime["layout_receipt_sha256"] != public["layout_receipt_sha256"]
+        or runtime["layout_validator_sha256"] != validator_sha256
+        or runtime["manifest_sha256"] != public["manifest_sha256"]
+        or runtime["member_name_digest_sha256"] != public["member_name_digest_sha256"]
+        or runtime["package_unchanged"] is not True
+        or runtime["private_manifest_commitment_sha256"]
+        != public["private_manifest_commitment_sha256"]
+        or runtime["restricted_values_disclosed"] is not False
+        or runtime["selected_candidate_id"] != R60_SELECTED_CANDIDATE_ID
+        or runtime["start_marker_sha256"] != start_sha256
+        or runtime["state"] != "runtime_committed"
+        or runtime["successor_commitment_sha256"] != successor_sha256
+    ):
+        raise LedgerError("R60 runtime receipt binding or state drift")
+
+    for cell in terminal["cell_results"]:
+        _require_keys(cell, R60_TERMINAL_CELL_KEYS, "R60 terminal cell")
+    if (
+        [cell["cell"] for cell in terminal["cell_results"]] != R60_CELLS
+        or any(cell["result"] != "pass" for cell in terminal["cell_results"])
+        or terminal["schema"] != "hanonly.r60.holdout-terminal.v1"
+        or terminal["plan_revision"] != R60_PLAN_REVISION
+        or terminal["artifact_sha256"] != artifact_sha256
+        or terminal["b0_sha"] != requested_b0_sha
+        or terminal["bundle_validation_receipt_sha256"] != bundle_sha256
+        or terminal["calibration_artifact_sha256"] != R60_CALIBRATION_ARTIFACT_SHA256
+        or terminal["cleanup_receipt_sha256"] != cleanup_sha256
+        or terminal["first_failed_cell"] is not None
+        or terminal["runtime_receipt_sha256"] != runtime_sha256
+        or terminal["selected_candidate_id"] != R60_SELECTED_CANDIDATE_ID
+        or terminal["start_marker_sha256"] != start_sha256
+        or terminal["state"] != "completed_pass"
+        or terminal["unexecuted_cells"] != []
+    ):
+        raise LedgerError("R60 terminal receipt is non-authorizing")
+
+    if (
+        cleanup["schema"] != "hanonly.r60.cleanup-receipt.v1"
+        or cleanup["plan_revision"] != R60_PLAN_REVISION
+        or cleanup["b0_sha"] != requested_b0_sha
+        or cleanup["cleanup_pass"] is not True
+        or cleanup["descriptors_closed"] is not True
+        or cleanup["nonce_hex"] != start["nonce_hex"]
+        or cleanup["plaintext_root"] != R60_PLAINTEXT_ROOT
+        or cleanup["plaintext_root_absent"] is not True
+        or cleanup["restricted_values_disclosed"] is not False
+        or cleanup["runner_process_exited"] is not True
+        or cleanup["runtime_receipt_sha256"] != runtime_sha256
+        or cleanup["start_marker_sha256"] != start_sha256
+        or cleanup["successor_commitment_sha256"] != successor_sha256
+    ):
+        raise LedgerError("R60 cleanup receipt is non-authorizing")
+    _r60_require_runner_process_absent(cleanup["runner_pid"])
+    _r60_require_plaintext_absent()
+
+    record = {
+        "artifact_sha256": artifact_sha256,
+        "b0_sha": requested_b0_sha,
+        "bundle_validation_receipt_sha256": bundle_sha256,
+        "calibration_artifact_sha256": R60_CALIBRATION_ARTIFACT_SHA256,
+        "cleanup_receipt_sha256": cleanup_sha256,
+        "contract_sha256": R60_CONTRACT_SHA256,
+        "plan_revision": R60_PLAN_REVISION,
+        "pre_holdout_attestation_sha256": start[
+            "pre_holdout_attestation_sha256"
+        ],
+        "public_commitment_sha256": public_sha256,
+        "result": "authorized",
+        "runtime_receipt_sha256": runtime_sha256,
+        "selected_candidate_id": R60_SELECTED_CANDIDATE_ID,
+        "start_marker_sha256": start_sha256,
+        "successor_commitment_sha256": successor_sha256,
+        "terminal_receipt_sha256": _sha256(terminal_data),
+        "test_spec_sha256": R60_TEST_SPEC_SHA256,
+    }
+    _require_keys(record, R60_AUTHORIZATION_KEYS, "R60 authorization record")
+    return record
+
+
+def _r60_validate_authorization(arguments):
+    repo_root = _canonical_existing_path(_r60_repo_root(), "R60 repository root")
+    _r60_validate_git_state(repo_root, arguments.requested_b0_sha)
+    validator_sha256 = _r60_validate_protocol_files(repo_root)
+    _r60_validate_calibration_artifact()
+    with contextlib.ExitStack() as stack:
+        public_root = _open_absolute(
+            R60_PUBLIC_ROOT, directory=True, stack=stack, search_only=True
+        )
+        public_metadata, implementation_identity = (
+            _r60_validate_public_directory_held(public_root)
+        )
+        names = (
+            (R60_LAYOUT_RECEIPT_NAME, "R60 layout receipt"),
+            (R60_PUBLIC_COMMITMENT_NAME, "R60 public commitment"),
+            (R60_SUCCESSOR_COMMITMENT_NAME, "R60 successor commitment"),
+            ("r60-holdout-start.json", "R60 start receipt"),
+            ("r60-runtime-commitment.json", "R60 runtime receipt"),
+            ("r60-holdout-terminal.json", "R60 terminal receipt"),
+            ("r60-cleanup-receipt.json", "R60 cleanup receipt"),
+        )
+        inputs = [
+            _r60_read_public_json(
+                public_root, name, label, stack, implementation_identity
+            )
+            for name, label in names
+        ]
+        bundle_sha256, artifact_sha256, held_files, held_directories = (
+            _r60_open_authorization_evidence(arguments.requested_b0_sha, stack)
+        )
+        record = _r60_validate_authorization_values(
+            *(item for value in inputs for item in value[:2]),
+            arguments.requested_b0_sha,
+            validator_sha256,
+            bundle_sha256,
+            artifact_sha256,
+        )
+        for value, (_, label) in zip(inputs, names):
+            _r59_revalidate_custody_file(
+                value[2], label, value[3], implementation_identity
+            )
+        _r59_revalidate_authorization_evidence(held_files, held_directories)
+        _r60_revalidate_public_directory_held(
+            public_root, public_metadata, implementation_identity
+        )
+    return _r59_canonical_json(record) + b"\n"
 
 
 class _Parser(argparse.ArgumentParser):
@@ -6627,6 +8320,11 @@ def _parse_arguments(argv):
         "authorized-at-utc",
     ):
         r52_authorization.add_argument(f"--{option}", required=True)
+    subparsers.add_parser("r57-validate-source-ink")
+    r60_preflight = subparsers.add_parser("validate-r60-b0-preflight")
+    r60_preflight.add_argument("--requested-b0-sha", required=True)
+    r60_authorization = subparsers.add_parser("validate-r60-b0-authorization")
+    r60_authorization.add_argument("--requested-b0-sha", required=True)
     return parser.parse_args(argv)
 
 
@@ -6654,7 +8352,15 @@ def execute(argv):
         return _r52_run_challenge(arguments)
     if arguments.command == "run-r52-holdout":
         return _r52_run_holdout(arguments)
-    return _r52_validate_authorization(arguments)
+    if arguments.command == "validate-r52-b0-authorization":
+        return _r52_validate_authorization(arguments)
+    if arguments.command == "r57-validate-source-ink":
+        return _r57_validate_source_ink(sys.stdin.buffer.read())
+    if arguments.command == "validate-r60-b0-preflight":
+        return _r60_validate_preflight(arguments)
+    if arguments.command == "validate-r60-b0-authorization":
+        return _r60_validate_authorization(arguments)
+    raise LedgerError("unknown ledger command")
 
 
 def main(argv=None, *, stdout=None, stderr=None):

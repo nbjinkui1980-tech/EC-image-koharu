@@ -7,7 +7,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use image::{DynamicImage, GrayImage, Luma};
 use koharu_core::{MaskRole, Op};
-use koharu_ml::speech_bubble_segmentation::{SpeechBubbleRegion, SpeechBubbleSegmentation};
+use koharu_ml::speech_bubble_segmentation::{
+    SpeechBubbleRegion, SpeechBubbleSegmentation, SpeechBubbleSegmentationResult,
+};
 
 use crate::pipeline::artifacts::Artifact;
 use crate::pipeline::engine::{Engine, EngineCtx, EngineInfo};
@@ -20,10 +22,7 @@ impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
         let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
         let result = self.0.inference(&image)?;
-
-        let mut regions: Vec<_> = result.regions.iter().collect();
-        regions.sort_by_key(|region| std::cmp::Reverse(region.area));
-        let mask = paint_bubble_id_mask(result.image_width, result.image_height, &regions);
+        let mask = bubble_mask_from_result(&result);
 
         let blob = ctx.blobs.put_webp(&DynamicImage::ImageLuma8(mask))?;
         Ok(vec![upsert_mask_blob(
@@ -33,6 +32,14 @@ impl Engine for Model {
             blob,
         )])
     }
+}
+
+pub(in crate::pipeline) fn bubble_mask_from_result(
+    result: &SpeechBubbleSegmentationResult,
+) -> GrayImage {
+    let mut regions: Vec<_> = result.regions.iter().collect();
+    regions.sort_by_key(|region| std::cmp::Reverse(region.area));
+    paint_bubble_id_mask(result.image_width, result.image_height, &regions)
 }
 
 fn paint_bubble_id_mask(width: u32, height: u32, regions: &[&SpeechBubbleRegion]) -> GrayImage {
@@ -80,6 +87,7 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use koharu_ml::probability_map::ProbabilityMap;
     use koharu_ml::speech_bubble_segmentation::{SpeechBubbleRegion, SpeechBubbleRegionMask};
 
     #[test]
@@ -106,5 +114,33 @@ mod tests {
         assert_eq!(mask.get_pixel(1, 2).0[0], 1);
         assert_eq!(mask.get_pixel(2, 2).0[0], 1);
         assert_eq!(mask.get_pixel(3, 2).0[0], 0);
+    }
+
+    #[test]
+    fn result_mask_uses_production_area_order() {
+        let region = |area| SpeechBubbleRegion {
+            label_id: 0,
+            label: "bubble".to_string(),
+            score: 0.9,
+            bbox: [1.0, 1.0, 3.0, 3.0],
+            area,
+            mask: SpeechBubbleRegionMask {
+                x: 1,
+                y: 1,
+                width: 2,
+                height: 2,
+                pixels: vec![255; 4],
+            },
+        };
+        let result = SpeechBubbleSegmentationResult {
+            image_width: 4,
+            image_height: 4,
+            regions: vec![region(1), region(4)],
+            probability_map: ProbabilityMap::zeros(4, 4),
+        };
+
+        let mask = bubble_mask_from_result(&result);
+
+        assert_eq!(mask.get_pixel(1, 1).0[0], 2);
     }
 }

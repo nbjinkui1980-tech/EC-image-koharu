@@ -12,7 +12,7 @@ use koharu_core::{
     BlobRef, ImageData, ImageRole, MaskData, MaskRole, Node, NodeDataPatch, NodeId, NodeKind,
     NodePatch, Op, PageId, ReadingOrder, Region, Scene, TextData, TextDataPatch, Transform,
 };
-use koharu_ml::types::TextRegion;
+use koharu_ml::{comic_text_detector::expanded_text_block_crop_bounds, types::TextRegion};
 
 use crate::{blobs::BlobStore, config::SourceTextPolicy};
 
@@ -91,10 +91,21 @@ type EraseDiagnosticSink = Arc<Mutex<Vec<EraseDiagnosticEvent>>>;
 type EraseFinalMaskSink = Arc<Mutex<Option<GrayImage>>>;
 
 #[cfg(test)]
+type EraseStageMaskSink = Arc<Mutex<Vec<EraseStageMask>>>;
+
+#[cfg(test)]
+pub(in crate::pipeline) struct EraseStageMask {
+    pub stage: EraseDiagnosticStage,
+    pub branch: EraseDiagnosticBranch,
+    pub mask: GrayImage,
+}
+
+#[cfg(test)]
 struct ActiveEraseDiagnosticSink {
     owner: ThreadId,
     events: EraseDiagnosticSink,
     final_mask: EraseFinalMaskSink,
+    stage_masks: EraseStageMaskSink,
 }
 
 #[cfg(test)]
@@ -109,6 +120,7 @@ pub(in crate::pipeline) struct EraseDiagnosticCapture {
     owner: ThreadId,
     events: EraseDiagnosticSink,
     final_mask: EraseFinalMaskSink,
+    stage_masks: EraseStageMaskSink,
 }
 
 #[cfg(test)]
@@ -117,6 +129,7 @@ impl EraseDiagnosticCapture {
         let owner = std::thread::current().id();
         let events = Arc::new(Mutex::new(Vec::new()));
         let final_mask = Arc::new(Mutex::new(None));
+        let stage_masks = Arc::new(Mutex::new(Vec::new()));
         let mut active = ERASE_DIAGNOSTIC_SINK
             .get_or_init(|| Mutex::new(None))
             .lock()
@@ -128,11 +141,13 @@ impl EraseDiagnosticCapture {
             owner,
             events: events.clone(),
             final_mask: final_mask.clone(),
+            stage_masks: stage_masks.clone(),
         });
         Ok(Self {
             owner,
             events,
             final_mask,
+            stage_masks,
         })
     }
 
@@ -150,6 +165,15 @@ impl EraseDiagnosticCapture {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
+    }
+
+    pub(in crate::pipeline) fn take_stage_masks(&self) -> Vec<EraseStageMask> {
+        std::mem::take(
+            &mut *self
+                .stage_masks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 }
 
@@ -183,8 +207,24 @@ pub(in crate::pipeline) fn record_erase_diagnostic(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
         .filter(|sink| sink.owner == owner)
-        .map(|sink| (sink.events.clone(), sink.final_mask.clone()));
-    if let Some((sink, final_mask)) = sink {
+        .map(|sink| {
+            (
+                sink.events.clone(),
+                sink.final_mask.clone(),
+                sink.stage_masks.clone(),
+            )
+        });
+    if let Some((sink, final_mask, stage_masks)) = sink {
+        if let Some(mask) = mask {
+            stage_masks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(EraseStageMask {
+                    stage,
+                    branch,
+                    mask: mask.clone(),
+                });
+        }
         if stage == EraseDiagnosticStage::InpaintFinal
             && let Some(mask) = mask
         {
@@ -549,7 +589,7 @@ pub fn protected_source_lines_for_page(
     protected
 }
 
-pub(super) fn forbidden_han_lines_for_page(
+pub(in crate::pipeline) fn forbidden_han_lines_for_page(
     scene: &Scene,
     page: PageId,
 ) -> Vec<(NodeId, EligibleTextLine)> {
@@ -847,7 +887,7 @@ pub fn intersect_gray_masks(source: &GrayImage, allowed: &GrayImage) -> GrayImag
     })
 }
 
-pub(super) enum PreparedInpaintMask {
+pub(in crate::pipeline) enum PreparedInpaintMask {
     Prepared {
         mask: DynamicImage,
         blocks: Vec<TextRegion>,
@@ -856,7 +896,7 @@ pub(super) enum PreparedInpaintMask {
     EmptyMask,
 }
 
-pub(super) fn canonical_han_mask(
+pub(in crate::pipeline) fn canonical_han_mask(
     source: &GrayImage,
     eligible_lines: &[(NodeId, EligibleTextLine)],
     protected_lines: &[(NodeId, EligibleTextLine)],
@@ -884,9 +924,17 @@ pub(super) fn canonical_han_mask(
         });
         eligible_by_node[index].1.push(line.clone());
     }
-    let owner_support = eligible_by_node
+    let owner_bounds = eligible_by_node
         .iter()
-        .map(|(node_id, lines)| (*node_id, line_support_mask(width, height, lines)))
+        .map(|(node_id, lines)| {
+            (
+                *node_id,
+                lines
+                    .iter()
+                    .map(|line| expanded_text_block_crop_bounds(width, height, &line.region))
+                    .collect::<Vec<_>>(),
+            )
+        })
         .collect::<Vec<_>>();
     let mut ink = source.clone();
     for (pixel, protected_pixel) in ink.pixels_mut().zip(protected.pixels()) {
@@ -895,19 +943,6 @@ pub(super) fn canonical_han_mask(
         }
     }
 
-    let mut eligible_support = GrayImage::new(width, height);
-    for (_, support) in &owner_support {
-        for (pixel, support_pixel) in eligible_support.pixels_mut().zip(support.pixels()) {
-            if support_pixel.0[0] != 0 {
-                pixel.0[0] = 255;
-            }
-        }
-    }
-    for (pixel, protected_pixel) in eligible_support.pixels_mut().zip(protected.pixels()) {
-        if protected_pixel.0[0] != 0 {
-            pixel.0[0] = 0;
-        }
-    }
     let mut retained = GrayImage::new(width, height);
     let mut allowed = GrayImage::new(width, height);
     let mut visited = vec![false; width as usize * height as usize];
@@ -949,25 +984,25 @@ pub(super) fn canonical_han_mask(
                 }
             }
 
-            let owners = owner_support
+            let owners = owner_bounds
                 .iter()
-                .filter(|(_, support)| {
-                    component
-                        .iter()
-                        .any(|&(cx, cy)| support.get_pixel(cx, cy).0[0] != 0)
+                .filter(|(_, bounds)| {
+                    component.iter().any(|&(cx, cy)| {
+                        bounds
+                            .iter()
+                            .any(|[x1, y1, x2, y2]| cx >= *x1 && cx < *x2 && cy >= *y1 && cy < *y2)
+                    })
                 })
                 .map(|(node_id, _)| *node_id)
                 .collect::<Vec<_>>();
             match owners.as_slice() {
-                [] => {}
+                [] => bail!("unsafe Han mask: component has no eligible owner"),
                 [owner] => {
                     owned_nodes.insert(*owner);
                     for &(cx, cy) in &component {
-                        if eligible_support.get_pixel(cx, cy).0[0] != 0 {
-                            let pixel = *ink.get_pixel(cx, cy);
-                            retained.put_pixel(cx, cy, pixel);
-                            allowed.put_pixel(cx, cy, pixel);
-                        }
+                        let pixel = *ink.get_pixel(cx, cy);
+                        retained.put_pixel(cx, cy, pixel);
+                        allowed.put_pixel(cx, cy, pixel);
                     }
                 }
                 _ => bail!("unsafe Han mask: component has multiple eligible owners"),
@@ -984,7 +1019,7 @@ pub(super) fn canonical_han_mask(
     Ok((retained, allowed))
 }
 
-pub(super) fn prepare_inpaint_mask<Expand>(
+pub(in crate::pipeline) fn prepare_inpaint_mask<Expand>(
     mask: &DynamicImage,
     bubble_mask: &DynamicImage,
     all_blocks: &[TextRegion],
@@ -1054,6 +1089,8 @@ where
         }
         let (filtered, allowed) =
             canonical_han_mask(&mask.to_luma8(), eligible_lines, protected_lines)?;
+        #[cfg(not(test))]
+        let _ = &allowed;
         let filtered = DynamicImage::ImageLuma8(filtered);
         #[cfg(test)]
         record_erase_diagnostic(
@@ -1077,7 +1114,22 @@ where
             Some(&expanded),
             None,
         );
-        DynamicImage::ImageLuma8(intersect_gray_masks(&expanded, &allowed))
+        let protected = line_support_mask(
+            expanded.width(),
+            expanded.height(),
+            &protected_lines
+                .iter()
+                .map(|(_, line)| line.clone())
+                .collect::<Vec<_>>(),
+        );
+        let final_mask = GrayImage::from_fn(expanded.width(), expanded.height(), |x, y| {
+            if protected.get_pixel(x, y).0[0] == 0 {
+                *expanded.get_pixel(x, y)
+            } else {
+                Luma([0])
+            }
+        });
+        DynamicImage::ImageLuma8(final_mask)
     } else {
         #[cfg(test)]
         record_erase_diagnostic(
@@ -1759,6 +1811,51 @@ mod tests {
     }
 
     #[test]
+    fn translation_readiness_unprotects_selected_han_but_keeps_explicit_protected_source() {
+        let target_id = NodeId::new();
+        let protected_id = NodeId::new();
+        let mut target = text_data("中文", None);
+        target.detector = Some(SOURCE_GATE_TARGET_DETECTOR.into());
+        let mut protected = text_data("Product ID", None);
+        protected.detector = Some(SOURCE_GATE_PROTECTED_DETECTOR.into());
+        let (mut scene, page) = translation_scene(vec![
+            Node {
+                id: target_id,
+                transform: transform(),
+                visible: true,
+                kind: NodeKind::Text(target),
+            },
+            Node {
+                id: protected_id,
+                transform: Transform {
+                    x: 2.0,
+                    y: 2.0,
+                    width: 20.0,
+                    height: 10.0,
+                    rotation_deg: 0.0,
+                },
+                visible: true,
+                kind: NodeKind::Text(protected),
+            },
+        ]);
+        let before = protected_source_lines_for_page(&scene, page);
+        assert!(before.iter().any(|(node_id, _)| *node_id == target_id));
+        assert!(before.iter().any(|(node_id, _)| *node_id == protected_id));
+
+        let eligible = eligible_lines_for_page(&scene, page).0;
+        let translations = vec!["translation-ready".into(); eligible.len()];
+        for mut op in
+            build_han_only_translation_ops(&scene, page, None, &eligible, &translations).unwrap()
+        {
+            op.apply(&mut scene).unwrap();
+        }
+
+        let after = protected_source_lines_for_page(&scene, page);
+        assert!(!after.iter().any(|(node_id, _)| *node_id == target_id));
+        assert!(after.iter().any(|(node_id, _)| *node_id == protected_id));
+    }
+
+    #[test]
     fn protected_source_lines_restore_rotated_unsupported_node() {
         let id = NodeId::new();
         let mut node_transform = Transform {
@@ -2009,10 +2106,10 @@ mod tests {
     }
 
     #[test]
-    fn canonical_han_mask_uses_complete_components_for_ownership_but_clips_retained_ink() {
+    fn canonical_han_mask_retains_complete_uniquely_owned_components() {
         let owner = NodeId::new();
         let source = GrayImage::from_fn(12, 6, |x, y| {
-            Luma([if (1..=5).contains(&x) && y == 2 || (x, y) == (9, 2) {
+            Luma([if (1..=5).contains(&x) && y == 2 {
                 255
             } else {
                 0
@@ -2022,16 +2119,33 @@ mod tests {
         let (retained, allowed) =
             canonical_han_mask(&source, &[node_line(owner, [2.0, 1.0, 5.0, 4.0])], &[]).unwrap();
 
-        assert_eq!(retained.get_pixel(1, 2).0[0], 0);
-        assert_eq!(allowed.get_pixel(1, 2).0[0], 0);
-        for x in 2..5 {
+        for x in 1..=5 {
             assert_eq!(retained.get_pixel(x, 2).0[0], 255);
             assert_eq!(allowed.get_pixel(x, 2).0[0], 255);
         }
-        assert_eq!(retained.get_pixel(5, 2).0[0], 0);
-        assert_eq!(allowed.get_pixel(5, 2).0[0], 0);
         assert_eq!(retained.get_pixel(9, 2).0[0], 0);
         assert_eq!(allowed.get_pixel(9, 2).0[0], 0);
+    }
+
+    #[test]
+    fn canonical_han_mask_owns_detached_source_ink_inside_canonical_crop() {
+        let owner = NodeId::new();
+        let source = GrayImage::from_fn(14, 12, |x, y| {
+            Luma([if (2..=3).contains(&x) && y == 5 {
+                255
+            } else {
+                0
+            }])
+        });
+        let line = node_line(owner, [4.0, 4.0, 8.0, 8.0]);
+
+        let detector_support = line_support_mask(14, 12, std::slice::from_ref(&line.1));
+        let (retained, _) = canonical_han_mask(&source, &[line], &[]).unwrap();
+
+        assert_eq!(detector_support.get_pixel(2, 5).0[0], 0);
+        for x in 2..=3 {
+            assert_eq!(retained.get_pixel(x, 5).0[0], 255);
+        }
     }
 
     #[test]
@@ -2048,7 +2162,10 @@ mod tests {
 
         let (retained, allowed) = canonical_han_mask(
             &source,
-            &[node_line(owner, [1.0, 1.0, 4.0, 4.0])],
+            &[
+                node_line(owner, [1.0, 1.0, 4.0, 4.0]),
+                node_line(owner, [5.0, 1.0, 8.0, 4.0]),
+            ],
             &[node_line(protected, [4.0, 1.0, 5.0, 4.0])],
         )
         .unwrap();
@@ -2056,7 +2173,13 @@ mod tests {
         for x in 1..=3 {
             assert_eq!(retained.get_pixel(x, 2).0[0], 255);
         }
-        for x in 4..=7 {
+        assert_eq!(retained.get_pixel(4, 2).0[0], 0);
+        assert_eq!(allowed.get_pixel(4, 2).0[0], 0);
+        for x in 5..=7 {
+            assert_eq!(retained.get_pixel(x, 2).0[0], 255);
+            assert_eq!(allowed.get_pixel(x, 2).0[0], 255);
+        }
+        for x in 8..10 {
             assert_eq!(retained.get_pixel(x, 2).0[0], 0);
             assert_eq!(allowed.get_pixel(x, 2).0[0], 0);
         }
@@ -2115,6 +2238,12 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("no allowed ink"));
+
+        let mut unowned = GrayImage::new(12, 8);
+        unowned.put_pixel(11, 7, Luma([255]));
+        let error = canonical_han_mask(&unowned, &[node_line(first, [1.0, 1.0, 3.0, 3.0])], &[])
+            .unwrap_err();
+        assert!(error.to_string().contains("no eligible owner"));
     }
 
     #[test]
@@ -2210,13 +2339,9 @@ mod tests {
     }
 
     #[test]
-    fn final_inpaint_mask_limits_han_support_before_and_after_expansion() {
+    fn final_inpaint_mask_preserves_backend_expansion() {
         let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(32, 16, |x, y| {
-            Luma([if (x == 5 || x == 20) && y == 8 {
-                255
-            } else {
-                0
-            }])
+            Luma([if x == 20 && y == 8 { 255 } else { 0 }])
         }));
         let bubble = DynamicImage::ImageLuma8(GrayImage::new(32, 16));
         let eligible = vec![support_line(
@@ -2243,10 +2368,45 @@ mod tests {
 
             assert_eq!(blocks.len(), 1);
             assert_eq!(prepared.get_pixel(5, 8).0[0], 0);
-            assert_eq!(prepared.get_pixel(17, 8).0[0], 0);
             assert_ne!(prepared.get_pixel(20, 8).0[0], 0);
-            assert_eq!(prepared.get_pixel(23, 8).0[0], 0);
+            assert!(prepared.pixels().filter(|pixel| pixel.0[0] != 0).count() > 1);
         }
+    }
+
+    #[test]
+    fn final_inpaint_mask_subtracts_protected_support_after_expansion() {
+        let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(12, 6, |x, y| {
+            Luma([u8::from((x, y) == (4, 2)) * 255])
+        }));
+        let bubble = DynamicImage::ImageLuma8(GrayImage::new(12, 6));
+        let owner = NodeId::new();
+        let protected_owner = NodeId::new();
+        let eligible = vec![node_line(owner, [3.0, 1.0, 6.0, 4.0])];
+        let protected = vec![node_line(protected_owner, [8.0, 1.0, 10.0, 4.0])];
+
+        let PreparedInpaintMask::Prepared { mask: prepared, .. } = super::prepare_inpaint_mask(
+            &mask,
+            &bubble,
+            &[],
+            &eligible,
+            &protected,
+            SourceTextPolicy::HanOnly,
+            None,
+            |mask, _, _| {
+                let mut expanded = mask.to_luma8();
+                expanded.put_pixel(2, 2, Luma([255]));
+                expanded.put_pixel(8, 2, Luma([255]));
+                expanded
+            },
+        )
+        .expect("safe Han support") else {
+            panic!("safe Han support should produce a final mask");
+        };
+        let prepared = prepared.to_luma8();
+
+        assert_ne!(prepared.get_pixel(2, 2).0[0], 0);
+        assert_ne!(prepared.get_pixel(4, 2).0[0], 0);
+        assert_eq!(prepared.get_pixel(8, 2).0[0], 0);
     }
 
     #[test]
@@ -2385,7 +2545,7 @@ mod tests {
         }
 
         let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(6, 4, |x, y| {
-            Luma([if (x, y) == (1, 1) || (x, y) == (4, 2) {
+            Luma([if matches!((x, y), (2, 1) | (3, 1) | (4, 2)) {
                 255
             } else {
                 0
@@ -2426,6 +2586,7 @@ mod tests {
         );
         assert_eq!(returned_bytes(&active_han), returned_bytes(&inactive_han));
         let han_events = capture.take();
+        let han_stage_masks = capture.take_stage_masks();
         assert_eq!(
             han_events
                 .iter()
@@ -2439,16 +2600,32 @@ mod tests {
                 EraseDiagnosticStage::InpaintFinal,
             ]
         );
+        assert_eq!(han_stage_masks.len(), 5);
+        assert!(
+            han_stage_masks
+                .iter()
+                .zip(&han_events)
+                .all(|(snapshot, event)| {
+                    snapshot.stage == event.stage
+                        && snapshot.branch == event.branch
+                        && event.mask.as_ref().is_some_and(|mask| {
+                            snapshot.mask.width() == mask.width
+                                && snapshot.mask.height() == mask.height
+                                && blake3::hash(snapshot.mask.as_raw()).to_hex().as_str()
+                                    == mask.grayscale_blake3
+                        })
+                })
+        );
         assert!(
             han_events
                 .iter()
                 .all(|event| event.branch == EraseDiagnosticBranch::HanOnly)
         );
-        assert_eq!(han_events[0].mask.as_ref().unwrap().nonzero_pixels, 2);
-        assert_eq!(han_events[1].mask.as_ref().unwrap().nonzero_pixels, 1);
-        assert_eq!(han_events[2].mask.as_ref().unwrap().nonzero_pixels, 1);
-        assert_eq!(han_events[3].mask.as_ref().unwrap().nonzero_pixels, 2);
-        assert_eq!(han_events[4].mask.as_ref().unwrap().nonzero_pixels, 1);
+        assert_eq!(han_events[0].mask.as_ref().unwrap().nonzero_pixels, 3);
+        assert_eq!(han_events[1].mask.as_ref().unwrap().nonzero_pixels, 3);
+        assert_eq!(han_events[2].mask.as_ref().unwrap().nonzero_pixels, 3);
+        assert_eq!(han_events[3].mask.as_ref().unwrap().nonzero_pixels, 4);
+        assert_eq!(han_events[4].mask.as_ref().unwrap().nonzero_pixels, 4);
         assert_eq!(han_events[4].returns_some, Some(true));
         let final_mask = capture
             .take_inpaint_final_mask()
@@ -2469,32 +2646,32 @@ mod tests {
                 Some((
                     6,
                     4,
-                    2,
-                    "116bebacbb6de73e4a2c236fbac6d3f91f38d751381dc759e9b1e88d25846b9e"
+                    3,
+                    "01e479676681d037839347b5b664dd8fa7ca26860afcef07196897367dc8be88"
                 )),
                 Some((
                     6,
                     4,
-                    1,
-                    "64b0950aabbf0659df8c4bafaa54c9fef7840bdeec85703fb88775872fb540f3"
+                    3,
+                    "01e479676681d037839347b5b664dd8fa7ca26860afcef07196897367dc8be88"
                 )),
                 Some((
                     6,
                     4,
-                    1,
-                    "64b0950aabbf0659df8c4bafaa54c9fef7840bdeec85703fb88775872fb540f3"
+                    3,
+                    "01e479676681d037839347b5b664dd8fa7ca26860afcef07196897367dc8be88"
                 )),
                 Some((
                     6,
                     4,
-                    2,
-                    "0daa796901b99a35273ecabb931b38d050ce50ce33f86c9e737e23c7e31c471e"
+                    4,
+                    "3600580a32a5bef0c11d70b1e153dd7c9dff27ac023d0629bca4df79710ec14c"
                 )),
                 Some((
                     6,
                     4,
-                    1,
-                    "64b0950aabbf0659df8c4bafaa54c9fef7840bdeec85703fb88775872fb540f3"
+                    4,
+                    "3600580a32a5bef0c11d70b1e153dd7c9dff27ac023d0629bca4df79710ec14c"
                 )),
             ]
         );
@@ -2539,27 +2716,27 @@ mod tests {
                 Some((
                     6,
                     4,
-                    2,
-                    "116bebacbb6de73e4a2c236fbac6d3f91f38d751381dc759e9b1e88d25846b9e"
+                    3,
+                    "01e479676681d037839347b5b664dd8fa7ca26860afcef07196897367dc8be88"
                 )),
                 None,
                 Some((
                     6,
                     4,
-                    2,
-                    "116bebacbb6de73e4a2c236fbac6d3f91f38d751381dc759e9b1e88d25846b9e"
+                    3,
+                    "01e479676681d037839347b5b664dd8fa7ca26860afcef07196897367dc8be88"
                 )),
                 Some((
                     6,
                     4,
-                    3,
-                    "f6c19c1de1f9d32968d49e6c8b1b481f0be5264e126c83d572817e8fe27c2bac"
+                    4,
+                    "3600580a32a5bef0c11d70b1e153dd7c9dff27ac023d0629bca4df79710ec14c"
                 )),
                 Some((
                     6,
                     4,
-                    3,
-                    "f6c19c1de1f9d32968d49e6c8b1b481f0be5264e126c83d572817e8fe27c2bac"
+                    4,
+                    "3600580a32a5bef0c11d70b1e153dd7c9dff27ac023d0629bca4df79710ec14c"
                 )),
             ]
         );
@@ -2602,36 +2779,36 @@ mod tests {
                 .all(|event| event.branch == EraseDiagnosticBranch::Region)
         );
         assert_eq!(region_events[1].mask, None);
-        assert_eq!(region_events[2].mask.as_ref().unwrap().nonzero_pixels, 1);
-        assert_eq!(region_events[3].mask.as_ref().unwrap().nonzero_pixels, 2);
-        assert_eq!(region_events[4].mask.as_ref().unwrap().nonzero_pixels, 1);
+        assert_eq!(region_events[2].mask.as_ref().unwrap().nonzero_pixels, 2);
+        assert_eq!(region_events[3].mask.as_ref().unwrap().nonzero_pixels, 3);
+        assert_eq!(region_events[4].mask.as_ref().unwrap().nonzero_pixels, 2);
         assert_eq!(
             region_events.iter().map(signature).collect::<Vec<_>>(),
             [
                 Some((
                     6,
                     4,
-                    2,
-                    "116bebacbb6de73e4a2c236fbac6d3f91f38d751381dc759e9b1e88d25846b9e"
+                    3,
+                    "01e479676681d037839347b5b664dd8fa7ca26860afcef07196897367dc8be88"
                 )),
                 None,
                 Some((
                     6,
                     4,
-                    1,
-                    "0fc4241829876639d2362de149a9a5f1d0d3d687e0cc2f51743d4981bf7d696c"
+                    2,
+                    "859cf3d1b136dc988c031be8a674df1d2ae139de51a94bc00471738ac1ed874d"
+                )),
+                Some((
+                    6,
+                    4,
+                    3,
+                    "1bfa38c5758a253085c78babcce44c3b1d43b24e44452a7978c4945054bc548f"
                 )),
                 Some((
                     6,
                     4,
                     2,
-                    "2ca0bf1a4387623866ef72bf9660f7ebf72bb21e0d3de4caa748757481d93dcf"
-                )),
-                Some((
-                    6,
-                    4,
-                    1,
-                    "0fc4241829876639d2362de149a9a5f1d0d3d687e0cc2f51743d4981bf7d696c"
+                    "859cf3d1b136dc988c031be8a674df1d2ae139de51a94bc00471738ac1ed874d"
                 )),
             ]
         );

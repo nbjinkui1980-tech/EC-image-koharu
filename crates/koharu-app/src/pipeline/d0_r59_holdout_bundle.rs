@@ -1,4 +1,4 @@
-//! Test-only Revision 51 plaintext holdout bundle validator.
+//! Test-only Revision 59 plaintext holdout bundle validator.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -23,23 +23,56 @@ use zip::read::ZipReadOptions;
 
 use super::d0_held_input::HeldInput;
 
-const PLAN_REVISION: u32 = 51;
-const ENTRY_IDS: [&str; 4] = ["r51-h01", "r51-h02", "r51-h03", "r51-h04"];
+const R59_ENTRY_IDS: [&str; 4] = ["r59-h01", "r59-h02", "r59-h03", "r59-h04"];
+const R60_ENTRY_IDS: [&str; 4] = ["r60-h01", "r60-h02", "r60-h03", "r60-h04"];
 const MANIFEST_NAME: &str = "manifest.json";
 const ORACLE_NAME: &str = "oracle.json";
 const HASHES_NAME: &str = "hashes.json";
 const PYTHON_SHA256: &str = "3e7d30871a9740446f33a907b14d28f10ebe6d4e1c146a4c0788308f573a6609";
 const SIPS_SHA256: &str = "e893abb712ee4799b10f4756943d9310229ddbaebea752ca9cd39a58240edcdf";
 
+struct BundleContract {
+    plan_revision: u32,
+    entry_ids: [&'static str; 4],
+    manifest_contract: &'static str,
+    oracle_contract: &'static str,
+    hashes_contract: &'static str,
+    mask_identity_domain: &'static [u8],
+    grayscale_masks_only: bool,
+    protected_texts_required: bool,
+}
+
+const R59_BUNDLE_CONTRACT: BundleContract = BundleContract {
+    plan_revision: 59,
+    entry_ids: R59_ENTRY_IDS,
+    manifest_contract: "hanonly-r59-holdout-manifest-v1",
+    oracle_contract: "hanonly-r59-holdout-oracle-v1",
+    hashes_contract: "hanonly-r59-holdout-hashes-v1",
+    mask_identity_domain: b"hanonly-r59-binary-mask-v1\0",
+    grayscale_masks_only: false,
+    protected_texts_required: false,
+};
+
+const R60_BUNDLE_CONTRACT: BundleContract = BundleContract {
+    plan_revision: 60,
+    entry_ids: R60_ENTRY_IDS,
+    manifest_contract: "hanonly-r60-holdout-manifest-v1",
+    oracle_contract: "hanonly-r60-holdout-oracle-v1",
+    hashes_contract: "hanonly-r60-holdout-hashes-v1",
+    mask_identity_domain: b"hanonly-r60-binary-mask-v1\0",
+    grayscale_masks_only: true,
+    protected_texts_required: true,
+};
+
 #[derive(Clone, Copy)]
-pub(super) struct R51FreezeCommitments<'a> {
+pub(super) struct R59FreezeCommitments<'a> {
     pub(super) plaintext_archive_sha256: &'a str,
     pub(super) manifest_sha256: &'a str,
     pub(super) oracle_sha256: &'a str,
     pub(super) hashes_sha256: &'a str,
 }
 
-pub(super) struct R51ValidatedReceiptData {
+pub(super) struct R59ValidatedReceiptData {
     pub(super) plaintext_archive_sha256: String,
     pub(super) manifest_sha256: String,
     pub(super) oracle_sha256: String,
@@ -50,16 +83,16 @@ pub(super) struct R51ValidatedReceiptData {
     pub(super) oracle_semantics_pass: bool,
 }
 
-pub(super) struct R51ValidatedBundle {
-    pub(super) receipt: R51ValidatedReceiptData,
-    pub(super) execution: R51ValidatedExecutionView,
+pub(super) struct R59ValidatedBundle {
+    pub(super) receipt: R59ValidatedReceiptData,
+    pub(super) execution: R59ValidatedExecutionView,
 }
 
-pub(super) struct R51ValidatedExecutionView {
-    pub(super) entries: Vec<R51ValidatedExecutionEntry>,
+pub(super) struct R59ValidatedExecutionView {
+    pub(super) entries: Vec<R59ValidatedExecutionEntry>,
 }
 
-pub(super) struct R51ValidatedExecutionEntry {
+pub(super) struct R59ValidatedExecutionEntry {
     pub(super) id: String,
     pub(super) source_encoded_bytes: Box<[u8]>,
     pub(super) clean_reference_encoded_bytes: Box<[u8]>,
@@ -70,16 +103,16 @@ pub(super) struct R51ValidatedExecutionEntry {
     pub(super) clean_width: u32,
     pub(super) clean_height: u32,
     pub(super) protected_rois: Vec<[u32; 4]>,
-    pub(super) targets: Vec<R51ValidatedExecutionTarget>,
+    pub(super) targets: Vec<R59ValidatedExecutionTarget>,
 }
 
-impl R51ValidatedExecutionEntry {
+impl R59ValidatedExecutionEntry {
     pub(super) fn source_dynamic_image(&self) -> DynamicImage {
         DynamicImage::ImageRgba8(self.validated_source_rgba.clone())
     }
 }
 
-pub(super) struct R51ValidatedExecutionTarget {
+pub(super) struct R59ValidatedExecutionTarget {
     pub(super) id: String,
     pub(super) source_roi: [u32; 4],
     pub(super) clean_reference_edit_roi: [u32; 4],
@@ -172,7 +205,18 @@ struct Oracle {
 #[serde(deny_unknown_fields)]
 struct OracleEntry {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protected_texts: Option<Vec<OracleProtectedText>>,
     targets: Vec<OracleTarget>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct OracleProtectedText {
+    roi: Rect,
+    source_script_class: String,
+    source_text_sha256: String,
+    source_text_utf8: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -239,12 +283,43 @@ struct DecodedMask {
     height: u32,
 }
 
-pub(super) fn validate_r51_plaintext_holdout_bundle(
+pub(super) fn validate_r59_plaintext_holdout_bundle(
     plaintext_root: &Path,
     canonical_plaintext_archive_path: &Path,
     canonical_plaintext_archive_bytes: &[u8],
-    freeze: R51FreezeCommitments<'_>,
-) -> io::Result<R51ValidatedBundle> {
+    freeze: R59FreezeCommitments<'_>,
+) -> io::Result<R59ValidatedBundle> {
+    validate_plaintext_holdout_bundle(
+        plaintext_root,
+        canonical_plaintext_archive_path,
+        canonical_plaintext_archive_bytes,
+        freeze,
+        &R59_BUNDLE_CONTRACT,
+    )
+}
+
+pub(super) fn validate_r60_plaintext_holdout_bundle(
+    plaintext_root: &Path,
+    canonical_plaintext_archive_path: &Path,
+    canonical_plaintext_archive_bytes: &[u8],
+    freeze: R59FreezeCommitments<'_>,
+) -> io::Result<R59ValidatedBundle> {
+    validate_plaintext_holdout_bundle(
+        plaintext_root,
+        canonical_plaintext_archive_path,
+        canonical_plaintext_archive_bytes,
+        freeze,
+        &R60_BUNDLE_CONTRACT,
+    )
+}
+
+fn validate_plaintext_holdout_bundle(
+    plaintext_root: &Path,
+    canonical_plaintext_archive_path: &Path,
+    canonical_plaintext_archive_bytes: &[u8],
+    freeze: R59FreezeCommitments<'_>,
+    contract: &BundleContract,
+) -> io::Result<R59ValidatedBundle> {
     validate_pinned_tool("/usr/bin/python3", PYTHON_SHA256, b"Python 3.9.6\n")?;
     validate_pinned_tool("/usr/bin/sips", SIPS_SHA256, b"sips-316\n")?;
     for commitment in [
@@ -253,7 +328,7 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
         freeze.oracle_sha256,
         freeze.hashes_sha256,
     ] {
-        require(is_sha256(commitment), "invalid R51 freeze commitment")?;
+        require(is_sha256(commitment), "invalid R59 freeze commitment")?;
     }
 
     let root = HeldRoot::open(plaintext_root)?;
@@ -261,12 +336,12 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
     archive.require_file_and_parent_security(root.owner, 0o600, 0o700)?;
     require(
         archive.bytes() == canonical_plaintext_archive_bytes,
-        "R51 archive path/bytes drift",
+        "R59 archive path/bytes drift",
     )?;
     let archive_sha256 = sha256_hex(canonical_plaintext_archive_bytes);
     require(
         archive_sha256 == freeze.plaintext_archive_sha256,
-        "R51 archive commitment drift",
+        "R59 archive commitment drift",
     )?;
 
     let manifest_asset = root.read_file(MANIFEST_NAME)?;
@@ -279,58 +354,51 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
         manifest_sha256 == freeze.manifest_sha256
             && oracle_sha256 == freeze.oracle_sha256
             && hashes_sha256 == freeze.hashes_sha256,
-        "R51 plaintext commitment drift",
+        "R59 plaintext commitment drift",
     )?;
 
     let manifest: Manifest = canonical_json(&manifest_asset.bytes)?;
     let oracle: Oracle = canonical_json(&oracle_asset.bytes)?;
     let hashes: Hashes = canonical_json(&hashes_asset.bytes)?;
     require(
-        manifest.contract == "hanonly-r51-holdout-manifest-v1"
-            && manifest.plan_revision == PLAN_REVISION
+        manifest.contract == contract.manifest_contract
+            && manifest.plan_revision == contract.plan_revision
             && manifest.role == "holdout"
-            && oracle.contract == "hanonly-r51-holdout-oracle-v1"
-            && oracle.plan_revision == PLAN_REVISION
+            && oracle.contract == contract.oracle_contract
+            && oracle.plan_revision == contract.plan_revision
             && oracle.manifest_sha256 == manifest_sha256
-            && hashes.contract == "hanonly-r51-holdout-hashes-v1"
-            && hashes.plan_revision == PLAN_REVISION
+            && hashes.contract == contract.hashes_contract
+            && hashes.plan_revision == contract.plan_revision
             && hashes.manifest_sha256 == manifest_sha256
             && hashes.oracle_sha256 == oracle_sha256,
-        "R51 manifest/oracle/hashes mutual binding drift",
+        "R59 manifest/oracle/hashes mutual binding drift",
     )?;
     require(
-        manifest.entries.len() == ENTRY_IDS.len() && oracle.entries.len() == ENTRY_IDS.len(),
-        "R51 entry cardinality drift",
+        manifest.entries.len() == contract.entry_ids.len()
+            && oracle.entries.len() == contract.entry_ids.len(),
+        "R59 entry cardinality drift",
     )?;
 
     let mut expected_paths = BTreeSet::new();
-    let mut execution_entries = Vec::with_capacity(ENTRY_IDS.len());
+    let mut execution_entries = Vec::with_capacity(contract.entry_ids.len());
     let mut seen_inodes = HashSet::from([
         (manifest_asset.metadata.dev, manifest_asset.metadata.ino),
         (oracle_asset.metadata.dev, oracle_asset.metadata.ino),
         (hashes_asset.metadata.dev, hashes_asset.metadata.ino),
     ]);
 
-    for (index, expected_id) in ENTRY_IDS.iter().enumerate() {
+    for (index, expected_id) in contract.entry_ids.iter().enumerate() {
         let entry = &manifest.entries[index];
         let oracle_entry = &oracle.entries[index];
         validate_entry_schema(entry, expected_id)?;
-        require(
-            oracle_entry.id == *expected_id
-                && oracle_entry.targets.len() == entry.targets.len()
-                && oracle_entry
-                    .targets
-                    .iter()
-                    .zip(&entry.targets)
-                    .all(|(left, right)| left.id == right.id),
-            "R51 oracle order or identity drift",
-        )?;
+        validate_oracle_alignment(entry, oracle_entry, expected_id)?;
+        validate_protected_texts(entry, oracle_entry, contract)?;
 
         let source_path = validate_source_path(&entry.source_relpath, expected_id)?;
         let clean_path = format!("assets/clean/{expected_id}.png");
         require(
             entry.clean_reference_relpath == clean_path,
-            "R51 clean path mapping drift",
+            "R59 clean path mapping drift",
         )?;
         let source = read_bound_asset(
             &root,
@@ -352,7 +420,7 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
         let clean_decoded = decode_image(&clean.bytes)?;
         require(
             source_decoded.rgba.dimensions() == clean_decoded.rgba.dimensions(),
-            "R51 Source/Clean dimensions drift",
+            "R59 Source/Clean dimensions drift",
         )?;
         validate_decoded_record(&hashes.assets[source_path], &source_decoded)?;
         validate_decoded_record(&hashes.assets[&clean_path], &clean_decoded)?;
@@ -368,7 +436,7 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
             require(
                 target.erase_source_ink_mask_relpath == erase_path
                     && target.residual_source_ink_mask_relpath == residual_path,
-                "R51 mask path mapping drift",
+                "R59 mask path mapping drift",
             )?;
             let erase = read_bound_asset(
                 &root,
@@ -386,14 +454,14 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
                 &mut expected_paths,
                 &mut seen_inodes,
             )?;
-            let erase_mask = decode_mask(&erase.bytes)?;
-            let residual_mask = decode_mask(&residual.bytes)?;
+            let erase_mask = decode_mask(&erase.bytes, contract)?;
+            let residual_mask = decode_mask(&residual.bytes, contract)?;
             require(
                 erase_mask.width == width
                     && erase_mask.height == height
                     && residual_mask.width == width
                     && residual_mask.height == height,
-                "R51 mask dimensions drift",
+                "R59 mask dimensions drift",
             )?;
             validate_mask_record(&hashes.assets[&erase_path], &erase_mask)?;
             validate_mask_record(&hashes.assets[&residual_path], &residual_mask)?;
@@ -402,7 +470,7 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
                     && erase_mask.bits.contains(&1)
                     && erase_mask.normalized_identity_sha256
                         == residual_mask.normalized_identity_sha256,
-                "R51 erase/residual mask drift",
+                "R59 erase/residual mask drift",
             )?;
             target_masks.push((erase_mask.bits, erase.bytes, residual.bytes));
         }
@@ -412,7 +480,7 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
             &clean_decoded.rgba,
             &target_masks,
         )?;
-        execution_entries.push(R51ValidatedExecutionEntry {
+        execution_entries.push(R59ValidatedExecutionEntry {
             id: entry.id.clone(),
             source_encoded_bytes: source.bytes,
             clean_reference_encoded_bytes: clean.bytes,
@@ -428,7 +496,7 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
                 .iter()
                 .zip(target_masks)
                 .map(
-                    |(target, (mask, erase_bytes, residual_bytes))| R51ValidatedExecutionTarget {
+                    |(target, (mask, erase_bytes, residual_bytes))| R59ValidatedExecutionTarget {
                         id: target.id.clone(),
                         source_roi: target.source_roi.0,
                         clean_reference_edit_roi: target.clean_reference_edit_roi.0,
@@ -448,7 +516,7 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
 
     require(
         expected_paths.iter().eq(hashes.assets.keys()),
-        "R51 hashes asset set drift",
+        "R59 hashes asset set drift",
     )?;
     let mut all_paths = expected_paths;
     all_paths.extend([
@@ -460,17 +528,18 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
     let expected_directories = expected_directories(&all_paths);
     require(
         actual_paths.files == all_paths && actual_paths.directories == expected_directories,
-        "R51 plaintext root contains unknown or missing entries",
+        "R59 plaintext root contains unknown or missing entries",
     )?;
     validate_archive(
         canonical_plaintext_archive_bytes,
         &root,
         &all_paths,
         &expected_directories,
+        contract.plan_revision == 60,
     )?;
 
-    Ok(R51ValidatedBundle {
-        receipt: R51ValidatedReceiptData {
+    Ok(R59ValidatedBundle {
+        receipt: R59ValidatedReceiptData {
             plaintext_archive_sha256: archive_sha256,
             manifest_sha256,
             oracle_sha256,
@@ -480,7 +549,7 @@ pub(super) fn validate_r51_plaintext_holdout_bundle(
             mask_source_clean_equality_pass: true,
             oracle_semantics_pass: true,
         },
-        execution: R51ValidatedExecutionView {
+        execution: R59ValidatedExecutionView {
             entries: execution_entries,
         },
     })
@@ -497,7 +566,7 @@ fn validate_entry_schema(entry: &ManifestEntry, expected_id: &str) -> io::Result
             && !entry.targets.is_empty()
             && entry.multi_node == (entry.targets.len() > 1)
             && entry.targets.windows(2).all(|pair| pair[0].id < pair[1].id),
-        "R51 manifest entry drift",
+        "R59 manifest entry drift",
     )?;
     let mut ids = HashSet::new();
     for target in &entry.targets {
@@ -512,7 +581,7 @@ fn validate_entry_schema(entry: &ManifestEntry, expected_id: &str) -> io::Result
                     target.translation_length.as_str(),
                     "short" | "equal" | "2x" | "3x"
                 ),
-            "R51 manifest target drift",
+            "R59 manifest target drift",
         )?;
     }
     Ok(())
@@ -530,7 +599,7 @@ fn validate_entry_geometry(entry: &ManifestEntry, width: u32, height: u32) -> io
                 .protected_rois
                 .iter()
                 .all(|rect| rect.valid_in(width, height)),
-        "R51 entry geometry classification drift",
+        "R59 entry geometry classification drift",
     )?;
     for (index, target) in entry.targets.iter().enumerate() {
         require(
@@ -548,7 +617,7 @@ fn validate_entry_geometry(entry: &ManifestEntry, width: u32, height: u32) -> io
                         .clean_reference_edit_roi
                         .disjoint(other.clean_reference_edit_roi)
                 }),
-            "R51 ROI geometry drift",
+            "R59 ROI geometry drift",
         )?;
     }
     require(
@@ -561,7 +630,7 @@ fn validate_entry_geometry(entry: &ManifestEntry, width: u32, height: u32) -> io
                     .iter()
                     .all(|other| rect.disjoint(*other))
             }),
-        "R51 protected ROI overlap",
+        "R59 protected ROI overlap",
     )
 }
 
@@ -591,7 +660,68 @@ fn validate_oracle_entry(entry: &OracleEntry) -> io::Result<()> {
                 && target.source_text_sha256 == sha256_hex(text.as_bytes())
                 && target.expected_decision == "select"
                 && target.expected_rejection_reason.is_none(),
-            "R51 oracle semantic drift",
+            "R59 oracle semantic drift",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_oracle_alignment(
+    manifest: &ManifestEntry,
+    oracle: &OracleEntry,
+    expected_id: &str,
+) -> io::Result<()> {
+    require(
+        oracle.id == expected_id
+            && oracle.targets.len() == manifest.targets.len()
+            && oracle
+                .targets
+                .iter()
+                .zip(&manifest.targets)
+                .all(|(left, right)| left.id == right.id),
+        "R59 oracle order or identity drift",
+    )
+}
+
+fn validate_protected_texts(
+    manifest: &ManifestEntry,
+    oracle: &OracleEntry,
+    contract: &BundleContract,
+) -> io::Result<()> {
+    if !contract.protected_texts_required {
+        return require(
+            oracle.protected_texts.is_none(),
+            "R59 protected-text schema drift",
+        );
+    }
+    let protected = oracle
+        .protected_texts
+        .as_ref()
+        .ok_or_else(|| invalid_data("R60 protected-text ground truth is missing"))?;
+    require(
+        protected.len() == manifest.protected_rois.len()
+            && protected
+                .iter()
+                .zip(&manifest.protected_rois)
+                .all(|(text, roi)| text.roi == *roi),
+        "R60 protected-text ROI binding drift",
+    )?;
+    let scripts = CodePointMapData::<Script>::new();
+    for text in protected {
+        let source = text.source_text_utf8.as_str();
+        require(
+            !source.is_empty()
+                && is_nfc(source)?
+                && source
+                    .chars()
+                    .any(|character| scripts.get(character) == Script::Latin)
+                && source.chars().all(|character| {
+                    scripts.get(character) == Script::Latin
+                        || character.is_ascii() && (' '..='~').contains(&character)
+                })
+                && text.source_script_class == "latin_or_ascii"
+                && text.source_text_sha256 == sha256_hex(source.as_bytes()),
+            "R60 protected-text semantic drift",
         )?;
     }
     Ok(())
@@ -612,12 +742,12 @@ fn is_nfc(text: &str) -> io::Result<bool> {
     child
         .stdin
         .take()
-        .ok_or_else(|| invalid_data("R51 NFC validator stdin is unavailable"))?
+        .ok_or_else(|| invalid_data("R59 NFC validator stdin is unavailable"))?
         .write_all(text.as_bytes())?;
     let output = child.wait_with_output()?;
     require(
         output.status.success() && output.stderr.is_empty(),
-        "R51 NFC validator failed",
+        "R59 NFC validator failed",
     )?;
     Ok(output.stdout == text.as_bytes())
 }
@@ -630,22 +760,22 @@ fn validate_pixels(
 ) -> io::Result<()> {
     let (width, height) = source.dimensions();
     let expected_len = usize::try_from(u64::from(width) * u64::from(height))
-        .map_err(|_| invalid_data("R51 image dimensions overflow"))?;
+        .map_err(|_| invalid_data("R59 image dimensions overflow"))?;
     require(
         masks.iter().all(|mask| mask.0.len() == expected_len),
-        "R51 mask byte length drift",
+        "R59 mask byte length drift",
     )?;
     for y in 0..height {
         for x in 0..width {
             let offset = usize::try_from(u64::from(y) * u64::from(width) + u64::from(x))
-                .map_err(|_| invalid_data("R51 pixel offset overflow"))?;
+                .map_err(|_| invalid_data("R59 pixel offset overflow"))?;
             let owners = masks
                 .iter()
                 .enumerate()
                 .filter(|(_, mask)| mask.0[offset] == 1)
                 .map(|(index, _)| index)
                 .collect::<Vec<_>>();
-            require(owners.len() <= 1, "R51 target masks overlap")?;
+            require(owners.len() <= 1, "R59 target masks overlap")?;
             let protected = entry
                 .protected_rois
                 .iter()
@@ -658,11 +788,11 @@ fn validate_pixels(
                         .contains_point(x, y)
                         && !protected
                         && changed,
-                    "R51 mask foreground is outside exact Source/Clean delta",
+                    "R59 mask foreground is outside exact Source/Clean delta",
                 )?,
                 None => require(
                     !changed,
-                    "R51 Source/Clean delta exists outside target masks",
+                    "R59 Source/Clean delta exists outside target masks",
                 )?,
             }
         }
@@ -681,12 +811,12 @@ fn read_bound_asset(
     validate_relative_path(relative)?;
     require(
         expected_paths.insert(relative.to_owned()),
-        "R51 asset referenced more than once",
+        "R59 asset referenced more than once",
     )?;
     let record = hashes
         .assets
         .get(relative)
-        .ok_or_else(|| invalid_data("R51 referenced asset is missing from hashes"))?;
+        .ok_or_else(|| invalid_data("R59 referenced asset is missing from hashes"))?;
     require(
         record.decoded_kind == decoded_kind
             && record.byte_length > 0
@@ -694,17 +824,17 @@ fn read_bound_asset(
             && record.height > 0
             && is_sha256(&record.raw_sha256)
             && is_sha256(&record.normalized_identity_sha256),
-        "R51 asset hash record drift",
+        "R59 asset hash record drift",
     )?;
     let held = root.read_file(relative)?;
     require(
         seen_inodes.insert((held.metadata.dev, held.metadata.ino)),
-        "R51 asset inode is referenced more than once",
+        "R59 asset inode is referenced more than once",
     )?;
     require(
         held.bytes.len() as u64 == record.byte_length
             && sha256_hex(&held.bytes) == record.raw_sha256,
-        "R51 raw asset commitment drift",
+        "R59 raw asset commitment drift",
     )?;
     Ok(held)
 }
@@ -717,7 +847,7 @@ fn decode_image(bytes: &[u8]) -> io::Result<DecodedAsset> {
             format,
             ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
         ),
-        "R51 unsupported source image format",
+        "R59 unsupported source image format",
     )?;
     let normalized_png = sips_png(bytes)?;
     let (width, height, color_type, scanlines) = normalized_png_scanlines(&normalized_png)?;
@@ -726,7 +856,7 @@ fn decode_image(bytes: &[u8]) -> io::Result<DecodedAsset> {
         .into_rgba8();
     require(
         rgba.dimensions() == (width, height),
-        "R51 normalized image dimensions drift",
+        "R59 normalized image dimensions drift",
     )?;
     let mut identity = Sha256::new();
     identity.update(b"sips-normalized-scanlines-v1\0");
@@ -753,7 +883,7 @@ fn sips_png(bytes: &[u8]) -> io::Result<Vec<u8>> {
         .output()?;
     require(
         result.status.success(),
-        "R51 pinned sips normalization failed",
+        "R59 pinned sips normalization failed",
     )?;
     std::fs::read(output)
 }
@@ -767,19 +897,19 @@ fn validate_pinned_tool(
     held.require_file_and_parent_security(0, 0o755, 0o755)?;
     require(
         hex_digest(held.sha256()) == expected_sha256,
-        "R51 pinned tool SHA drift",
+        "R59 pinned tool SHA drift",
     )?;
     let output = Command::new(path).arg("--version").output()?;
     require(
         output.status.success() && output.stdout == expected_version && output.stderr.is_empty(),
-        "R51 pinned tool version drift",
+        "R59 pinned tool version drift",
     )
 }
 
 fn normalized_png_scanlines(bytes: &[u8]) -> io::Result<(u32, u32, u8, Vec<u8>)> {
     require(
         bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "R51 normalized image is not PNG",
+        "R59 normalized image is not PNG",
     )?;
     let mut offset = 8;
     let mut header = None;
@@ -791,27 +921,27 @@ fn normalized_png_scanlines(bytes: &[u8]) -> io::Result<(u32, u32, u8, Vec<u8>)>
         let length_end = offset
             .checked_add(4)
             .filter(|end| *end <= bytes.len())
-            .ok_or_else(|| invalid_data("R51 normalized PNG is truncated"))?;
+            .ok_or_else(|| invalid_data("R59 normalized PNG is truncated"))?;
         let length = usize::try_from(u32::from_be_bytes(
             bytes[offset..length_end].try_into().unwrap(),
         ))
-        .map_err(|_| invalid_data("R51 normalized PNG chunk length overflow"))?;
+        .map_err(|_| invalid_data("R59 normalized PNG chunk length overflow"))?;
         let chunk_end = length_end
             .checked_add(4 + length + 4)
             .filter(|end| *end <= bytes.len())
-            .ok_or_else(|| invalid_data("R51 normalized PNG chunk is truncated"))?;
+            .ok_or_else(|| invalid_data("R59 normalized PNG chunk is truncated"))?;
         let kind = &bytes[length_end..length_end + 4];
         let data = &bytes[length_end + 4..chunk_end - 4];
         let expected_crc = u32::from_be_bytes(bytes[chunk_end - 4..chunk_end].try_into().unwrap());
         require(
             png_crc(kind, data) == expected_crc,
-            "R51 normalized PNG CRC drift",
+            "R59 normalized PNG CRC drift",
         )?;
         match kind {
             b"IHDR" => {
                 require(
                     header.is_none() && offset == 8 && data.len() == 13,
-                    "R51 normalized PNG IHDR drift",
+                    "R59 normalized PNG IHDR drift",
                 )?;
                 let width = u32::from_be_bytes(data[..4].try_into().unwrap());
                 let height = u32::from_be_bytes(data[4..8].try_into().unwrap());
@@ -823,14 +953,14 @@ fn normalized_png_scanlines(bytes: &[u8]) -> io::Result<(u32, u32, u8, Vec<u8>)>
                         && data[10] == 0
                         && data[11] == 0
                         && data[12] == 0,
-                    "R51 normalized PNG IHDR values drift",
+                    "R59 normalized PNG IHDR values drift",
                 )?;
                 header = Some((width, height, data[9]));
             }
             b"IDAT" => {
                 require(
                     header.is_some() && !ended_idat && !saw_iend,
-                    "R51 normalized PNG IDAT order drift",
+                    "R59 normalized PNG IDAT order drift",
                 )?;
                 saw_idat = true;
                 idat.extend_from_slice(data);
@@ -838,7 +968,7 @@ fn normalized_png_scanlines(bytes: &[u8]) -> io::Result<(u32, u32, u8, Vec<u8>)>
             b"IEND" => {
                 require(
                     saw_idat && !saw_iend && data.is_empty() && chunk_end == bytes.len(),
-                    "R51 normalized PNG IEND drift",
+                    "R59 normalized PNG IEND drift",
                 )?;
                 saw_iend = true;
             }
@@ -848,17 +978,17 @@ fn normalized_png_scanlines(bytes: &[u8]) -> io::Result<(u32, u32, u8, Vec<u8>)>
                 }
                 require(
                     kind[0] & 0x20 != 0,
-                    "R51 normalized PNG has unknown critical chunk",
+                    "R59 normalized PNG has unknown critical chunk",
                 )?;
             }
         }
         offset = chunk_end;
     }
     let (width, height, color_type) =
-        header.ok_or_else(|| invalid_data("R51 normalized PNG has no IHDR"))?;
+        header.ok_or_else(|| invalid_data("R59 normalized PNG has no IHDR"))?;
     require(
         saw_iend && !idat.is_empty(),
-        "R51 normalized PNG chunk set drift",
+        "R59 normalized PNG chunk set drift",
     )?;
     let channels = match color_type {
         0 => 1_u64,
@@ -872,10 +1002,10 @@ fn normalized_png_scanlines(bytes: &[u8]) -> io::Result<(u32, u32, u8, Vec<u8>)>
             u64::from(width)
                 .checked_mul(channels)
                 .and_then(|row| row.checked_add(1))
-                .ok_or_else(|| invalid_data("R51 normalized scanline length overflow"))?,
+                .ok_or_else(|| invalid_data("R59 normalized scanline length overflow"))?,
         )
         .and_then(|length| usize::try_from(length).ok())
-        .ok_or_else(|| invalid_data("R51 normalized scanline length overflow"))?;
+        .ok_or_else(|| invalid_data("R59 normalized scanline length overflow"))?;
     let scanlines = inflate_zlib(&idat, scanline_length)?;
     Ok((width, height, color_type, scanlines))
 }
@@ -887,7 +1017,7 @@ fn inflate_zlib(bytes: &[u8], expected_length: usize) -> io::Result<Vec<u8>> {
             && bytes[0] >> 4 <= 7
             && (u16::from(bytes[0]) * 256 + u16::from(bytes[1])).is_multiple_of(31)
             && bytes[1] & 0x20 == 0,
-        "R51 normalized PNG zlib header drift",
+        "R59 normalized PNG zlib header drift",
     )?;
     let compressed = &bytes[2..bytes.len() - 4];
     let mut zip = Vec::new();
@@ -943,7 +1073,7 @@ fn inflate_zlib(bytes: &[u8], expected_length: usize) -> io::Result<Vec<u8>> {
     require(
         output.len() == expected_length
             && adler32(&output) == u32::from_be_bytes(bytes[bytes.len() - 4..].try_into().unwrap()),
-        "R51 normalized PNG zlib payload drift",
+        "R59 normalized PNG zlib payload drift",
     )?;
     Ok(output)
 }
@@ -967,11 +1097,11 @@ fn adler32(bytes: &[u8]) -> u32 {
     b << 16 | a
 }
 
-fn decode_mask(bytes: &[u8]) -> io::Result<DecodedMask> {
+fn decode_mask(bytes: &[u8], contract: &BundleContract) -> io::Result<DecodedMask> {
     let (width, height, color_type) = png_ihdr(bytes)?;
     require(
-        matches!(color_type, 0 | 6),
-        "R51 mask must be grayscale or RGBA PNG",
+        color_type == 0 || !contract.grayscale_masks_only && color_type == 6,
+        "R59 mask must be grayscale or RGBA PNG",
     )?;
     let dynamic = image::load_from_memory_with_format(bytes, ImageFormat::Png)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -987,15 +1117,15 @@ fn decode_mask(bytes: &[u8]) -> io::Result<DecodedMask> {
                 let [red, green, blue, alpha] = pixel.0;
                 require(
                     alpha == 255 && red == green && green == blue,
-                    "R51 mask pixel is not opaque grayscale",
+                    "R59 mask pixel is not opaque grayscale",
                 )?;
                 binary_channel(red)
             })
             .collect::<io::Result<Vec<_>>>()?,
-        _ => return Err(invalid_data("R51 mask PNG decode kind drift")),
+        _ => return Err(invalid_data("R59 mask PNG decode kind drift")),
     };
     let mut identity = Sha256::new();
-    identity.update(b"hanonly-r51-binary-mask-v1\0");
+    identity.update(contract.mask_identity_domain);
     identity.update(width.to_be_bytes());
     identity.update(height.to_be_bytes());
     identity.update(&bits);
@@ -1013,7 +1143,7 @@ fn png_ihdr(bytes: &[u8]) -> io::Result<(u32, u32, u8)> {
             && &bytes[..8] == b"\x89PNG\r\n\x1a\n"
             && &bytes[8..12] == 13_u32.to_be_bytes().as_slice()
             && &bytes[12..16] == b"IHDR",
-        "R51 mask is not a canonical PNG",
+        "R59 mask is not a canonical PNG",
     )?;
     let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
     let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
@@ -1025,7 +1155,7 @@ fn png_ihdr(bytes: &[u8]) -> io::Result<(u32, u32, u8)> {
             && bytes[26] == 0
             && bytes[27] == 0
             && bytes[28] == 0,
-        "R51 mask PNG IHDR drift",
+        "R59 mask PNG IHDR drift",
     )?;
     Ok((width, height, bytes[25]))
 }
@@ -1034,7 +1164,7 @@ fn binary_channel(value: u8) -> io::Result<u8> {
     match value {
         0 => Ok(0),
         255 => Ok(1),
-        _ => Err(invalid_data("R51 mask is not binary")),
+        _ => Err(invalid_data("R59 mask is not binary")),
     }
 }
 
@@ -1044,7 +1174,7 @@ fn validate_decoded_record(record: &AssetHash, decoded: &DecodedAsset) -> io::Re
         record.width == width
             && record.height == height
             && record.normalized_identity_sha256 == decoded.normalized_identity_sha256,
-        "R51 decoded image identity drift",
+        "R59 decoded image identity drift",
     )
 }
 
@@ -1053,7 +1183,7 @@ fn validate_mask_record(record: &AssetHash, mask: &DecodedMask) -> io::Result<()
         record.width == mask.width
             && record.height == mask.height
             && record.normalized_identity_sha256 == mask.normalized_identity_sha256,
-        "R51 decoded mask identity drift",
+        "R59 decoded mask identity drift",
     )
 }
 
@@ -1079,7 +1209,7 @@ impl HeldRoot {
             metadata.file_type.is_dir()
                 && metadata.owner == effective_owner()?
                 && metadata.mode & 0o7777 == 0o700,
-            "R51 plaintext root security metadata is invalid",
+            "R59 plaintext root security metadata is invalid",
         )?;
         Ok(Self {
             descriptor: current,
@@ -1091,7 +1221,7 @@ impl HeldRoot {
         let components = relative_components(relative)?;
         let (name, directories) = components
             .split_last()
-            .ok_or_else(|| invalid_data("R51 relative path is empty"))?;
+            .ok_or_else(|| invalid_data("R59 relative path is empty"))?;
         let mut current: Option<OwnedFd> = None;
         for directory in directories {
             let parent = current
@@ -1108,7 +1238,7 @@ impl HeldRoot {
                 metadata.file_type.is_dir()
                     && metadata.owner == self.owner
                     && metadata.mode & 0o7777 == 0o700,
-                "R51 plaintext directory security metadata is invalid",
+                "R59 plaintext directory security metadata is invalid",
             )?;
             current = Some(next);
         }
@@ -1126,14 +1256,14 @@ impl HeldRoot {
             current_metadata.file_type.is_file()
                 && current_metadata.owner == self.owner
                 && current_metadata.mode & 0o7777 == 0o600,
-            "R51 plaintext file security metadata is invalid",
+            "R59 plaintext file security metadata is invalid",
         )?;
         let mut file = File::from(descriptor);
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         require(
             metadata(&fs(fstat(&file))?) == current_metadata,
-            "R51 plaintext file metadata changed while reading",
+            "R59 plaintext file metadata changed while reading",
         )?;
         Ok(HeldAsset {
             bytes: bytes.into_boxed_slice(),
@@ -1176,7 +1306,7 @@ fn snapshot_directory(
     for name in names {
         let utf8 = name
             .to_str()
-            .ok_or_else(|| invalid_data("R51 plaintext path is not UTF-8"))?;
+            .ok_or_else(|| invalid_data("R59 plaintext path is not UTF-8"))?;
         validate_component(utf8)?;
         let relative = if prefix.is_empty() {
             utf8.to_owned()
@@ -1192,23 +1322,23 @@ fn snapshot_directory(
         let metadata = metadata(&fs(fstat(&child))?);
         require(
             metadata.owner == owner && seen.insert((metadata.dev, metadata.ino)),
-            "R51 plaintext entry owner or inode drift",
+            "R59 plaintext entry owner or inode drift",
         )?;
         if metadata.file_type.is_dir() {
             require(
                 metadata.mode & 0o7777 == 0o700,
-                "R51 plaintext directory mode drift",
+                "R59 plaintext directory mode drift",
             )?;
             snapshot.directories.insert(relative.clone());
             snapshot_directory(child.as_fd(), &relative, owner, snapshot, seen)?;
         } else if metadata.file_type.is_file() {
             require(
                 metadata.mode & 0o7777 == 0o600,
-                "R51 plaintext file mode drift",
+                "R59 plaintext file mode drift",
             )?;
             snapshot.files.insert(relative);
         } else {
-            return Err(invalid_data("R51 plaintext entry is not regular"));
+            return Err(invalid_data("R59 plaintext entry is not regular"));
         }
     }
     Ok(())
@@ -1234,10 +1364,11 @@ fn validate_archive(
     root: &HeldRoot,
     files: &BTreeSet<String>,
     directories: &BTreeSet<String>,
+    strict_raw_ustar: bool,
 ) -> io::Result<()> {
     require(
         bytes.len() >= 1024 && bytes.len().is_multiple_of(512),
-        "R51 archive block length drift",
+        "R59 archive block length drift",
     )?;
     let mut offset = 0;
     let mut previous: Option<String> = None;
@@ -1263,66 +1394,81 @@ fn validate_archive(
                 && canonical_tar_number(&header[116..124], gid)
                 && canonical_tar_number(&header[124..136], size)
                 && canonical_tar_number(&header[136..148], mtime),
-            "R51 archive ustar metadata drift",
+            "R59 archive ustar metadata drift",
         )?;
         let raw_name = tar_string(&header[..100])?;
         let is_directory = header[156] == b'5';
         let name = if is_directory {
             raw_name
                 .strip_suffix('/')
-                .ok_or_else(|| invalid_data("R51 archive directory name drift"))?
+                .ok_or_else(|| invalid_data("R59 archive directory name drift"))?
         } else {
             raw_name
         };
         validate_relative_path(name)?;
         require(
             previous.as_ref().is_none_or(|value| value.as_str() < name),
-            "R51 archive pathname order drift",
+            "R59 archive pathname order drift",
         )?;
         previous = Some(name.to_owned());
         let mode = parse_tar_number(&header[100..108])?;
         require(
             canonical_tar_number(&header[100..108], mode),
-            "R51 archive mode encoding drift",
+            "R59 archive mode encoding drift",
         )?;
         if is_directory {
             require(
                 size == 0 && mode == 0o700 && archive_directories.insert(name.to_owned()),
-                "R51 archive directory drift",
+                "R59 archive directory drift",
             )?;
         } else {
             require(
                 header[156] == b'0' && mode == 0o600 && archive_files.insert(name.to_owned()),
-                "R51 archive regular file drift",
+                "R59 archive regular file drift",
             )?;
             let size = usize::try_from(size)
-                .map_err(|_| invalid_data("R51 archive file length overflow"))?;
+                .map_err(|_| invalid_data("R59 archive file length overflow"))?;
             let data_start = offset + 512;
             let data_end = data_start
                 .checked_add(size)
                 .filter(|end| *end <= bytes.len())
-                .ok_or_else(|| invalid_data("R51 archive is truncated"))?;
+                .ok_or_else(|| invalid_data("R59 archive is truncated"))?;
             let held = root.read_file(name)?;
             require(
                 held.bytes.as_ref() == &bytes[data_start..data_end],
-                "R51 archive/file byte drift",
+                "R59 archive/file byte drift",
             )?;
+            if strict_raw_ustar {
+                let padded = size
+                    .checked_add(511)
+                    .map(|size| size / 512 * 512)
+                    .ok_or_else(|| invalid_data("R59 archive size overflow"))?;
+                let padded_end = data_start
+                    .checked_add(padded)
+                    .filter(|end| *end <= bytes.len())
+                    .ok_or_else(|| invalid_data("R59 archive is truncated"))?;
+                require(
+                    bytes[data_end..padded_end].iter().all(|byte| *byte == 0),
+                    "R59 archive file padding drift",
+                )?;
+            }
         }
         let padded = usize::try_from(size)
             .ok()
             .and_then(|size| size.checked_add(511))
             .map(|size| size / 512 * 512)
-            .ok_or_else(|| invalid_data("R51 archive size overflow"))?;
+            .ok_or_else(|| invalid_data("R59 archive size overflow"))?;
         offset = offset
             .checked_add(512 + padded)
-            .ok_or_else(|| invalid_data("R51 archive offset overflow"))?;
+            .ok_or_else(|| invalid_data("R59 archive offset overflow"))?;
     }
     require(
         archive_files == *files
             && archive_directories == *directories
             && offset + 1024 <= bytes.len()
-            && bytes[offset..].iter().all(|byte| *byte == 0),
-        "R51 archive entry set or terminator drift",
+            && bytes[offset..].iter().all(|byte| *byte == 0)
+            && (!strict_raw_ustar || offset + 1024 == bytes.len()),
+        "R59 archive entry set or terminator drift",
     )
 }
 
@@ -1342,7 +1488,7 @@ fn validate_tar_checksum(header: &[u8]) -> io::Result<()> {
     let canonical = format!("{expected:06o}\0 ");
     require(
         expected == actual && &header[148..156] == canonical.as_bytes(),
-        "R51 archive checksum drift",
+        "R59 archive checksum drift",
     )
 }
 
@@ -1357,7 +1503,7 @@ fn parse_tar_number(bytes: &[u8]) -> io::Result<u64> {
             && bytes
                 .iter()
                 .all(|byte| matches!(*byte, 0 | b' ' | b'0'..=b'7')),
-        "R51 archive numeric field drift",
+        "R59 archive numeric field drift",
     )?;
     let text = bytes
         .split(|byte| *byte == 0 || *byte == b' ')
@@ -1367,9 +1513,9 @@ fn parse_tar_number(bytes: &[u8]) -> io::Result<u64> {
         Ok(0)
     } else {
         let text = std::str::from_utf8(text)
-            .map_err(|_| invalid_data("R51 archive numeric field is not ASCII"))?;
+            .map_err(|_| invalid_data("R59 archive numeric field is not ASCII"))?;
         u64::from_str_radix(text, 8)
-            .map_err(|_| invalid_data("R51 archive numeric field is invalid"))
+            .map_err(|_| invalid_data("R59 archive numeric field is invalid"))
     }
 }
 
@@ -1380,9 +1526,9 @@ fn tar_string(bytes: &[u8]) -> io::Result<&str> {
         .unwrap_or(bytes.len());
     require(
         bytes[end..].iter().all(|byte| *byte == 0),
-        "R51 archive string padding drift",
+        "R59 archive string padding drift",
     )?;
-    std::str::from_utf8(&bytes[..end]).map_err(|_| invalid_data("R51 archive path is not UTF-8"))
+    std::str::from_utf8(&bytes[..end]).map_err(|_| invalid_data("R59 archive path is not UTF-8"))
 }
 
 fn canonical_json<T>(bytes: &[u8]) -> io::Result<T>
@@ -1393,7 +1539,7 @@ where
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let canonical = serde_json::to_vec(&value)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    require(canonical == bytes, "R51 JSON is not canonical")?;
+    require(canonical == bytes, "R59 JSON is not canonical")?;
     Ok(value)
 }
 
@@ -1403,7 +1549,7 @@ fn validate_source_path<'a>(path: &'a str, entry_id: &str) -> io::Result<&'a str
     require(
         path.strip_prefix(&prefix)
             .is_some_and(|extension| matches!(extension, "png" | "jpg" | "jpeg" | "webp")),
-        "R51 source path mapping drift",
+        "R59 source path mapping drift",
     )?;
     Ok(path)
 }
@@ -1418,7 +1564,7 @@ fn validate_relative_path(path: &str) -> io::Result<()> {
             && path
                 .split('/')
                 .all(|component| !component.is_empty() && component != "." && component != ".."),
-        "R51 relative path drift",
+        "R59 relative path drift",
     )
 }
 
@@ -1430,7 +1576,7 @@ fn validate_component(component: &str) -> io::Result<()> {
             && !component.contains('/')
             && !component.contains('\\')
             && !component.contains('\0'),
-        "R51 path component drift",
+        "R59 path component drift",
     )
 }
 
@@ -1468,14 +1614,14 @@ fn absolute_components(path: &Path) -> io::Result<Vec<OsString>> {
     let bytes = path.as_os_str().as_bytes();
     require(
         bytes.len() >= 2 && bytes[0] == b'/' && bytes[1] != b'/' && !bytes.ends_with(b"/"),
-        "R51 root path is not canonical absolute",
+        "R59 root path is not canonical absolute",
     )?;
     bytes[1..]
         .split(|byte| *byte == b'/')
         .map(|component| {
             require(
                 !component.is_empty() && component != b"." && component != b"..",
-                "R51 root path component drift",
+                "R59 root path component drift",
             )?;
             Ok(OsStr::from_bytes(component).to_owned())
         })
@@ -1553,10 +1699,19 @@ mod tests {
         archive: std::path::PathBuf,
         archive_bytes: Vec<u8>,
         freeze: [String; 4],
+        contract: &'static BundleContract,
     }
 
     impl Fixture {
         fn build() -> Self {
+            Self::build_for(&R59_BUNDLE_CONTRACT)
+        }
+
+        fn build_r60() -> Self {
+            Self::build_for(&R60_BUNDLE_CONTRACT)
+        }
+
+        fn build_for(contract: &'static BundleContract) -> Self {
             let temp = TempDir::new().unwrap();
             let base = fs::canonicalize(temp.path()).unwrap();
             chmod(&base, 0o700);
@@ -1571,7 +1726,7 @@ mod tests {
             let mut manifest_entries = Vec::new();
             let mut oracle_entries = Vec::new();
             let mut assets = BTreeMap::new();
-            for id in ENTRY_IDS {
+            for id in contract.entry_ids {
                 let mask_directory = root.join(format!("assets/masks/{id}"));
                 fs::create_dir(&mask_directory).unwrap();
                 chmod(&mask_directory, 0o700);
@@ -1593,8 +1748,8 @@ mod tests {
                 write_asset(&root, &residual_path, &mask_bytes);
                 assets.insert(source_path.clone(), image_record(&source_bytes));
                 assets.insert(clean_path.clone(), image_record(&clean_bytes));
-                assets.insert(erase_path.clone(), mask_record(&mask_bytes));
-                assets.insert(residual_path.clone(), mask_record(&mask_bytes));
+                assets.insert(erase_path.clone(), mask_record(&mask_bytes, contract));
+                assets.insert(residual_path.clone(), mask_record(&mask_bytes, contract));
                 manifest_entries.push(json!({
                     "aspect": "square_or_near",
                     "background": "pure",
@@ -1619,7 +1774,7 @@ mod tests {
                     }]
                 }));
                 let text = "汉";
-                oracle_entries.push(json!({
+                let mut oracle_entry = json!({
                     "id": id,
                     "targets": [{
                         "expected_decision": "select",
@@ -1630,26 +1785,36 @@ mod tests {
                         "source_text_sha256": sha256_hex(text.as_bytes()),
                         "source_text_utf8": text
                     }]
-                }));
+                });
+                if contract.protected_texts_required {
+                    let protected_text = "Product ID";
+                    oracle_entry["protected_texts"] = json!([{
+                        "roi": [3, 3, 4, 4],
+                        "source_script_class": "latin_or_ascii",
+                        "source_text_sha256": sha256_hex(protected_text.as_bytes()),
+                        "source_text_utf8": protected_text
+                    }]);
+                }
+                oracle_entries.push(oracle_entry);
             }
             let manifest = canonical_value(json!({
-                "contract": "hanonly-r51-holdout-manifest-v1",
+                "contract": contract.manifest_contract,
                 "entries": manifest_entries,
-                "plan_revision": 51,
+                "plan_revision": contract.plan_revision,
                 "role": "holdout"
             }));
             let oracle = canonical_value(json!({
-                "contract": "hanonly-r51-holdout-oracle-v1",
+                "contract": contract.oracle_contract,
                 "entries": oracle_entries,
                 "manifest_sha256": sha256_hex(&manifest),
-                "plan_revision": 51
+                "plan_revision": contract.plan_revision
             }));
             let hashes = canonical_value(json!({
                 "assets": assets,
-                "contract": "hanonly-r51-holdout-hashes-v1",
+                "contract": contract.hashes_contract,
                 "manifest_sha256": sha256_hex(&manifest),
                 "oracle_sha256": sha256_hex(&oracle),
-                "plan_revision": 51
+                "plan_revision": contract.plan_revision
             }));
             write_asset(&root, MANIFEST_NAME, &manifest);
             write_asset(&root, ORACLE_NAME, &oracle);
@@ -1671,11 +1836,12 @@ mod tests {
                     sha256_hex(&hashes),
                 ],
                 archive_bytes,
+                contract,
             }
         }
 
-        fn commitments(&self) -> R51FreezeCommitments<'_> {
-            R51FreezeCommitments {
+        fn commitments(&self) -> R59FreezeCommitments<'_> {
+            R59FreezeCommitments {
                 plaintext_archive_sha256: &self.freeze[0],
                 manifest_sha256: &self.freeze[1],
                 oracle_sha256: &self.freeze[2],
@@ -1683,13 +1849,73 @@ mod tests {
             }
         }
 
-        fn validate(&self) -> io::Result<R51ValidatedBundle> {
-            validate_r51_plaintext_holdout_bundle(
-                &self.root,
-                &self.archive,
-                &self.archive_bytes,
-                self.commitments(),
-            )
+        fn validate(&self) -> io::Result<R59ValidatedBundle> {
+            match self.contract.plan_revision {
+                59 => validate_r59_plaintext_holdout_bundle(
+                    &self.root,
+                    &self.archive,
+                    &self.archive_bytes,
+                    self.commitments(),
+                ),
+                60 => validate_r60_plaintext_holdout_bundle(
+                    &self.root,
+                    &self.archive,
+                    &self.archive_bytes,
+                    self.commitments(),
+                ),
+                _ => unreachable!(),
+            }
+        }
+
+        fn rewrite_oracle(&mut self, mutate: impl FnOnce(&mut serde_json::Value)) {
+            self.rewrite_json(ORACLE_NAME, mutate);
+            let oracle_sha256 = self.freeze[2].clone();
+            self.rewrite_json(HASHES_NAME, |value| {
+                value["oracle_sha256"] = serde_json::Value::String(oracle_sha256);
+            });
+            self.refresh_archive();
+        }
+
+        fn rewrite_manifest(&mut self, mutate: impl FnOnce(&mut serde_json::Value)) {
+            self.rewrite_json(MANIFEST_NAME, mutate);
+            let manifest_sha256 = self.freeze[1].clone();
+            self.rewrite_json(ORACLE_NAME, |value| {
+                value["manifest_sha256"] = serde_json::Value::String(manifest_sha256.clone());
+            });
+            let oracle_sha256 = self.freeze[2].clone();
+            self.rewrite_json(HASHES_NAME, |value| {
+                value["manifest_sha256"] = serde_json::Value::String(manifest_sha256);
+                value["oracle_sha256"] = serde_json::Value::String(oracle_sha256);
+            });
+            self.refresh_archive();
+        }
+
+        fn rewrite_hashes(&mut self, mutate: impl FnOnce(&mut serde_json::Value)) {
+            self.rewrite_json(HASHES_NAME, mutate);
+            self.refresh_archive();
+        }
+
+        fn replace_image(&mut self, relative: &str, bytes: &[u8]) {
+            fs::write(self.root.join(relative), bytes).unwrap();
+            chmod(&self.root.join(relative), 0o600);
+            let record = image_record(bytes);
+            self.rewrite_json(HASHES_NAME, |value| value["assets"][relative] = record);
+            self.refresh_archive();
+        }
+
+        fn replace_mask(&mut self, relative: &str, bytes: &[u8]) {
+            fs::write(self.root.join(relative), bytes).unwrap();
+            chmod(&self.root.join(relative), 0o600);
+            let record = mask_record(bytes, self.contract);
+            self.rewrite_json(HASHES_NAME, |value| value["assets"][relative] = record);
+            self.refresh_archive();
+        }
+
+        fn refresh_archive(&mut self) {
+            self.archive_bytes = tar(&self.root, &snapshot_fs(&self.root));
+            fs::write(&self.archive, &self.archive_bytes).unwrap();
+            chmod(&self.archive, 0o600);
+            self.freeze[0] = sha256_hex(&self.archive_bytes);
         }
 
         fn rewrite_json(&mut self, name: &str, mutate: impl FnOnce(&mut serde_json::Value)) {
@@ -1709,8 +1935,15 @@ mod tests {
         }
     }
 
+    fn rejection(fixture: &Fixture) -> String {
+        match fixture.validate() {
+            Ok(_) => panic!("fixture unexpectedly passed"),
+            Err(error) => error.to_string(),
+        }
+    }
+
     #[test]
-    fn d0_r51_holdout_bundle_accepts_closed_synthetic_bundle() {
+    fn d0_r59_holdout_bundle_accepts_closed_synthetic_bundle() {
         let fixture = Fixture::build();
         let validated = fixture.validate().unwrap();
         let receipt = &validated.receipt;
@@ -1731,7 +1964,7 @@ mod tests {
                 .iter()
                 .map(|entry| entry.id.as_str())
                 .collect::<Vec<_>>(),
-            ENTRY_IDS
+            R59_ENTRY_IDS
         );
         for entry in &validated.execution.entries {
             assert_eq!(
@@ -1762,7 +1995,359 @@ mod tests {
     }
 
     #[test]
-    fn d0_r51_holdout_bundle_rejects_canonical_drift() {
+    fn d0_r60_holdout_bundle_accepts_closed_synthetic_bundle() {
+        let fixture = Fixture::build_r60();
+        let validated = fixture.validate().unwrap();
+        assert_eq!(
+            validated
+                .execution
+                .entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            R60_ENTRY_IDS
+        );
+        assert!(validated.receipt.schema_validation_pass);
+    }
+
+    #[test]
+    fn d0_r60_archive_accepts_exact_ustar_terminator() {
+        let fixture = Fixture::build_r60();
+        validate_synthetic_archive(&fixture, &fixture.archive_bytes).unwrap();
+    }
+
+    #[test]
+    fn d0_r60_archive_rejects_nonzero_file_padding() {
+        let fixture = Fixture::build_r60();
+        let mut archive = fixture.archive_bytes.clone();
+        let padding_offset = first_file_padding_offset(&archive);
+        archive[padding_offset] = 1;
+        assert_eq!(
+            validate_synthetic_archive(&fixture, &archive)
+                .unwrap_err()
+                .to_string(),
+            "R59 archive file padding drift"
+        );
+    }
+
+    #[test]
+    fn d0_r60_archive_rejects_one_zero_block_terminator() {
+        let fixture = Fixture::build_r60();
+        let archive = &fixture.archive_bytes[..fixture.archive_bytes.len() - 512];
+        assert!(validate_synthetic_archive(&fixture, archive).is_err());
+    }
+
+    #[test]
+    fn d0_r60_archive_rejects_three_zero_block_terminator() {
+        let fixture = Fixture::build_r60();
+        let mut archive = fixture.archive_bytes.clone();
+        archive.extend_from_slice(&[0; 512]);
+        assert!(validate_synthetic_archive(&fixture, &archive).is_err());
+    }
+
+    #[test]
+    fn d0_r60_archive_rejects_trailing_bytes() {
+        let fixture = Fixture::build_r60();
+        let mut archive = fixture.archive_bytes.clone();
+        archive.push(0);
+        assert!(validate_synthetic_archive(&fixture, &archive).is_err());
+    }
+
+    #[test]
+    fn d0_r59_archive_keeps_legacy_padding_and_terminator_compatibility() {
+        let fixture = Fixture::build();
+        let mut archive = fixture.archive_bytes.clone();
+        let padding_offset = first_file_padding_offset(&archive);
+        archive[padding_offset] = 1;
+        archive.extend_from_slice(&[0; 512]);
+        validate_synthetic_archive(&fixture, &archive).unwrap();
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_keeps_r59_mask_contract_distinct() {
+        let mut gray = GrayImage::from_pixel(2, 2, Luma([0]));
+        gray.put_pixel(0, 0, Luma([255]));
+        let gray = encode_gray(&gray);
+        let r59 = decode_mask(&gray, &R59_BUNDLE_CONTRACT).unwrap();
+        let r60 = decode_mask(&gray, &R60_BUNDLE_CONTRACT).unwrap();
+        assert_ne!(
+            r59.normalized_identity_sha256,
+            r60.normalized_identity_sha256
+        );
+
+        let mut rgba = RgbaImage::from_pixel(2, 2, Rgba([0, 0, 0, 255]));
+        rgba.put_pixel(0, 0, Rgba([255, 255, 255, 255]));
+        let rgba = encode_rgba(&rgba);
+        assert!(decode_mask(&rgba, &R59_BUNDLE_CONTRACT).is_ok());
+        assert!(decode_mask(&rgba, &R60_BUNDLE_CONTRACT).is_err());
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_rejects_schema_geometry_and_latin_drift() {
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| {
+            value["entries"][0]["targets"][0]["id"] = json!("different");
+        });
+        assert_eq!(rejection(&fixture), "R59 oracle order or identity drift");
+
+        for invalid in ["A😀", "A\n", "汉A"] {
+            let mut fixture = Fixture::build_r60();
+            fixture.rewrite_oracle(|value| {
+                value["entries"][0]["protected_texts"][0]["source_text_utf8"] = json!(invalid);
+                value["entries"][0]["protected_texts"][0]["source_text_sha256"] =
+                    json!(sha256_hex(invalid.as_bytes()));
+            });
+            assert_eq!(rejection(&fixture), "R60 protected-text semantic drift");
+        }
+
+        let mut fixture = Fixture::build_r60();
+        let clean = encode_rgba(&RgbaImage::from_pixel(5, 4, Rgba([255, 255, 255, 255])));
+        fixture.replace_image("assets/clean/r60-h01.png", &clean);
+        assert_eq!(rejection(&fixture), "R59 Source/Clean dimensions drift");
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_rejects_pure_latin_target() {
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| {
+            let text = "Product";
+            let target = &mut value["entries"][0]["targets"][0];
+            target["source_text_utf8"] = json!(text);
+            target["source_text_sha256"] = json!(sha256_hex(text.as_bytes()));
+            target["source_han_scalar_count"] = json!(0);
+            target["source_script_class"] = json!("latin_or_ascii");
+        });
+        assert_eq!(rejection(&fixture), "R59 oracle semantic drift");
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_rejects_closed_schema_and_mask_drift() {
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_manifest(|value| value["plan_revision"] = json!(59));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_manifest(|value| value["contract"] = json!("wrong"));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| value["contract"] = json!("wrong"));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| value["plan_revision"] = json!(59));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_hashes(|value| value["contract"] = json!("wrong"));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_hashes(|value| value["plan_revision"] = json!(59));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 manifest/oracle/hashes mutual binding drift"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_manifest(|value| value["entries"][0]["id"] = json!("r60-h05"));
+        assert_eq!(rejection(&fixture), "R59 manifest entry drift");
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_hashes(|value| {
+            value["assets"]["assets/source/r60-h01.png"]["normalized_identity_sha256"] =
+                json!("0".repeat(64));
+        });
+        assert_eq!(rejection(&fixture), "R59 decoded image identity drift");
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_hashes(|value| {
+            value["assets"]["assets/source/r60-h01.png"]["decoded_kind"] = json!("wrong");
+        });
+        assert_eq!(rejection(&fixture), "R59 asset hash record drift");
+
+        let mut non_binary = GrayImage::from_pixel(4, 4, Luma([0]));
+        non_binary.put_pixel(1, 1, Luma([1]));
+        let error = match decode_mask(&encode_gray(&non_binary), &R60_BUNDLE_CONTRACT) {
+            Ok(_) => panic!("non-binary mask unexpectedly passed"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "R59 mask is not binary");
+
+        let mut fixture = Fixture::build_r60();
+        let mut residual = GrayImage::from_pixel(4, 4, Luma([0]));
+        residual.put_pixel(2, 2, Luma([255]));
+        fixture.replace_mask(
+            "assets/masks/r60-h01/text-residual.png",
+            &encode_gray(&residual),
+        );
+        assert_eq!(rejection(&fixture), "R59 erase/residual mask drift");
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_rejects_pixel_and_protected_text_drift() {
+        let mut fixture = Fixture::build_r60();
+        let mut clean = RgbaImage::from_pixel(4, 4, Rgba([255, 255, 255, 255]));
+        clean.put_pixel(2, 2, Rgba([0, 0, 0, 255]));
+        fixture.replace_image("assets/clean/r60-h01.png", &encode_rgba(&clean));
+        assert_eq!(
+            rejection(&fixture),
+            "R59 Source/Clean delta exists outside target masks"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| {
+            value["entries"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("protected_texts");
+        });
+        assert_eq!(
+            rejection(&fixture),
+            "R60 protected-text ground truth is missing"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        let text = "Δelta";
+        fixture.rewrite_oracle(|value| {
+            let protected = &mut value["entries"][0]["protected_texts"][0];
+            protected["source_text_utf8"] = json!(text);
+            protected["source_text_sha256"] = json!(sha256_hex(text.as_bytes()));
+        });
+        assert_eq!(rejection(&fixture), "R60 protected-text semantic drift");
+    }
+
+    #[test]
+    fn d0_r60_holdout_bundle_checks_alignment_pixels_and_protected_order() {
+        let fixture = Fixture::build_r60();
+        let mut manifest: Manifest =
+            serde_json::from_slice(&fs::read(fixture.root.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let mut oracle: Oracle =
+            serde_json::from_slice(&fs::read(fixture.root.join(ORACLE_NAME)).unwrap()).unwrap();
+        let manifest_entry = &mut manifest.entries[0];
+        let oracle_entry = &mut oracle.entries[0];
+
+        let mut second_target: ManifestTarget =
+            serde_json::from_value(serde_json::to_value(&manifest_entry.targets[0]).unwrap())
+                .unwrap();
+        second_target.id = "text2".into();
+        manifest_entry.targets.push(second_target);
+        let mut second_oracle: OracleTarget =
+            serde_json::from_value(serde_json::to_value(&oracle_entry.targets[0]).unwrap())
+                .unwrap();
+        second_oracle.id = "text2".into();
+        oracle_entry.targets.push(second_oracle);
+        validate_oracle_alignment(manifest_entry, oracle_entry, "r60-h01").unwrap();
+        oracle_entry.targets.swap(0, 1);
+        assert_eq!(
+            validate_oracle_alignment(manifest_entry, oracle_entry, "r60-h01")
+                .unwrap_err()
+                .to_string(),
+            "R59 oracle order or identity drift"
+        );
+        oracle_entry.targets.pop();
+        assert_eq!(
+            validate_oracle_alignment(manifest_entry, oracle_entry, "r60-h01")
+                .unwrap_err()
+                .to_string(),
+            "R59 oracle order or identity drift"
+        );
+
+        let fixture = Fixture::build_r60();
+        let manifest: Manifest =
+            serde_json::from_slice(&fs::read(fixture.root.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let entry = &manifest.entries[0];
+        let source =
+            decode_image(&fs::read(fixture.root.join("assets/source/r60-h01.png")).unwrap())
+                .unwrap()
+                .rgba;
+        let mask = vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(
+            validate_pixels(
+                entry,
+                &source,
+                &source,
+                &[(mask.clone(), Box::new([]), Box::new([]))],
+            )
+            .unwrap_err()
+            .to_string(),
+            "R59 mask foreground is outside exact Source/Clean delta"
+        );
+
+        let mut entry_value = serde_json::to_value(entry).unwrap();
+        let mut second = entry_value["targets"][0].clone();
+        second["id"] = json!("text2");
+        entry_value["targets"].as_array_mut().unwrap().push(second);
+        let entry: ManifestEntry = serde_json::from_value(entry_value).unwrap();
+        assert_eq!(
+            validate_pixels(
+                &entry,
+                &source,
+                &RgbaImage::from_pixel(4, 4, Rgba([255, 255, 255, 255])),
+                &[
+                    (mask.clone(), Box::new([]), Box::new([])),
+                    (mask, Box::new([]), Box::new([])),
+                ],
+            )
+            .unwrap_err()
+            .to_string(),
+            "R59 target masks overlap"
+        );
+
+        let fixture = Fixture::build_r60();
+        let mut manifest: Manifest =
+            serde_json::from_slice(&fs::read(fixture.root.join(MANIFEST_NAME)).unwrap()).unwrap();
+        let mut oracle: Oracle =
+            serde_json::from_slice(&fs::read(fixture.root.join(ORACLE_NAME)).unwrap()).unwrap();
+        let manifest_entry = &mut manifest.entries[0];
+        let oracle_entry = &mut oracle.entries[0];
+        manifest_entry.protected_rois.insert(0, Rect([2, 3, 3, 4]));
+        let mut second: OracleProtectedText = serde_json::from_value(
+            serde_json::to_value(&oracle_entry.protected_texts.as_ref().unwrap()[0]).unwrap(),
+        )
+        .unwrap();
+        second.roi = Rect([2, 3, 3, 4]);
+        second.source_text_utf8 = "SKU-42!".into();
+        second.source_text_sha256 = sha256_hex(second.source_text_utf8.as_bytes());
+        oracle_entry
+            .protected_texts
+            .as_mut()
+            .unwrap()
+            .insert(0, second);
+        validate_protected_texts(manifest_entry, oracle_entry, &R60_BUNDLE_CONTRACT).unwrap();
+        oracle_entry.protected_texts.as_mut().unwrap().swap(0, 1);
+        assert_eq!(
+            validate_protected_texts(manifest_entry, oracle_entry, &R60_BUNDLE_CONTRACT)
+                .unwrap_err()
+                .to_string(),
+            "R60 protected-text ROI binding drift"
+        );
+
+        let mut fixture = Fixture::build_r60();
+        fixture.rewrite_oracle(|value| {
+            let extra = value["entries"][0]["protected_texts"][0].clone();
+            value["entries"][0]["protected_texts"]
+                .as_array_mut()
+                .unwrap()
+                .push(extra);
+        });
+        assert_eq!(rejection(&fixture), "R60 protected-text ROI binding drift");
+    }
+
+    #[test]
+    fn d0_r59_holdout_bundle_rejects_canonical_drift() {
         let fixture = Fixture::build();
         let path = fixture.root.join(MANIFEST_NAME);
         let mut bytes = fs::read(&path).unwrap();
@@ -1772,7 +2357,7 @@ mod tests {
     }
 
     #[test]
-    fn d0_r51_holdout_bundle_rejects_mutual_hash_drift() {
+    fn d0_r59_holdout_bundle_rejects_mutual_hash_drift() {
         let mut fixture = Fixture::build();
         fixture.rewrite_json(HASHES_NAME, |value| {
             value["oracle_sha256"] = serde_json::Value::String("0".repeat(64));
@@ -1781,9 +2366,9 @@ mod tests {
     }
 
     #[test]
-    fn d0_r51_holdout_bundle_rejects_mask_delta_mismatch() {
+    fn d0_r59_holdout_bundle_rejects_mask_delta_mismatch() {
         let fixture = Fixture::build();
-        let path = fixture.root.join("assets/clean/r51-h01.png");
+        let path = fixture.root.join("assets/clean/r59-h01.png");
         let mut clean = RgbaImage::from_pixel(4, 4, Rgba([255, 255, 255, 255]));
         clean.put_pixel(2, 2, Rgba([0, 0, 0, 255]));
         fs::write(path, encode_rgba(&clean)).unwrap();
@@ -1791,7 +2376,7 @@ mod tests {
     }
 
     #[test]
-    fn d0_r51_holdout_bundle_rejects_oracle_semantic_drift() {
+    fn d0_r59_holdout_bundle_rejects_oracle_semantic_drift() {
         let mut fixture = Fixture::build();
         fixture.rewrite_json(ORACLE_NAME, |value| {
             value["entries"][0]["targets"][0]["source_han_scalar_count"] =
@@ -1801,14 +2386,14 @@ mod tests {
     }
 
     #[test]
-    fn d0_r51_holdout_bundle_nfc_accepts_uncomposed_mark_and_rejects_decomposed_form() {
+    fn d0_r59_holdout_bundle_nfc_accepts_uncomposed_mark_and_rejects_decomposed_form() {
         assert!(is_nfc("汉\u{301}").unwrap());
         assert!(!is_nfc("汉e\u{301}").unwrap());
         assert!(is_nfc("汉é").unwrap());
     }
 
     #[test]
-    fn d0_r51_holdout_bundle_uses_frozen_aspect_boundary() {
+    fn d0_r59_holdout_bundle_uses_frozen_aspect_boundary() {
         assert_eq!(recompute_aspect(110, 100), "square_or_near");
         assert_eq!(recompute_aspect(111, 100), "landscape");
         assert_eq!(recompute_aspect(100, 110), "square_or_near");
@@ -1816,16 +2401,16 @@ mod tests {
     }
 
     #[test]
-    fn d0_r51_holdout_bundle_rejects_path_and_symlink() {
+    fn d0_r59_holdout_bundle_rejects_path_and_symlink() {
         let mut fixture = Fixture::build();
         fixture.rewrite_json(MANIFEST_NAME, |value| {
             value["entries"][0]["source_relpath"] =
-                serde_json::Value::String("assets/source/../r51-h01.png".into());
+                serde_json::Value::String("assets/source/../r59-h01.png".into());
         });
         assert!(fixture.validate().is_err());
 
         let fixture = Fixture::build();
-        let source = fixture.root.join("assets/source/r51-h01.png");
+        let source = fixture.root.join("assets/source/r59-h01.png");
         fs::rename(&source, source.with_extension("real")).unwrap();
         symlink(source.with_extension("real"), &source).unwrap();
         assert!(fixture.validate().is_err());
@@ -1844,8 +2429,8 @@ mod tests {
         })
     }
 
-    fn mask_record(bytes: &[u8]) -> serde_json::Value {
-        let decoded = decode_mask(bytes).unwrap();
+    fn mask_record(bytes: &[u8], contract: &BundleContract) -> serde_json::Value {
+        let decoded = decode_mask(bytes, contract).unwrap();
         json!({
             "byte_length": bytes.len(),
             "decoded_kind": "binary-mask-v1",
@@ -1917,6 +2502,39 @@ mod tests {
         visit(root, Path::new(""), &mut output);
         output.sort_by(|left, right| left.0.cmp(&right.0));
         output
+    }
+
+    fn validate_synthetic_archive(fixture: &Fixture, archive: &[u8]) -> io::Result<()> {
+        let paths = snapshot_fs(&fixture.root);
+        let files = paths
+            .iter()
+            .filter(|(_, directory)| !directory)
+            .map(|(path, _)| path.clone())
+            .collect();
+        let directories = paths
+            .iter()
+            .filter(|(_, directory)| *directory)
+            .map(|(path, _)| path.clone())
+            .collect();
+        validate_archive(
+            archive,
+            &HeldRoot::open(&fixture.root).unwrap(),
+            &files,
+            &directories,
+            fixture.contract.plan_revision == 60,
+        )
+    }
+
+    fn first_file_padding_offset(archive: &[u8]) -> usize {
+        let mut offset = 0;
+        loop {
+            let header = &archive[offset..offset + 512];
+            let size = usize::try_from(parse_tar_number(&header[124..136]).unwrap()).unwrap();
+            if header[156] == b'0' && !size.is_multiple_of(512) {
+                return offset + 512 + size;
+            }
+            offset += 512 + size.div_ceil(512) * 512;
+        }
     }
 
     fn tar(root: &Path, paths: &[(String, bool)]) -> Vec<u8> {

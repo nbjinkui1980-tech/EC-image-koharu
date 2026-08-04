@@ -1,4 +1,7 @@
+import argparse
 import contextlib
+import base64
+import errno
 import hashlib
 import io
 import json
@@ -443,6 +446,9 @@ class Case:
 
 
 class ImageDimensionTests(unittest.TestCase):
+    def test_explicit_input_size_is_not_locked_to_regression_dimensions(self):
+        self.assertEqual(ledger._parse_size("800x800"), (800, 800))
+
     def test_reads_baseline_and_progressive_jpeg_dimensions(self):
         for marker in (0xC0, 0xC2):
             with self.subTest(marker=marker):
@@ -541,6 +547,24 @@ class LedgerContractTests(unittest.TestCase):
         values = output[:-1].split(b"\0")
         self.assertEqual(len(values), 6)
         return [value.decode("utf-8") for value in values]
+
+    def test_manifest_accepts_one_frozen_calibration_input(self):
+        selected_path = "/tmp/r55-c01.jpg"
+        selected_hash = "1" * 64
+        manifest = {
+            "entries": [
+                {
+                    "id": f"r55-c{index:02}",
+                    "role": "calibration",
+                    "path": selected_path if index == 1 else f"/tmp/r55-c{index:02}.jpg",
+                    "sha256": selected_hash if index == 1 else str(index) * 64,
+                }
+                for index in range(1, 5)
+            ]
+        }
+        ledger._validate_manifest_regression(
+            json.dumps(manifest).encode(), selected_path, selected_hash
+        )
 
     def test_create_writes_canonical_closed_ledger_and_six_nul_values(self):
         status, output, error = self.case.cli(self.case.create_args())
@@ -1568,14 +1592,25 @@ class R51EvidenceTests(unittest.TestCase):
         os.chmod(path, 0o600)
         return path
 
-    def calibration_fixture(self):
+    def calibration_manifest_bytes(self, entry_ids):
+        return ledger._r51_canonical_json(
+            {
+                "entries": [
+                    {"id": entry_id, "role": "calibration"}
+                    for entry_id in entry_ids
+                ]
+            }
+        )
+
+    def calibration_fixture(self, entry_ids=None):
+        entry_ids = entry_ids or ledger.R51_CALIBRATION_IDS
         value = b0_artifact()
         processes = [
             process
             for process in value["process_evidence"]
             if process["phase"] == "calibration"
         ]
-        id_map = dict(zip(value["calibration_entry_ids"], ledger.R51_CALIBRATION_IDS))
+        id_map = dict(zip(value["calibration_entry_ids"], entry_ids))
         results = value["calibration_results"]
         for result in results:
             result["entry_id"] = id_map[result["entry_id"]]
@@ -1593,29 +1628,66 @@ class R51EvidenceTests(unittest.TestCase):
             "selected_candidate_id": ledger.B0_CANDIDATES[0]["id"],
         }
         calibration_ledger = {
-            "calibration_entry_ids": ledger.R51_CALIBRATION_IDS,
+            "calibration_entry_ids": entry_ids,
             "candidates": ledger.B0_CANDIDATES,
             "calibration_results": results,
             "selected_candidate_id": ledger.B0_CANDIDATES[0]["id"],
             "process_evidence": processes,
         }
-        return payload, calibration_ledger
+        expected = ledger._r51_calibration_manifest_entry_ids(
+            self.calibration_manifest_bytes(entry_ids)
+        )
+        return payload, calibration_ledger, expected
 
     def test_calibration_selects_only_the_first_complete_all_pass_candidate(self):
-        payload, calibration_ledger = self.calibration_fixture()
-        ledger._r51_validate_calibration(payload, calibration_ledger, str(self.root))
+        payload, calibration_ledger, expected = self.calibration_fixture()
+        ledger._r51_validate_calibration(
+            payload, calibration_ledger, expected, str(self.root)
+        )
         payload["selected_candidate_id"] = ledger.B0_CANDIDATES[1]["id"]
         calibration_ledger["selected_candidate_id"] = payload["selected_candidate_id"]
         with self.assertRaises(ledger.LedgerError):
             ledger._r51_validate_calibration(
-                payload, calibration_ledger, str(self.root)
+                payload, calibration_ledger, expected, str(self.root)
             )
+
+    def test_calibration_accepts_manifest_derived_revision_ids(self):
+        r56_ids = [f"r56-c0{index}" for index in range(1, 5)]
+        payload, calibration_ledger, expected = self.calibration_fixture(r56_ids)
+        self.assertEqual(expected, r56_ids)
+        ledger._r51_validate_calibration(
+            payload, calibration_ledger, expected, str(self.root)
+        )
+
+    def test_calibration_rejects_manifest_and_ledger_id_mismatch(self):
+        r55_ids = [f"r55-c0{index}" for index in range(1, 5)]
+        r56_ids = [f"r56-c0{index}" for index in range(1, 5)]
+        payload, calibration_ledger, _ = self.calibration_fixture(r55_ids)
+        expected = ledger._r51_calibration_manifest_entry_ids(
+            self.calibration_manifest_bytes(r56_ids)
+        )
+        with self.assertRaises(ledger.LedgerError):
+            ledger._r51_validate_calibration(
+                payload, calibration_ledger, expected, str(self.root)
+            )
+
+    def test_calibration_rejects_matched_spoof_manifest(self):
+        for entry_ids in (
+            ["r56-c01", "r56-c02", "r56-c03", "r56-h01"],
+            ["r56-c01", "r56-c02", "r56-c03", "r55-c04"],
+            ["r56-c01", "r56-c01", "r56-c03", "r56-c04"],
+        ):
+            with self.subTest(entry_ids=entry_ids):
+                with self.assertRaises(ledger.LedgerError):
+                    ledger._r51_calibration_manifest_entry_ids(
+                        self.calibration_manifest_bytes(entry_ids)
+                    )
 
     def test_calibration_rejects_metal_log_and_terminal_evidence_drift(self):
         mutations = ("metal-device", "load-log", "bare-bool")
         for mutation in mutations:
             with self.subTest(mutation=mutation):
-                payload, calibration_ledger = self.calibration_fixture()
+                payload, calibration_ledger, expected = self.calibration_fixture()
                 if mutation == "metal-device":
                     metal = calibration_ledger["process_evidence"][1]["load_evidence"]
                     metal["mtmd_backend"] = "CPU"
@@ -1627,8 +1699,101 @@ class R51EvidenceTests(unittest.TestCase):
                     payload["calibration_results"][0]["derived"]["passed"] = False
                 with self.assertRaises(ledger.LedgerError):
                     ledger._r51_validate_calibration(
-                        payload, calibration_ledger, str(self.root)
+                        payload, calibration_ledger, expected, str(self.root)
                     )
+
+    def test_cell_diagnostic_closes_protected_overlap_fail_closed_state(self):
+        device = self.write_private("cell/device.json", b"{}")
+        log = self.write_private("cell/inference.log", b"log")
+        recall = {"target_total": 1, "selected": 1, "covered": 1, "uncovered": 0}
+        bindings = {
+            "b0_sha": "b" * 40,
+            "calibration_manifest_sha256": "1" * 64,
+            "fixture_manifest_sha256": "2" * 64,
+            "manifest_sha256": "3" * 64,
+            "bundle_sha256": "4" * 64,
+        }
+        diagnostic = {
+            "contract": "hanonly-r50-cell-diagnostic-v1",
+            "plan_revision": 51,
+            "b0_sha": bindings["b0_sha"],
+            "calibration_manifest_sha256": bindings["calibration_manifest_sha256"],
+            "holdout_manifest_sha256": None,
+            "fixture_manifest_sha256": bindings["fixture_manifest_sha256"],
+            "phase": "calibration-freeze",
+            "entry_id": "r51-c01",
+            "device": "cpu",
+            "candidate_id": "S25L4",
+            "state": "passed",
+            "selection_result": "selected",
+            "target_recall": recall,
+            "pp_han_count": 1,
+            "vl_han_count": 1,
+            "rejection_reason": None,
+            "raw_detector_outputs": [],
+            "canonical_lines": [],
+            "raw_detector_count": 0,
+            "raw_detector_f32_bits_multiset_sha256": hashlib.sha256(
+                ledger._r51_canonical_json([])
+            ).hexdigest(),
+            "detector_support_records": [],
+            "detector_geometry_passed": True,
+            "selected_scene_rotations_zero": True,
+            "runtime_inpainter_id": "lama-manga",
+            "bubble_segmenter_id": "speech-bubble-segmentation",
+            "bubble_support_sha256": "5" * 64,
+            "runtime_removal_support_sha256": "6" * 64,
+            "protected_overlap_pixels": 0,
+            "device_evidence_sha256": hashlib.sha256(device.read_bytes()).hexdigest(),
+            "device_evidence_byte_length": device.stat().st_size,
+            "log_sha256": hashlib.sha256(log.read_bytes()).hexdigest(),
+            "log_byte_length": log.stat().st_size,
+            "terminal_reason": None,
+            "bundle_validation_receipt_sha256": None,
+            "target_coverage_index_sha256": None,
+        }
+        record = {
+            "phase": diagnostic["phase"],
+            "entry_id": diagnostic["entry_id"],
+            "device": diagnostic["device"],
+            "candidate_id": diagnostic["candidate_id"],
+            "state": diagnostic["state"],
+            "selection_result": diagnostic["selection_result"],
+            "target_recall": recall,
+            "pp_han_count": 1,
+            "vl_han_count": 1,
+            "rejection_reason": None,
+            "terminal_reason": None,
+            "target_coverage_index_path": None,
+            "target_coverage_index_sha256": None,
+            "target_coverage_index_byte_length": None,
+            "device_evidence_path": "cell/device.json",
+            "device_evidence_sha256": diagnostic["device_evidence_sha256"],
+            "device_evidence_byte_length": diagnostic["device_evidence_byte_length"],
+            "log_path": "cell/inference.log",
+            "log_sha256": diagnostic["log_sha256"],
+            "log_byte_length": diagnostic["log_byte_length"],
+        }
+
+        def validate():
+            payload = ledger._r51_canonical_json(diagnostic)
+            path = self.write_private("cell/cell-diagnostic.json", payload)
+            record.update(
+                diagnostic_path="cell/cell-diagnostic.json",
+                diagnostic_sha256=hashlib.sha256(payload).hexdigest(),
+                diagnostic_byte_length=path.stat().st_size,
+            )
+            ledger._r51_validate_cell_diagnostic(
+                str(self.root), record, bindings, set(), holdout=False
+            )
+
+        validate()
+        diagnostic["protected_overlap_pixels"] = 1
+        with self.assertRaisesRegex(ledger.LedgerError, "protected overlap"):
+            validate()
+        diagnostic["state"] = record["state"] = "failed"
+        diagnostic["terminal_reason"] = record["terminal_reason"] = "protected_overlap"
+        validate()
 
     def test_approved_contract_paths_are_fixed_before_read(self):
         arguments = mock.Mock(repo_root=str(self.root))
@@ -1759,42 +1924,140 @@ class R51EvidenceTests(unittest.TestCase):
                 65, [*calibration, {**first_holdout, "state": "passed"}]
             )
 
-    def test_coverage_index_recomputes_binary_rasters_and_rejects_path_reuse(self):
-        selected = b"\x01\x00\x01\x00"
-        downstream = b"\x01\x01\x01\x00"
-        self.write_private("selected.bin", selected)
-        self.write_private("downstream.bin", downstream)
+    def test_r57_spatial_validator_rejects_shift_overlap_and_invalid_framing(self):
+        def payload(runtime, protected=()):
+            oracle = b"\x01\x00\x01\x00"
+            protected = list(protected)
+            value = {
+                "contract": "hanonly-r57-source-ink-validation-input-v1",
+                "b0_sha": "b" * 40,
+                "cell_key": "holdout/S25L4/cpu/r51-h01",
+                "entry_id": "r51-h01",
+                "target_id": "opaque-target-1",
+                "page_width": 2,
+                "page_height": 2,
+                "support_stride_bytes": 2,
+                "oracle_mask_base64": base64.b64encode(oracle).decode(),
+                "oracle_mask_raw_sha256": "4" * 64,
+                "oracle_mask_normalized_sha256": hashlib.sha256(
+                    b"hanonly-r51-binary-mask-v1\0"
+                    + struct.pack(">II", 2, 2)
+                    + oracle
+                ).hexdigest(),
+                "protected_rois": protected,
+                "protected_geometry_sha256": hashlib.sha256(
+                    ledger._r51_canonical_json(protected)
+                ).hexdigest(),
+                "runtime_inpainter_id": "lama-manga",
+                "bubble_segmenter_id": "speech-bubble-segmentation",
+                "bubble_support_sha256": "5" * 64,
+                "runtime_removal_support_base64": base64.b64encode(runtime).decode(),
+                "runtime_removal_support_sha256": hashlib.sha256(runtime).hexdigest(),
+            }
+            return ledger._r51_canonical_json(value)
+
+        passed = json.loads(
+            ledger._r57_validate_source_ink(payload(b"\x01\x00\x01\x00"))
+        )
+        self.assertEqual(passed["result"], "pass")
+        shifted = json.loads(
+            ledger._r57_validate_source_ink(payload(b"\x00\x01\x01\x00"))
+        )
+        self.assertEqual(shifted["result"], "fail-closed")
+        protected = json.loads(
+            ledger._r57_validate_source_ink(
+                payload(b"\x01\x00\x01\x00", ([0, 0, 1, 1],))
+            )
+        )
+        self.assertEqual(protected["result"], "fail-closed")
+        with self.assertRaises(ledger.LedgerError):
+            ledger._r57_validate_source_ink(payload(b"\x01\x00\x01"))
+        with self.assertRaises(ledger.LedgerError):
+            ledger._r57_validate_source_ink(
+                payload(b"\x01\x00\x01\x00") + b"\n"
+            )
+        for width, height in ((1, 4), (4, 1)):
+            changed = json.loads(payload(b"\x01\x00\x01\x00"))
+            changed["page_width"] = width
+            changed["page_height"] = height
+            changed["support_stride_bytes"] = width
+            with self.assertRaises(ledger.LedgerError):
+                ledger._r57_validate_source_ink(
+                    ledger._r51_canonical_json(changed)
+                )
+
+    def test_coverage_index_recomputes_runtime_removal_raster(self):
+        runtime_removal = b"\x01\x01\x01\x00"
+        self.write_private("runtime-removal.bin", runtime_removal)
         bindings = {
             "b0_sha": "b" * 40,
             "manifest_sha256": "1" * 64,
             "oracle_sha256": "2" * 64,
             "hashes_sha256": "3" * 64,
         }
+        oracle = b"\x01\x00\x01\x00"
+        oracle_normalized_sha256 = hashlib.sha256(
+            b"hanonly-r51-binary-mask-v1\0" + struct.pack(">II", 2, 2) + oracle
+        ).hexdigest()
+        protected_geometry_sha256 = hashlib.sha256(
+            ledger._r51_canonical_json([])
+        ).hexdigest()
+        receipt = {
+            "contract": "hanonly-r57-source-ink-validation-receipt-v1",
+            "b0_sha": bindings["b0_sha"],
+            "cell_key": "holdout/S25L4/cpu/r51-h01",
+            "entry_id": "r51-h01",
+            "target_id": "opaque-target-1",
+            "page_width": 2,
+            "page_height": 2,
+            "support_stride_bytes": 2,
+            "oracle_mask_raw_sha256": "4" * 64,
+            "oracle_mask_normalized_sha256": oracle_normalized_sha256,
+            "protected_geometry_sha256": protected_geometry_sha256,
+            "runtime_inpainter_id": "lama-manga",
+            "bubble_segmenter_id": "speech-bubble-segmentation",
+            "bubble_support_sha256": "5" * 64,
+            "runtime_removal_support_sha256": hashlib.sha256(
+                runtime_removal
+            ).hexdigest(),
+            "oracle_foreground_pixels": 2,
+            "runtime_removal_covered_pixels": 2,
+            "missing_runtime_removal_pixels": 0,
+            "protected_overlap_pixels": 0,
+            "result": "pass",
+        }
+        receipt_bytes = ledger._r51_canonical_json(receipt)
+        self.write_private("spatial-validation.json", receipt_bytes)
         proof = {
-            "contract": "hanonly-r51-target-coverage-proof-v1",
+            "contract": "hanonly-r57-source-ink-coverage-proof-v1",
             "plan_revision": 51,
             "b0_sha": bindings["b0_sha"],
             "cell_key": "holdout/S25L4/cpu/r51-h01",
             "entry_id": "r51-h01",
             "target_id": "opaque-target-1",
             "oracle_mask_raw_sha256": "4" * 64,
-            "oracle_mask_normalized_sha256": "5" * 64,
+            "oracle_mask_normalized_sha256": oracle_normalized_sha256,
             "page_width": 2,
             "page_height": 2,
             "support_stride_bytes": 2,
-            "selected_support_relpath": "selected.bin",
-            "selected_support_byte_length": len(selected),
-            "selected_support_sha256": hashlib.sha256(selected).hexdigest(),
-            "downstream_support_relpath": "downstream.bin",
-            "downstream_support_byte_length": len(downstream),
-            "downstream_support_sha256": hashlib.sha256(downstream).hexdigest(),
+            "runtime_removal_support_relpath": "runtime-removal.bin",
+            "runtime_removal_support_byte_length": len(runtime_removal),
+            "runtime_removal_support_sha256": hashlib.sha256(
+                runtime_removal
+            ).hexdigest(),
+            "spatial_validation_receipt_relpath": "spatial-validation.json",
+            "spatial_validation_receipt_byte_length": len(receipt_bytes),
+            "spatial_validation_receipt_sha256": hashlib.sha256(
+                receipt_bytes
+            ).hexdigest(),
+            "protected_geometry_sha256": protected_geometry_sha256,
+            "runtime_inpainter_id": "lama-manga",
+            "bubble_segmenter_id": "speech-bubble-segmentation",
+            "bubble_support_sha256": "5" * 64,
             "oracle_foreground_pixels": 2,
-            "selected_support_foreground_pixels": 2,
-            "downstream_support_foreground_pixels": 3,
-            "selected_covered_pixels": 2,
-            "downstream_covered_pixels": 2,
-            "missing_selected_pixels": 0,
-            "missing_downstream_pixels": 0,
+            "runtime_removal_support_foreground_pixels": 3,
+            "runtime_removal_covered_pixels": 2,
+            "missing_runtime_removal_pixels": 0,
             "protected_overlap_pixels": 0,
             "target_selected": True,
             "result": "pass",
@@ -1802,7 +2065,7 @@ class R51EvidenceTests(unittest.TestCase):
         proof_bytes = ledger._r51_canonical_json(proof)
         self.write_private("proof.json", proof_bytes)
         index = {
-            "contract": "hanonly-r51-target-coverage-index-v1",
+            "contract": "hanonly-r57-source-ink-coverage-index-v1",
             "plan_revision": 51,
             "b0_sha": bindings["b0_sha"],
             "cell_key": proof["cell_key"],
@@ -1829,20 +2092,18 @@ class R51EvidenceTests(unittest.TestCase):
             "target_coverage_index_byte_length": len(index_bytes),
         }
         ledger._r51_validate_coverage_index(str(self.root), record, bindings, 1, set())
-        proof["downstream_support_relpath"] = proof["selected_support_relpath"]
-        proof["downstream_support_sha256"] = proof["selected_support_sha256"]
-        proof["downstream_support_foreground_pixels"] = 2
+        proof["runtime_removal_support_foreground_pixels"] = 2
         proof_bytes = ledger._r51_canonical_json(proof)
-        self.write_private("proof-reused.json", proof_bytes)
-        index["records"][0]["proof_path"] = "proof-reused.json"
+        self.write_private("proof-invalid.json", proof_bytes)
+        index["records"][0]["proof_path"] = "proof-invalid.json"
         index["records"][0]["proof_sha256"] = hashlib.sha256(proof_bytes).hexdigest()
         index["records"][0]["proof_byte_length"] = len(proof_bytes)
         index_bytes = ledger._r51_canonical_json(index)
-        self.write_private("coverage-reused.json", index_bytes)
-        record["target_coverage_index_path"] = "coverage-reused.json"
+        self.write_private("coverage-invalid.json", index_bytes)
+        record["target_coverage_index_path"] = "coverage-invalid.json"
         record["target_coverage_index_sha256"] = hashlib.sha256(index_bytes).hexdigest()
         record["target_coverage_index_byte_length"] = len(index_bytes)
-        with self.assertRaisesRegex(ledger.LedgerError, "reuses"):
+        with self.assertRaisesRegex(ledger.LedgerError, "did not pass"):
             ledger._r51_validate_coverage_index(
                 str(self.root), record, bindings, 1, set()
             )
@@ -3070,6 +3331,1084 @@ l._r52_with_one_shot_lock(
         self.write_private(authorization / "hanonly-r52-b0-artifact.json", b"{}")
         with self.assertRaises(ledger.LedgerError):
             ledger._r52_validate_authorization(arguments)
+class R59CustodyBoundaryTests(unittest.TestCase):
+    BUNDLE_RECEIPT_BYTES = b'{"result":"pass"}'
+    HOLDOUT_ARTIFACT_BYTES = b'{"holdout":"pass"}'
+    ORIGINAL_BYTES = (
+        b'{"B0_SHA":"4c0e0d25d4de3be2809e8c749a6858a1bb724fa4",'
+        b'"age_public_recipient":"age1pzaxrtkwu424yrz2s4kck0avakx5y57u2qm2u2h30ya7s4fxaanqst09sw",'
+        b'"ciphertext_sha256":"1985675aae9ec857f97e42e3942cd9d0d717563cd384b5d2f642222701376b72",'
+        b'"created_at":"2026-08-02T10:25:51.592320Z",'
+        b'"opaque_ids":["r59-h01","r59-h02","r59-h03","r59-h04"],'
+        b'"plaintext_cleanup":true,'
+        b'"private_manifest_commitment_sha256":"b9bf0d416d38e4adcd8d34e07666d365e4652582437979d986cdb68bae7e764d",'
+        b'"restricted_content_disclosed":false,'
+        b'"schema":"hanonly.r59.public-commitment.v1",'
+        b'"start_marker_absent":true}\n'
+    )
+    SUCCESSOR_B0 = "a" * 40
+
+    def setUp(self):
+        self.original = json.loads(self.ORIGINAL_BYTES)
+        self.successor = {
+            "schema": "hanonly.r59.successor-commitment.v1",
+            "original_public_commitment_sha256": ledger.R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256,
+            "original_b0_sha": ledger.R59_ORIGINAL_B0_SHA,
+            "successor_b0_sha": self.SUCCESSOR_B0,
+            "contract_sha256": ledger.R59_CONTRACT_SHA256,
+            "test_spec_sha256": ledger.R59_TEST_SPEC_SHA256,
+            "calibration_artifact_sha256": ledger.R59_CALIBRATION_ARTIFACT_SHA256,
+            "selected_candidate_id": ledger.R59_SELECTED_CANDIDATE_ID,
+            "ciphertext_sha256": self.original["ciphertext_sha256"],
+            "private_manifest_commitment_sha256": self.original[
+                "private_manifest_commitment_sha256"
+            ],
+            "entry_ids": ledger.R59_ENTRY_IDS,
+            "package_unchanged": True,
+            "start_marker_absent": True,
+        }
+
+    def clone(self, value):
+        return json.loads(json.dumps(value))
+
+    def successor_bytes(self, value=None):
+        return ledger._r59_canonical_json(value or self.successor)
+
+    def preflight(
+        self, successor=None, requested_b0=None, marker_exists=False, runtime_exists=False
+    ):
+        successor = successor or self.successor
+        return ledger._r59_validate_preflight_values(
+            self.ORIGINAL_BYTES,
+            self.original,
+            self.successor_bytes(successor),
+            successor,
+            requested_b0 or self.SUCCESSOR_B0,
+            marker_exists=marker_exists,
+            runtime_exists=runtime_exists,
+        )
+
+    def test_r59_commands_are_not_public(self):
+        for command in (
+            "validate-r59-b0-preflight",
+            "validate-r59-b0-authorization",
+        ):
+            stdout = io.BytesIO()
+            stderr = io.StringIO()
+            status = ledger.main(
+                [command, "--requested-b0-sha", self.SUCCESSOR_B0],
+                stdout=stdout,
+                stderr=stderr,
+            )
+            self.assertEqual(status, 2)
+            self.assertEqual(stdout.getvalue(), b"")
+            self.assertIn("invalid choice", stderr.getvalue())
+
+    def test_clean_detached_head_uses_shared_git_runner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            subprocess.run(["git", "init", "-q", directory], check=True)
+            subprocess.run(
+                ["git", "-C", directory, "config", "user.name", "R59 Test"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", directory, "config", "user.email", "r59@test.invalid"],
+                check=True,
+            )
+            Path(directory, "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            subprocess.run(["git", "-C", directory, "add", "tracked.txt"], check=True)
+            subprocess.run(
+                ["git", "-C", directory, "commit", "-q", "-m", "fixture"],
+                check=True,
+            )
+            head = subprocess.run(
+                ["git", "-C", directory, "rev-parse", "HEAD"],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "-C", directory, "checkout", "-q", "--detach", head],
+                check=True,
+            )
+
+            with tempfile.TemporaryDirectory() as shim_directory:
+                shim = Path(shim_directory, "git")
+                shim.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+                shim.chmod(0o700)
+                with mock.patch.dict(os.environ, {"PATH": shim_directory}):
+                    ledger._r59_validate_clean_detached_head(directory, head)
+
+            Path(directory, "untracked.txt").write_text("dirty\n", encoding="utf-8")
+            with self.assertRaisesRegex(ledger.LedgerError, "clean"):
+                ledger._r59_validate_clean_detached_head(directory, head)
+
+    def receipts(self):
+        successor_sha256 = self.preflight()
+        start = {
+            "schema": "hanonly-r59-holdout-start-v1",
+            "plan_revision": 59,
+            "b0_sha": self.SUCCESSOR_B0,
+            "selected_candidate_id": "S25L4",
+            "original_public_commitment_sha256": ledger.R59_ORIGINAL_PUBLIC_COMMITMENT_SHA256,
+            "successor_commitment_sha256": successor_sha256,
+            "ciphertext_sha256": self.original["ciphertext_sha256"],
+            "pre_holdout_attestation_sha256": "6" * 64,
+            "nonce_hex": "7" * 32,
+            "state": "started",
+        }
+        cleanup = {
+            "schema": "hanonly-r59-cleanup-v1",
+            "plaintext_root": "/Users/koharu-custody/r59-plaintext",
+            "runner_process_exited": True,
+            "descriptors_closed": True,
+            "plaintext_root_absent": True,
+            "cleanup_pass": True,
+        }
+        start_bytes = ledger._r59_canonical_json(start)
+        runtime = {
+            "schema": "hanonly.r59.runtime-commitment.v1",
+            "plan_revision": 59,
+            "b0_sha": self.SUCCESSOR_B0,
+            "start_marker_sha256": hashlib.sha256(start_bytes).hexdigest(),
+            "successor_commitment_sha256": successor_sha256,
+            "ciphertext_sha256": self.original["ciphertext_sha256"],
+            "private_manifest_commitment_sha256": self.original[
+                "private_manifest_commitment_sha256"
+            ],
+            "runtime_archive_sha256": "1" * 64,
+            "runtime_manifest_sha256": "2" * 64,
+            "runtime_oracle_sha256": "3" * 64,
+            "runtime_hashes_sha256": "4" * 64,
+            "entry_ids": ledger.R59_ENTRY_IDS,
+            "decrypt_result": "pass",
+            "package_unchanged": True,
+            "restricted_values_disclosed": False,
+            "state": "runtime_committed",
+        }
+        runtime_bytes = ledger._r59_canonical_json(runtime)
+        cleanup_bytes = ledger._r59_canonical_json(cleanup)
+        terminal = {
+            "schema": "hanonly-r59-holdout-terminal-v1",
+            "plan_revision": 59,
+            "b0_sha": self.SUCCESSOR_B0,
+            "start_marker_sha256": hashlib.sha256(start_bytes).hexdigest(),
+            "successor_commitment_sha256": successor_sha256,
+            "selected_candidate_id": "S25L4",
+            "cell_results": [
+                {"cell": cell, "result": "pass"} for cell in ledger.R59_CELLS
+            ],
+            "first_failed_cell": None,
+            "unexecuted_cells": [],
+            "cleanup_receipt_sha256": hashlib.sha256(cleanup_bytes).hexdigest(),
+            "bundle_validation_receipt_sha256": hashlib.sha256(
+                self.BUNDLE_RECEIPT_BYTES
+            ).hexdigest(),
+            "artifact_payload_sha256": hashlib.sha256(
+                self.HOLDOUT_ARTIFACT_BYTES
+            ).hexdigest(),
+            "runtime_commitment_receipt_sha256": hashlib.sha256(
+                runtime_bytes
+            ).hexdigest(),
+            "state": "completed_pass",
+        }
+        return start, runtime, cleanup, terminal
+
+    def authorize(
+        self,
+        start=None,
+        runtime=None,
+        cleanup=None,
+        terminal=None,
+        bundle_bytes=None,
+        artifact_bytes=None,
+    ):
+        default_start, default_runtime, default_cleanup, default_terminal = self.receipts()
+        start = start or default_start
+        runtime = runtime or default_runtime
+        cleanup = cleanup or default_cleanup
+        terminal = terminal or default_terminal
+        return ledger._r59_validate_authorization_values(
+            self.ORIGINAL_BYTES,
+            self.original,
+            self.successor_bytes(),
+            self.successor,
+            ledger._r59_canonical_json(start),
+            start,
+            ledger._r59_canonical_json(runtime),
+            runtime,
+            ledger._r59_canonical_json(terminal),
+            terminal,
+            ledger._r59_canonical_json(cleanup),
+            cleanup,
+            self.SUCCESSOR_B0,
+            hashlib.sha256(bundle_bytes or self.BUNDLE_RECEIPT_BYTES).hexdigest(),
+            hashlib.sha256(artifact_bytes or self.HOLDOUT_ARTIFACT_BYTES).hexdigest(),
+        )
+
+    def test_rejects_successor_b0_mismatch(self):
+        with self.assertRaisesRegex(ledger.LedgerError, "B0"):
+            self.preflight(requested_b0="b" * 40)
+
+    def test_rejects_protocol_file_byte_drift(self):
+        source_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(os.path.realpath(directory))
+            for relative in (
+                ".omx/plans/hanonly-r59-b0-custody-contract.json",
+                ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((source_root / relative).read_bytes())
+            ledger._r59_validate_protocol_files(str(root))
+            for relative in (
+                ".omx/plans/hanonly-r59-b0-custody-contract.json",
+                ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+            ):
+                path = root / relative
+                original = path.read_bytes()
+                path.write_bytes(original + b"\n")
+                with self.assertRaisesRegex(ledger.LedgerError, "SHA drift"):
+                    ledger._r59_validate_protocol_files(str(root))
+                path.write_bytes(original)
+
+    def test_rejects_corpus_commitment_drift(self):
+        changed = self.clone(self.successor)
+        changed["ciphertext_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "binding drift"):
+            self.preflight(changed)
+
+    def test_rejects_pre_start_runtime_fields(self):
+        changed = self.clone(self.successor)
+        changed["runtime_manifest_sha256"] = "1" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+            self.preflight(changed)
+
+    def test_rejects_r51_ids(self):
+        changed = self.clone(self.successor)
+        changed["entry_ids"] = [f"r51-h0{index}" for index in range(1, 5)]
+        with self.assertRaisesRegex(ledger.LedgerError, "binding drift"):
+            self.preflight(changed)
+
+    def test_rejects_marker_reuse_and_unknown_start_state(self):
+        with self.assertRaisesRegex(ledger.LedgerError, "retry is forbidden"):
+            self.preflight(marker_exists=True)
+        with self.assertRaisesRegex(ledger.LedgerError, "before start marker"):
+            self.preflight(runtime_exists=True)
+        start, runtime, cleanup, terminal = self.receipts()
+        start["state"] = "fresh"
+        with self.assertRaisesRegex(ledger.LedgerError, "state drift"):
+            self.authorize(start, runtime, cleanup, terminal)
+
+    def test_rejects_incomplete_cleanup(self):
+        start, runtime, cleanup, terminal = self.receipts()
+        cleanup["descriptors_closed"] = False
+        terminal["cleanup_receipt_sha256"] = hashlib.sha256(
+            ledger._r59_canonical_json(cleanup)
+        ).hexdigest()
+        with self.assertRaisesRegex(ledger.LedgerError, "non-authorizing"):
+            self.authorize(start, runtime, cleanup, terminal)
+
+    def test_rejects_runtime_commitment_drift(self):
+        start, runtime, cleanup, terminal = self.receipts()
+        runtime["ciphertext_sha256"] = "0" * 64
+        terminal["runtime_commitment_receipt_sha256"] = hashlib.sha256(
+            ledger._r59_canonical_json(runtime)
+        ).hexdigest()
+        with self.assertRaisesRegex(ledger.LedgerError, "runtime commitment"):
+            self.authorize(start, runtime, cleanup, terminal)
+
+        start, runtime, cleanup, terminal = self.receipts()
+        del terminal["runtime_commitment_receipt_sha256"]
+        with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+            self.authorize(start, runtime, cleanup, terminal)
+
+    def test_authorizes_only_all_eight_passes_and_cleanup(self):
+        record = self.authorize()
+        self.assertEqual(record["result"], "authorized")
+        self.assertEqual(record["b0_sha"], self.SUCCESSOR_B0)
+        self.assertEqual(
+            record["bundle_validation_receipt_sha256"],
+            hashlib.sha256(self.BUNDLE_RECEIPT_BYTES).hexdigest(),
+        )
+        self.assertEqual(
+            record["artifact_payload_sha256"],
+            hashlib.sha256(self.HOLDOUT_ARTIFACT_BYTES).hexdigest(),
+        )
+        start, runtime, cleanup, terminal = self.receipts()
+        terminal["cell_results"][0]["result"] = "fail"
+        with self.assertRaisesRegex(ledger.LedgerError, "failed"):
+            self.authorize(start, runtime, cleanup, terminal)
+
+        start, runtime, cleanup, terminal = self.receipts()
+        terminal["bundle_validation_receipt_sha256"] = "8" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "bundle validation.*drift"):
+            self.authorize(start, runtime, cleanup, terminal)
+
+        start, runtime, cleanup, terminal = self.receipts()
+        terminal["artifact_payload_sha256"] = "9" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "artifact payload SHA drift"):
+            self.authorize(start, runtime, cleanup, terminal)
+
+    def test_authorization_requires_fixed_evidence_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            prefix = str(Path(directory).resolve() / "readiness-")
+            root = Path(prefix + self.SUCCESSOR_B0)
+            bundle_parent = root.joinpath(*ledger.R59_BUNDLE_RECEIPT_COMPONENTS[:-1])
+            bundle_parent.mkdir(parents=True, mode=0o700)
+            for path in (root, root / "formal-report", bundle_parent):
+                path.chmod(0o700)
+            artifact = root / ledger.R59_HOLDOUT_ARTIFACT_NAME
+            bundle = bundle_parent / ledger.R59_BUNDLE_RECEIPT_COMPONENTS[-1]
+            directory_acl = (
+                f"user:{ledger._r59_implementation_user()} "
+                "allow read,execute,readattr"
+            )
+            file_acl = (
+                f"user:{ledger._r59_implementation_user()} allow read,readattr"
+            )
+            for path in (root, root / "formal-report", bundle_parent):
+                subprocess.run(["/bin/chmod", "+a", directory_acl, path], check=True)
+            artifact.write_bytes(self.HOLDOUT_ARTIFACT_BYTES)
+            bundle.write_bytes(self.BUNDLE_RECEIPT_BYTES)
+            for path in (artifact, bundle):
+                path.chmod(0o600)
+                subprocess.run(["/bin/chmod", "+a", file_acl, path], check=True)
+            with (
+                mock.patch.object(ledger, "R59_READINESS_ROOT_PREFIX", prefix),
+                mock.patch.object(ledger, "_r59_custody_uid", return_value=os.geteuid()),
+            ):
+                self.assertEqual(
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0),
+                    (
+                        hashlib.sha256(self.BUNDLE_RECEIPT_BYTES).hexdigest(),
+                        hashlib.sha256(self.HOLDOUT_ARTIFACT_BYTES).hexdigest(),
+                    ),
+                )
+                read_custody_file = ledger._r59_read_custody_file
+
+                def drift_intermediate_directory(root, name, label, stack):
+                    value = read_custody_file(root, name, label, stack)
+                    if label == "R59 bundle validation receipt":
+                        (Path(prefix + self.SUCCESSOR_B0) / "formal-report").chmod(
+                            0o777
+                        )
+                    return value
+
+                with (
+                    mock.patch.object(
+                        ledger,
+                        "_r59_read_custody_file",
+                        side_effect=drift_intermediate_directory,
+                    ),
+                    self.assertRaisesRegex(
+                        ledger.LedgerError, "formal-report.*metadata changed"
+                    ),
+                ):
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0)
+                (root / "formal-report").chmod(0o700)
+
+                def drift_artifact(root, name, label, stack):
+                    value = read_custody_file(root, name, label, stack)
+                    if label == "R59 bundle validation receipt":
+                        artifact.write_bytes(b"drift")
+                    return value
+
+                with (
+                    mock.patch.object(
+                        ledger,
+                        "_r59_read_custody_file",
+                        side_effect=drift_artifact,
+                    ),
+                    self.assertRaisesRegex(
+                        ledger.LedgerError, "holdout artifact changed"
+                    ),
+                ):
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0)
+                artifact.write_bytes(self.HOLDOUT_ARTIFACT_BYTES)
+                artifact.chmod(0o600)
+                subprocess.run(["/bin/chmod", "+a", file_acl, artifact], check=True)
+                bundle.unlink()
+                with self.assertRaisesRegex(
+                    ledger.LedgerError, "bundle-validation.json"
+                ):
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0)
+                bundle.write_bytes(self.BUNDLE_RECEIPT_BYTES)
+                bundle.chmod(0o600)
+                subprocess.run(["/bin/chmod", "+a", file_acl, bundle], check=True)
+                artifact.unlink()
+                with self.assertRaisesRegex(
+                    ledger.LedgerError, ledger.R59_HOLDOUT_ARTIFACT_NAME
+                ):
+                    ledger._r59_read_authorization_evidence(self.SUCCESSOR_B0)
+
+
+class R60PreflightTests(unittest.TestCase):
+    REQUESTED_B0 = "a" * 40
+    VALIDATOR_SHA = "5" * 64
+
+    def setUp(self):
+        self.layout = {
+            "canonical_ustar_pass": True,
+            "ciphertext_sha256": "1" * 64,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "layout_pass": True,
+            "layout_validator_sha256": self.VALIDATOR_SHA,
+            "manifest_binding_pass": True,
+            "manifest_sha256": "2" * 64,
+            "member_name_digest_sha256": "3" * 64,
+            "plan_revision": 60,
+            "private_manifest_commitment_sha256": "2" * 64,
+            "required_root_present": True,
+            "restricted_values_disclosed": False,
+            "same_archive_object_pass": True,
+            "schema": "hanonly.r60.layout-receipt.v1",
+            "wrapper_absent": True,
+        }
+        self.public = {
+            "ciphertext_sha256": self.layout["ciphertext_sha256"],
+            "cleanup_pass": True,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "layout_receipt_sha256": self.sha(self.layout),
+            "layout_validator_sha256": self.VALIDATOR_SHA,
+            "manifest_sha256": self.layout["manifest_sha256"],
+            "member_name_digest_sha256": self.layout[
+                "member_name_digest_sha256"
+            ],
+            "plan_revision": 60,
+            "private_manifest_commitment_sha256": self.layout[
+                "private_manifest_commitment_sha256"
+            ],
+            "restricted_values_disclosed": False,
+            "schema": "hanonly.r60.public-commitment.v1",
+            "source_b0_sha": ledger.R60_BASE_B0_SHA,
+            "start_marker_absent": True,
+        }
+        self.successor = {
+            "calibration_artifact_sha256": ledger.R60_CALIBRATION_ARTIFACT_SHA256,
+            "ciphertext_sha256": self.layout["ciphertext_sha256"],
+            "contract_sha256": ledger.R60_CONTRACT_SHA256,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "layout_receipt_sha256": self.sha(self.layout),
+            "layout_validator_sha256": self.VALIDATOR_SHA,
+            "manifest_sha256": self.layout["manifest_sha256"],
+            "member_name_digest_sha256": self.layout[
+                "member_name_digest_sha256"
+            ],
+            "package_unchanged": True,
+            "plan_revision": 60,
+            "private_manifest_commitment_sha256": self.layout[
+                "private_manifest_commitment_sha256"
+            ],
+            "public_commitment_sha256": self.sha(self.public),
+            "schema": "hanonly.r60.successor-commitment.v1",
+            "selected_candidate_id": "S25L4",
+            "source_b0_sha": ledger.R60_BASE_B0_SHA,
+            "start_marker_absent": True,
+            "successor_b0_sha": self.REQUESTED_B0,
+            "test_spec_sha256": ledger.R60_TEST_SPEC_SHA256,
+        }
+
+    @staticmethod
+    def clone(value):
+        return json.loads(json.dumps(value))
+
+    @staticmethod
+    def bytes(value):
+        return ledger._r59_canonical_json(value)
+
+    @classmethod
+    def sha(cls, value):
+        return hashlib.sha256(cls.bytes(value)).hexdigest()
+
+    def validate(self, *, layout=None, public=None, successor=None):
+        layout = layout or self.layout
+        public = public or self.public
+        successor = successor or self.successor
+        return ledger._r60_validate_preflight_values(
+            self.bytes(layout),
+            layout,
+            self.bytes(public),
+            public,
+            self.bytes(successor),
+            successor,
+            self.REQUESTED_B0,
+            self.VALIDATOR_SHA,
+        )
+
+    def test_exact_receipts_pass(self):
+        self.assertIsNone(self.validate())
+
+    def test_search_only_directory_uses_o_search_for_final_component(self):
+        directory_stat = mock.Mock(st_mode=stat.S_IFDIR)
+        with (
+            contextlib.ExitStack() as stack,
+            mock.patch.object(
+                ledger, "_canonical_existing_path", return_value="/public/root"
+            ),
+            mock.patch.object(ledger.os, "open", side_effect=(10, 11, 12)) as opened,
+            mock.patch.object(ledger.os, "fstat", return_value=directory_stat),
+            mock.patch.object(ledger.os, "close"),
+        ):
+            ledger._open_absolute(
+                "/public/root", directory=True, stack=stack, search_only=True
+            )
+        final_flags = opened.call_args_list[-1].args[1]
+        self.assertTrue(final_flags & os.O_SEARCH)
+
+    def authorization_values(self):
+        public_sha = self.sha(self.public)
+        successor_sha = self.sha(self.successor)
+        start = {
+            "b0_sha": self.REQUESTED_B0,
+            "calibration_artifact_sha256": ledger.R60_CALIBRATION_ARTIFACT_SHA256,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "nonce_hex": "6" * 64,
+            "plan_revision": 60,
+            "pre_holdout_attestation_sha256": "7" * 64,
+            "public_commitment_sha256": public_sha,
+            "schema": "hanonly.r60.holdout-start.v1",
+            "selected_candidate_id": "S25L4",
+            "state": "started",
+            "successor_commitment_sha256": successor_sha,
+        }
+        start_sha = self.sha(start)
+        runtime = {
+            "b0_sha": self.REQUESTED_B0,
+            "calibration_artifact_sha256": ledger.R60_CALIBRATION_ARTIFACT_SHA256,
+            "ciphertext_sha256": self.public["ciphertext_sha256"],
+            "decrypt_pass": True,
+            "entry_ids": ledger.R60_ENTRY_IDS,
+            "hashes_sha256": "8" * 64,
+            "layout_receipt_sha256": self.public["layout_receipt_sha256"],
+            "layout_validator_sha256": self.VALIDATOR_SHA,
+            "manifest_sha256": self.public["manifest_sha256"],
+            "member_name_digest_sha256": self.public["member_name_digest_sha256"],
+            "oracle_sha256": "9" * 64,
+            "package_unchanged": True,
+            "plaintext_archive_sha256": "4" * 64,
+            "plan_revision": 60,
+            "private_manifest_commitment_sha256": self.public[
+                "private_manifest_commitment_sha256"
+            ],
+            "restricted_values_disclosed": False,
+            "schema": "hanonly.r60.runtime-commitment.v1",
+            "selected_candidate_id": "S25L4",
+            "start_marker_sha256": start_sha,
+            "state": "runtime_committed",
+            "successor_commitment_sha256": successor_sha,
+        }
+        runtime_sha = self.sha(runtime)
+        cleanup = {
+            "b0_sha": self.REQUESTED_B0,
+            "cleanup_pass": True,
+            "descriptors_closed": True,
+            "nonce_hex": start["nonce_hex"],
+            "plaintext_root": ledger.R60_PLAINTEXT_ROOT,
+            "plaintext_root_absent": True,
+            "plan_revision": 60,
+            "restricted_values_disclosed": False,
+            "runner_pid": 424242,
+            "runner_process_exited": True,
+            "runtime_receipt_sha256": runtime_sha,
+            "schema": "hanonly.r60.cleanup-receipt.v1",
+            "start_marker_sha256": start_sha,
+            "successor_commitment_sha256": successor_sha,
+        }
+        bundle_sha = "a" * 64
+        artifact_sha = "b" * 64
+        terminal = {
+            "artifact_sha256": artifact_sha,
+            "b0_sha": self.REQUESTED_B0,
+            "bundle_validation_receipt_sha256": bundle_sha,
+            "calibration_artifact_sha256": ledger.R60_CALIBRATION_ARTIFACT_SHA256,
+            "cell_results": [
+                {"cell": cell, "result": "pass"} for cell in ledger.R60_CELLS
+            ],
+            "cleanup_receipt_sha256": self.sha(cleanup),
+            "first_failed_cell": None,
+            "plan_revision": 60,
+            "runtime_receipt_sha256": runtime_sha,
+            "schema": "hanonly.r60.holdout-terminal.v1",
+            "selected_candidate_id": "S25L4",
+            "start_marker_sha256": start_sha,
+            "state": "completed_pass",
+            "unexecuted_cells": [],
+        }
+        return start, runtime, terminal, cleanup, bundle_sha, artifact_sha
+
+    def authorize(self, *, mutate=None):
+        start, runtime, terminal, cleanup, bundle_sha, artifact_sha = (
+            self.authorization_values()
+        )
+        if mutate:
+            mutate(start, runtime, terminal, cleanup)
+        with (
+            mock.patch.object(ledger, "_r60_require_plaintext_absent"),
+            mock.patch.object(ledger, "_r60_require_runner_process_absent"),
+        ):
+            return ledger._r60_validate_authorization_values(
+                self.bytes(self.layout),
+                self.layout,
+                self.bytes(self.public),
+                self.public,
+                self.bytes(self.successor),
+                self.successor,
+                self.bytes(start),
+                start,
+                self.bytes(runtime),
+                runtime,
+                self.bytes(terminal),
+                terminal,
+                self.bytes(cleanup),
+                cleanup,
+                self.REQUESTED_B0,
+                self.VALIDATOR_SHA,
+                bundle_sha,
+                artifact_sha,
+            )
+
+    def test_authorization_requires_exact_eight_cells_and_cleanup_bindings(self):
+        self.assertEqual(self.authorize()["result"], "authorized")
+        with self.assertRaisesRegex(ledger.LedgerError, "terminal receipt"):
+            self.authorize(
+                mutate=lambda _s, _r, terminal, _c: terminal["cell_results"].reverse()
+            )
+        def fail_cleanup(_start, _runtime, terminal, cleanup):
+            cleanup["plaintext_root_absent"] = False
+            terminal["cleanup_receipt_sha256"] = self.sha(cleanup)
+
+        with self.assertRaisesRegex(ledger.LedgerError, "cleanup receipt"):
+            self.authorize(mutate=fail_cleanup)
+
+    def test_authorization_requires_exact_lowercase_64_hex_nonce(self):
+        for nonce in ("6" * 32, "6" * 65, "A" * 64):
+            with self.subTest(nonce=nonce), self.assertRaisesRegex(
+                ledger.LedgerError, "start receipt binding"
+            ):
+                self.authorize(
+                    mutate=lambda start, _r, _t, cleanup, nonce=nonce: (
+                        start.__setitem__("nonce_hex", nonce),
+                        cleanup.__setitem__("nonce_hex", nonce),
+                    )
+                )
+
+    def test_authorization_rejects_invalid_runtime_plaintext_archive_hash(self):
+        with self.assertRaisesRegex(ledger.LedgerError, "plaintext_archive_sha256"):
+            self.authorize(
+                mutate=lambda _s, runtime, _t, _c: runtime.__setitem__(
+                    "plaintext_archive_sha256", "not-a-sha"
+                )
+            )
+
+    def test_cleanup_runner_pid_lifecycle_checks_fail_closed(self):
+        with mock.patch.object(ledger.os, "kill", side_effect=ProcessLookupError):
+            self.assertIsNone(ledger._r60_require_runner_process_absent(424242))
+        with mock.patch.object(
+            ledger.os, "kill", side_effect=OSError(errno.ESRCH, "not found")
+        ):
+            self.assertIsNone(ledger._r60_require_runner_process_absent(424242))
+
+        for error in (None, PermissionError(), OSError(errno.EIO, "unavailable")):
+            with self.subTest(error=error):
+                patcher = mock.patch.object(
+                    ledger.os,
+                    "kill",
+                    return_value=None,
+                    side_effect=error,
+                )
+                with patcher, self.assertRaisesRegex(
+                    ledger.LedgerError, "live or reused|cannot prove"
+                ):
+                    ledger._r60_require_runner_process_absent(424242)
+
+        for invalid in (True, 0, -1, "424242"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                ledger.LedgerError, "positive integer"
+            ):
+                ledger._r60_require_runner_process_absent(invalid)
+
+    def test_cleanup_runner_pid_is_required_by_closed_schema(self):
+        def remove_runner_pid(_start, _runtime, terminal, cleanup):
+            del cleanup["runner_pid"]
+            terminal["cleanup_receipt_sha256"] = self.sha(cleanup)
+
+        with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+            self.authorize(mutate=remove_runner_pid)
+
+    def test_authorization_keeps_evidence_open_through_semantic_revalidation(self):
+        events = []
+
+        class TrackingStack:
+            active = False
+
+            def __enter__(self):
+                self.active = True
+                events.append("open")
+                return self
+
+            def __exit__(self, *_args):
+                events.append("close")
+                self.active = False
+
+        stack = TrackingStack()
+
+        def during(label):
+            def check(*_args):
+                self.assertTrue(stack.active)
+                events.append(label)
+
+            return check
+
+        inputs = []
+        for value in (
+            self.layout,
+            self.public,
+            self.successor,
+            *self.authorization_values()[:4],
+        ):
+            inputs.append((self.bytes(value), value, object(), object()))
+
+        arguments = argparse.Namespace(requested_b0_sha=self.REQUESTED_B0)
+        implementation_identity = ("implementation", 501)
+
+        def read_public_json(_root, _name, _label, _stack, identity):
+            self.assertEqual(identity, implementation_identity)
+            return inputs.pop(0)
+
+        def revalidate_file(_held, _label, _metadata, identity):
+            self.assertEqual(identity, implementation_identity)
+            during("file")()
+
+        def revalidate_root(_root, _metadata, identity):
+            self.assertEqual(identity, implementation_identity)
+            during("root")()
+
+        with (
+            mock.patch.object(
+                ledger,
+                "contextlib",
+                mock.Mock(ExitStack=mock.Mock(return_value=stack)),
+            ),
+            mock.patch.object(ledger, "_canonical_existing_path", return_value="/repo"),
+            mock.patch.object(ledger, "_r60_repo_root", return_value="/repo"),
+            mock.patch.object(ledger, "_r60_validate_git_state"),
+            mock.patch.object(
+                ledger, "_r60_validate_protocol_files", return_value=self.VALIDATOR_SHA
+            ),
+            mock.patch.object(ledger, "_r60_validate_calibration_artifact"),
+            mock.patch.object(ledger, "_open_absolute", return_value=object()),
+            mock.patch.object(
+                ledger,
+                "_r60_validate_public_directory_held",
+                return_value=(object(), implementation_identity),
+            ),
+            mock.patch.object(
+                ledger, "_r60_read_public_json", side_effect=read_public_json
+            ),
+            mock.patch.object(
+                ledger,
+                "_r60_open_authorization_evidence",
+                return_value=("a" * 64, "b" * 64, [], []),
+            ),
+            mock.patch.object(
+                ledger,
+                "_r60_validate_authorization_values",
+                side_effect=lambda *_args: (
+                    during("semantic")(),
+                    {"result": "authorized"},
+                )[1],
+            ),
+            mock.patch.object(
+                ledger, "_r59_revalidate_custody_file", side_effect=revalidate_file
+            ),
+            mock.patch.object(
+                ledger,
+                "_r59_revalidate_authorization_evidence",
+                side_effect=during("evidence"),
+            ),
+            mock.patch.object(
+                ledger,
+                "_r60_revalidate_public_directory_held",
+                side_effect=revalidate_root,
+            ),
+        ):
+            ledger._r60_validate_authorization(arguments)
+
+        self.assertEqual(
+            events,
+            ["open", "semantic", *("file" for _ in range(7)), "evidence", "root", "close"],
+        )
+
+    def test_closed_schemas_and_canonical_bytes_reject(self):
+        for label, value in (
+            ("layout", self.layout),
+            ("public", self.public),
+            ("successor", self.successor),
+        ):
+            with self.subTest(label=label):
+                changed = self.clone(value)
+                changed["unknown"] = True
+                arguments = {label: changed}
+                with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+                    self.validate(**arguments)
+        changed = self.clone(self.layout)
+        changed["plaintext_archive_sha256"] = "4" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "closed and complete"):
+            self.validate(layout=changed)
+        with self.assertRaisesRegex(ledger.LedgerError, "canonical JSON"):
+            ledger._r60_validate_preflight_values(
+                self.bytes(self.layout) + b"\n",
+                self.layout,
+                self.bytes(self.public),
+                self.public,
+                self.bytes(self.successor),
+                self.successor,
+                self.REQUESTED_B0,
+                self.VALIDATOR_SHA,
+            )
+
+    def test_hash_boolean_and_binding_drift_reject(self):
+        changed = self.clone(self.layout)
+        changed["manifest_binding_pass"] = False
+        with self.assertRaisesRegex(ledger.LedgerError, "layout receipt binding"):
+            self.validate(layout=changed)
+
+        changed = self.clone(self.public)
+        changed["manifest_sha256"] = "9" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "cross-binding"):
+            self.validate(public=changed)
+
+        changed = self.clone(self.successor)
+        changed["contract_sha256"] = "8" * 64
+        with self.assertRaisesRegex(ledger.LedgerError, "successor commitment binding"):
+            self.validate(successor=changed)
+
+        with self.assertRaisesRegex(ledger.LedgerError, "cross-binding"):
+            ledger._r60_validate_preflight_values(
+                self.bytes(self.layout),
+                self.layout,
+                self.bytes(self.public),
+                self.public,
+                self.bytes(self.successor),
+                self.successor,
+                self.REQUESTED_B0,
+                "0" * 64,
+            )
+
+    def test_fixed_protocol_and_calibration_hashes(self):
+        source_root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for relative in (
+                ".omx/plans/hanonly-r60-b0-custody-contract.json",
+                ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+                "scripts/hanonly_tar_layout.py",
+            ):
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes((source_root / relative).read_bytes())
+            self.assertEqual(
+                ledger._r60_validate_protocol_files(str(root)),
+                hashlib.sha256((root / "scripts/hanonly_tar_layout.py").read_bytes()).hexdigest(),
+            )
+            spec = root / ".omx/plans/test-spec-hanonly-r60-b0-custody.md"
+            spec.write_bytes(spec.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ledger.LedgerError, "test spec SHA drift"):
+                ledger._r60_validate_protocol_files(str(root))
+
+            calibration = root / "calibration.json"
+            calibration.write_bytes(b"calibration")
+            calibration.chmod(0o600)
+            with (
+                mock.patch.object(
+                    ledger, "R60_CALIBRATION_ARTIFACT_PATH", str(calibration)
+                ),
+                mock.patch.object(
+                    ledger,
+                    "R60_CALIBRATION_ARTIFACT_SHA256",
+                    hashlib.sha256(b"calibration").hexdigest(),
+                ),
+            ):
+                ledger._r60_validate_calibration_artifact()
+                calibration.write_bytes(b"drift")
+                with self.assertRaisesRegex(ledger.LedgerError, "artifact SHA drift"):
+                    ledger._r60_validate_calibration_artifact()
+
+    def test_r60_calibration_artifact_allows_frozen_source_owner(self):
+        digest = hashlib.sha256(b"calibration").hexdigest()
+        with (
+            mock.patch.object(
+                ledger,
+                "R60_CALIBRATION_ARTIFACT_SHA256",
+                digest,
+            ),
+            mock.patch.object(
+                ledger,
+                "_r51_read",
+                return_value=(ledger.R60_CALIBRATION_ARTIFACT_PATH, b"calibration"),
+            ) as read_artifact,
+        ):
+            ledger._r60_validate_calibration_artifact()
+
+        read_artifact.assert_called_once_with(
+            ledger.R60_CALIBRATION_ARTIFACT_PATH,
+            "R60 calibration artifact",
+            mode=0o600,
+            owner_required=False,
+        )
+
+    def test_r60_acl_identity_is_non_custody_local_principal(self):
+        acl = (
+            "!#acl 1\n"
+            "user:8DEDC8B4-0346-412C-818D-F63BC34B2CF0:"
+            "implementation:501:allow:execute,readattr\n"
+        )
+        principal = mock.Mock(pw_name="implementation")
+        with (
+            mock.patch.object(ledger, "_r59_acl_text", return_value=acl),
+            mock.patch.object(ledger.pwd, "getpwuid", return_value=principal),
+            mock.patch.object(ledger, "_r59_custody_uid", return_value=502),
+        ):
+            self.assertEqual(
+                ledger._r60_implementation_identity(
+                    1, "execute,readattr", "R60 public root"
+                ),
+                ("implementation", 501),
+            )
+            ledger._r59_require_acl(
+                1,
+                "execute,readattr",
+                "R60 public root",
+                ("implementation", 501),
+            )
+
+        with (
+            mock.patch.object(ledger, "_r59_acl_text", return_value=acl),
+            mock.patch.object(ledger.pwd, "getpwuid", return_value=principal),
+            mock.patch.object(ledger, "_r59_custody_uid", return_value=501),
+            self.assertRaisesRegex(ledger.LedgerError, "ACL drift"),
+        ):
+            ledger._r60_implementation_identity(
+                1, "execute,readattr", "R60 public root"
+            )
+
+    def test_git_state_requires_detached_clean_exact_diff(self):
+        def result(code=0, stdout=b""):
+            return subprocess.CompletedProcess([], code, stdout, b"")
+
+        valid = [
+            result(stdout=(self.REQUESTED_B0 + "\n").encode()),
+            result(code=1),
+            result(),
+            result(stdout=("\n".join(ledger.R60_ALLOWED_CHANGED_PATHS) + "\n").encode()),
+        ]
+        with mock.patch.object(ledger, "_run_git", side_effect=valid):
+            ledger._r60_validate_git_state("/repo", self.REQUESTED_B0)
+
+        for changed_paths in (
+            ledger.R60_ALLOWED_CHANGED_PATHS[:-1],
+            ledger.R60_ALLOWED_CHANGED_PATHS + ("crates/product.rs",),
+        ):
+            responses = [
+                result(stdout=(self.REQUESTED_B0 + "\n").encode()),
+                result(code=1),
+                result(),
+                result(stdout=("\n".join(changed_paths) + "\n").encode()),
+            ]
+            with (
+                self.subTest(paths=changed_paths),
+                mock.patch.object(ledger, "_run_git", side_effect=responses),
+                self.assertRaisesRegex(ledger.LedgerError, "diff path set drift"),
+            ):
+                ledger._r60_validate_git_state("/repo", self.REQUESTED_B0)
+
+    def test_fixed_endpoint_pass_and_all_pre_start_markers_reject(self):
+        with tempfile.TemporaryDirectory() as directory:
+            public_root = Path(directory).resolve() / "public"
+            public_root.mkdir(mode=0o700)
+            receipts = (
+                (ledger.R60_LAYOUT_RECEIPT_NAME, self.layout),
+                (ledger.R60_PUBLIC_COMMITMENT_NAME, self.public),
+                (ledger.R60_SUCCESSOR_COMMITMENT_NAME, self.successor),
+            )
+            for name, value in receipts:
+                path = public_root / name
+                path.write_bytes(self.bytes(value))
+                path.chmod(0o600)
+            patches = (
+                mock.patch.object(ledger, "R60_PUBLIC_ROOT", str(public_root)),
+                mock.patch.object(ledger, "_r60_repo_root", return_value=str(Path(directory).resolve())),
+                mock.patch.object(ledger, "_r60_validate_git_state"),
+                mock.patch.object(
+                    ledger,
+                    "_r60_validate_protocol_files",
+                    return_value=self.VALIDATOR_SHA,
+                ),
+                mock.patch.object(ledger, "_r60_validate_calibration_artifact"),
+                mock.patch.object(ledger, "_r60_require_plaintext_absent"),
+                mock.patch.object(ledger, "_r59_custody_uid", return_value=os.geteuid()),
+                mock.patch.object(
+                    ledger,
+                    "_r60_implementation_identity",
+                    return_value=(ledger._r59_implementation_user(), os.geteuid()),
+                ),
+                mock.patch.object(ledger, "_r59_require_acl"),
+            )
+            with contextlib.ExitStack() as stack:
+                for patcher in patches:
+                    stack.enter_context(patcher)
+                self.assertEqual(
+                    json.loads(
+                        ledger.execute(
+                            [
+                                "validate-r60-b0-preflight",
+                                "--requested-b0-sha",
+                                self.REQUESTED_B0,
+                            ]
+                        )
+                    ),
+                    {"result": "pass"},
+                )
+                for marker in ledger.R60_ABSENT_RECEIPT_NAMES:
+                    with self.subTest(marker=marker):
+                        marker_path = public_root / marker
+                        marker_path.write_bytes(b"marker")
+                        with self.assertRaisesRegex(
+                            ledger.LedgerError, "pre-start receipt already exists"
+                        ):
+                            ledger.execute(
+                                [
+                                    "validate-r60-b0-preflight",
+                                    "--requested-b0-sha",
+                                    self.REQUESTED_B0,
+                                ]
+                            )
+                        marker_path.unlink()
+
+    def test_endpoint_rejects_paths_hashes_and_plaintext_presence(self):
+        for extra in (
+            ("--repo-root", "/tmp/repo"),
+            ("--layout-validator-sha256", "0" * 64),
+            ("--public-root", "/tmp/public"),
+        ):
+            with self.subTest(extra=extra), self.assertRaises(ledger.LedgerError):
+                ledger.execute(
+                    [
+                        "validate-r60-b0-preflight",
+                        "--requested-b0-sha",
+                        self.REQUESTED_B0,
+                        *extra,
+                    ]
+                )
+        with tempfile.TemporaryDirectory() as directory:
+            plaintext = Path(directory) / "plaintext"
+            with mock.patch.object(ledger, "R60_PLAINTEXT_ROOT", str(plaintext)):
+                ledger._r60_require_plaintext_absent()
+                plaintext.mkdir()
+                with self.assertRaisesRegex(ledger.LedgerError, "already exists"):
+                    ledger._r60_require_plaintext_absent()
 
 
 if __name__ == "__main__":

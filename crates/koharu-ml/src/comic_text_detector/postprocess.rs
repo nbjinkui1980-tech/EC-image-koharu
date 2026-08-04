@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::types::{TextDirection, TextRegion};
 use image::{
     DynamicImage, GrayImage, Luma, Rgb, RgbImage,
@@ -7,6 +9,7 @@ use imageproc::{
     distance_transform::Norm,
     geometric_transformations::{Interpolation, Projection, warp_into},
     morphology::dilate,
+    region_labelling::{Connectivity, connected_components},
 };
 
 const FINAL_MASK_DILATE_RADIUS: u8 = 2;
@@ -20,6 +23,59 @@ pub struct ComicTextDetection {
     pub line_polygons: Vec<Quad>,
     pub text_blocks: Vec<TextRegion>,
     pub mask: GrayImage,
+}
+
+fn threshold_segmentation_probability_mask(pred_mask: &GrayImage) -> GrayImage {
+    GrayImage::from_fn(pred_mask.width(), pred_mask.height(), |x, y| {
+        Luma([if pred_mask.get_pixel(x, y)[0] > super::BINARY_THRESHOLD {
+            255
+        } else {
+            0
+        }])
+    })
+}
+
+fn refine_segmentation_probability_mask(pred_mask: &GrayImage) -> GrayImage {
+    dilate(
+        &threshold_segmentation_probability_mask(pred_mask),
+        Norm::L1,
+        FINAL_MASK_DILATE_RADIUS,
+    )
+}
+
+pub fn refine_segmentation_candidate_mask(
+    pred_mask: &GrayImage,
+    blocks: &[TextRegion],
+) -> GrayImage {
+    let (width, height) = pred_mask.dimensions();
+    if blocks.is_empty() {
+        return GrayImage::new(width, height);
+    }
+    let thresholded = threshold_segmentation_probability_mask(pred_mask);
+    let labels = connected_components(&thresholded, Connectivity::Eight, Luma([0]));
+    let bounds = blocks
+        .iter()
+        .map(|block| expanded_text_block_crop_bounds(width, height, block))
+        .collect::<Vec<_>>();
+    let mut candidates = HashSet::new();
+    for [left, top, right, bottom] in bounds {
+        for y in top..bottom {
+            for x in left..right {
+                let label = labels.get_pixel(x, y).0[0];
+                if label != 0 {
+                    candidates.insert(label);
+                }
+            }
+        }
+    }
+    let retained = GrayImage::from_fn(width, height, |x, y| {
+        if candidates.contains(&labels.get_pixel(x, y).0[0]) {
+            *thresholded.get_pixel(x, y)
+        } else {
+            Luma([0])
+        }
+    });
+    dilate(&retained, Norm::L1, FINAL_MASK_DILATE_RADIUS)
 }
 
 pub fn refine_segmentation_mask(
@@ -51,19 +107,14 @@ pub fn refine_segmentation_mask(
         }
     }
 
-    // Apply a threshold mask: Pixels are preserved exclusively if their probability
-    // exceeds the core threshold (`super::BINARY_THRESHOLD`) and they reside within a known TextRegion geometry.
-    let base = GrayImage::from_fn(width, height, |x, y| {
-        if in_bounds_mask.get_pixel(x, y)[0] != 0
-            && pred_mask.get_pixel(x, y)[0] > super::BINARY_THRESHOLD
-        {
-            Luma([255])
-        } else {
+    let bounded_probability = GrayImage::from_fn(width, height, |x, y| {
+        if in_bounds_mask.get_pixel(x, y)[0] == 0 {
             Luma([0])
+        } else {
+            *pred_mask.get_pixel(x, y)
         }
     });
-
-    let dilated = dilate(&base, Norm::L1, FINAL_MASK_DILATE_RADIUS);
+    let dilated = refine_segmentation_probability_mask(&bounded_probability);
 
     // Final clipping pass: Ensure the dilated mask never escapes the block boundaries
     // even if it thickens beyond its original source pixel edges.
@@ -322,6 +373,51 @@ fn vector_norm(vector: [f32; 2]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probability_refinement_locks_threshold_and_l1_radius_two() {
+        let probability = GrayImage::from_fn(9, 9, |x, y| {
+            Luma([if (x, y) == (4, 4) {
+                super::super::BINARY_THRESHOLD + 1
+            } else if (x, y) == (1, 1) {
+                super::super::BINARY_THRESHOLD
+            } else {
+                0
+            }])
+        });
+
+        let refined = refine_segmentation_probability_mask(&probability);
+
+        assert_eq!(refined.get_pixel(1, 1).0[0], 0);
+        assert_ne!(refined.get_pixel(4, 4).0[0], 0);
+        assert_ne!(refined.get_pixel(6, 4).0[0], 0);
+        assert_ne!(refined.get_pixel(5, 5).0[0], 0);
+        assert_eq!(refined.get_pixel(6, 5).0[0], 0);
+    }
+
+    #[test]
+    fn candidate_refinement_keeps_owned_component_and_drops_nearby_noise() {
+        let probability = GrayImage::from_fn(32, 16, |x, y| {
+            let owned = y == 8 && (7..18).contains(&x);
+            let noise = y == 8 && (20..22).contains(&x);
+            Luma([u8::from(owned || noise) * 255])
+        });
+        let block = TextRegion {
+            x: 10.0,
+            y: 6.0,
+            width: 4.0,
+            height: 4.0,
+            detected_font_size_px: Some(4.0),
+            ..Default::default()
+        };
+
+        let refined = refine_segmentation_candidate_mask(&probability, &[block]);
+
+        assert_ne!(refined.get_pixel(5, 8).0[0], 0);
+        assert_ne!(refined.get_pixel(19, 8).0[0], 0);
+        assert_eq!(refined.get_pixel(20, 8).0[0], 0);
+        assert_eq!(refined.get_pixel(21, 8).0[0], 0);
+    }
 
     #[test]
     fn refine_segmentation_mask_erases_when_blocks_are_missing() {

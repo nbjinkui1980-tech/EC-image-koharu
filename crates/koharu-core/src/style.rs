@@ -5,7 +5,6 @@ use std::str::FromStr;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
-use strum::IntoEnumIterator;
 use utoipa::ToSchema;
 
 // ---------------------------------------------------------------------------
@@ -26,13 +25,6 @@ pub enum TextAlign {
 // ---------------------------------------------------------------------------
 // Shader effect (italic / bold flags)
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumIter, strum::EnumString)]
-#[strum(serialize_all = "lowercase")]
-enum TextShaderEffectFlag {
-    Italic,
-    Bold,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default, ToSchema, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -68,42 +60,15 @@ impl TextShaderEffect {
             bold: false,
         }
     }
-
-    fn apply_flag(&mut self, flag: TextShaderEffectFlag) {
-        match flag {
-            TextShaderEffectFlag::Italic => self.italic = true,
-            TextShaderEffectFlag::Bold => self.bold = true,
-        }
-    }
-
-    fn enabled_flags(self) -> [Option<TextShaderEffectFlag>; 2] {
-        [
-            self.italic.then_some(TextShaderEffectFlag::Italic),
-            self.bold.then_some(TextShaderEffectFlag::Bold),
-        ]
-    }
-}
-
-fn valid_shader_effects() -> String {
-    TextShaderEffectFlag::iter()
-        .map(|flag| flag.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 impl fmt::Display for TextShaderEffect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let parts = self
-            .enabled_flags()
-            .into_iter()
-            .flatten()
-            .map(|flag| flag.to_string())
-            .collect::<Vec<_>>();
-
-        if parts.is_empty() {
-            f.write_str("none")
-        } else {
-            f.write_str(&parts.join(","))
+        match (self.italic, self.bold) {
+            (false, false) => f.write_str("none"),
+            (true, false) => f.write_str("italic"),
+            (false, true) => f.write_str("bold"),
+            (true, true) => f.write_str("italic,bold"),
         }
     }
 }
@@ -126,13 +91,15 @@ impl FromStr for TextShaderEffect {
                 continue;
             }
 
-            let flag = token.parse::<TextShaderEffectFlag>().map_err(|_| {
-                anyhow::anyhow!(
-                    "Unknown shader effect: {token}. Valid: {}",
-                    valid_shader_effects()
-                )
-            })?;
-            effect.apply_flag(flag);
+            match token {
+                "italic" => effect.italic = true,
+                "bold" => effect.bold = true,
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "Unknown shader effect: {token}. Valid: italic, bold"
+                    ));
+                }
+            }
         }
 
         Ok(effect)

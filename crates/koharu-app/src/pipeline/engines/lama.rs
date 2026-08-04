@@ -171,11 +171,7 @@ mod tests {
     fn lama_inpaint_dispatch_receives_final_mask() {
         let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(32, 16, Rgb([1, 2, 3])));
         let mask = DynamicImage::ImageLuma8(GrayImage::from_fn(32, 16, |x, y| {
-            Luma([if (x == 5 || x == 20) && y == 8 {
-                255
-            } else {
-                0
-            }])
+            Luma([if x == 20 && y == 8 { 255 } else { 0 }])
         }));
         let bubble = DynamicImage::ImageLuma8(GrayImage::new(32, 16));
         let calls = Cell::new(0);

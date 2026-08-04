@@ -158,14 +158,11 @@ impl BertEmbeddings {
 }
 
 #[derive(Clone)]
-struct Dropout {
-    #[allow(dead_code)]
-    prob: f64,
-}
+struct Dropout;
 
 impl Dropout {
-    fn new(prob: f64) -> Self {
-        Self { prob }
+    fn new(_prob: f64) -> Self {
+        Self
     }
 }
 
