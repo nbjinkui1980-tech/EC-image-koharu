@@ -9,8 +9,9 @@ const HF_REPO: &str = "marsena/paddleocr-onnx-models";
 const DETECTION_MODEL: &str = "PP-OCRv5_server_det_infer.onnx";
 const RECOGNITION_MODEL: &str = "PP-OCRv5_server_rec_infer.onnx";
 const RECOGNITION_CONFIG: &str = "PP-OCRv5_server_rec_infer.yml";
-const SMALL_CANDIDATE_HEIGHT: u32 = 160;
-const MAX_SOURCE_DIMENSION_FOR_UPSCALE: u32 = 1024;
+const CROP_LOCAL_MIN_INFERENCE_HEIGHT: u32 = 320;
+const CROP_LOCAL_INFERENCE_PIXEL_BUDGET: u64 = 1024 * 1024;
+const CROP_LOCAL_MAX_SCALE: u32 = 4;
 
 koharu_runtime::declare_hf_model_package!(
     id: "model:pp-ocr-v5:detector",
@@ -77,11 +78,19 @@ pub struct PpOcrV5 {
 }
 
 fn word_box_inference_scale(width: u32, height: u32) -> u32 {
-    if height < SMALL_CANDIDATE_HEIGHT && width.max(height) <= MAX_SOURCE_DIMENSION_FOR_UPSCALE {
-        2
-    } else {
-        1
-    }
+    let scale = CROP_LOCAL_MIN_INFERENCE_HEIGHT
+        .div_ceil(height.max(1))
+        .clamp(1, CROP_LOCAL_MAX_SCALE);
+    (1..=scale)
+        .rev()
+        .find(|scale| {
+            u64::from(width)
+                .checked_mul(u64::from(height))
+                .and_then(|pixels| pixels.checked_mul(u64::from(*scale)))
+                .and_then(|pixels| pixels.checked_mul(u64::from(*scale)))
+                .is_some_and(|pixels| pixels <= CROP_LOCAL_INFERENCE_PIXEL_BUDGET)
+        })
+        .unwrap_or(1)
 }
 
 fn word_box_source_bbox(bbox: [f32; 4], scale: u32) -> [f32; 4] {
@@ -322,6 +331,7 @@ fn parse_character_dict(config: &str) -> Result<Vec<char>> {
 #[cfg(test)]
 mod tests {
     use super::{
+        CROP_LOCAL_INFERENCE_PIXEL_BUDGET, CROP_LOCAL_MAX_SCALE, CROP_LOCAL_MIN_INFERENCE_HEIGHT,
         canonicalize_detection_topology, parse_character_dict, word_box_inference_scale,
         word_box_source_bbox,
     };
@@ -342,7 +352,7 @@ mod tests {
 
     #[test]
     fn upscales_small_word_box_candidates_and_maps_boxes_back_to_source_pixels() {
-        assert_eq!(word_box_inference_scale(423, 77), 2);
+        assert_eq!(word_box_inference_scale(423, 77), 4);
         assert_eq!(word_box_inference_scale(900, 300), 1);
         assert_eq!(
             word_box_source_bbox([58.0, 40.0, 474.0, 116.0], 2),
@@ -383,12 +393,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-b1-red"]
     fn hanonly_pre_b1_red_t2_crop_local_ppocr_contract() {
-        const CROP_LOCAL_MIN_INFERENCE_HEIGHT: u32 = 320;
-        const CROP_LOCAL_INFERENCE_PIXEL_BUDGET: u64 = 1024 * 1024;
-        const CROP_LOCAL_MAX_SCALE: u32 = 4;
-
         fn crop_local_model_scale(width: u32, height: u32) -> u32 {
             let scale = CROP_LOCAL_MIN_INFERENCE_HEIGHT
                 .div_ceil(height.max(1))
