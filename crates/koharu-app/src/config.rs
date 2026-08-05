@@ -178,7 +178,7 @@ pub fn load() -> Result<AppConfig> {
         save(&config)?;
     }
 
-    hydrate_provider_secrets(&mut config);
+    hydrate_provider_secrets(&mut config)?;
 
     Ok(config)
 }
@@ -381,22 +381,23 @@ fn validate_engine_name(
 
 /// Populate provider keys from the standard credential store without writing
 /// them back to TOML. Custom CLI config uses the same hydration path.
-pub fn hydrate_provider_secrets(config: &mut AppConfig) {
+pub fn hydrate_provider_secrets(config: &mut AppConfig) -> Result<()> {
     let secrets = SecretStore::new(DEFAULT_SECRET_SERVICE);
-    hydrate_provider_secrets_with(config, |key| secrets.get(key).ok().flatten());
+    hydrate_provider_secrets_with(config, |key| secrets.get(key))
 }
 
 fn hydrate_provider_secrets_with(
     config: &mut AppConfig,
-    mut read: impl FnMut(&str) -> Option<String>,
-) {
+    mut read: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<()> {
     for provider in &mut config.providers {
-        if let Some(key) = read(&provider_api_key_secret_key(&provider.id))
+        if let Some(key) = read(&provider_api_key_secret_key(&provider.id))?
             && !key.trim().is_empty()
         {
             provider.api_key = Some(RedactedSecret::new(key));
         }
     }
+    Ok(())
 }
 
 /// Sync api_key fields to credential storage.
@@ -619,6 +620,22 @@ mod tests {
             provider_api_key_secret_key("openai"),
             "llm_provider_api_key_openai"
         );
+    }
+
+    #[test]
+    fn provider_secret_hydration_propagates_store_errors() {
+        let mut config = AppConfig::default();
+        config.providers.push(ProviderConfig {
+            id: "openai".into(),
+            base_url: None,
+            api_key: None,
+        });
+
+        let error = hydrate_provider_secrets_with(&mut config, |_| anyhow::bail!("store failed"))
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "store failed");
+        assert!(config.providers[0].api_key.is_none());
     }
 
     #[test]

@@ -1243,12 +1243,12 @@ describe('CLI contract', () => {
     })
   })
 
-  test('rejects retired R59 custody commands', async () => {
+  test('rejects retired R59 custody commands with the stable error', async () => {
     for (const command of ['--validate-r59-b0-preflight', '--validate-r59-b0-authorization']) {
       const result = await runCli([command, '--requested-b0-sha', 'a'.repeat(40)])
       expect(result.exitCode).not.toBe(0)
       expect(result.stdout).toBe('')
-      expect(result.stderr).toStartWith('FAIL [argv]:')
+      expect(result.stderr).toBe('FAIL [historical-custody]: historical_custody_command_retired\n')
     }
 
     const retired = await runCli([
@@ -1257,10 +1257,10 @@ describe('CLI contract', () => {
       'a'.repeat(40),
     ])
     expect(retired.exitCode).not.toBe(0)
-    expect(retired.stderr).toStartWith('FAIL [argv]:')
+    expect(retired.stderr).toBe('FAIL [historical-custody]: historical_custody_command_retired\n')
   })
 
-  test('accepts only the fixed R60 preflight argument shape', async () => {
+  test('retains the fixed R60 parser for read-only historical checks', () => {
     const sha = 'a'.repeat(40)
     expect(r60Args(['--validate-r60-b0-preflight', '--requested-b0-sha', sha])).toEqual([
       '--requested-b0-sha',
@@ -1272,66 +1272,25 @@ describe('CLI contract', () => {
         '--validate-r60-b0-authorization',
       ),
     ).toEqual(['--requested-b0-sha', sha])
-
-    for (const extra of [
-      ['--public-root', '/tmp/public'],
-      ['--layout-validator-sha256', 'b'.repeat(64)],
-      ['--contract-sha256', 'c'.repeat(64)],
-      ['--repo-root', '/tmp/repo'],
-    ]) {
-      const result = await runCli([
-        '--validate-r60-b0-preflight',
-        '--requested-b0-sha',
-        sha,
-        ...extra,
-      ])
-      expect(result.exitCode).not.toBe(0)
-      expect(result.stdout).toBe('')
-      expect(result.stderr).toStartWith('FAIL [r60-argv]:')
-    }
   })
 
-  test.each([
-    ['--project-r52-calibration-manifest', 'project-r52-calibration-manifest'],
-    ['--write-r52-b0-preflight-attestation', 'write-r52-b0-preflight-attestation'],
-    ['--write-r52-r51-holdout-adoption', 'write-r52-r51-holdout-adoption'],
-    ['--run-r52-challenge', 'run-r52-challenge'],
-    ['--run-r52-holdout', 'run-r52-holdout'],
-    ['--validate-r52-b0-authorization', 'validate-r52-b0-authorization'],
-  ])('wires %s only to its R52 ledger endpoint', async (flag, endpoint) => {
+  test('rejects historical custody before invoking Python or writing files', async () => {
     const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-r52-')))
     temporaryRoots.push(temporaryRoot)
     const bin = path.join(temporaryRoot, 'bin')
-    const argvLog = path.join(temporaryRoot, 'argv.json')
+    const invocationMarker = path.join(temporaryRoot, 'python-invoked')
     await mkdir(bin)
     const shim = path.join(bin, 'python3')
     await writeFile(
       shim,
       `#!${process.execPath}
 import { writeFileSync } from 'node:fs'
-writeFileSync(process.env.HANONLY_R52_ARGV_LOG, JSON.stringify(process.argv.slice(2)))
-process.stdout.write("R52\\n")
+writeFileSync(process.env.HANONLY_INVOCATION_MARKER, "invoked")
 `,
       { mode: 0o700 },
     )
     await chmod(shim, 0o700)
 
-    const result = await runCli([flag], {
-      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-      HANONLY_R52_ARGV_LOG: argvLog,
-    })
-
-    expect(result).toEqual({ exitCode: 0, stdout: 'R52\n', stderr: '' })
-    const argv = JSON.parse(await readFile(argvLog, 'utf8')) as string[]
-    expect(argv.slice(0, 3)).toEqual([
-      'scripts/hanonly_evidence_ledger.py',
-      endpoint,
-      '--repo-root',
-    ])
-    expect(argv).not.toContain('validate-r51-b0-authorization')
-  })
-
-  test('rejects caller-controlled repo roots on every R52 endpoint', async () => {
     for (const flag of [
       '--project-r52-calibration-manifest',
       '--write-r52-b0-preflight-attestation',
@@ -1339,23 +1298,19 @@ process.stdout.write("R52\\n")
       '--run-r52-challenge',
       '--run-r52-holdout',
       '--validate-r52-b0-authorization',
+      '--validate-r60-b0-preflight',
+      '--validate-r60-b0-authorization',
     ]) {
-      const result = await runCli([flag, '--repo-root', '/tmp'])
+      const result = await runCli([flag], {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        HANONLY_INVOCATION_MARKER: invocationMarker,
+      })
       expect(result.exitCode).not.toBe(0)
-      expect(result.stderr).toStartWith('FAIL [r52-argv]:')
+      expect(result.stdout).toBe('')
+      expect(result.stderr).toBe('FAIL [historical-custody]: historical_custody_command_retired\n')
+      await expect(stat(invocationMarker)).rejects.toMatchObject({ code: 'ENOENT' })
     }
   })
-
-  test.each(['--run-r52-challenge', '--run-r52-holdout'])(
-    'rejects arbitrary runner control for %s',
-    async (flag) => {
-      for (const option of ['--command', '--argv', '--runner', '--environment', '--env']) {
-        const result = await runCli([flag, option, '/tmp/caller-controlled'])
-        expect(result.exitCode).not.toBe(0)
-        expect(result.stderr).toStartWith('FAIL [r52-argv]:')
-      }
-    },
-  )
 
   test('uses the exact cargo metadata argv and prints only PASS on success', async () => {
     const temporaryRoot = await realpath(await mkdtemp(path.join(os.tmpdir(), 'hanonly-cli-')))

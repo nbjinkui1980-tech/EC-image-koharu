@@ -548,6 +548,31 @@ class LedgerContractTests(unittest.TestCase):
         self.assertEqual(len(values), 6)
         return [value.decode("utf-8") for value in values]
 
+    def test_historical_custody_commands_retire_before_file_access(self):
+        for command in (
+            "write-r51-b0-preflight-attestation",
+            "snapshot-r51-preflight-custody",
+            "validate-r51-b0-authorization",
+            "project-r52-calibration-manifest",
+            "write-r52-b0-preflight-attestation",
+            "write-r52-r51-holdout-adoption",
+            "run-r52-challenge",
+            "run-r52-holdout",
+            "validate-r52-b0-authorization",
+            "validate-r60-b0-preflight",
+            "validate-r60-b0-authorization",
+        ):
+            stdout = io.BytesIO()
+            stderr = io.StringIO()
+            with mock.patch("builtins.open", side_effect=AssertionError("file access")):
+                result = ledger.main([command], stdout=stdout, stderr=stderr)
+            self.assertEqual(result, 2)
+            self.assertEqual(stdout.getvalue(), b"")
+            self.assertEqual(
+                stderr.getvalue(),
+                "hanonly evidence ledger: historical_custody_command_retired\n",
+            )
+
     def test_manifest_accepts_one_frozen_calibration_input(self):
         selected_path = "/tmp/r55-c01.jpg"
         selected_hash = "1" * 64
@@ -1887,18 +1912,38 @@ class R51EvidenceTests(unittest.TestCase):
         for name, relative_path in ledger.R51_APPROVED_PUBLIC_FILES.items():
             setattr(arguments, name, str(repo_root / relative_path))
 
-        before = ledger._r51_preflight_custody_snapshot(arguments)
-        after = ledger._r51_preflight_custody_snapshot(arguments)
+        contract_hashes = {
+            "r51_contract_sha256": ledger.R51_CONTRACT_SHA256,
+            "operative_plan_sha256": ledger.R51_OPERATIVE_PLAN_SHA256,
+            "r51_test_spec_sha256": ledger.R51_TEST_SPEC_SHA256,
+            "base_production_contract_sha256": ledger.R51_BASE_CONTRACT_SHA256,
+            "paths": (),
+        }
+        with mock.patch.object(
+            ledger, "_r51_validate_contract_files", return_value=contract_hashes
+        ):
+            before = ledger._r51_preflight_custody_snapshot(arguments)
+            after = ledger._r51_preflight_custody_snapshot(arguments)
         self.assertEqual(before, after)
         self.assertEqual(before["custody_root_mode"], 0o700)
         self.assertEqual(set(before["files"]), ledger.R51_CUSTODY_FROZEN_NAMES)
 
         os.chmod(self.root / "holdout.enc", 0o644)
-        with self.assertRaises(ledger.LedgerError):
+        with (
+            mock.patch.object(
+                ledger, "_r51_validate_contract_files", return_value=contract_hashes
+            ),
+            self.assertRaises(ledger.LedgerError),
+        ):
             ledger._r51_preflight_custody_snapshot(arguments)
         os.chmod(self.root / "holdout.enc", 0o600)
         self.write_private("holdout-open.json", b"{}")
-        with self.assertRaises(ledger.LedgerError):
+        with (
+            mock.patch.object(
+                ledger, "_r51_validate_contract_files", return_value=contract_hashes
+            ),
+            self.assertRaises(ledger.LedgerError),
+        ):
             ledger._r51_preflight_custody_snapshot(arguments)
 
     def test_generation_continuity_is_calibration_1_64_then_holdout_65_80(self):
@@ -2933,10 +2978,10 @@ l._r52_with_one_shot_lock(
                     ledger, "_r52_run_pinned_evaluator", side_effect=run_pinned
                 ),
             ):
-                output = ledger.execute(argv)
+                output = ledger._r52_run_challenge(ledger._parse_arguments(argv))
                 self.assertIn(b'"challenge_terminal_sha256"', output)
                 with self.assertRaises(ledger.LedgerError):
-                    ledger.execute(argv)
+                    ledger._r52_run_challenge(ledger._parse_arguments(argv))
         finally:
             os.chdir(original_cwd)
         self.assertEqual(invocations, ["challenge"])
@@ -2962,7 +3007,7 @@ l._r52_with_one_shot_lock(
                 ),
                 self.assertRaises(ledger.LedgerError) as failure_error,
             ):
-                ledger.execute(failed_argv)
+                ledger._r52_run_challenge(ledger._parse_arguments(failed_argv))
         finally:
             os.chdir(original_cwd)
         failure_path = failed_state / "challenge-failure.json"
@@ -3555,16 +3600,16 @@ class R59CustodyBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(os.path.realpath(directory))
             for relative in (
-                ".omx/plans/hanonly-r59-b0-custody-contract.json",
-                ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+                ".omx/plans/archive/hanonly-r59-b0-custody-contract.json",
+                ".omx/plans/archive/test-spec-hanonly-r59-b0-custody.md",
             ):
                 destination = root / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes((source_root / relative).read_bytes())
             ledger._r59_validate_protocol_files(str(root))
             for relative in (
-                ".omx/plans/hanonly-r59-b0-custody-contract.json",
-                ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+                ".omx/plans/archive/hanonly-r59-b0-custody-contract.json",
+                ".omx/plans/archive/test-spec-hanonly-r59-b0-custody.md",
             ):
                 path = root / relative
                 original = path.read_bytes()
@@ -4202,8 +4247,8 @@ class R60PreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             for relative in (
-                ".omx/plans/hanonly-r60-b0-custody-contract.json",
-                ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+                ".omx/plans/archive/hanonly-r60-b0-custody-contract.json",
+                ".omx/plans/archive/test-spec-hanonly-r60-b0-custody.md",
                 "scripts/hanonly_tar_layout.py",
             ):
                 destination = root / relative
@@ -4213,7 +4258,7 @@ class R60PreflightTests(unittest.TestCase):
                 ledger._r60_validate_protocol_files(str(root)),
                 hashlib.sha256((root / "scripts/hanonly_tar_layout.py").read_bytes()).hexdigest(),
             )
-            spec = root / ".omx/plans/test-spec-hanonly-r60-b0-custody.md"
+            spec = root / ".omx/plans/archive/test-spec-hanonly-r60-b0-custody.md"
             spec.write_bytes(spec.read_bytes() + b"\n")
             with self.assertRaisesRegex(ledger.LedgerError, "test spec SHA drift"):
                 ledger._r60_validate_protocol_files(str(root))
@@ -4361,12 +4406,8 @@ class R60PreflightTests(unittest.TestCase):
                     stack.enter_context(patcher)
                 self.assertEqual(
                     json.loads(
-                        ledger.execute(
-                            [
-                                "validate-r60-b0-preflight",
-                                "--requested-b0-sha",
-                                self.REQUESTED_B0,
-                            ]
+                        ledger._r60_validate_preflight(
+                            SimpleNamespace(requested_b0_sha=self.REQUESTED_B0)
                         )
                     ),
                     {"result": "pass"},
@@ -4378,30 +4419,12 @@ class R60PreflightTests(unittest.TestCase):
                         with self.assertRaisesRegex(
                             ledger.LedgerError, "pre-start receipt already exists"
                         ):
-                            ledger.execute(
-                                [
-                                    "validate-r60-b0-preflight",
-                                    "--requested-b0-sha",
-                                    self.REQUESTED_B0,
-                                ]
+                            ledger._r60_validate_preflight(
+                                SimpleNamespace(requested_b0_sha=self.REQUESTED_B0)
                             )
                         marker_path.unlink()
 
-    def test_endpoint_rejects_paths_hashes_and_plaintext_presence(self):
-        for extra in (
-            ("--repo-root", "/tmp/repo"),
-            ("--layout-validator-sha256", "0" * 64),
-            ("--public-root", "/tmp/public"),
-        ):
-            with self.subTest(extra=extra), self.assertRaises(ledger.LedgerError):
-                ledger.execute(
-                    [
-                        "validate-r60-b0-preflight",
-                        "--requested-b0-sha",
-                        self.REQUESTED_B0,
-                        *extra,
-                    ]
-                )
+    def test_plaintext_presence_remains_fail_closed_for_historical_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             plaintext = Path(directory) / "plaintext"
             with mock.patch.object(ledger, "R60_PLAINTEXT_ROOT", str(plaintext)):

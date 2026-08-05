@@ -256,12 +256,12 @@ R51_BASE_CONTRACT_SHA256 = (
     "d29a18cd93d6d26516414009451117b131334f2a26439b0806d173e1e1c50afb"
 )
 R51_APPROVED_PUBLIC_FILES = {
-    "r51_contract": ".omx/plans/hanonly-r51-b0-custody-contract.json",
+    "r51_contract": ".omx/plans/archive/hanonly-r51-b0-custody-contract.json",
     "operative_plan": (
-        ".omx/plans/2026-07-23-hanonly-visual-rendering-remediation-plan.md"
+        ".omx/plans/archive/2026-07-23-hanonly-visual-rendering-remediation-plan.md"
     ),
-    "r51_test_spec": ".omx/plans/test-spec-hanonly-r51-b0-custody.md",
-    "base_production_contract": ".omx/plans/hanonly-r50-b0-evidence-contract.json",
+    "r51_test_spec": ".omx/plans/archive/test-spec-hanonly-r51-b0-custody.md",
+    "base_production_contract": ".omx/plans/archive/hanonly-r50-b0-evidence-contract.json",
 }
 R51_CUSTODY_FROZEN_NAMES = {
     "historical-inventory.json",
@@ -7349,12 +7349,12 @@ def _r59_validate_clean_detached_head(repo_root, requested_b0_sha):
 def _r59_validate_protocol_files(repo_root):
     for relative, expected, label in (
         (
-            ".omx/plans/hanonly-r59-b0-custody-contract.json",
+            ".omx/plans/archive/hanonly-r59-b0-custody-contract.json",
             R59_CONTRACT_SHA256,
             "R59 custody contract",
         ),
         (
-            ".omx/plans/test-spec-hanonly-r59-b0-custody.md",
+            ".omx/plans/archive/test-spec-hanonly-r59-b0-custody.md",
             R59_TEST_SPEC_SHA256,
             "R59 custody test spec",
         ),
@@ -7558,12 +7558,12 @@ def _r60_validate_git_state(repo_root, requested_b0_sha):
 def _r60_validate_protocol_files(repo_root):
     for relative, expected, label in (
         (
-            ".omx/plans/hanonly-r60-b0-custody-contract.json",
+            ".omx/plans/archive/hanonly-r60-b0-custody-contract.json",
             R60_CONTRACT_SHA256,
             "R60 custody contract",
         ),
         (
-            ".omx/plans/test-spec-hanonly-r60-b0-custody.md",
+            ".omx/plans/archive/test-spec-hanonly-r60-b0-custody.md",
             R60_TEST_SPEC_SHA256,
             "R60 custody test spec",
         ),
@@ -8329,6 +8329,20 @@ def _parse_arguments(argv):
 
 
 def execute(argv):
+    if argv and argv[0] in {
+        "write-r51-b0-preflight-attestation",
+        "snapshot-r51-preflight-custody",
+        "validate-r51-b0-authorization",
+        "project-r52-calibration-manifest",
+        "write-r52-b0-preflight-attestation",
+        "write-r52-r51-holdout-adoption",
+        "run-r52-challenge",
+        "run-r52-holdout",
+        "validate-r52-b0-authorization",
+        "validate-r60-b0-preflight",
+        "validate-r60-b0-authorization",
+    }:
+        raise LedgerError("historical_custody_command_retired")
     arguments = _parse_arguments(argv)
     if arguments.command == "create":
         return _create(arguments)

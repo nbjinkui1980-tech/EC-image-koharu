@@ -340,14 +340,14 @@ fn load_config(path: Option<&std::path::Path>) -> Result<AppConfig> {
 fn load_config_with(
     path: Option<&std::path::Path>,
     standard_load: impl FnOnce() -> Result<AppConfig>,
-    hydrate: impl FnOnce(&mut AppConfig),
+    hydrate: impl FnOnce(&mut AppConfig) -> Result<()>,
 ) -> Result<AppConfig> {
     match path {
         Some(p) => {
             let text = std::fs::read_to_string(p)
                 .with_context(|| format!("read config {}", p.display()))?;
             let mut config = toml::from_str(&text)?;
-            hydrate(&mut config);
+            hydrate(&mut config)?;
             Ok(config)
         }
         None => standard_load(),
@@ -920,6 +920,7 @@ mod tests {
                 config.providers[0].api_key = Some(koharu_app::config::RedactedSecret::new(
                     "custom-config-secret",
                 ));
+                Ok(())
             },
         )
         .unwrap();
@@ -930,5 +931,20 @@ mod tests {
         let serialized = toml::to_string(&config).unwrap();
         assert!(serialized.contains("[REDACTED]"));
         assert!(!serialized.contains("custom-config-secret"));
+    }
+
+    #[test]
+    fn typography_planner_cli_custom_config_propagates_secret_store_errors() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "[[providers]]\nid = 'openai-compatible'\n").unwrap();
+
+        let error = load_config_with(
+            Some(file.path()),
+            || panic!("custom config must not use standard loader"),
+            |_| anyhow::bail!("credential store unavailable"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "credential store unavailable");
     }
 }

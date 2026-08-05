@@ -14,6 +14,20 @@ const metadataKeys = ['mode', 'owner_uid', 'path', 'sha256', 'st_dev', 'st_ino',
 const registrySource = 'registry+https://github.com/rust-lang/crates.io-index'
 const hex40 = /^[0-9a-f]{40}$/
 const hex64 = /^[0-9a-f]{64}$/
+const retiredHistoricalCustodyFlags = new Set([
+  '--write-r51-b0-preflight-attestation',
+  '--validate-r51-b0-authorization',
+  '--project-r52-calibration-manifest',
+  '--write-r52-b0-preflight-attestation',
+  '--write-r52-r51-holdout-adoption',
+  '--run-r52-challenge',
+  '--run-r52-holdout',
+  '--validate-r52-b0-authorization',
+  '--validate-r59-b0-preflight',
+  '--validate-r59-b0-authorization',
+  '--validate-r60-b0-preflight',
+  '--validate-r60-b0-authorization',
+])
 
 export type JsonObject = Record<string, unknown>
 
@@ -1733,6 +1747,9 @@ export async function validateR52B0Authorization(
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2)
+  if (args.some((argument) => retiredHistoricalCustodyFlags.has(argument))) {
+    fail('historical-custody', 'historical_custody_command_retired')
+  }
   if (deepEqual(args, ['--test-dependency-inventory'])) {
     const snapshotDir = process.env.HANONLY_ORIGINAL_SNAPSHOT_DIR
     if (!snapshotDir) fail('snapshot-env', 'HANONLY_ORIGINAL_SNAPSHOT_DIR is required')

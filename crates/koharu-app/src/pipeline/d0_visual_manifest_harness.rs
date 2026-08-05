@@ -499,6 +499,7 @@ mod source_gate_selection {
     const R59_CALIBRATION_MANIFEST_SHA256_ENV: &str = "HANONLY_R59_CALIBRATION_MANIFEST_SHA256";
     const R60_START_MARKER_SHA256_ENV: &str = "HANONLY_R60_START_MARKER_SHA256";
     const R60_COMPLETION_SUMMARY_STDOUT_PREFIX: &str = "HANONLY_R60_COMPLETION_SUMMARY=";
+    const HISTORICAL_CUSTODY_COMMAND_RETIRED: &str = "historical_custody_command_retired";
     const R59_CALIBRATION_ARTIFACT_SHA256: &str =
         "7006eecae1aab6a7f178fc64c0979db0ec155ce3239122c280db750b8f90a3dc";
     const R60_PUBLIC_DIRECTORY: &str = "/Users/Shared/hanonly-r60-public";
@@ -611,11 +612,11 @@ mod source_gate_selection {
         }
 
         fn contract_path(self) -> &'static str {
-            ".omx/plans/hanonly-r60-b0-custody-contract.json"
+            ".omx/plans/archive/hanonly-r60-b0-custody-contract.json"
         }
 
         fn test_spec_path(self) -> &'static str {
-            ".omx/plans/test-spec-hanonly-r60-b0-custody.md"
+            ".omx/plans/archive/test-spec-hanonly-r60-b0-custody.md"
         }
 
         fn start_marker_sha256_env(self) -> &'static str {
@@ -658,13 +659,18 @@ mod source_gate_selection {
         retired_r59: Option<&str>,
         r60: Option<&str>,
     ) -> io::Result<Option<FormalRevision>> {
-        require(retired_r59.is_none(), "R59 formal custody is retired")?;
+        if matches!(retired_r59, Some("1")) || matches!(r60, Some("1")) {
+            return Err(invalid_data(HISTORICAL_CUSTODY_COMMAND_RETIRED));
+        }
+        require(
+            retired_r59.is_none() || retired_r59 == Some("0"),
+            "invalid retired R59 formal custody mode",
+        )?;
         match r60 {
             None | Some("0") => Ok(false),
-            Some("1") => Ok(true),
             Some(_) => return Err(invalid_data("invalid R60 formal custody mode")),
         }
-        .map(|enabled| enabled.then_some(FormalRevision::R60))
+        .map(|_| None)
     }
 
     #[derive(Deserialize)]
@@ -3150,6 +3156,7 @@ mod source_gate_selection {
     }
 
     fn run_r52_evidence_bridge() -> io::Result<()> {
+        require(false, HISTORICAL_CUSTODY_COMMAND_RETIRED)?;
         let (request_path, request_input, request) = load_r52_bridge_request()?;
         validate_r52_bridge_request(&request_path, &request)?;
         request_input.with_revalidated_path(|validation| {
@@ -7720,26 +7727,41 @@ sched_reserve: CPU compute buffer size = 1.57 MiB
     }
 
     #[test]
-    fn formal_protocol_selection_accepts_only_r60() {
+    fn formal_protocol_selection_retires_historical_custody_before_access() {
         assert_eq!(select_formal_revision(None, None).unwrap(), None);
         assert_eq!(select_formal_revision(None, Some("0")).unwrap(), None);
+        assert_eq!(select_formal_revision(Some("0"), None).unwrap(), None);
         assert_eq!(
-            select_formal_revision(None, Some("1")).unwrap(),
-            Some(FormalRevision::R60)
+            select_formal_revision(None, Some("1"))
+                .unwrap_err()
+                .to_string(),
+            HISTORICAL_CUSTODY_COMMAND_RETIRED
+        );
+        assert_eq!(
+            select_formal_revision(Some("1"), None)
+                .unwrap_err()
+                .to_string(),
+            HISTORICAL_CUSTODY_COMMAND_RETIRED
         );
         assert!(select_formal_revision(None, Some("true")).is_err());
-        assert!(select_formal_revision(Some("0"), None).is_err());
-        assert!(select_formal_revision(Some("1"), Some("1")).is_err());
     }
 
     #[test]
-    fn formal_protocol_rejects_calibration_before_model_access() {
+    fn r52_bridge_retires_before_request_access() {
+        assert_eq!(
+            run_r52_evidence_bridge().unwrap_err().to_string(),
+            HISTORICAL_CUSTODY_COMMAND_RETIRED
+        );
+    }
+
+    #[test]
+    fn formal_protocol_environment_retires_before_model_access() {
         let root = tempfile::tempdir().unwrap();
         let mut values = valid_environment(root.path());
         values.insert(R60_FORMAL_CUSTODY_ENV, "1".into());
 
         let error = parse_test_environment(&values).err().expect("must reject");
-        assert!(error.to_string().contains("holdout-only"));
+        assert_eq!(error.to_string(), HISTORICAL_CUSTODY_COMMAND_RETIRED);
     }
 
     #[test]

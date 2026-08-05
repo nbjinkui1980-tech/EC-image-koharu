@@ -162,6 +162,22 @@ const DEFAULT_HTTP_CONNECT_TIMEOUT = 20
 const DEFAULT_HTTP_READ_TIMEOUT = 300
 const DEFAULT_HTTP_MAX_RETRIES = 3
 
+export function codexLoginPollMs(
+  open: boolean,
+  status: string | undefined,
+  intervalSeconds: number | undefined,
+): number | null {
+  return open && status === 'pending' ? Math.max(intervalSeconds ?? 2, 1) * 1000 : null
+}
+
+export function codexLoginTimeoutMs(
+  open: boolean,
+  status: string | undefined,
+  timeoutSeconds: number | undefined,
+): number | null {
+  return open && status === 'pending' && timeoutSeconds !== undefined ? timeoutSeconds * 1000 : null
+}
+
 export function SettingsDialog({
   open,
   onOpenChange,
@@ -761,10 +777,18 @@ function CodexSettingsPane() {
   const signedIn = auth?.signedIn === true
 
   useEffect(() => {
-    if (!loginOpen && loginStatus !== 'pending') return
-    const id = window.setInterval(() => void refetch(), 2000)
+    const delay = codexLoginPollMs(loginOpen, loginStatus, login?.intervalSeconds)
+    if (delay === null) return
+    const id = window.setInterval(() => void refetch(), delay)
     return () => window.clearInterval(id)
-  }, [loginOpen, loginStatus, refetch])
+  }, [login?.intervalSeconds, loginOpen, loginStatus, refetch])
+
+  useEffect(() => {
+    const delay = codexLoginTimeoutMs(loginOpen, loginStatus, login?.timeoutSeconds)
+    if (delay === null) return
+    const id = window.setTimeout(() => setLoginOpen(false), delay)
+    return () => window.clearTimeout(id)
+  }, [login?.timeoutSeconds, loginOpen, loginStatus])
 
   useEffect(() => {
     if (loginOpen && (signedIn || loginStatus === 'succeeded')) {
