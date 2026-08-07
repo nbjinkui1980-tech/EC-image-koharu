@@ -1,0 +1,44 @@
+{
+  "plan": {
+    "path": ".omx/plans/2026-08-07-g005-runtime-geometry-execution-card.md",
+    "sha256": "dc38ed4eefa1c55a2573dee063c9dcb59f50c3ac43c974afa9e7c0912c0acae1"
+  },
+  "planning_context": {
+    "path": ".omx/plans/2026-08-05-hanonly-functional-delivery-plan.md",
+    "sha256": "d1c20ce4e6f8c7cd81872b29774a44440a84b32333f35473c28b6e86bb10d175"
+  },
+  "consensus": {
+    "gate_complete": true,
+    "execution_authorized": false,
+    "pre_repair_consensus_commit": "d4b55f5f8dc091ad11a8c86df667f5783fae72dc",
+    "review_order": ["planner", "architect", "critic"]
+  },
+  "reviewers": [
+    {
+      "role": "planner",
+      "agent": "metis",
+      "session": "ses_022139168ffeVpxvdhzrEb1vIP",
+      "decision": "approve_with_minor_changes",
+      "issues_addressed": true
+    },
+    {
+      "role": "architect",
+      "agent": "oracle",
+      "session": "ses_0220ff443ffeDzc9bviVyhV2vJ",
+      "decision": "approve_with_minor_changes",
+      "issues_addressed": true
+    },
+    {
+      "role": "architect_final",
+      "agent": "oracle",
+      "session": "ses_0220b08b0ffe3IhzOQ6XwMNshE",
+      "decision": "approve"
+    },
+    {
+      "role": "critic",
+      "agent": "sisyphus",
+      "note": "momus unavailable (GOOGLE_GENERATIVE_AI_API_KEY missing); Sisyphus performed the critic review with equivalent criteria",
+      "decision": "approve"
+    }
+  ]
+}
