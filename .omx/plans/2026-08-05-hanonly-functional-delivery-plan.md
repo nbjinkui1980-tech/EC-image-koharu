@@ -13,7 +13,7 @@ This is the sole active execution plan for G005-G009. G004 is complete. Revision
 
 1. **G005 - Visual rendering:** implement the approved rendering behavior with focused regression tests and CPU/Metal smoke coverage.
 2. **G006 - Integration reliability:** verify current supported platforms with integration, race, and fault tests. Windows is required only when it is an active release target or suitable CI is available.
-3. **G007 - Product workflow:** complete the user-facing workflow and its focused end-to-end tests.
+3. **G007 - Planner source style and frozen sprite:** implement strict source style classification, run-local Planner contracts, immutable frozen sprites, exact post-inpaint Renderer composition, and turn the nine staged T3 tests green.
 4. **G008 - Release verification:** run focused tests, workspace checks, CPU and actual-Metal smoke tests, and end-to-end visual acceptance.
 5. **G009 - Final acceptance:** complete final code review, builds, and functional acceptance.
 
