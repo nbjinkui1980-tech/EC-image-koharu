@@ -1460,6 +1460,22 @@ fn select_chinese_target_from_observation_with_layout(
         && pp_scalars.iter().zip(&vl_scalars).all(|(pp, vl)| {
             pp == vl || (contains_han(&pp.to_string()) && contains_han(&vl.to_string()))
         });
+    let single_complete_han_detector = detector_bboxes.len() == 1
+        && active_lines.len() == 1
+        && active_lines[0].detector_indices.as_slice() == [active_detector_occurrences[0]]
+        && active_lines[0].recognition.as_deref().is_some_and(|text| {
+            let mut scalars = text.chars().filter(|character| !character.is_whitespace());
+            scalars.clone().next().is_some()
+                && scalars.all(|character| contains_han(&character.to_string()))
+        })
+        && !pp_scalars.is_empty()
+        && pp_scalars
+            .iter()
+            .all(|character| contains_han(&character.to_string()))
+        && !vl_scalars.is_empty()
+        && vl_scalars
+            .iter()
+            .all(|character| contains_han(&character.to_string()));
     if !pp_has_han {
         let pp_contains_latin = active_words
             .iter()
@@ -1510,21 +1526,26 @@ fn select_chinese_target_from_observation_with_layout(
             },
         ));
     }
-    if !scalar_alignment_proven {
+    if !scalar_alignment_proven && !single_complete_han_detector {
         return Err(SourceGateRejectReason::PpVlIncompleteCoverage);
     }
 
     let mut selected_texts = detector_texts.clone();
+    if single_complete_han_detector {
+        selected_texts[0] = vl_scalars.iter().collect();
+    }
     let mut vl_offset = 0;
-    for detector_index in &reading_order {
-        let scalar_count = detector_texts[*detector_index]
-            .chars()
-            .filter(|character| !character.is_whitespace())
-            .count();
-        selected_texts[*detector_index] = vl_scalars[vl_offset..vl_offset + scalar_count]
-            .iter()
-            .collect();
-        vl_offset += scalar_count;
+    if !single_complete_han_detector {
+        for detector_index in &reading_order {
+            let scalar_count = detector_texts[*detector_index]
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .count();
+            selected_texts[*detector_index] = vl_scalars[vl_offset..vl_offset + scalar_count]
+                .iter()
+                .collect();
+            vl_offset += scalar_count;
+        }
     }
 
     let mut attached_to = vec![None; detector_bboxes.len()];
@@ -2987,9 +3008,9 @@ mod tests {
     }
 
     #[test]
-    fn scalar_count_mismatch_with_pp_han_stays_fail_closed() {
+    fn single_detector_han_scalar_count_mismatch_uses_vl_text() {
         let observed = observation_from_words(vec![word("安全", 0, 12.0, 8.0, 72.0, 28.0)]);
-        let reason = select_chinese_target_from_observation_with_layout(
+        let (selection, decision) = select_chinese_target_from_observation_with_layout(
             "安全规范",
             &observed,
             [10, 20, 110, 70],
@@ -2997,9 +3018,64 @@ mod tests {
             200,
             100,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(reason, SourceGateRejectReason::PpVlIncompleteCoverage);
+        assert_eq!(selection.targets.len(), 1);
+        assert_eq!(selection.targets[0].text, "安全规范");
+        assert!(matches!(
+            decision,
+            SourceGateDecision::AcceptedPrimary {
+                target_count: 1,
+                protected_count: 0,
+            }
+        ));
+    }
+
+    #[test]
+    fn multiple_detectors_han_scalar_count_mismatch_stays_fail_closed() {
+        let observed = observation(
+            vec![
+                detector(0, 2.0, 3.0, 42.0, 23.0),
+                detector(1, 48.0, 3.0, 88.0, 23.0),
+            ],
+            vec![PpOcrLineObservation {
+                detector_indices: vec![0, 1],
+                recognition: Some("安全".into()),
+            }],
+            vec![
+                word("安", 0, 4.0, 4.0, 40.0, 22.0),
+                word("全", 0, 50.0, 4.0, 86.0, 22.0),
+            ],
+        );
+
+        assert_eq!(
+            select_chinese_target_from_observation("安全规范", &observed, [0, 0, 100, 50], 100, 50,),
+            Err(SourceGateRejectReason::PpVlIncompleteCoverage)
+        );
+    }
+
+    #[test]
+    fn single_detector_scalar_count_mismatch_with_latin_stays_fail_closed() {
+        let observed = observation(
+            vec![detector(0, 12.0, 8.0, 72.0, 28.0)],
+            vec![PpOcrLineObservation {
+                detector_indices: vec![0],
+                recognition: Some("安全A".into()),
+            }],
+            vec![word("安全", 0, 12.0, 8.0, 72.0, 28.0)],
+        );
+
+        assert_eq!(
+            select_chinese_target_from_observation_with_layout(
+                "安全规范",
+                &observed,
+                [10, 20, 110, 70],
+                [20.25, 25.5, 100.75, 60.5],
+                200,
+                100,
+            ),
+            Err(SourceGateRejectReason::PpVlIncompleteCoverage)
+        );
     }
 
     #[test]
@@ -4241,7 +4317,7 @@ mod tests {
             &scene,
             page,
             |_, _| Ok(observed.clone()),
-            |_| std::future::ready(Ok(vec!["中文".into()])),
+            |_| std::future::ready(Ok(vec!["中文规范".into()])),
         )
         .await
         .unwrap();
@@ -4251,6 +4327,7 @@ mod tests {
             scene.node(page, candidate_id).map(|node| &node.kind),
             Some(NodeKind::Text(text))
                 if text.detector.as_deref() == Some(SOURCE_GATE_TARGET_DETECTOR)
+                    && text.text.as_deref() == Some("中文规范")
         ));
     }
 
