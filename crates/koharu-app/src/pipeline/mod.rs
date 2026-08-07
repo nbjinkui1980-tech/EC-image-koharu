@@ -2708,6 +2708,84 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn han_only_typography_authority_reaches_renderer_auto_sizing() -> anyhow::Result<()> {
+        use crate::renderer::{RendererDiagnosticCapture, RendererFieldOutcome};
+
+        let fixture = PipelineFixture::new("中文", "App text")?;
+        install_counting_engine(
+            &fixture,
+            "pp-ocr-v5-source-gate",
+            Arc::new(AtomicUsize::new(0)),
+            false,
+        );
+        let response = json!({
+            "nodes": [{
+                "nodeId": fixture.text,
+                "lines": ["planner", "text"],
+                "style": {
+                    "fontFamily": fixture.font,
+                    "fontSize": 18.0,
+                    "color": [1, 2, 3, 255],
+                    "stroke": null,
+                    "effect": null,
+                    "textAlign": "center"
+                }
+            }]
+        })
+        .to_string();
+        let planner = Arc::new(TypographyPlanner::with_test_sender(
+            Arc::new(move |_, _| {
+                let response = response.clone();
+                Box::pin(async move { Ok(response) })
+            }),
+            Duration::from_secs(1),
+        ));
+        let diagnostics = RendererDiagnosticCapture::start()
+            .map_err(|_| anyhow::anyhow!("renderer diagnostic capture already active"))?;
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let recorded_warnings = warnings.clone();
+        let warning_sink: WarningSink = Arc::new(move |warning| {
+            recorded_warnings.lock().unwrap().push(warning);
+        });
+
+        let outcome = run(
+            fixture.session.clone(),
+            fixture.registry.clone(),
+            fixture.runtime.clone(),
+            true,
+            fixture.llm.clone(),
+            fixture.renderer.clone(),
+            planner,
+            PipelineSpec {
+                scope: Scope::Pages(vec![fixture.page]),
+                steps: vec!["cloud-typography-planner".into(), "koharu-renderer".into()],
+                options: PipelineRunOptions {
+                    source_text_policy: SourceTextPolicy::HanOnly,
+                    target_language: Some("en".into()),
+                    default_font: Some(fixture.font.clone()),
+                    ..Default::default()
+                },
+            },
+            Arc::new(AtomicBool::new(false)),
+            None,
+            Some(warning_sink),
+        )
+        .await?;
+
+        assert_eq!(outcome.warning_count, 0, "{:#?}", warnings.lock().unwrap());
+        let scene = fixture.session.scene_snapshot();
+        let text = text(&scene, fixture.page, fixture.text);
+        assert_eq!(text.translation.as_deref(), Some("App text"));
+        assert_eq!(text.style.as_ref().and_then(|style| style.font_size), None);
+        assert!(text.typography_plan_verified);
+        let events = diagnostics.take();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].node_id, fixture.text);
+        assert_eq!(events[0].font_outcome, RendererFieldOutcome::Default);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn typography_planner_empty_targets_skip_sender_and_run_renderer() -> anyhow::Result<()> {
         let fixture = PipelineFixture::new("English", "English")?;
         let renderer_calls = Arc::new(AtomicUsize::new(0));

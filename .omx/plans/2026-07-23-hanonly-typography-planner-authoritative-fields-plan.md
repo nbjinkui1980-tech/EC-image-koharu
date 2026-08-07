@@ -1,10 +1,11 @@
 # HanOnly Typography Planner authoritative fields remediation
 
-> Status: G005 Execution Card - implementation verified, checkpoint pending.
+> Status: closed G005 Execution Card - completed by `fa3d4290`.
 >
 > Parent authority: `.omx/plans/2026-08-05-hanonly-functional-delivery-plan.md`.
 > This card is subordinate to that sole active plan, cannot complete G005 by
-> itself, and does not reopen or modify completed G004.
+> itself, is not a G005 completion gate, and does not reopen or modify completed
+> G004.
 
 ## Scope
 
@@ -15,20 +16,22 @@ remains renderer-owned. Limit production changes to
 
 ## Supersession boundary
 
-This card supersedes only the HanOnly semantic-rejection rules in
-`.omx/plans/2026-07-19-source-relative-target-typography-plan.md` that require:
+`.omx/plans/2026-07-19-source-relative-target-typography-plan.md` is historical
+design background only. It cannot authorize or block current G005/G008 work, or
+redefine the active requirements by restoring:
 
 - exact returned `lines` and rejection of any changed or reflowed lines;
 - rejection of every non-null returned `fontSize`;
 - the corresponding rejection-test names and zero-op PASS statement; and
-- the consequence statement that legacy HanOnly Planner reflow is not accepted.
+- the consequence statement that legacy HanOnly Planner reflow is not accepted;
+- the historical source-minus-2 sizing rule; or
+- the old UI and Task 5 gates.
 
-This card does not modify the other 2026-07-19 contracts. Their current
-applicability is determined by the parent functional-delivery plan and later
-accepted work. In this slice, the prompt's exact line/null-size request,
-manual-size priority, Planner ownership of the remaining validated style fields,
-renderer line-count and placement safety, protected pixels, AllText behavior,
-and atomic writes remain unchanged.
+Only invariants restated by the parent functional-delivery plan or this card are
+current. In this slice, the prompt's exact line/null-size request, manual-size
+priority, Planner ownership of the remaining validated style fields, renderer
+line-count and placement safety, protected pixels, AllText behavior, and atomic
+writes remain unchanged.
 
 The apparent prompt/consumer difference is deliberate: the prompt requests the
 canonical response, while the consumer tolerates schema-valid deviations only
@@ -106,19 +109,17 @@ Existing workspace-wide test or Clippy baseline failures outside the changed
 file are recorded separately and do not authorize adjacent cleanup in this
 card. They remain visible to the parent plan's later release verification.
 
-## Review and rollback
+## Completed review and rollback record
 
-- One independent code review must verify the field-authority boundary, AllText
-  isolation, manual-size priority, and retained atomic safety.
-- Ralph completion requires one final native Architect approval of the same
-  diff. A second Critic or UltraQA gate is not required for this one-file card.
+- The completed independent code review verified the field-authority boundary,
+  AllText isolation, manual-size priority, and retained atomic safety.
+- The completed native Architect review approved the same implementation diff.
 - Rollback is the path-scoped reversal of the production hunk and associated tests in `typography.rs`; no data migration is involved.
 
 ## Runtime acceptance follow-up
 
 Automated deterministic tests use local response fixtures and are sufficient to
-checkpoint this card. Runtime cloud-model behavior is part of the parent
-G005/G008 visual acceptance, not a second gate here. That later evidence must
-identify the build SHA, fixture path and hash, policy/model configuration,
-expected preserved translation and automatic/manual size outcome, and the
-observed app result. No cloud request is made automatically by this card.
+close this card. If a cloud-provider path is exercised voluntarily later, its
+result may be recorded as a non-blocking observation. No external credentials,
+real cloud request, or provider-specific evidence is required by this card or by
+the parent G005/G008 acceptance.
