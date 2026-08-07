@@ -331,7 +331,6 @@ fn parse_character_dict(config: &str) -> Result<Vec<char>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CROP_LOCAL_INFERENCE_PIXEL_BUDGET, CROP_LOCAL_MAX_SCALE, CROP_LOCAL_MIN_INFERENCE_HEIGHT,
         canonicalize_detection_topology, parse_character_dict, word_box_inference_scale,
         word_box_source_bbox,
     };
@@ -394,86 +393,34 @@ mod tests {
 
     #[test]
     fn hanonly_pre_b1_red_t2_crop_local_ppocr_contract() {
-        fn crop_local_model_scale(width: u32, height: u32) -> u32 {
-            let scale = CROP_LOCAL_MIN_INFERENCE_HEIGHT
-                .div_ceil(height.max(1))
-                .clamp(1, CROP_LOCAL_MAX_SCALE);
-            (1..=scale)
-                .rev()
-                .find(|scale| {
-                    u64::from(width)
-                        .checked_mul(u64::from(height))
-                        .and_then(|pixels| pixels.checked_mul(u64::from(*scale)))
-                        .and_then(|pixels| pixels.checked_mul(u64::from(*scale)))
-                        .is_some_and(|pixels| pixels <= CROP_LOCAL_INFERENCE_PIXEL_BUDGET)
-                })
-                .unwrap_or(1)
+        for (label, width, height, expected) in [
+            ("half-size", 200, 80, 4),
+            ("base-size", 400, 160, 2),
+            ("double-size", 800, 320, 1),
+            ("below-minimum-height", 100, 319, 2),
+            ("minimum-height", 100, 320, 1),
+            ("above-minimum-height", 100, 321, 1),
+            ("maximum-scale", 100, 1, 4),
+            ("pixel-budget-exact", 2048, 128, 2),
+            ("pixel-budget-exceeded", 2049, 128, 1),
+            ("zero-width", 0, 100, 4),
+            ("zero-height", 100, 0, 4),
+            ("maximum-dimensions", u32::MAX, u32::MAX, 1),
+        ] {
+            assert_eq!(
+                word_box_inference_scale(width, height),
+                expected,
+                "{label} crop-local scale for {width}x{height}"
+            );
         }
 
-        let mut violations = Vec::new();
-        for factor in [0.5_f32, 1.0, 2.0, 4.0] {
-            let width = (400.0 * factor) as u32;
-            let height = (160.0 * factor) as u32;
-            let expected = crop_local_model_scale(width, height);
-            let actual = word_box_inference_scale(width, height);
-            if actual != expected {
-                violations.push(format!(
-                    "{factor}x crop-local scale {width}x{height}: expected {expected}, got {actual}"
-                ));
-            }
-        }
-        for (label, width, height) in [
-            ("former-height-below", 1024, 159),
-            ("former-height-at", 1024, 160),
-            ("former-width-at", 1024, 159),
-            ("former-width-above", 1025, 159),
-            ("pixel-budget", 1000, 300),
-            ("checked-overflow", u32::MAX, u32::MAX),
+        for (bbox, scale, expected) in [
+            ([0.5, 0.5, 1.0, 1.0], 1, [0.0, 0.0, 1.0, 1.0]),
+            ([1.0, 1.0, 3.0, 3.0], 2, [0.0, 0.0, 2.0, 2.0]),
+            ([2.0, 2.0, 6.0, 6.0], 4, [0.0, 0.0, 2.0, 2.0]),
+            ([59.0, 41.0, 473.0, 115.0], 2, [29.0, 20.0, 237.0, 58.0]),
         ] {
-            let expected = crop_local_model_scale(width, height);
-            let actual = word_box_inference_scale(width, height);
-            if actual != expected {
-                violations.push(format!(
-                    "{label} crop-local scale {width}x{height}: expected {expected}, got {actual}"
-                ));
-            }
+            assert_eq!(word_box_source_bbox(bbox, scale), expected);
         }
-        for (bbox, scale, source_size) in [
-            ([0.5, 0.5, 1.0, 1.0], 1, [2.0, 2.0]),
-            ([1.0, 1.0, 3.0, 3.0], 2, [2.0, 2.0]),
-            ([2.0, 2.0, 6.0, 6.0], 4, [2.0, 2.0]),
-            ([59.0, 41.0, 473.0, 115.0], 2, [300.0, 100.0]),
-        ] {
-            let scale_f32 = scale as f32;
-            let expected = [
-                (bbox[0] / scale_f32).floor(),
-                (bbox[1] / scale_f32).floor(),
-                (bbox[2] / scale_f32).ceil(),
-                (bbox[3] / scale_f32).ceil(),
-            ];
-            let actual = word_box_source_bbox(bbox, scale);
-            if actual != expected {
-                violations.push(format!(
-                    "half-open inverse {bbox:?} / {scale}: expected {expected:?}, got {actual:?}"
-                ));
-            }
-            for axis in 0..4 {
-                let source_extent = source_size[axis % 2];
-                let inference_extent = source_extent * scale_f32;
-                let normalized = bbox[axis] / inference_extent;
-                let normalized_floor_or_ceil = actual[axis] / source_extent;
-                let tolerance = 1.0 / source_extent;
-                if (normalized - normalized_floor_or_ceil).abs() > tolerance {
-                    violations.push(format!(
-                        "normalized half-open coordinate changed beyond one source pixel at axis {axis}: {normalized} -> {normalized_floor_or_ceil}"
-                    ));
-                }
-            }
-        }
-        assert!(
-            violations.is_empty(),
-            "G002 PP-OCR contract violations:\n{}",
-            violations.join("\n")
-        );
     }
 }

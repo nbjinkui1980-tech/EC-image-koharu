@@ -4088,7 +4088,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-b1-red"]
     fn hanonly_pre_b1_red_t2_source_gate_ratio_contract() {
         let expected = [
             ("S25L4", [60, 80, 1140, 260]),
