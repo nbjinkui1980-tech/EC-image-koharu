@@ -5202,7 +5202,6 @@ mod tests {
             assert_diagnostic_matches_sprite(event, &output.blocks[0].sprite);
             observations.push((name, event.clone(), output.blocks[0].sprite.to_rgba8()));
         }
-        let digest = observations[0].1.sprite_rgba_blake3.clone();
         for (name, event, sprite) in observations {
             assert_eq!(
                 event.fill_outcome,
