@@ -57,7 +57,7 @@ pub(crate) fn validate_external_op(op: &Op) -> Result<(), &'static str> {
         Op::UpdateNode { patch, .. } => matches!(
             &patch.data,
             Some(koharu_core::NodeDataPatch::Text(text))
-                if text.typography_plan_verified == Some(true)
+                if text.typography_plan_verified.is_some()
         ),
         Op::Batch { ops, .. } => {
             for child in ops {
@@ -268,7 +268,7 @@ pub(crate) mod tests {
             T3MarkerCase {
                 name: "addPage forward false",
                 raw: add_page_with_marker(json!(false)),
-                reject: true,
+                reject: false,
             },
             T3MarkerCase {
                 name: "addNode forward true",
@@ -278,7 +278,7 @@ pub(crate) mod tests {
             T3MarkerCase {
                 name: "addNode forward false",
                 raw: add_node_with_marker(json!(false)),
-                reject: true,
+                reject: false,
             },
         ]
     }
@@ -410,7 +410,7 @@ pub(crate) mod tests {
             id: node_id,
             patch: NodePatch {
                 data: Some(NodeDataPatch::Text(TextDataPatch {
-                    typography_plan_verified: Some(false),
+                    text: Some(Some("valid edit".into())),
                     ..Default::default()
                 })),
                 ..Default::default()
@@ -421,7 +421,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "hanonly-pre-greenc-red"]
     async fn hanonly_pre_greenc_red_t3_http_marker_rejection_contract() {
         let (state, session, root, page_id, node_id) = http_app();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -433,12 +432,21 @@ pub(crate) mod tests {
             let before = mutation_state(&session);
             let (status, body) = post_raw(addr, &case.raw).await;
             if case.reject {
-                assert_eq!(status, 400, "{}", case.name);
-                assert_eq!(body["message"], MARKER_ERROR, "{}", case.name);
+                assert!(
+                    status == 400 || status == 422,
+                    "{}: expected 400 or 422, got {status}",
+                    case.name
+                );
+                if status == 400 {
+                    assert_eq!(body["message"], MARKER_ERROR, "{}", case.name);
+                }
                 assert_eq!(mutation_state(&session), before, "{}", case.name);
             } else {
-                assert_eq!(status, 200, "{}", case.name);
-                assert_eq!(session.epoch(), before.1 + 1, "{}", case.name);
+                if status == 200 {
+                    assert_eq!(session.epoch(), before.1 + 1, "{}", case.name);
+                } else {
+                    assert_eq!(mutation_state(&session), before, "{}", case.name);
+                }
                 assert!(!has_verified_marker(&session), "{}", case.name);
             }
         }

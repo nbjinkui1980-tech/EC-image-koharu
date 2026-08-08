@@ -502,6 +502,8 @@ mod hanonly_contracts {
     }
 
     #[test]
+    
+    #[test]
     #[ignore = "hanonly-pre-greenc-red"]
     fn hanonly_pre_greenc_red_t3_source_color_probe_contract() -> Result<()> {
         let mut book = FontBook::new();
