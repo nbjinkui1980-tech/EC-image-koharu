@@ -153,6 +153,38 @@ impl Runtime {
         self.inner.packages.prepare_bootstrap(self).await
     }
 
+    /// Verify all bootstrap artifacts are cached locally. Fails on any
+    /// missing artifact without attempting a download. Used by the CLI
+    /// smoke path to guarantee pre-seeded models.
+    pub async fn ensure_prepared_cached(&self) -> Result<()> {
+        let dirs = [
+            self.root().join("runtime"),
+            self.root().join("models"),
+            self.root().join("models").join("huggingface"),
+        ];
+        for dir in dirs {
+            anyhow::ensure!(
+                dir.exists(),
+                "missing runtime directory: {}",
+                dir.display()
+            );
+        }
+        for package in self
+            .inner
+            .packages
+            .all()
+            .filter(|p| p.bootstrap)
+            .filter(|p| (p.enabled)(self))
+        {
+            anyhow::ensure!(
+                (package.present)(self).context(format!("check package `{}`", package.id))?,
+                "bootstrap package `{}` is not cached",
+                package.id,
+            );
+        }
+        Ok(())
+    }
+
     pub fn llama_directory(&self) -> Result<PathBuf> {
         crate::llama::runtime_dir(self)
     }

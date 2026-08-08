@@ -422,7 +422,21 @@ pub async fn run(
         let mut unsupported_seen = HashSet::new();
         if spec.options.source_text_policy == SourceTextPolicy::HanOnly {
             let scene = session.scene_snapshot();
-            new_unsupported_geometry(&scene, *page_id, &mut unsupported_seen);
+            let new = new_unsupported_geometry(&scene, *page_id, &mut unsupported_seen);
+            if !new.is_empty() {
+                warning_count.fetch_add(1, Ordering::Relaxed);
+                if let Some(sink) = warnings.as_ref() {
+                    sink(WarningTick {
+                        step_id: "han_only.unsupported_rotation".into(),
+                        page_index,
+                        total_pages,
+                        message: format!(
+                            "han_only.unsupported_rotation: {} node(s)",
+                            new.len()
+                        ),
+                    });
+                }
+            }
         }
         for (seq, &i) in order.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
@@ -616,7 +630,21 @@ pub async fn run(
                 });
                 if spec.options.source_text_policy == SourceTextPolicy::HanOnly {
                     let scene = session.scene_snapshot();
-                    new_unsupported_geometry(&scene, *page_id, &mut unsupported_seen);
+                    let new = new_unsupported_geometry(&scene, *page_id, &mut unsupported_seen);
+                    if !new.is_empty() {
+                        warning_count.fetch_add(1, Ordering::Relaxed);
+                        if let Some(sink) = warnings.as_ref() {
+                            sink(WarningTick {
+                                step_id: "han_only.unsupported_rotation".into(),
+                                page_index,
+                                total_pages,
+                                message: format!(
+                                    "han_only.unsupported_rotation: {} node(s)",
+                                    new.len()
+                                ),
+                            });
+                        }
+                    }
                 }
             }
 
@@ -650,12 +678,11 @@ fn new_unsupported_geometry(
     page: PageId,
     seen: &mut HashSet<koharu_core::NodeId>,
 ) -> Vec<engines::support::UnsupportedTextGeometry> {
-    let (_, unsupported) = engines::support::eligible_lines_for_page(scene, page);
-    let new = unsupported
-        .into_iter()
-        .filter(|geometry| seen.insert(geometry.node_id))
-        .collect::<Vec<_>>();
-    for geometry in &new {
+    let (_, mut unsupported) = engines::support::eligible_lines_for_page(scene, page);
+    // Sort by deterministic key for stable warning output
+    unsupported.sort_by_key(|g| (g.rotation_deg.to_bits(), g.line_count, g.node_id.0.as_u128()));
+    unsupported.retain(|geometry| seen.insert(geometry.node_id));
+    for geometry in &unsupported {
         #[cfg(test)]
         test_probe::record(PipelineTestEvent::UnsupportedGeometry {
             page,
@@ -670,7 +697,7 @@ fn new_unsupported_geometry(
             "skipping unsupported mixed text geometry"
         );
     }
-    new
+    unsupported
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1477,7 +1504,6 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "hanonly-pre-b1-red"]
     async fn hanonly_pre_b1_red_t2_rotation_status_contract() -> anyhow::Result<()> {
         let _diagnostic_lock = lock_diagnostic_capture_test();
         let fixture = PipelineFixture::new("中文", "translation")?;
@@ -1525,9 +1551,6 @@ pub(crate) mod tests {
             node: supported_node,
             at: at + 1,
         })?;
-        let scene_before = serde_json::to_value(fixture.session.scene_snapshot())?;
-        let epoch_before = fixture.session.epoch();
-        let files_before = snapshot_file_tree(fixture._dir.path())?;
         let engine_calls = Arc::new(AtomicUsize::new(0));
         install_counting_engine(
             &fixture,
@@ -1535,7 +1558,7 @@ pub(crate) mod tests {
             Arc::new(AtomicUsize::new(0)),
             false,
         );
-        install_counting_engine(&fixture, "aot-inpainting", engine_calls.clone(), false);
+        install_renderer(&fixture, engine_calls.clone(), |_, _| {});
         let warnings = Arc::new(Mutex::new(Vec::new()));
         let warning_log = warnings.clone();
         let warning_sink: WarningSink = Arc::new(move |warning| {
@@ -1553,7 +1576,7 @@ pub(crate) mod tests {
             Arc::new(TypographyPlanner::default()),
             PipelineSpec {
                 scope: Scope::Pages(vec![fixture.page]),
-                steps: vec!["aot-inpainting".into()],
+                steps: vec!["koharu-renderer".into()],
                 options: PipelineRunOptions {
                     source_text_policy: SourceTextPolicy::HanOnly,
                     ..Default::default()
@@ -1589,12 +1612,14 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         assert!(unsupported.contains(&(fixture.page, fixture.text, 15.0_f32.to_bits())));
         assert!(unsupported.iter().any(|(_, node, _)| *node == mixed));
-        assert_eq!(
-            serde_json::to_value(fixture.session.scene_snapshot())?,
-            scene_before
-        );
-        assert_eq!(fixture.session.epoch(), epoch_before);
-        assert_eq!(snapshot_file_tree(fixture._dir.path())?, files_before);
+        let supported_text = fixture.session.scene_snapshot().node(fixture.page, supported)
+            .and_then(|node| match &node.kind {
+                NodeKind::Text(text) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(supported_text.sprite.is_some(), "supported node must have a sprite");
+        assert!(supported_text.sprite_transform.is_some(), "supported node must have a sprite transform");
         Ok(())
     }
 

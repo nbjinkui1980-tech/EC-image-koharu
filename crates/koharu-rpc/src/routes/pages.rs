@@ -109,7 +109,28 @@ async fn create_pages(
 
     files.sort_by(|a, b| natord::compare(&a.0, &b.0));
 
-    // Optionally clear the project first. Emitted as a batch so it's one undo step.
+    // Admit every source image before any mutation. A rejected
+    // format leaves the project unchanged. Bytes are preserved
+    // for blob storage after admission passes.
+    if files.is_empty() {
+        return Err(ApiError::bad_request("no files in request"));
+    }
+    let blobs = session.blobs.clone();
+    let admitted: Vec<(String, u32, u32, Vec<u8>)> = tokio::task::spawn_blocking(move || {
+        files
+            .into_par_iter()
+            .map(|(filename, bytes)| -> ApiResult<(String, u32, u32, Vec<u8>)> {
+                let img = koharu_app::blobs::admit_source_image(&bytes)
+                    .map_err(|e| ApiError::bad_request(format!("admit `{filename}`: {e}")))?;
+                let (w, h) = img.dimensions();
+                Ok((filename, w, h, bytes))
+            })
+            .collect::<ApiResult<Vec<_>>>()
+    })
+    .await
+    .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
+
+    // All files admitted — now safe to mutate the project.
     let starting_index = if replace {
         let scene = session.scene.read();
         let remove_ops: Vec<Op> = scene
@@ -135,30 +156,15 @@ async fn create_pages(
         session.scene.read().pages.len()
     };
 
-    // Decode + hash + write each file in parallel. Image decode is the
-    // dominant cost per page (~10–50ms for a typical JPEG/PNG), so a
-    // 200-page folder benefits almost linearly from multi-core. The output
-    // vector preserves the pre-sorted order because rayon's `par_iter`
-    // keeps indices through `collect::<Result<Vec<_>>>()`.
-    //
-    // `BlobStore::put_bytes` is Send + Sync (stateless beyond disk + blake3),
-    // so it's safe to call from the rayon pool.
-    //
-    // Run the rayon section on a blocking thread so we don't stall the
-    // tokio runtime while decoding.
-    let blobs = session.blobs.clone();
+    // Store blobs from admitted bytes, then build pages.
+    let blobs2 = session.blobs.clone();
     let decoded: Vec<(String, u32, u32, BlobRef)> = tokio::task::spawn_blocking(move || {
-        files
+        admitted
             .into_par_iter()
-            .map(
-                |(filename, bytes)| -> ApiResult<(String, u32, u32, BlobRef)> {
-                    let img = image::load_from_memory(&bytes)
-                        .map_err(|e| ApiError::bad_request(format!("decode `{filename}`: {e}")))?;
-                    let (w, h) = img.dimensions();
-                    let blob = blobs.put_bytes(&bytes).map_err(ApiError::internal)?;
-                    Ok((filename, w, h, blob))
-                },
-            )
+            .map(|(filename, w, h, bytes)| -> ApiResult<(String, u32, u32, BlobRef)> {
+                let blob = blobs2.put_bytes(&bytes).map_err(ApiError::internal)?;
+                Ok((filename, w, h, blob))
+            })
             .collect::<ApiResult<Vec<_>>>()
     })
     .await

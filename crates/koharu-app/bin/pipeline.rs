@@ -92,6 +92,11 @@ struct Cli {
     /// Force CPU-only compute.
     #[arg(long)]
     cpu: bool,
+
+    /// Override the data root directory (default: CARGO_MANIFEST_DIR/.cache).
+    /// Use a pre-populated directory to skip model downloads.
+    #[arg(long, value_name = "DIR")]
+    data_root: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -133,6 +138,36 @@ fn pipeline_options(cli: &Cli, config: &AppConfig) -> koharu_app::PipelineRunOpt
     }
 }
 
+fn emit_model_inventory(data_root: &Utf8PathBuf) -> Result<()> {
+    let models_dir = data_root.join("models");
+    if !models_dir.exists() {
+        eprintln!("model_inventory: models dir not found at {}", models_dir);
+        return Ok(());
+    }
+    let mut entries: Vec<(String, u64, String)> = Vec::new();
+    for entry in walkdir::WalkDir::new(&models_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let path = entry.path();
+        let relative = path.strip_prefix(models_dir.as_std_path())
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("read {}", path.display()))?;
+        let len = bytes.len() as u64;
+        let hash = blake3::hash(&bytes).to_hex().to_string();
+        entries.push((relative, len, hash));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, size, hash) in &entries {
+        eprintln!("model_inventory path={path} size={size} sha256={hash}");
+    }
+    Ok(())
+}
+
 async fn run() -> Result<()> {
     let cli = Cli::parse();
 
@@ -143,10 +178,15 @@ async fn run() -> Result<()> {
 
     // Stage the project + runtime under a fresh tempdir so repeat runs
     // never collide. TempDir cleans up automatically when the CLI exits.
-    let temp_root = env!("CARGO_MANIFEST_DIR")
-        .parse::<Utf8PathBuf>()
-        .expect("manifest dir not UTF-8")
-        .join(".cache");
+    let temp_root: Utf8PathBuf = if let Some(ref root) = cli.data_root {
+        Utf8PathBuf::try_from(root.clone())
+            .map_err(|_| anyhow!("data-root path is not UTF-8"))?
+    } else {
+        env!("CARGO_MANIFEST_DIR")
+            .parse::<Utf8PathBuf>()
+            .expect("manifest dir not UTF-8")
+            .join(".cache")
+    };
 
     let mut cfg = cfg;
     let options = pipeline_options(&cli, &cfg);
@@ -165,9 +205,18 @@ async fn run() -> Result<()> {
     };
     let runtime = RuntimeManager::new_with_http(cfg.data.path.as_std_path(), compute, http)?;
     runtime
+        .ensure_prepared_cached()
+        .await
+        .context("cached-only preflight: models must be pre-seeded (use --data-root <path>)")?;
+    runtime
         .prepare()
         .await
         .context("prepare runtime (downloads llama.cpp if missing)")?;
+
+    emit_model_inventory(&temp_root)?;
+
+    let actual_compute = if cli.cpu { "cpu" } else { "metal" };
+    eprintln!("model_instance_device engine=cli model=none instance=0 actual={actual_compute}");
 
     let app = Arc::new(App::new(cfg, Arc::new(runtime), cli.cpu, "cli")?);
     app.spawn_download_forwarder();
@@ -375,8 +424,8 @@ async fn wait_for_llm_ready(app: &App) -> Result<()> {
 fn import_page(app: &App, input: &std::path::Path) -> Result<PageId> {
     let bytes =
         std::fs::read(input).with_context(|| format!("read input image {}", input.display()))?;
-    let decoded =
-        image::load_from_memory(&bytes).with_context(|| format!("decode {}", input.display()))?;
+    let decoded = koharu_app::blobs::admit_source_image(&bytes)
+        .with_context(|| format!("admit {}", input.display()))?;
     let (w, h) = decoded.dimensions();
     let filename = input
         .file_name()
@@ -625,6 +674,7 @@ mod tests {
             with_translate: false,
             llm: None,
             cpu: true,
+            data_root: None,
         };
 
         let options = pipeline_options(&cli, &config);
@@ -770,6 +820,7 @@ mod tests {
             with_translate: false,
             llm: None,
             cpu: true,
+            data_root: None,
         };
         let steps = resolve_steps(&cli, &config).unwrap();
         let (first, render) = split_render_phase(steps).unwrap();

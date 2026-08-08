@@ -183,7 +183,7 @@ fn decode_blob(bytes: &[u8]) -> Result<DynamicImage> {
             height: img.height(),
             has_alpha: true,
         });
-        return Ok(DynamicImage::ImageRgba8(img));
+        return     Ok(DynamicImage::ImageRgba8(img));
     }
     let img = image::load_from_memory(bytes)?;
     #[cfg(test)]
@@ -193,6 +193,36 @@ fn decode_blob(bytes: &[u8]) -> Result<DynamicImage> {
         has_alpha: img.color().has_alpha(),
     });
     Ok(img)
+}
+
+/// Admit a source image from raw bytes for new ingress only (multipart,
+/// path import, CLI `import_page`). Accepts PNG, JPEG, WebP; rejects
+/// GIF, BMP, unknown, corrupt, and extension-spoofed input.
+///
+/// This is intentionally separate from `decode_blob` — existing project
+/// blobs (including legacy GIF/BMP) must remain readable through the
+/// normal decode path.
+pub fn admit_source_image(bytes: &[u8]) -> Result<DynamicImage> {
+    if bytes.is_empty() {
+        anyhow::bail!("empty source image");
+    }
+    // Byte-sniff: check known magic bytes
+    let format = match bytes {
+        [0x89, 0x50, 0x4E, 0x47, ..] => {
+            image::ImageFormat::Png
+        }
+        [0xFF, 0xD8, 0xFF, ..] => {
+            image::ImageFormat::Jpeg
+        }
+        [0x52, 0x49, 0x46, 0x46, _, _, _, _, 0x57, 0x45, 0x42, 0x50, ..] => {
+            image::ImageFormat::WebP
+        }
+        _ => {
+            anyhow::bail!("unsupported source image format")
+        }
+    };
+    image::load_from_memory(bytes)
+        .with_context(|| format!("cannot decode admitted {:?}", format))
 }
 
 #[cfg(test)]

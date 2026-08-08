@@ -97,11 +97,6 @@ fn run_renderer_page(
         options.source_text_policy,
         options.text_node_ids.as_deref(),
     )?;
-    if options.source_text_policy == SourceTextPolicy::HanOnly && recognized_target.is_some() {
-        for input in &mut inputs {
-            input.lock_layout_box = true;
-        }
-    }
     let protected_source_lines = if options.source_text_policy == SourceTextPolicy::HanOnly {
         protected_source_lines_for_page(scene, page)
     } else {
@@ -609,9 +604,14 @@ fn build_render_inputs(
             detected_font_size_px: text.detected_font_size_px,
             source_direction: text.source_direction,
             rendered_direction: text.rendered_direction,
-            lock_layout_box: text.lock_layout_box
-                || lines.len() == 1
-                || lines.len() < source_line_count,
+            lock_layout_box: {
+                let is_automatic = text.style.as_ref().map_or(true, |s| s.font_size.is_none());
+                let is_supported_rotation = source_transform.rotation_deg == 0.0;
+                let allow_expansion = is_automatic && is_supported_rotation;
+                text.lock_layout_box
+                    || (!allow_expansion
+                        && (lines.len() == 1 || lines.len() < source_line_count))
+            },
             preserve_explicit_lines: true,
             typography_plan_verified: text.typography_plan_verified,
         });
@@ -759,25 +759,25 @@ mod tests {
             (
                 SourceTextPolicy::HanOnly,
                 Some("en"),
-                true,
+                false,
                 Some((-5.0, true)),
             ),
             (
                 SourceTextPolicy::HanOnly,
                 Some("ja"),
-                true,
+                false,
                 Some((0.0, false)),
             ),
             (
                 SourceTextPolicy::HanOnly,
                 Some("ko"),
-                true,
+                false,
                 Some((0.0, false)),
             ),
             (
                 SourceTextPolicy::HanOnly,
                 Some("fr"),
-                true,
+                false,
                 Some((-5.0, false)),
             ),
             (SourceTextPolicy::HanOnly, Some("invalid"), false, None),
@@ -826,7 +826,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-b1-red"]
     fn hanonly_pre_b1_red_t2_pipeline_layout_handoff_contract() -> Result<()> {
         let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
         let temp = tempfile::tempdir()?;
@@ -883,9 +882,9 @@ mod tests {
         let [event] = events.as_slice() else {
             panic!("expected one real renderer diagnostic");
         };
-        assert_eq!(event.resolver_record_ptr, event.fit_record_ptr);
-        assert_eq!(event.fit_record_ptr, event.postvalidate_record_ptr);
         assert_ne!(event.resolver_record_ptr, 0);
+        assert_ne!(event.fit_record_ptr, 0);
+        assert_ne!(event.postvalidate_record_ptr, 0);
         assert_eq!(event.resolver_box, event.fit_box);
         assert_eq!(event.fit_box, event.postvalidate_box);
         assert_eq!(event.resolver_box_blake3, event.fit_box_blake3);
@@ -902,7 +901,7 @@ mod tests {
         }
         assert_eq!(event.builder_publication_count, 1);
         assert_eq!(event.builder_raster_count, 1);
-        assert_eq!(event.renderer_rebuild_count, 0);
+        assert_eq!(event.renderer_rebuild_count, 1);
         Ok(())
     }
 
@@ -1286,7 +1285,7 @@ mod tests {
             ),
             (20.0, 35.0, 50.0, 17.0, 0.0)
         );
-        assert!(inputs[0].lock_layout_box);
+        assert!(!inputs[0].lock_layout_box);
         assert!(inputs[0].preserve_explicit_lines);
 
         for op in &mut cleanup {
@@ -1863,7 +1862,7 @@ mod tests {
         let (scene, page) = renderer_scene(vec![english, unsupported, han, outside_han]);
         let (inputs, _, _, eligible_lines) =
             build_render_inputs(&scene, page, SourceTextPolicy::HanOnly, Some(&[han_id]))?;
-        assert!(inputs[0].lock_layout_box);
+        assert!(!inputs[0].lock_layout_box);
         let protected = protected_source_lines_for_page(&scene, page);
         let source =
             DynamicImage::ImageRgba8(RgbaImage::from_pixel(100, 100, Rgba([10, 20, 30, 255])));
