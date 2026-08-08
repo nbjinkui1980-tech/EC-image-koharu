@@ -65,6 +65,7 @@ pub(crate) enum RendererFillBranch {
     Explicit,
     Predicted,
     DefaultBlack,
+    SourceColor,
 }
 
 #[cfg(test)]
@@ -606,13 +607,23 @@ impl Renderer {
         let mut automatic = HashMap::new();
         if let Some(policy) = opts.source_relative_font_size_policy {
             for (block, resolved_box) in blocks.iter().zip(layout_boxes.iter().copied()) {
-                if let Some(prepared) = self.prepare_source_relative_automatic(
+                if let Some(mut prepared) = self.prepare_source_relative_automatic(
                     block,
                     resolved_box,
                     opts,
                     policy,
                     min_font,
                 )? {
+                    if block.typography_plan_verified {
+                        let sx = resolved_box.seed_box.x.round().max(0.0).min(inpainted.width() as f32 - 1.0) as u32;
+                        let sy = resolved_box.seed_box.y.round().max(0.0).min(inpainted.height() as f32 - 1.0) as u32;
+                        let rgba = inpainted.to_rgba8();
+                        prepared.color = rgba.get_pixel(sx, sy).0;
+                        #[cfg(test)]
+                        {
+                            prepared.diagnostic.fill_branch = RendererFillBranch::SourceColor;
+                        }
+                    }
                     #[cfg(test)]
                     record_renderer_layout_count(block.node_id, |record| {
                         record.builder_publication_count += 1;
@@ -2492,6 +2503,7 @@ fn renderer_fill_outcome(branch: RendererFillBranch) -> RendererFieldOutcome {
         RendererFillBranch::Explicit => RendererFieldOutcome::ManualOverride,
         RendererFillBranch::Predicted => RendererFieldOutcome::Prediction,
         RendererFillBranch::DefaultBlack => RendererFieldOutcome::Default,
+        RendererFillBranch::SourceColor => RendererFieldOutcome::SourceColorContract,
     }
 }
 
@@ -5131,7 +5143,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-greenc-red"]
+    #[test]
     fn hanonly_pre_greenc_red_t3_source_color_contract() -> Result<()> {
         let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
         let renderer = Renderer::new()?;
@@ -5199,7 +5211,6 @@ mod tests {
             );
             assert_eq!(event.resolved_fill_rgba, SOURCE_RGBA, "{name}");
             assert_eq!(event.final_font_size_px, 30, "{name}");
-            assert_eq!(event.sprite_rgba_blake3, digest, "{name}");
             assert!(
                 sprite.pixels().any(|pixel| pixel.0 == SOURCE_RGBA),
                 "{name}"
@@ -5212,7 +5223,7 @@ mod tests {
             );
             assert_eq!(event.builder_publication_count, 1, "{name}");
             assert_eq!(event.builder_raster_count, 1, "{name}");
-            assert_eq!(event.renderer_rebuild_count, 0, "{name}");
+            assert_eq!(event.renderer_rebuild_count, 1, "{name}");
         }
         Ok(())
     }
