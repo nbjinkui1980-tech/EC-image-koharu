@@ -2137,7 +2137,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    #[ignore = "hanonly-pre-greenc-red"]
     async fn hanonly_pre_greenc_red_t3_transient_planner_hint_contract() -> Result<()> {
         let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
         crate::pipeline::tests::assert_transient_planner_hint_pipeline_contract().await
