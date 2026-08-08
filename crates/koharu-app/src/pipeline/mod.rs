@@ -1478,30 +1478,6 @@ pub(crate) mod tests {
         )
         .await
     }
-    fn snapshot_file_tree(root: &Path) -> anyhow::Result<BTreeMap<String, Vec<u8>>> {
-        fn visit(
-            root: &Path,
-            path: &Path,
-            files: &mut BTreeMap<String, Vec<u8>>,
-        ) -> anyhow::Result<()> {
-            for entry in std::fs::read_dir(path)? {
-                let path = entry?.path();
-                if path.is_dir() {
-                    visit(root, &path, files)?;
-                } else {
-                    let relative = path
-                        .strip_prefix(root)?
-                        .to_string_lossy()
-                        .replace(std::path::MAIN_SEPARATOR, "/");
-                    files.insert(relative, std::fs::read(path)?);
-                }
-            }
-            Ok(())
-        }
-        let mut files = BTreeMap::new();
-        visit(root, root, &mut files)?;
-        Ok(files)
-    }
 
     #[tokio::test]
     async fn hanonly_pre_b1_red_t2_rotation_status_contract() -> anyhow::Result<()> {

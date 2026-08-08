@@ -92,7 +92,7 @@ fn run_renderer_page(
 
     let has_text_nodes = !text_nodes(scene, page).is_empty();
     let recognized_target = options.target_language.as_deref().and_then(Language::parse);
-    let (mut inputs, mutable_ids, mut ops, eligible_lines) = build_render_inputs(
+    let (inputs, mutable_ids, mut ops, eligible_lines) = build_render_inputs(
         scene,
         page,
         options.source_text_policy,

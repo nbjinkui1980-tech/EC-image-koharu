@@ -5143,7 +5143,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn hanonly_pre_greenc_red_t3_source_color_contract() -> Result<()> {
         let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
         let renderer = Renderer::new()?;

@@ -8,7 +8,6 @@
 //! the filesystem store + cache.
 
 use std::io::Cursor;
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
