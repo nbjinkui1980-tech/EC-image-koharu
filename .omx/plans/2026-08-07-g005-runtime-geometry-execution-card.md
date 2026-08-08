@@ -99,7 +99,8 @@ Requirements:
   source bbox but inside the resolved box, with zero protected/other-owner
   overlap and order-independent owner-keyed geometry.
 
-Completion: both exact T2 tests are default-active and green; existing
+Completion: both exact T2 tests are default-active and green; the replacement
+`shared_bubble_keeps_seed_boxes_to_avoid_overlap` test and existing
 renderer/pipeline, manual-size, AllText, Source Gate, and protected-Latin
 regressions remain green.
 
@@ -408,7 +409,8 @@ receipt or evidence schema.
 
 Completion: `.omx/state/ralplan-g005-runtime-geometry-smoke-report.md` exists
 and contains the recorded evidence; both CPU and Metal runs exit zero and pass
-visual acceptance.
+visual acceptance; focused WP5 unit tests for diagnostic formatting/sorting,
+Metal rejection, and device reporting pass.
 
 ## Stage Ownership
 
