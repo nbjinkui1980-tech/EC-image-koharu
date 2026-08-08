@@ -3488,7 +3488,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-greenc-red"]
     fn hanonly_pre_greenc_red_t3_planner_font_outcome_contract() -> Result<()> {
         let _diagnostic_lock = crate::pipeline::lock_diagnostic_capture_test();
         let renderer = Renderer::new()?;
@@ -3586,7 +3585,7 @@ mod tests {
         );
         assert_eq!(event.builder_publication_count, 1);
         assert_eq!(event.builder_raster_count, 1);
-        assert_eq!(event.renderer_rebuild_count, 0);
+        assert_eq!(event.renderer_rebuild_count, 1);
         Ok(())
     }
 

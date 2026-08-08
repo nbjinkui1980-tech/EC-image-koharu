@@ -105,6 +105,8 @@ pub struct ProjectSession {
     pub blobs: Arc<BlobStore>,
     /// Held for the lifetime of the session.
     _lock: File,
+    /// Whether external clients may set Planner-owned fields.
+    trusted: bool,
     #[cfg(test)]
     compact_apply_sync: Mutex<Option<Arc<CompactApplySync>>>,
 }
@@ -116,7 +118,7 @@ impl ProjectSession {
         if !dir.is_dir() {
             anyhow::bail!("not a project directory: {dir}");
         }
-        Self::open_inner(dir, false, false)
+        Self::open_inner(dir, false, false, true)
     }
 
     /// Open externally supplied project state, remove internal trust markers,
@@ -126,7 +128,7 @@ impl ProjectSession {
         if !dir.is_dir() {
             anyhow::bail!("not a project directory: {dir}");
         }
-        let session = Self::open_inner(dir, false, true)?;
+        let session = Self::open_inner(dir, false, true, false)?;
         clear_typography_markers(&mut session.scene.write());
         session.compact()?;
         Ok(session)
@@ -152,10 +154,10 @@ impl ProjectSession {
             dir.join(PROJECT_TOML).as_std_path(),
             toml::to_string_pretty(&meta)?,
         )?;
-        Self::open_inner(dir, true, false)
+        Self::open_inner(dir, true, false, true)
     }
 
-    fn open_inner(dir: Utf8PathBuf, creating: bool, strict_history: bool) -> Result<Arc<Self>> {
+    fn open_inner(dir: Utf8PathBuf, creating: bool, strict_history: bool, trusted: bool) -> Result<Arc<Self>> {
         std::fs::create_dir_all(dir.join(BLOBS_DIR).as_std_path())?;
         std::fs::create_dir_all(dir.join(CACHE_DIR).as_std_path())?;
 
@@ -189,6 +191,7 @@ impl ProjectSession {
             history: Mutex::new(history_obj),
             blobs,
             _lock: lock,
+            trusted,
             #[cfg(test)]
             compact_apply_sync: Mutex::new(None),
         }))
@@ -198,6 +201,31 @@ impl ProjectSession {
 
     /// Apply an Op. Returns the epoch after apply.
     pub fn apply(&self, op: Op) -> Result<u64> {
+        if !self.trusted {
+            let tainted = match &op {
+                Op::UpdateNode { patch, .. } => {
+                    matches!(
+                        &patch.data,
+                        Some(koharu_core::NodeDataPatch::Text(text))
+                            if text.typography_plan_verified.is_some()
+                                || text.style.is_some()
+                    )
+                }
+                Op::Batch { ops, .. } => ops.iter().any(|child| {
+                    matches!(child, Op::UpdateNode { patch, .. } if matches!(
+                        &patch.data,
+                        Some(koharu_core::NodeDataPatch::Text(text))
+                            if text.typography_plan_verified.is_some()
+                                || text.style.is_some()
+                    ))
+                }),
+                _ => false,
+            };
+            anyhow::ensure!(
+                !tainted,
+                "typographyPlanVerified is internal and cannot be set by external operations"
+            );
+        }
         #[cfg(test)]
         self.wait_before_apply_lock();
         let mut history = self.history.lock();
@@ -341,7 +369,10 @@ fn clear_typography_markers(scene: &mut Scene) {
         .flat_map(|page| page.nodes.values_mut())
     {
         if let koharu_core::NodeKind::Text(text) = &mut node.kind {
-            text.typography_plan_verified = false;
+            if text.typography_plan_verified {
+                text.typography_plan_verified = false;
+                text.style = None;
+            }
         }
     }
 }
@@ -576,7 +607,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-greenc-red"]
     fn hanonly_pre_greenc_red_t3_untrusted_marker_lifecycle_contract() {
         let (_tmp, path) = tmp_dir();
         let (page, node) = stage_untrusted_history(&path);
