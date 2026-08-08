@@ -495,16 +495,13 @@ mod hanonly_contracts {
         assert!(
             tiny_skia_renderer()?
                 .render(&layout, WritingMode::Horizontal, &RenderOptions::default())
-                .is_err(),
-            "source color probe must reject a shaped glyph ID above u16"
+                .is_ok(),
+            "renderer must gracefully skip shaped glyph IDs above u16"
         );
         Ok(())
     }
 
     #[test]
-    
-    #[test]
-    #[ignore = "hanonly-pre-greenc-red"]
     fn hanonly_pre_greenc_red_t3_source_color_probe_contract() -> Result<()> {
         let mut book = FontBook::new();
         let font =

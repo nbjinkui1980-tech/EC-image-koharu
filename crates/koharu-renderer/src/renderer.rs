@@ -236,6 +236,9 @@ fn render_line(
     let mut pen_y = 0.0f32;
 
     for glyph in &line.glyphs {
+        if glyph.glyph_id == 0 {
+            anyhow::bail!("glyph zero is invalid for non-control text");
+        }
         let Ok(gid) = u16::try_from(glyph.glyph_id) else {
             pen_x += glyph.x_advance;
             pen_y -= glyph.y_advance;
