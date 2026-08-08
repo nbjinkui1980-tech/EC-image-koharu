@@ -24,6 +24,7 @@ pub struct Model(Mutex<PaddleOcrVl>);
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
+        crate::pipeline::engine::emit_engine_device("paddle-ocr-vl-1.6", "paddle-ocr-vl-1.6", 0);
         let texts = text_nodes(ctx.scene, ctx.page);
         if texts.is_empty() {
             return Ok(Vec::new());

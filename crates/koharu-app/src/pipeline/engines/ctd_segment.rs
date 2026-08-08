@@ -27,6 +27,7 @@ pub struct Model(ComicTextDetector);
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
+        crate::pipeline::engine::emit_engine_device("comic-text-detector-seg", "comic-text-detector-seg", 0);
         let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
         let mask = dispatch_segment(
             &image,

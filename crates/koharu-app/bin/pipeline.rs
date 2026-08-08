@@ -190,7 +190,7 @@ async fn run() -> Result<()> {
 
     let mut cfg = cfg;
     let options = pipeline_options(&cli, &cfg);
-    cfg.data.path = temp_root.join("data");
+    cfg.data.path = temp_root.clone();
     std::fs::create_dir_all(cfg.data.path.as_std_path()).context("create data dir")?;
 
     let http = RuntimeHttpConfig {
@@ -208,12 +208,13 @@ async fn run() -> Result<()> {
         .ensure_prepared_cached()
         .await
         .context("cached-only preflight: models must be pre-seeded (use --data-root <path>)")?;
+
+    emit_model_inventory(&temp_root)?;
+
     runtime
         .prepare()
         .await
         .context("prepare runtime (downloads llama.cpp if missing)")?;
-
-    emit_model_inventory(&temp_root)?;
 
     let actual_compute = if cli.cpu { "cpu" } else { "metal" };
     eprintln!("model_instance_device engine=cli model=none instance=0 actual={actual_compute}");

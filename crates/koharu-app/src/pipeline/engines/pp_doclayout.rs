@@ -21,6 +21,7 @@ pub struct Model(PPDocLayoutV3);
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
+        crate::pipeline::engine::emit_engine_device("pp-doclayout-v3", "pp-doclayout-v3", 0);
         let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
         let layout = self.0.inference_one_fast(&image, CONFIDENCE_THRESHOLD)?;
         let blocks = build_text_blocks(&layout.regions);

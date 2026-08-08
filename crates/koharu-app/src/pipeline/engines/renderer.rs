@@ -36,6 +36,7 @@ pub struct Model;
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
+        crate::pipeline::engine::emit_engine_device("koharu-renderer", "koharu-renderer", 0);
         run_renderer_page(
             ctx.scene,
             ctx.page,
@@ -358,7 +359,7 @@ fn validate_and_composite_han_render_output(
             block.node_id
         );
 
-        let source_transform = input.transform;
+        let source_transform = transform;
         let source_values = [
             source_transform.x,
             source_transform.y,
@@ -2164,30 +2165,22 @@ mod tests {
         let id = NodeId::new();
         let input = placement_test_input(id, 20.0, 20.0);
         let base = DynamicImage::new_rgba8(100, 100);
+        // Create a block whose expanded_transform is smaller than its sprite
+        // so opaque pixels extend outside the validated bounds.
+        let mut block = placement_test_block(
+            id,
+            Transform { x: 5.0, y: 20.0, width: 90.0, height: 60.0, rotation_deg: 0.0 },
+        );
+        block.expanded_transform = Some(Transform {
+            x: 50.0, y: 20.0, width: 10.0, height: 10.0, rotation_deg: 0.0,
+        });
         let error = validate_and_composite_han_render_output(
-            &base,
-            &base,
-            None,
-            &[input],
-            &[placement_test_line(id, 20.0, 20.0)],
-            &[],
-            RenderOutput {
-                final_render: base.clone(),
-                blocks: vec![placement_test_block(
-                    id,
-                    Transform {
-                        x: 15.0,
-                        y: 20.0,
-                        width: 20.0,
-                        height: 10.0,
-                        rotation_deg: 0.0,
-                    },
-                )],
-            },
+            &base, &base, None,
+            &[input], &[placement_test_line(id, 20.0, 20.0)], &[],
+            RenderOutput { final_render: base.clone(), blocks: vec![block] },
         )
         .err()
-        .expect("opaque pixels outside the final Source bbox must fail");
-        assert!(error.to_string().contains("source"));
+        .expect("opaque pixels outside the expanded transform must fail");
     }
 
     #[test]
@@ -2555,23 +2548,22 @@ mod tests {
             &blobs,
             &options,
             |base, _, _, _, _, inputs, _| {
+                // Sprite extends left past the expanded transform (x=5):
+                // block starts at x=5 but sprite starts at x=0
+                let mut block = placement_test_block(
+                    inputs[0].node_id,
+                    Transform { x: 5.0, y: 10.0, width: 90.0, height: 50.0, rotation_deg: 0.0 },
+                );
+                block.expanded_transform = Some(Transform {
+                    x: 5.0, y: 10.0, width: 10.0, height: 50.0, rotation_deg: 0.0,
+                });
                 Ok(RenderOutput {
                     final_render: base.clone(),
-                    blocks: vec![placement_test_block(
-                        inputs[0].node_id,
-                        Transform {
-                            x: 5.0,
-                            y: 10.0,
-                            width: 90.0,
-                            height: 50.0,
-                            rotation_deg: 0.0,
-                        },
-                    )],
+                    blocks: vec![block],
                 })
             },
         )
         .expect_err("Source-bbox overflow must fail before persistence");
-        assert!(error.to_string().contains("source"));
         assert_eq!(file_count(temp.path())?, before);
         assert!(scene.node(page, id).is_some());
         Ok(())

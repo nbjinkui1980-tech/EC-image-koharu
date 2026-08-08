@@ -16,6 +16,7 @@ pub struct Model(FontDetector);
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
+        crate::pipeline::engine::emit_engine_device("yuzumarker-font-detection", "yuzumarker-font-detection", 0);
         let texts = text_nodes(ctx.scene, ctx.page);
         if texts.is_empty() {
             return Ok(Vec::new());

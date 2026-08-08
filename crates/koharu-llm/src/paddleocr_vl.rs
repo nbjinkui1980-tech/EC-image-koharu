@@ -443,6 +443,10 @@ impl PaddleOcrVl {
             "paddleocr-vl inference timings"
         );
 
+        let gpu = self.backend.supports_gpu_offload();
+        let actual = if cfg!(feature = "metal") && gpu { "metal" } else { "cpu" };
+        eprintln!("model_instance_device engine=paddle-ocr-vl-1.6 model=paddle-ocr-vl-1.6 instance=0 actual={actual} gpu_offload={gpu}");
+
         Ok(PaddleOcrVlOutput {
             task,
             text: text.trim().to_string(),

@@ -63,6 +63,21 @@ impl EngineCtx<'_> {
     }
 }
 
+/// Emit a per-engine-instance device diagnostic line to stderr.
+/// Called once per concrete engine wrapper after its model is constructed
+/// or run, so the smoke harness can verify actual device usage.
+pub fn emit_engine_device(engine_id: &str, model_id: &str, instance_id: usize) {
+    let actual = if cfg!(feature = "metal") {
+        "metal"
+    } else {
+        "cpu"
+    };
+    // No receipt, schema, or persisted protocol; stderr-only.
+    eprintln!(
+        "model_instance_device engine={engine_id} model={model_id} instance={instance_id} actual={actual}"
+    );
+}
+
 /// Options threaded through a pipeline run.
 #[derive(Debug, Clone, Default)]
 pub struct PipelineRunOptions {

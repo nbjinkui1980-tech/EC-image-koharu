@@ -33,6 +33,7 @@ pub struct Model(Lama);
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
+        crate::pipeline::engine::emit_engine_device("lama-manga", "lama-manga", 0);
         let (_, mask_ref) = find_mask_node(ctx.scene, ctx.page, MaskRole::Segment)
             .ok_or_else(|| anyhow!("no Segment mask on page"))?;
         let (_, bubble_ref) = find_mask_node(ctx.scene, ctx.page, MaskRole::Bubble)
