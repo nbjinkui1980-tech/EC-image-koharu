@@ -131,7 +131,9 @@ async fn create_pages(
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
 
     // All files admitted — now safe to mutate the project.
-    let starting_index = if replace {
+    let starting_index;
+    let mut ops: Vec<Op> = Vec::new();
+    if replace {
         let scene = session.scene.read();
         let remove_ops: Vec<Op> = scene
             .pages
@@ -144,16 +146,10 @@ async fn create_pages(
             })
             .collect();
         drop(scene);
-        if !remove_ops.is_empty() {
-            app.apply(Op::Batch {
-                ops: remove_ops,
-                label: "Replace pages (clear)".into(),
-            })
-            .map_err(ApiError::internal)?;
-        }
-        0
+        ops.extend(remove_ops);
+        starting_index = 0;
     } else {
-        session.scene.read().pages.len()
+        starting_index = session.scene.read().pages.len();
     };
 
     // Store blobs from admitted bytes, then build pages.
@@ -170,8 +166,7 @@ async fn create_pages(
     .await
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
 
-    // Build one AddPage batch for the whole import.
-    let mut ops = Vec::with_capacity(decoded.len());
+    // Build AddPage ops into the combined batch.
     let mut created_ids = Vec::with_capacity(decoded.len());
     for (i, (filename, w, h, blob)) in decoded.into_iter().enumerate() {
         let mut page = Page::new(&filename, w, h);
@@ -256,7 +251,8 @@ async fn create_pages_from_paths(
         natord::compare(af, bf)
     });
 
-    let starting_index = if req.replace {
+    if paths.is_empty() && req.replace {
+        // Replace with empty is just a clear — no admission needed.
         let scene = session.scene.read();
         let remove_ops: Vec<Op> = scene
             .pages
@@ -276,16 +272,17 @@ async fn create_pages_from_paths(
             })
             .map_err(ApiError::internal)?;
         }
-        0
-    } else {
-        session.scene.read().pages.len()
-    };
+        return Ok(Json(CreatePagesResponse { pages: Vec::new() }));
+    }
+    if paths.is_empty() {
+        return Err(ApiError::bad_request("no paths provided"));
+    }
 
-    let blobs = session.blobs.clone();
-    let decoded: Vec<(String, u32, u32, BlobRef)> = tokio::task::spawn_blocking(move || {
+    // Admit every source image before any mutation.
+    let admitted: Vec<(String, u32, u32, Vec<u8>)> = tokio::task::spawn_blocking(move || {
         paths
             .into_par_iter()
-            .map(|path| -> ApiResult<(String, u32, u32, BlobRef)> {
+            .map(|path| -> ApiResult<(String, u32, u32, Vec<u8>)> {
                 let filename = std::path::Path::new(&path)
                     .file_name()
                     .and_then(|s| s.to_str())
@@ -293,9 +290,44 @@ async fn create_pages_from_paths(
                     .unwrap_or_else(|| "page.bin".to_string());
                 let bytes = std::fs::read(&path)
                     .map_err(|e| ApiError::bad_request(format!("read `{filename}`: {e}")))?;
-                let img = image::load_from_memory(&bytes)
-                    .map_err(|e| ApiError::bad_request(format!("decode `{filename}`: {e}")))?;
+                let img = koharu_app::blobs::admit_source_image(&bytes)
+                    .map_err(|e| ApiError::bad_request(format!("admit `{filename}`: {e}")))?;
                 let (w, h) = img.dimensions();
+                Ok((filename, w, h, bytes))
+            })
+            .collect::<ApiResult<Vec<_>>>()
+    })
+    .await
+    .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
+
+    // All files admitted — now safe to mutate the project.
+    let starting_index;
+    let mut ops: Vec<Op> = Vec::new();
+    if req.replace {
+        let scene = session.scene.read();
+        let remove_ops: Vec<Op> = scene
+            .pages
+            .keys()
+            .copied()
+            .map(|id| Op::RemovePage {
+                id,
+                prev_page: scene.pages[&id].clone(),
+                prev_index: scene.pages.get_index_of(&id).unwrap_or(0),
+            })
+            .collect();
+        drop(scene);
+        ops.extend(remove_ops);
+        starting_index = 0;
+    } else {
+        starting_index = session.scene.read().pages.len();
+    };
+
+    // Store blobs from admitted bytes.
+    let blobs = session.blobs.clone();
+    let decoded: Vec<(String, u32, u32, BlobRef)> = tokio::task::spawn_blocking(move || {
+        admitted
+            .into_par_iter()
+            .map(|(filename, w, h, bytes)| -> ApiResult<(String, u32, u32, BlobRef)> {
                 let blob = blobs.put_bytes(&bytes).map_err(ApiError::internal)?;
                 Ok((filename, w, h, blob))
             })
@@ -304,7 +336,6 @@ async fn create_pages_from_paths(
     .await
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
 
-    let mut ops = Vec::with_capacity(decoded.len());
     let mut created_ids = Vec::with_capacity(decoded.len());
     for (i, (filename, w, h, blob)) in decoded.into_iter().enumerate() {
         let mut page = Page::new(&filename, w, h);
@@ -858,7 +889,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "hanonly-pre-b1-red"]
     async fn hanonly_pre_b1_red_t2_replace_import_atomicity_contract() {
         let root = TestDir(
             std::env::temp_dir().join(format!("koharu-replace-atomicity-{}", Uuid::new_v4())),

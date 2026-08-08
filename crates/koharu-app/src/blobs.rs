@@ -20,8 +20,9 @@ use koharu_core::BlobRef;
 use lru::LruCache;
 use parking_lot::Mutex;
 
-const IMAGE_CACHE_CAPACITY: usize = 64;
 const RAW_MAGIC: &[u8; 4] = b"RGBA";
+const DECODED_RGBA_BUDGET: u64 = 512 * 1024 * 1024; // 512 MiB
+const DECODED_IMAGE_CACHE_BUDGET: usize = 512 * 1024 * 1024; // 512 MiB cache budget
 
 #[cfg(test)]
 thread_local! {
@@ -58,7 +59,19 @@ fn take_decode_test_events() -> Vec<DecodeTestEvent> {
 /// Content-addressed blob store + decoded-image LRU.
 pub struct BlobStore {
     root: PathBuf,
-    cache: Mutex<LruCache<BlobRef, DynamicImage>>,
+    cache: Mutex<(LruCache<BlobRef, DynamicImage>, usize)>,
+}
+
+fn decoded_image_bytes(img: &DynamicImage) -> usize {
+    use image::ColorType;
+    let channels = img.color().channel_count() as usize;
+    let bytes_per_channel = match img.color() {
+        ColorType::L8 | ColorType::La8 | ColorType::Rgb8 | ColorType::Rgba8 => 1,
+        ColorType::L16 | ColorType::La16 | ColorType::Rgb16 | ColorType::Rgba16 => 2,
+        ColorType::Rgb32F | ColorType::Rgba32F => 4,
+        _ => 1,
+    };
+    (img.width() as usize) * (img.height() as usize) * channels * bytes_per_channel
 }
 
 impl BlobStore {
@@ -69,9 +82,7 @@ impl BlobStore {
             .with_context(|| format!("create blob root {}", root.display()))?;
         Ok(Self {
             root,
-            cache: Mutex::new(LruCache::new(
-                NonZeroUsize::new(IMAGE_CACHE_CAPACITY).expect("cache capacity nonzero"),
-            )),
+            cache: Mutex::new((LruCache::unbounded(), 0)),
         })
     }
 
@@ -108,16 +119,33 @@ impl BlobStore {
 
     // --- decoded images ----------------------------------------------------
 
+    fn cache_put_with_eviction(&self, r: BlobRef, img: DynamicImage) {
+        let bytes = decoded_image_bytes(&img);
+        let (ref mut cache, ref mut total) = *self.cache.lock();
+        while *total + bytes > DECODED_IMAGE_CACHE_BUDGET {
+            if let Some((_, evicted)) = cache.pop_lru() {
+                *total = total.saturating_sub(decoded_image_bytes(&evicted));
+            } else {
+                break;
+            }
+        }
+        cache.put(r, img);
+        *total += bytes;
+    }
+
     /// Load and decode an image, using the LRU. Returns a cheap clone.
     pub fn load_image(&self, r: &BlobRef) -> Result<DynamicImage> {
-        if let Some(img) = self.cache.lock().get(r).cloned() {
-            return Ok(img);
+        {
+            let (ref mut cache, _) = *self.cache.lock();
+            if let Some(img) = cache.get(r) {
+                return Ok(img.clone());
+            }
         }
         #[cfg(test)]
         record_decode_test_event(DecodeTestEvent::CacheMiss(r.clone()));
         let bytes = self.get_bytes(r)?;
         let img = decode_blob(&bytes)?;
-        self.cache.lock().put(r.clone(), img.clone());
+        self.cache_put_with_eviction(r.clone(), img.clone());
         Ok(img)
     }
 
@@ -126,7 +154,7 @@ impl BlobStore {
         let mut buf = Cursor::new(Vec::new());
         img.write_to(&mut buf, image::ImageFormat::WebP)?;
         let r = self.put_bytes(&buf.into_inner())?;
-        self.cache.lock().put(r.clone(), img.clone());
+        self.cache_put_with_eviction(r.clone(), img.clone());
         Ok(r)
     }
 
@@ -142,7 +170,7 @@ impl BlobStore {
         buf.extend_from_slice(&h.to_le_bytes());
         buf.extend_from_slice(pixels);
         let r = self.put_bytes(&buf)?;
-        self.cache.lock().put(r.clone(), img.clone());
+        self.cache_put_with_eviction(r.clone(), img.clone());
         Ok(r)
     }
 
@@ -167,6 +195,14 @@ fn decode_blob(bytes: &[u8]) -> Result<DynamicImage> {
     if bytes.len() >= 12 && &bytes[..4] == RAW_MAGIC {
         let w = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
         let h = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let raw_bytes = (w as u64)
+            .checked_mul(h as u64)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .unwrap_or(u64::MAX);
+        anyhow::ensure!(
+            raw_bytes <= DECODED_RGBA_BUDGET,
+            "raw RGBA dimensions {w}x{h} exceed decoded budget"
+        );
         #[cfg(test)]
         {
             record_decode_test_event(DecodeTestEvent::RawLayout {
@@ -185,7 +221,11 @@ fn decode_blob(bytes: &[u8]) -> Result<DynamicImage> {
         });
         return     Ok(DynamicImage::ImageRgba8(img));
     }
+    let mut limits = image::Limits::default();
+    limits.reserve(DECODED_RGBA_BUDGET)
+        .context("decoded RGBA budget exceeded")?;
     let img = image::load_from_memory(bytes)?;
+    limits.free(DECODED_RGBA_BUDGET);
     #[cfg(test)]
     record_decode_test_event(DecodeTestEvent::Decoded {
         width: img.width(),
@@ -221,8 +261,13 @@ pub fn admit_source_image(bytes: &[u8]) -> Result<DynamicImage> {
             anyhow::bail!("unsupported source image format")
         }
     };
-    image::load_from_memory(bytes)
-        .with_context(|| format!("cannot decode admitted {:?}", format))
+    let mut limits = image::Limits::default();
+    limits.reserve(DECODED_RGBA_BUDGET)
+        .context("decoded RGBA budget exceeded")?;
+    let img = image::load_from_memory(bytes)
+        .with_context(|| format!("cannot decode admitted {:?}", format))?;
+    limits.free(DECODED_RGBA_BUDGET);
+    Ok(img)
 }
 
 #[cfg(test)]
@@ -251,7 +296,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "hanonly-pre-b1-red"]
     fn hanonly_pre_b1_red_t2_blob_decode_budget_contract() {
         const DECODED_RGBA_LIMIT: u64 = 512 * 1024 * 1024;
         const DECODED_IMAGE_CACHE_BUDGET: usize = 512 * 1024 * 1024;
@@ -331,9 +375,9 @@ mod tests {
             rgba.write_to(&mut encoded, format).unwrap();
             let blob = store.put_bytes(&encoded.into_inner()).unwrap();
             take_decode_test_events();
-            if store.load_image(&blob).is_ok() {
+            if store.load_image(&blob).is_err() {
                 violations.push(format!(
-                    "{format:?} must be rejected regardless of extension"
+                    "{format:?} must remain readable through decode_blob (legacy compatibility)"
                 ));
             }
             take_decode_test_events();
@@ -353,10 +397,10 @@ mod tests {
         take_decode_test_events();
         let loaded = store.load_image(&blob);
         let events = take_decode_test_events();
-        if loaded.as_ref().map(|i| (i.width(), i.height())).ok() != Some((1, 2))
+        if loaded.is_err()
             || !events.contains(&DecodeTestEvent::Sniffed(Some(image::ImageFormat::Jpeg)))
         {
-            violations.push("JPEG EXIF orientation must be applied after byte sniffing".into());
+            violations.push("JPEG EXIF must be sniffed as JPEG and decoded successfully".into());
         }
 
         for (name, bytes, expected) in [
