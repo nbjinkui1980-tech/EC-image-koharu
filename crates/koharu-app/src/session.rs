@@ -202,25 +202,7 @@ impl ProjectSession {
     /// Apply an Op. Returns the epoch after apply.
     pub fn apply(&self, op: Op) -> Result<u64> {
         if !self.trusted {
-            let tainted = match &op {
-                Op::UpdateNode { patch, .. } => {
-                    matches!(
-                        &patch.data,
-                        Some(koharu_core::NodeDataPatch::Text(text))
-                            if text.typography_plan_verified.is_some()
-                                || text.style.is_some()
-                    )
-                }
-                Op::Batch { ops, .. } => ops.iter().any(|child| {
-                    matches!(child, Op::UpdateNode { patch, .. } if matches!(
-                        &patch.data,
-                        Some(koharu_core::NodeDataPatch::Text(text))
-                            if text.typography_plan_verified.is_some()
-                                || text.style.is_some()
-                    ))
-                }),
-                _ => false,
-            };
+            let tainted = contains_planner_marker(&op);
             anyhow::ensure!(
                 !tainted,
                 "typographyPlanVerified is internal and cannot be set by external operations"
@@ -360,6 +342,27 @@ fn load_snapshot(dir: &Utf8Path, creating: bool) -> Result<(Scene, u64)> {
     scene.project.created_at = meta.created_at;
     scene.project.updated_at = meta.updated_at;
     Ok((scene, 0))
+}
+
+fn contains_planner_marker(op: &Op) -> bool {
+    match op {
+        Op::AddPage { page, .. } => page.nodes.values().any(|node| {
+            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified)
+        }),
+        Op::AddNode { node, .. } => {
+            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified)
+        }
+        Op::UpdateNode { patch, .. } => {
+            matches!(
+                &patch.data,
+                Some(koharu_core::NodeDataPatch::Text(text))
+                    if text.typography_plan_verified.is_some()
+                        || text.style.is_some()
+            )
+        }
+        Op::Batch { ops, .. } => ops.iter().any(|child| contains_planner_marker(child)),
+        _ => false,
+    }
 }
 
 fn clear_typography_markers(scene: &mut Scene) {
@@ -657,6 +660,69 @@ mod tests {
         assert_eq!(text.translation.as_deref(), Some("history value"));
         assert!(!text.typography_plan_verified);
         assert!(text.style.is_none());
+    }
+
+    #[test]
+    fn hanonly_pre_greenc_red_t3_untrusted_rejects_nested_batch_marker() {
+        let (_tmp, path) = tmp_dir();
+        let (page, node) = stage_untrusted_history(&path);
+        let untrusted = ProjectSession::open_untrusted(&path).unwrap();
+        let epoch = untrusted.epoch();
+        let result = untrusted.apply(Op::Batch {
+            label: "nested".into(),
+            ops: vec![Op::Batch {
+                label: "inner".into(),
+                ops: vec![Op::UpdateNode {
+                    page,
+                    id: node,
+                    patch: koharu_core::NodePatch {
+                        data: Some(koharu_core::NodeDataPatch::Text(
+                            koharu_core::TextDataPatch {
+                                style: Some(Some(planner_owned_style())),
+                                ..Default::default()
+                            },
+                        )),
+                        ..Default::default()
+                    },
+                    prev: koharu_core::NodePatch::default(),
+                }],
+            }],
+        });
+        assert!(
+            result.is_err(),
+            "an untrusted session must reject nested-batch Planner-owned style reintroduction"
+        );
+        assert_eq!(untrusted.epoch(), epoch);
+    }
+
+    #[test]
+    fn hanonly_pre_greenc_red_t3_untrusted_rejects_add_page_with_marker() {
+        let (_tmp, path) = tmp_dir();
+        stage_untrusted_history(&path);
+        let untrusted = ProjectSession::open_untrusted(&path).unwrap();
+        let epoch = untrusted.epoch();
+        let mut page = Page::new("p2", 320, 240);
+        let node_id = NodeId::new();
+        page.nodes.insert(
+            node_id,
+            Node {
+                id: node_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Text(TextData {
+                    text: Some("forged".into()),
+                    typography_plan_verified: true,
+                    style: Some(planner_owned_style()),
+                    ..Default::default()
+                }),
+            },
+        );
+        let result = untrusted.apply(Op::AddPage { page, at: 1 });
+        assert!(
+            result.is_err(),
+            "an untrusted session must reject AddPage with pre-verified text"
+        );
+        assert_eq!(untrusted.epoch(), epoch);
     }
 
     #[test]
