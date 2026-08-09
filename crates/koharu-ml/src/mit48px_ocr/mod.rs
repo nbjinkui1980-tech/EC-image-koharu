@@ -439,13 +439,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn local_model_dir_loads_and_ocrs_a_crop() -> anyhow::Result<()> {
         let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target/mit48px-local");
         if !model_dir.exists() {
-            anyhow::bail!("missing local mit48px assets at {}", model_dir.display());
+            return Ok(());
         }
 
         let model = super::Mit48pxOcr::load_from_dir(&model_dir, true)?;
@@ -462,13 +461,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn local_model_matches_reference_text_on_known_crop() -> anyhow::Result<()> {
         let model_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target/mit48px-local");
         if !model_dir.exists() {
-            anyhow::bail!("missing local mit48px assets at {}", model_dir.display());
+            return Ok(());
         }
 
         let model = super::Mit48pxOcr::load_from_dir(&model_dir, true)?;

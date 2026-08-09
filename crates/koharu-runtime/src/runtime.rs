@@ -201,7 +201,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore]
     async fn prepares_llama_runtime_into_configured_root() -> Result<()> {
         let tempdir = tempfile::tempdir()?;
         let runtime = Runtime::new(tempdir.path(), ComputePolicy::CpuOnly)?;
@@ -211,7 +210,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn repeated_basename_loads_succeed_after_prepare() -> Result<()> {
         let tempdir = tempfile::tempdir()?;
         let runtime = Runtime::new(tempdir.path(), ComputePolicy::CpuOnly)?;
