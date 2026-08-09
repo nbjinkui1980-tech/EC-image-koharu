@@ -2129,6 +2129,7 @@ mod tests {
         }
     }
 
+#[allow(unused_variables)]
     #[test]
     fn han_only_expanded_sprite_rejects_natural_page_overflow() {
         let id = NodeId::new();
@@ -2161,6 +2162,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unused_variables)]
     fn han_only_nontransparent_pixels_must_stay_inside_final_source_bbox() {
         let id = NodeId::new();
         let input = placement_test_input(id, 20.0, 20.0);
@@ -2530,6 +2532,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unused_variables)]
     fn han_only_source_bbox_overflow_fails_before_blob_or_scene_ops() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let blobs = BlobStore::open(temp.path())?;
