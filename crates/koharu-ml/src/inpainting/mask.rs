@@ -156,6 +156,16 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
     expanded
 }
 
+/// Apply Gaussian blur to a binary mask, producing soft edges for
+/// smoother inpainting transitions. Sigma controls the blur radius;
+/// typical values for manga inpainting are 1.0–3.0.
+pub fn feather_mask(mask: &GrayImage, sigma: f32) -> GrayImage {
+    let (width, height) = mask.dimensions();
+    let img = DynamicImage::ImageLuma8(mask.clone());
+    let blurred = img.blur(sigma);
+    blurred.to_luma8()
+}
+
 fn expand_residual_components(
     out: &mut GrayImage,
     residual: &GrayImage,
@@ -700,5 +710,23 @@ mod tests {
         assert_eq!(expanded.get_pixel(32, 29).0[0], 255);
         // (33, 29) should be 0
         assert_eq!(expanded.get_pixel(33, 29).0[0], 0);
+    }
+
+    #[test]
+    fn feather_mask_softens_hard_edges() {
+        // 128x128 mask: left half = 255, right half = 0
+        let mask = GrayImage::from_fn(128, 128, |x, _y| {
+            if x < 64 { Luma([255]) } else { Luma([0]) }
+        });
+        let feathered = feather_mask(&mask, 4.0);
+
+        // At the edge (x=64), pixel should be blended (neither 0 nor 255)
+        let edge = feathered.get_pixel(64, 64).0[0];
+        assert!(edge > 0, "edge pixel {edge} should be > 0 after feathering");
+        assert!(edge < 255, "edge pixel {edge} should be < 255 after feathering");
+
+        // Far from edge should remain largely unchanged
+        assert!(feathered.get_pixel(32, 64).0[0] > 200);
+        assert!(feathered.get_pixel(96, 64).0[0] < 55);
     }
 }
