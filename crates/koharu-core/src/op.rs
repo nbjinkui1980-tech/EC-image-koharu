@@ -409,14 +409,13 @@ impl Op {
             }
 
             Op::Batch { ops, .. } => {
-                if ops.iter().all(|op| matches!(op, Op::UpdateNode { .. })) {
-                    for op in ops.iter() {
-                        op.validate(scene)?;
-                    }
+                let mut scratch_scene = scene.clone();
+                let mut scratch_ops = ops.clone();
+                for op in &mut scratch_ops {
+                    op.apply(&mut scratch_scene)?;
                 }
-                for op in ops.iter_mut() {
-                    op.apply(scene)?;
-                }
+                *scene = scratch_scene;
+                *ops = scratch_ops;
             }
         }
         Ok(())
@@ -1130,6 +1129,7 @@ mod tests {
     #[test]
     fn batch_apply_preserves_sequential_add_page_dependencies() {
         let mut scene = Scene::default();
+        let before = serde_json::to_vec(&scene).unwrap();
         let first = blank_page();
         let second = Page::new("p2", 800, 1200);
         let mut batch = Op::Batch {
@@ -1152,10 +1152,15 @@ mod tests {
             scene.pages.keys().copied().collect::<Vec<_>>(),
             vec![first.id, second.id]
         );
+
+        let mut undo = batch.inverse();
+        assert!(matches!(&undo, Op::Batch { ops, .. } if ops.len() == 2));
+        undo.apply(&mut scene).unwrap();
+        assert_eq!(serde_json::to_vec(&scene).unwrap(), before);
     }
 
     #[test]
-    fn hanonly_pre_greenc_red_t3_marker_batch_atomicity_contract() {
+    fn batch_apply_is_atomic_for_mixed_and_nested_failures() {
         let update = |page, id, patch| Op::UpdateNode {
             page,
             id,
@@ -1167,33 +1172,30 @@ mod tests {
         };
 
         let (mut mixed_scene, page, node) = verified_text_scene();
-        let _mixed_before = serde_json::to_vec(&mixed_scene).unwrap();
+        let mixed_before = serde_json::to_vec(&mixed_scene).unwrap();
         let mut mixed = Op::Batch {
             ops: vec![
                 update(
                     page,
                     node,
                     TextDataPatch {
-                        style: Some(Some(TextStyle::default())),
+                        translation: Some(Some("edited".into())),
                         ..Default::default()
                     },
                 ),
-                update(
-                    page,
-                    node,
-                    TextDataPatch {
-                        typography_plan_verified: Some(true),
-                        ..Default::default()
-                    },
-                ),
+                Op::AddNode {
+                    page: PageId::new(),
+                    node: custom_image_node(),
+                    at: 0,
+                },
             ],
-            label: "mixed marker guard".into(),
+            label: "mixed late failure".into(),
         };
-        let _mixed_op_before = serde_json::to_vec(&mixed).unwrap();
+        let mixed_op_before = serde_json::to_vec(&mixed).unwrap();
         let mixed_result = mixed.apply(&mut mixed_scene);
 
         let (mut nested_scene, page, node) = verified_text_scene();
-        let _nested_before = serde_json::to_vec(&nested_scene).unwrap();
+        let nested_before = serde_json::to_vec(&nested_scene).unwrap();
         let added_page = blank_page();
         let mut nested = Op::Batch {
             ops: vec![
@@ -1222,14 +1224,15 @@ mod tests {
             ],
             label: "nested atomicity".into(),
         };
-        let _nested_op_before = serde_json::to_vec(&nested).unwrap();
+        let nested_op_before = serde_json::to_vec(&nested).unwrap();
         let nested_result = nested.apply(&mut nested_scene);
 
-        assert!(
-            mixed_result.is_ok(),
-            "planner-owned marker ops are accepted through apply() (API-layer rejects externally)"
-        );
-        assert!(nested_result.is_err(), "late nested invariant must fail");
+        assert!(mixed_result.is_err(), "late mixed op must fail");
+        assert_eq!(serde_json::to_vec(&mixed_scene).unwrap(), mixed_before);
+        assert_eq!(serde_json::to_vec(&mixed).unwrap(), mixed_op_before);
+        assert!(nested_result.is_err(), "late nested op must fail");
+        assert_eq!(serde_json::to_vec(&nested_scene).unwrap(), nested_before);
+        assert_eq!(serde_json::to_vec(&nested).unwrap(), nested_op_before);
     }
 
     #[test]
