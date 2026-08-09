@@ -26,7 +26,7 @@
 
 use anyhow::Result;
 use image::{
-    GrayImage, RgbImage,
+    GrayImage, Rgb, RgbImage,
     imageops::{FilterType, crop_imm, resize},
 };
 use imageproc::contours::{BorderType, find_contours};
@@ -460,6 +460,35 @@ fn composite_masked(
     }
 }
 
+/// Blend `crop_result` into `out` using a feathered mask, producing
+/// smooth transitions at tile boundaries instead of hard cuts.
+fn composite_feathered(
+    out: &mut RgbImage,
+    crop_result: &RgbImage,
+    crop_mask: &GrayImage,
+    left: u32,
+    top: u32,
+    feather_sigma: f32,
+) {
+    let blurred = super::mask::feather_mask(crop_mask, feather_sigma);
+    for y in 0..blurred.height() {
+        for x in 0..blurred.width() {
+            let alpha = blurred.get_pixel(x, y).0[0] as f32 / 255.0;
+            if alpha == 0.0 {
+                continue;
+            }
+            let orig = out.get_pixel(left + x, top + y).0;
+            let new = crop_result.get_pixel(x, y).0;
+            let blended = [
+                (orig[0] as f32 + (new[0] as f32 - orig[0] as f32) * alpha) as u8,
+                (orig[1] as f32 + (new[1] as f32 - orig[1] as f32) * alpha) as u8,
+                (orig[2] as f32 + (new[2] as f32 - orig[2] as f32) * alpha) as u8,
+            ];
+            out.put_pixel(left + x, top + y, Rgb(blended));
+        }
+    }
+}
+
 fn clear_masked_region(mask: &mut GrayImage, crop_mask: &GrayImage, left: u32, top: u32) {
     for y in 0..crop_mask.height() {
         for x in 0..crop_mask.width() {
@@ -801,5 +830,61 @@ mod tests {
         assert_eq!(out.get_pixel(110, 110).0, [5, 6, 7]);
         assert_eq!(out.get_pixel(170, 160).0, [5, 6, 7]);
         assert_eq!(out.get_pixel(20, 20).0, [90, 90, 90]);
+    }
+
+    #[test]
+    fn original_strategy_with_bubble_mask_preserves_bubble_outside_pixels() {
+        let img = solid_rgb(32, 32, [50, 50, 50]);
+        let mut mask = GrayImage::new(32, 32);
+        mask.put_pixel(16, 16, Luma([255]));
+        let mut bubble = GrayImage::new(32, 32);
+        for y in 12..20 {
+            for x in 12..20 {
+                bubble.put_pixel(x, y, Luma([1]));
+            }
+        }
+        let forward = PaintForward::new([100, 200, 50]);
+        let cfg = HdStrategyConfig {
+            strategy: HdStrategy::Original,
+            ..HdStrategyConfig::lama_default()
+        };
+        let out = run_inpaint(&forward, &img, &mask, Some(&bubble), &cfg).unwrap();
+        assert_eq!(forward.calls.get(), 1);
+        assert_eq!(out.get_pixel(16, 16).0, [100, 200, 50]);
+        assert_eq!(out.get_pixel(0, 0).0, [50, 50, 50]);
+    }
+
+    #[test]
+    fn resize_strategy_scales_and_preserves_unmasked_pixels() {
+        let img = solid_rgb(2000, 1500, [30, 40, 50]);
+        let mut mask = GrayImage::new(2000, 1500);
+        mask.put_pixel(1000, 750, Luma([255]));
+        let forward = PaintForward::new([80, 90, 100]);
+        let cfg = HdStrategyConfig {
+            strategy: HdStrategy::Resize,
+            resize_limit: 500,
+            ..HdStrategyConfig::lama_default()
+        };
+        let out = run_inpaint(&forward, &img, &mask, None, &cfg).unwrap();
+        assert_eq!(forward.calls.get(), 1);
+        assert_eq!(out.dimensions(), (2000, 1500));
+        assert_eq!(out.get_pixel(0, 0).0, [30, 40, 50]);
+    }
+
+    #[test]
+    fn composite_feathered_blends_at_mask_boundary() {
+        let mut out = solid_rgb(64, 64, [100, 100, 100]);
+        let crop = solid_rgb(32, 32, [200, 200, 200]);
+        let mut mask = GrayImage::new(32, 32);
+        for y in 0..32 {
+            for x in 0..16 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        composite_feathered(&mut out, &crop, &mask, 16, 16, 3.0);
+        // At the seam (x=32), pixel should be blended, not hard-cut.
+        let seam = out.get_pixel(32, 32).0;
+        assert!(seam[0] > 100, "seam R should be > 100 (blended)");
+        assert!(seam[0] < 200, "seam R should be < 200 (blended)");
     }
 }
