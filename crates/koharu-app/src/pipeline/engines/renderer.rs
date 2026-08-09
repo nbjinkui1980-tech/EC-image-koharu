@@ -804,7 +804,7 @@ mod tests {
                 target_language: language.map(str::to_string),
                 ..Default::default()
             };
-        let _error = run_renderer_page(
+        let error = run_renderer_page(
                 &scene,
                 page,
                 &blobs,
@@ -1953,7 +1953,7 @@ mod tests {
         let base =
             DynamicImage::ImageRgba8(RgbaImage::from_pixel(120, 30, Rgba([10, 20, 30, 255])));
 
-        let _error = dispatch_render_page(
+        let error = dispatch_render_page(
             SourceTextPolicy::HanOnly,
             true,
             &base,
@@ -2134,7 +2134,7 @@ mod tests {
         let id = NodeId::new();
         let input = placement_test_input(id, 95.0, 95.0);
         let base = DynamicImage::new_rgba8(100, 100);
-        let _error = validate_and_composite_han_render_output(
+        let error = validate_and_composite_han_render_output(
             &base,
             &base,
             None,
@@ -2174,7 +2174,7 @@ mod tests {
         block.expanded_transform = Some(Transform {
             x: 50.0, y: 20.0, width: 10.0, height: 10.0, rotation_deg: 0.0,
         });
-        let _error = validate_and_composite_han_render_output(
+        let error = validate_and_composite_han_render_output(
             &base, &base, None,
             &[input], &[placement_test_line(id, 20.0, 20.0)], &[],
             RenderOutput { final_render: base.clone(), blocks: vec![block] },
@@ -2191,7 +2191,7 @@ mod tests {
         input.transform.width = 20.0;
         input.transform.height = 20.0;
         let base = DynamicImage::new_rgba8(100, 100);
-        let _error = validate_and_composite_han_render_output(
+        let error = validate_and_composite_han_render_output(
             &base,
             &base,
             None,
@@ -2237,7 +2237,7 @@ mod tests {
             height: 10.0,
             rotation_deg: 0.0,
         };
-        let _error = validate_and_composite_han_render_output(
+        let error = validate_and_composite_han_render_output(
             &base,
             &base,
             None,
@@ -2356,7 +2356,7 @@ mod tests {
             }),
         };
 
-        let _error = validate_and_composite_han_render_output(
+        let error = validate_and_composite_han_render_output(
             &base,
             &base,
             None,
@@ -2383,7 +2383,7 @@ mod tests {
         let id = NodeId::new();
         let input = placement_test_input(id, 10.0, 10.0);
         let base = DynamicImage::new_rgba8(100, 100);
-        let _error = validate_and_composite_han_render_output(
+        let error = validate_and_composite_han_render_output(
             &base,
             &base,
             None,
@@ -2502,7 +2502,7 @@ mod tests {
             target_language: Some("en".to_string()),
             ..Default::default()
         };
-        let _error = run_renderer_page(
+        let error = run_renderer_page(
             &scene,
             page,
             &blobs,
@@ -2542,7 +2542,7 @@ mod tests {
             target_language: Some("en".to_string()),
             ..Default::default()
         };
-        let _error = run_renderer_page(
+        let error = run_renderer_page(
             &scene,
             page,
             &blobs,
@@ -2589,7 +2589,7 @@ mod tests {
             ..Default::default()
         };
         let renderer = crate::renderer::Renderer::new()?;
-        let _error = run_renderer_page(
+        let error = run_renderer_page(
             &scene,
             page,
             &blobs,
