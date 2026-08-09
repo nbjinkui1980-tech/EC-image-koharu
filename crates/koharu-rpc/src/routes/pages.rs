@@ -115,7 +115,6 @@ async fn create_pages(
     if files.is_empty() {
         return Err(ApiError::bad_request("no files in request"));
     }
-    let blobs = session.blobs.clone();
     let admitted: Vec<(String, u32, u32, Vec<u8>)> = tokio::task::spawn_blocking(move || {
         files
             .into_par_iter()
