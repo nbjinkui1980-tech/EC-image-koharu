@@ -1,3 +1,5 @@
+//! LaMa: Fourier-based inpainting model for large-area text removal.
+
 mod fft;
 mod model;
 

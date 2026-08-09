@@ -1,3 +1,5 @@
+//! Joint text block and speech bubble detection model.
+
 mod model;
 
 use std::{collections::BTreeMap, time::Instant};

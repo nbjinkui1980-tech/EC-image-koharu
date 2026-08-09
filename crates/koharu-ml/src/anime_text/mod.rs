@@ -1,3 +1,5 @@
+//! Anime-text-YOLO: text block detection model for manga and anime pages.
+
 mod model;
 
 use std::{path::Path, path::PathBuf, time::Instant};

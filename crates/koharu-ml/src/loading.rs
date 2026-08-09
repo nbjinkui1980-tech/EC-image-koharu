@@ -1,3 +1,5 @@
+//! Shared model loading utilities: safetensors, mmap, dtype resolution.
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 

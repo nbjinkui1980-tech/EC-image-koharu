@@ -1,3 +1,5 @@
+//! Text layout engine: shaping, line breaking, bidirectional text.
+
 use std::{collections::HashMap, ops::Range};
 use unicode_bidi::BidiInfo;
 

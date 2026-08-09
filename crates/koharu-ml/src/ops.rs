@@ -1,3 +1,5 @@
+//! Common image processing ops (resize, normalize, tensor conversion).
+
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, VarBuilder};
 

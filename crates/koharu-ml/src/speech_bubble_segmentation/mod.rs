@@ -1,3 +1,5 @@
+//! Speech bubble segmentation model for manga page analysis.
+
 mod model;
 
 use std::{

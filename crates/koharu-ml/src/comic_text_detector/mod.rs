@@ -1,3 +1,5 @@
+//! Text segmentation mask generator for comic and manga pages.
+
 mod dbnet;
 mod postprocess;
 mod unet;

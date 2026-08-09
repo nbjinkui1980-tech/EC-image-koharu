@@ -1,3 +1,5 @@
+//! MIT 48px OCR: compact multilingual text recognition model.
+
 mod model;
 
 use std::path::{Path, PathBuf};

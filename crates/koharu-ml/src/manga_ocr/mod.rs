@@ -1,3 +1,5 @@
+//! Manga OCR: specialized Japanese text recognition model.
+
 mod bert;
 mod model;
 mod tokenizer;

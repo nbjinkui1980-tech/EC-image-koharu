@@ -1,3 +1,5 @@
+//! Raster-based text renderer producing RGBA images from layout runs.
+
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};

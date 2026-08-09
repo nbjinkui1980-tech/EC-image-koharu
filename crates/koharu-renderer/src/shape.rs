@@ -1,3 +1,5 @@
+//! OpenType shaping via HarfBuzz for complex text scripts.
+
 use anyhow::Result;
 use harfrust::{Direction, Feature, Script, ShapeOptions, ShaperData, Tag, UnicodeBuffer};
 use icu_properties::{CodePointMapData, props::Script as IcuScript};

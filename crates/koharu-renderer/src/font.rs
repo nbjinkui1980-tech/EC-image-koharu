@@ -1,3 +1,5 @@
+//! Font discovery, loading, caching, and glyph querying.
+
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},

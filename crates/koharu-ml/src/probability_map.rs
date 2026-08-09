@@ -1,3 +1,5 @@
+//! Probability map post-processing for detection models.
+
 use anyhow::{Context, Result};
 use image::GrayImage;
 

@@ -1,3 +1,5 @@
+//! Font style and color detection for source text analysis.
+
 use std::{fs, path::PathBuf, time::Instant};
 
 use crate::{device, loading};

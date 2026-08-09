@@ -1,3 +1,5 @@
+//! PP-DocLayout V3: document layout analysis and text region detection.
+
 mod model;
 
 use std::{collections::BTreeMap, time::Instant};

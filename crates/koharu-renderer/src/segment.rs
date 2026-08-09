@@ -1,3 +1,5 @@
+//! Text segmentation and character boundary detection.
+
 use std::{ops::Range, sync::LazyLock};
 
 use hypher::{Lang, hyphenate_bounded};

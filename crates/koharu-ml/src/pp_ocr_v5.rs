@@ -1,3 +1,5 @@
+//! PP-OCRv5: PaddleOCR text recognition model.
+
 use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Context, Result, ensure};

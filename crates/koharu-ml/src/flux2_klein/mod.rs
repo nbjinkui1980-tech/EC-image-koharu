@@ -1,3 +1,5 @@
+//! FLUX.2 Klein 4B: diffusion-based inpainting model.
+
 mod latents;
 mod precomputed;
 pub mod qwen;

@@ -1,3 +1,5 @@
+//! AOT-GAN: deep learning inpainting model for text removal.
+
 mod model;
 
 use std::{
