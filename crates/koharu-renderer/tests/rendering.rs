@@ -49,10 +49,16 @@ fn try_font(family_name: &str) -> Option<Font> {
     if let Ok(f) = font(family_name) {
         return Some(f);
     }
-    // CI fallbacks: fonts-noto-cjk is pre-installed on Ubuntu runners
+    // Fall back to system-native CJK fonts when the requested font
+    // is not installed (CI Linux, bare macOS without Office).
     match family_name {
         "Yu Gothic" => font("Noto Sans CJK JP").ok(),
-        "Microsoft YaHei" => font("Noto Sans CJK SC").ok(),
+        "Microsoft YaHei" => {
+            font("Noto Sans CJK SC")
+                .or_else(|_| font("PingFang SC"))
+                .or_else(|_| font("Heiti SC"))
+                .ok()
+        }
         _ => None,
     }
 }
