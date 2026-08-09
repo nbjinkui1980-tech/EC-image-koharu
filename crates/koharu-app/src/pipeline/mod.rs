@@ -2515,10 +2515,10 @@ pub(crate) mod tests {
     pub(crate) async fn assert_transient_planner_hint_pipeline_contract() -> anyhow::Result<()> {
         use crate::renderer::RendererDiagnosticCapture;
         use crate::typography::{
-            TypographyDiagnosticCapture, TypographyDiagnosticOutcome, TypographyFieldOutcome,
+            TypographyDiagnosticCapture, TypographyDiagnosticOutcome,
         };
         let fixture = PipelineFixture::new("中文", "abcdef")?;
-        let text_before = fixture
+        let _text_before = fixture
             .session
             .scene_snapshot()
             .node(fixture.page, fixture.text)
@@ -2595,7 +2595,7 @@ pub(crate) mod tests {
             }
             other => failures.push(format!("Planner acceptance events {other:?}")),
         }
-        let text_after = fixture
+        let _text_after = fixture
             .session
             .scene_snapshot()
             .node(fixture.page, fixture.text)
