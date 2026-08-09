@@ -185,8 +185,6 @@ const hasExplicitColor = (node: TextNodeEntry) => Array.isArray(node.data.style?
 const canonicalSourceLanguageCode = (value?: string) =>
   value === undefined ? undefined : SOURCE_RELATIVE_LANGUAGE_ALIASES.get(value.trim())
 
-
-
 export function RenderControlsPanel() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -733,9 +731,7 @@ export function RenderControlsPanel() {
             data-testid='render-font-size-decrease'
             disabled={!selectedNode || isAutoMode}
             onClick={() => {
-              const next = Number(
-                Math.max(6, (displayedCurrentFontSize ?? 16) - 1).toFixed(1),
-              )
+              const next = Number(Math.max(6, (displayedCurrentFontSize ?? 16) - 1).toFixed(1))
               applyStyleToSelected({ fontSize: next })
             }}
           >
@@ -766,9 +762,7 @@ export function RenderControlsPanel() {
             data-testid='render-font-size-increase'
             disabled={!selectedNode || isAutoMode}
             onClick={() => {
-              const next = Number(
-                Math.min(300, (displayedCurrentFontSize ?? 16) + 1).toFixed(1),
-              )
+              const next = Number(Math.min(300, (displayedCurrentFontSize ?? 16) + 1).toFixed(1))
               applyStyleToSelected({ fontSize: next })
             }}
           >
