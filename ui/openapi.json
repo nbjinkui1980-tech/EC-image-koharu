@@ -1173,7 +1173,10 @@
       },
       "BlobRef": {
         "type": "string",
-        "description": "Hex-encoded blake3 hash of an immutable blob."
+        "description": "Hex-encoded blake3 hash of an immutable blob.",
+        "maxLength": 64,
+        "minLength": 64,
+        "pattern": "^[0-9a-f]{64}$"
       },
       "CodexAuthAttemptStatus": {
         "type": "string",

@@ -474,8 +474,8 @@ mod tests {
     use camino::Utf8PathBuf;
     use koharu_app::{AppConfig, ProjectSession};
     use koharu_core::{
-        Node, NodeDataPatch, NodeId, NodeKind, NodePatch, Op, Page, TextData, TextDataPatch,
-        Transform,
+        BlobRef, ImageData, ImageRole, Node, NodeDataPatch, NodeId, NodeKind, NodePatch, Op, Page,
+        TextData, TextDataPatch, Transform,
     };
 
     struct TempRoot(Utf8PathBuf);
@@ -544,6 +544,46 @@ mod tests {
         bytes
     }
 
+    fn invalid_blob_archive(root: &Utf8PathBuf) -> Vec<u8> {
+        const VALID_BLOB: &str = "41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d";
+        const INVALID_BLOB: &str =
+            "../../outside000000000000000000000000000000000000000000000000000";
+        let path = root.join("invalid-blob.khrproj");
+        let session = ProjectSession::create(&path, "invalid blob").unwrap();
+        let mut page = Page::new("p1", 100, 100);
+        let id = NodeId::new();
+        page.nodes.insert(
+            id,
+            Node {
+                id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Image(ImageData {
+                    role: ImageRole::Source,
+                    blob: BlobRef::parse(VALID_BLOB).unwrap(),
+                    opacity: 1.0,
+                    natural_width: 100,
+                    natural_height: 100,
+                    name: None,
+                }),
+            },
+        );
+        session.apply(Op::AddPage { page, at: 0 }).unwrap();
+        session.compact().unwrap();
+        drop(session);
+        let scene_path = path.join("scene.bin");
+        let mut scene = std::fs::read(&scene_path).unwrap();
+        let offset = scene
+            .windows(VALID_BLOB.len())
+            .position(|window| window == VALID_BLOB.as_bytes())
+            .expect("serialized blob fixture");
+        scene[offset..offset + VALID_BLOB.len()].copy_from_slice(INVALID_BLOB.as_bytes());
+        std::fs::write(scene_path, scene).unwrap();
+        let bytes = koharu_app::archive::export_khr_bytes(&path).unwrap();
+        std::fs::remove_dir_all(path.as_std_path()).unwrap();
+        bytes
+    }
+
     fn only_text_marker(session: &ProjectSession) -> bool {
         session
             .scene
@@ -597,6 +637,8 @@ mod tests {
         ])
         .unwrap();
         assert!(sanitize_and_publish_import(&config, &truncated_history).is_err());
+        let invalid_blob = invalid_blob_archive(&root.0);
+        assert!(sanitize_and_publish_import(&config, &invalid_blob).is_err());
         assert!(project_dirs::list_projects(&config).unwrap().is_empty());
         let projects = project_dirs::projects_dir(&config).unwrap();
         assert!(

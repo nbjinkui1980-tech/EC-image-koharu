@@ -738,7 +738,12 @@ mod tests {
             kind: NodeKind::Text(TextData {
                 text: Some(text.to_string()),
                 translation: Some("old".to_string()),
-                sprite: Some(BlobRef::new("sprite")),
+                sprite: Some(
+                    BlobRef::parse(
+                        "4a046e33ecf7aced9bfd000747bb1fda7836c8ceeff662af33c2a2c288b4e78c",
+                    )
+                    .unwrap(),
+                ),
                 sprite_transform: Some(Transform::default()),
                 line_polygons: polygons,
                 source_direction: Some(TextDirection::Horizontal),

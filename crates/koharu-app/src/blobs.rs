@@ -95,25 +95,26 @@ impl BlobStore {
     /// Write raw bytes; return the blake3-derived `BlobRef`.
     pub fn put_bytes(&self, data: &[u8]) -> Result<BlobRef> {
         let hash = blake3::hash(data).to_hex().to_string();
-        let path = self.blob_path(&hash);
+        let blob = BlobRef::parse(hash)?;
+        let path = self.blob_path(&blob)?;
         if !path.exists() {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, data).with_context(|| format!("write blob {hash}"))?;
+            std::fs::write(&path, data).with_context(|| format!("write blob {}", blob.hash()))?;
         }
-        Ok(BlobRef::new(hash))
+        Ok(blob)
     }
 
     /// Read raw bytes by `BlobRef`.
     pub fn get_bytes(&self, r: &BlobRef) -> Result<Vec<u8>> {
-        let path = self.blob_path(r.hash());
+        let path = self.blob_path(r)?;
         std::fs::read(&path).with_context(|| format!("blob not found: {}", r.hash()))
     }
 
     /// Whether a blob exists on disk (no decode, no cache touch).
     pub fn exists(&self, r: &BlobRef) -> bool {
-        self.blob_path(r.hash()).exists()
+        self.blob_path(r).is_ok_and(|path| path.exists())
     }
 
     // --- decoded images ----------------------------------------------------
@@ -182,9 +183,16 @@ impl BlobStore {
 
     // --- internals ---------------------------------------------------------
 
-    fn blob_path(&self, hash: &str) -> PathBuf {
-        let (prefix, rest) = hash.split_at(2.min(hash.len()));
-        self.root.join(prefix).join(rest)
+    fn blob_path(&self, blob: &BlobRef) -> Result<PathBuf> {
+        self.blob_path_for_hash(blob.hash())
+    }
+
+    fn blob_path_for_hash(&self, hash: &str) -> Result<PathBuf> {
+        let blob = BlobRef::parse(hash)?;
+        let (prefix, rest) = blob.hash().split_at(2);
+        let path = self.root.join(prefix).join(rest);
+        anyhow::ensure!(path.starts_with(&self.root), "blob path escaped store root");
+        Ok(path)
     }
 }
 
@@ -279,7 +287,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = BlobStore::open(dir.path()).unwrap();
         let r = store.put_bytes(b"hello world").unwrap();
-        assert!(!r.is_empty());
+        assert_eq!(r.hash().len(), 64);
         let bytes = store.get_bytes(&r).unwrap();
         assert_eq!(bytes, b"hello world");
         assert!(store.exists(&r));
@@ -292,6 +300,30 @@ mod tests {
         let a = store.put_bytes(b"x").unwrap();
         let b = store.put_bytes(b"x").unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn invalid_blob_ref_cannot_escape_store_root() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("blobs");
+        let sentinel = dir.path().join("sentinel");
+        std::fs::write(&sentinel, b"outside").unwrap();
+        let store = BlobStore::open(&root).unwrap();
+        assert!(store.blob_path_for_hash("..sentinel").is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn valid_blob_ref_maps_to_expected_two_level_path() {
+        const VALID_BLOB: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let dir = tempdir().unwrap();
+        let store = BlobStore::open(dir.path()).unwrap();
+        let blob = BlobRef::parse(VALID_BLOB).unwrap();
+
+        assert_eq!(
+            store.blob_path(&blob).unwrap(),
+            dir.path().join("01").join(&blob.hash()[2..])
+        );
     }
 
     #[test]

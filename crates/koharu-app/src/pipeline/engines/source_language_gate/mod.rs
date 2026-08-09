@@ -4634,6 +4634,9 @@ mod tests {
 
     #[tokio::test]
     async fn production_gate_empty_targets_preserves_repair_brush_and_inpainted_result() {
+        let blob = |name: &str| {
+            BlobRef::parse(blake3::hash(name.as_bytes()).to_hex().to_string()).unwrap()
+        };
         let english = NodeId::new();
         let source = Node {
             id: NodeId::new(),
@@ -4641,7 +4644,7 @@ mod tests {
             visible: true,
             kind: NodeKind::Image(ImageData {
                 role: ImageRole::Source,
-                blob: BlobRef::new("source"),
+                blob: blob("source"),
                 opacity: 1.0,
                 natural_width: 200,
                 natural_height: 100,
@@ -4654,7 +4657,7 @@ mod tests {
             visible: true,
             kind: NodeKind::Image(ImageData {
                 role,
-                blob: BlobRef::new(name),
+                blob: blob(name),
                 opacity: 1.0,
                 natural_width: 200,
                 natural_height: 100,
@@ -4667,7 +4670,7 @@ mod tests {
             visible: true,
             kind: NodeKind::Mask(MaskData {
                 role,
-                blob: BlobRef::new(name),
+                blob: blob(name),
             }),
         };
         let (scene, page) = scene_with_nodes(vec![

@@ -150,9 +150,33 @@ async fn blob_missing_returns_404() -> anyhow::Result<()> {
     let resp = app
         .client_config
         .client
-        .get(format!("{}/blobs/{}", app.base_url, "deadbeefdeadbeef"))
+        .get(format!(
+            "{}/blobs/{}",
+            app.base_url,
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        ))
         .send()
         .await?;
     assert_eq!(resp.status(), 404);
+    Ok(())
+}
+
+#[tokio::test]
+async fn encoded_blob_path_separator_is_rejected() -> anyhow::Result<()> {
+    let app = TestApp::spawn().await?;
+    let project = app.open_fresh_project("traversal").await?;
+    let sentinel = project.join("outside-blobs.txt");
+    std::fs::write(&sentinel, b"outside")?;
+    let encoded = sentinel.as_str().replace('/', "%2F");
+
+    let resp = app
+        .client_config
+        .client
+        .get(format!("{}/blobs/aa{encoded}", app.base_url))
+        .send()
+        .await?;
+
+    assert_eq!(resp.status(), 400);
+    assert_eq!(std::fs::read(&sentinel)?, b"outside");
     Ok(())
 }

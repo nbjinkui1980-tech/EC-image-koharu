@@ -784,14 +784,9 @@ mod tests {
         let (_tmp, path) = tmp_dir();
         let page_id: PageId;
         let expected = [
-            BlobRef::new("source"),
-            BlobRef::new("rendered"),
-            BlobRef::new("custom"),
-            BlobRef::new("segment"),
-            BlobRef::new("bubble"),
-            BlobRef::new("brush"),
-            BlobRef::new("sprite"),
-        ];
+            "source", "rendered", "custom", "segment", "bubble", "brush", "sprite",
+        ]
+        .map(|label| BlobRef::parse(blake3::hash(label.as_bytes()).to_hex().to_string()).unwrap());
         {
             let session = ProjectSession::create(&path, "legacy-layers").unwrap();
             let mut page = Page::new("p1", 64, 64);
@@ -863,9 +858,9 @@ mod tests {
                 NodeKind::Text(data) => data.sprite.clone(),
             })
             .collect::<Vec<_>>();
-        blobs.sort_by(|left, right| left.0.cmp(&right.0));
+        blobs.sort_by(|left, right| left.hash().cmp(right.hash()));
         let mut expected_blobs = expected.to_vec();
-        expected_blobs.sort_by(|left, right| left.0.cmp(&right.0));
+        expected_blobs.sort_by(|left, right| left.hash().cmp(right.hash()));
         assert_eq!(blobs, expected_blobs);
         for (role, blob) in [
             (ImageRole::Source, &expected[0]),

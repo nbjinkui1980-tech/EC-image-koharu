@@ -94,7 +94,8 @@ async fn get_blob(State(app): State<AppState>, Path(hash): Path<String>) -> ApiR
     let session = app
         .current_session()
         .ok_or_else(|| ApiError::bad_request("no project open"))?;
-    let blob_ref = BlobRef::new(hash);
+    let blob_ref = BlobRef::parse(hash)
+        .map_err(|_| ApiError::bad_request("invalid blob reference"))?;
     let bytes = session
         .blobs
         .get_bytes(&blob_ref)

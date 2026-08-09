@@ -1095,7 +1095,12 @@ pub(crate) mod tests {
                         detector: Some(engines::support::SOURCE_GATE_TARGET_DETECTOR.to_string()),
                         text: Some(source_text.to_string()),
                         translation: Some(translation.to_string()),
-                        sprite: Some(BlobRef::new("old-sprite")),
+                        sprite: Some(
+                            BlobRef::parse(
+                                "edc0af89c4b6558d0a7fa0cfdc49cb615e274d98ea9b784e5927a06658c78127",
+                            )
+                            .unwrap(),
+                        ),
                         sprite_transform: Some(Transform {
                             x: 1.0,
                             y: 2.0,

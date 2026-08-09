@@ -1169,7 +1169,12 @@ mod tests {
                 translation: translation.map(str::to_string),
                 line_polygons: polygons,
                 source_direction: Some(TextDirection::Horizontal),
-                sprite: Some(BlobRef::new("old-sprite")),
+                sprite: Some(
+                    BlobRef::parse(
+                        "edc0af89c4b6558d0a7fa0cfdc49cb615e274d98ea9b784e5927a06658c78127",
+                    )
+                    .unwrap(),
+                ),
                 sprite_transform: Some(Transform::default()),
                 ..Default::default()
             }),

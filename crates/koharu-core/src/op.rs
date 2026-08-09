@@ -856,7 +856,10 @@ mod tests {
             visible: true,
             kind: NodeKind::Image(ImageData {
                 role: ImageRole::Custom,
-                blob: BlobRef::new("deadbeef"),
+                blob: BlobRef::parse(
+                    "2baf1f40105d9501fe319a8ec463fdf4325a2a5df445adf3f572f626253678c9",
+                )
+                .unwrap(),
                 opacity: 1.0,
                 natural_width: 100,
                 natural_height: 100,
@@ -1028,7 +1031,10 @@ mod tests {
             visible: true,
             kind: NodeKind::Image(ImageData {
                 role: ImageRole::Source,
-                blob: BlobRef::new("a"),
+                blob: BlobRef::parse(
+                    "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+                )
+                .unwrap(),
                 opacity: 1.0,
                 natural_width: 10,
                 natural_height: 10,
@@ -1041,7 +1047,10 @@ mod tests {
             visible: true,
             kind: NodeKind::Image(ImageData {
                 role: ImageRole::Source,
-                blob: BlobRef::new("b"),
+                blob: BlobRef::parse(
+                    "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+                )
+                .unwrap(),
                 opacity: 1.0,
                 natural_width: 10,
                 natural_height: 10,
