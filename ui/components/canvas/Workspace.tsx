@@ -255,6 +255,7 @@ export function Workspace() {
           <ScrollAreaPrimitive.Viewport
             ref={handleViewportRef}
             data-testid='workspace-viewport'
+            role='application'
             className='grid size-full place-content-center-safe'
           >
             {page ? (
@@ -268,6 +269,9 @@ export function Workspace() {
                     <div
                       ref={canvasRef}
                       data-testid='workspace-canvas'
+                      role='img'
+                      aria-label={t('canvas.workspace.label', 'Manga translation canvas')}
+                      tabIndex={0}
                       className='relative rounded-md border border-border bg-card shadow-sm'
                       style={{
                         ...canvasDimensions,
