@@ -1,3 +1,5 @@
+//! Typed API request builders for Codex endpoints.
+
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 

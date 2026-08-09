@@ -1,3 +1,5 @@
+//! Archive extraction and manipulation utilities.
+
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs;

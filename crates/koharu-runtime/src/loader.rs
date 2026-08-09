@@ -1,3 +1,5 @@
+//! Dynamic shared library loader (dlopen/dlsym abstraction).
+
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 

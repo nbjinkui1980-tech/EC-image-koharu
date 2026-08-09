@@ -1,3 +1,5 @@
+//! OAuth token types (access, refresh, ID tokens).
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};

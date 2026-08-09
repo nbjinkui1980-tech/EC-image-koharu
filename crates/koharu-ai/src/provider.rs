@@ -1,3 +1,5 @@
+//! Cloud LLM provider abstractions (OpenAI, Gemini, Claude, DeepSeek).
+
 #[derive(Debug, Clone)]
 pub struct AiInputImage {
     pub data_url: String,

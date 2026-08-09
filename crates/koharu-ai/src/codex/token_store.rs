@@ -1,3 +1,5 @@
+//! Secure OAuth token persistence via the system keychain.
+
 use koharu_secrets::{DEFAULT_SECRET_SERVICE, SecretStore};
 
 use super::error::{CodexError, Result};

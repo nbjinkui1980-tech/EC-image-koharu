@@ -1,3 +1,5 @@
+//! llama.cpp runtime detection, installation, and platform-specific library resolution.
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};

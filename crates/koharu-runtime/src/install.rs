@@ -1,3 +1,5 @@
+//! Package installation, extraction, and filesystem preparation.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

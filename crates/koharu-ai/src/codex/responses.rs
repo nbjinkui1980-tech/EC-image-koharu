@@ -1,3 +1,5 @@
+//! API response deserialization types.
+
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]

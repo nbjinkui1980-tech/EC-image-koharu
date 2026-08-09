@@ -1,3 +1,5 @@
+//! ZLUDA compatibility layer for running CUDA workloads on AMD GPUs.
+
 #[cfg(target_os = "windows")]
 const RELEASE_BASE_URL: &str = "https://github.com/vosen/ZLUDA/releases/download";
 #[cfg(any(target_os = "windows", test))]

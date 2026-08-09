@@ -1,3 +1,5 @@
+//! Error types for Codex API interactions.
+
 use std::time::Duration;
 
 use reqwest::StatusCode;

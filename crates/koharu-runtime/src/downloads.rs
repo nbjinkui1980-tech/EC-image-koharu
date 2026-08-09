@@ -1,3 +1,5 @@
+//! HTTP download manager with retry logic for model and runtime files.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

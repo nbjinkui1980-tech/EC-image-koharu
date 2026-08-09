@@ -1,3 +1,5 @@
+//! HTTP client for the ChatGPT Codex REST API.
+
 use std::fmt;
 use std::time::Instant;
 

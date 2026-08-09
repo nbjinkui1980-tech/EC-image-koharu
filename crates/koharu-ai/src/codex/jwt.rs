@@ -1,3 +1,5 @@
+//! JWT token parsing and validation.
+
 use base64::Engine as _;
 use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
 use serde_json::Value;

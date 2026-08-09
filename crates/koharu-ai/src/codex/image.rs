@@ -1,3 +1,5 @@
+//! Image generation and response streaming endpoints.
+
 use serde::Serialize;
 use serde_json::Value;
 

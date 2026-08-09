@@ -1,3 +1,5 @@
+//! Codex client configuration (API base URL, user agent).
+
 use std::time::Duration;
 
 pub const DEFAULT_ISSUER_URL: &str = "https://auth.openai.com";

@@ -1,3 +1,5 @@
+//! Codex API integration for image-to-image generation via ChatGPT.
+
 mod client;
 mod config;
 mod device;

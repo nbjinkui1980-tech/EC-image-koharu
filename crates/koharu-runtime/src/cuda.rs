@@ -1,3 +1,5 @@
+//! CUDA toolkit detection, driver support checks, and GPU capability queries.
+
 use anyhow::{Context, Result, anyhow, bail};
 use libloading::Library;
 use serde::Deserialize;

@@ -1,3 +1,5 @@
+//! Package catalog manifest parsing and dependency resolution.
+
 use std::sync::Arc;
 
 use anyhow::{Context, Result};

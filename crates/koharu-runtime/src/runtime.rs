@@ -1,3 +1,5 @@
+//! Central runtime manager: compute policy, root path, HTTP client, and bootstrap sequencing.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

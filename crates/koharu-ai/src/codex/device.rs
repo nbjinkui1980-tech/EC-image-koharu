@@ -1,3 +1,5 @@
+//! OAuth 2.0 device authorization flow for Codex login.
+
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
