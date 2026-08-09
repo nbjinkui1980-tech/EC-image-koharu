@@ -41,8 +41,20 @@ fn font(family_name: &str) -> Result<Font> {
     Ok(font)
 }
 
+/// Returns `None` when the font is unavailable on this system.
+/// Falls back to CI-friendly alternatives (Noto CJK) for Japanese,
+/// Chinese, and Korean fonts that are not installed by default on
+/// Linux or macOS CI runners.
 fn try_font(family_name: &str) -> Option<Font> {
-    font(family_name).ok()
+    if let Ok(f) = font(family_name) {
+        return Some(f);
+    }
+    // CI fallbacks: fonts-noto-cjk is pre-installed on Ubuntu runners
+    match family_name {
+        "Yu Gothic" => font("Noto Sans CJK JP").ok(),
+        "Microsoft YaHei" => font("Noto Sans CJK SC").ok(),
+        _ => None,
+    }
 }
 
 fn tiny_skia_renderer() -> Result<&'static TinySkiaRenderer> {
