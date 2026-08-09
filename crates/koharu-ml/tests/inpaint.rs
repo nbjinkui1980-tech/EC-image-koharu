@@ -7,7 +7,6 @@ use koharu_ml::lama::Lama;
 mod support;
 
 #[tokio::test]
-#[ignore]
 async fn lama_inpainting_updates_masked_region() -> anyhow::Result<()> {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
 
@@ -41,7 +40,6 @@ async fn lama_inpainting_updates_masked_region() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-#[ignore]
 async fn aot_inpainting_updates_masked_region() -> anyhow::Result<()> {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
 
