@@ -1,8 +1,8 @@
 // @ts-nocheck
+import { exec as execCallback, spawn } from 'node:child_process'
+import { readdir, access, mkdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { readdir, access } from 'node:fs/promises'
-import { exec as execCallback, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 
 const exec = promisify(execCallback)
@@ -94,6 +94,13 @@ async function setupCl() {
 }
 
 async function dev() {
+  if (process.env.KOHARU_TMPDIR) {
+    await mkdir(process.env.KOHARU_TMPDIR, { recursive: true })
+    process.env.TMPDIR = process.env.KOHARU_TMPDIR
+    process.env.TMP = process.env.KOHARU_TMPDIR
+    process.env.TEMP = process.env.KOHARU_TMPDIR
+  }
+
   if (os.type() === 'Windows_NT') {
     // First, try to check if nvcc is available
     await checkNvcc()
