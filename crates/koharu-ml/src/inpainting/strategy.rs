@@ -57,6 +57,9 @@ pub struct HdStrategyConfig {
     /// Model-required spatial divisor. LaMa / AoT both need 8; larger for
     /// models with deeper downsampling.
     pub pad_mod: u32,
+    /// When `Some(sigma)`, tile boundaries are blended with Gaussian blur
+    /// instead of hard cuts. `None` preserves the original behavior.
+    pub crop_feather_sigma: Option<f32>,
 }
 
 impl HdStrategyConfig {
@@ -69,6 +72,7 @@ impl HdStrategyConfig {
             crop_margin: 128,
             resize_limit: 1280,
             pad_mod: 8,
+            crop_feather_sigma: None,
         }
     }
 
@@ -81,6 +85,7 @@ impl HdStrategyConfig {
             crop_margin: 128,
             resize_limit,
             pad_mod,
+            crop_feather_sigma: None,
         }
     }
 }
@@ -172,7 +177,7 @@ fn run_crop<F: InpaintForward>(
             }
             let crop_result =
                 pad_forward_bounded(model, &crop_img, &crop_mask, crop_bubble.as_ref(), cfg)?;
-            composite_masked(&mut out, &crop_result, &crop_mask, l, t);
+            composite_blend(&mut out, &crop_result, &crop_mask, l, t, cfg);
             clear_masked_region(&mut working_mask, &crop_mask, l, t);
         }
         return Ok(out);
@@ -199,7 +204,7 @@ fn run_crop<F: InpaintForward>(
         }
         let crop_result =
             pad_forward_bounded(model, &crop_img, &crop_mask, crop_bubble.as_ref(), cfg)?;
-        composite_masked(&mut out, &crop_result, &crop_mask, l, t);
+        composite_blend(&mut out, &crop_result, &crop_mask, l, t, cfg);
         clear_masked_region(&mut working_mask, &crop_mask, l, t);
     }
     Ok(out)
@@ -210,10 +215,10 @@ fn run_resize<F: InpaintForward>(
     image: &RgbImage,
     mask: &GrayImage,
     bubble_mask: Option<&GrayImage>,
-    cfg: &HdStrategyConfig,
+    config: &HdStrategyConfig,
 ) -> Result<RgbImage> {
     let (w, h) = image.dimensions();
-    let (nw, nh) = scaled_dims(w, h, cfg.resize_limit);
+    let (nw, nh) = scaled_dims(w, h, config.resize_limit);
     tracing::debug!(
         from_w = w,
         from_h = h,
@@ -232,7 +237,7 @@ fn run_resize<F: InpaintForward>(
         &small_img,
         &small_mask,
         small_bubble.as_ref(),
-        cfg.pad_mod,
+        config.pad_mod,
     )?;
     let full_out = resize(&small_out, w, h, FilterType::CatmullRom);
 
@@ -457,6 +462,20 @@ fn composite_masked(
             }
             out.put_pixel(left + x, top + y, *crop_result.get_pixel(x, y));
         }
+    }
+}
+
+fn composite_blend(
+    out: &mut RgbImage,
+    crop_result: &RgbImage,
+    crop_mask: &GrayImage,
+    left: u32,
+    top: u32,
+    cfg: &HdStrategyConfig,
+) {
+    match cfg.crop_feather_sigma {
+        Some(sigma) => composite_feathered(out, crop_result, crop_mask, left, top, sigma),
+        None => composite_masked(out, crop_result, crop_mask, left, top),
     }
 }
 
@@ -887,5 +906,23 @@ mod tests {
         let seam = out.get_pixel(32, 32).0;
         assert!(seam[0] > 100, "seam R should be > 100 (blended)");
         assert!(seam[0] < 200, "seam R should be < 200 (blended)");
+    }
+
+    #[test]
+    fn crop_strategy_respects_feather_sigma_config() {
+        let img = solid_rgb(900, 900, [10, 20, 30]);
+        let mut mask = GrayImage::new(900, 900);
+        for y in 100..120 {
+            for x in 100..120 {
+                mask.put_pixel(x, y, Luma([255]));
+            }
+        }
+        let forward = PaintForward::new([240, 8, 16]);
+        let mut cfg = HdStrategyConfig::lama_default();
+        cfg.crop_feather_sigma = Some(2.0);
+        let out = run_inpaint(&forward, &img, &mask, None, &cfg).unwrap();
+        assert_eq!(out.dimensions(), (900, 900));
+        let seam = out.get_pixel(100, 100).0;
+        assert!(seam[0] > 10, "feathered seam should blend");
     }
 }
