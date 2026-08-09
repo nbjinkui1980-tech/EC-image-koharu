@@ -10,7 +10,6 @@ fn is_textlike_label(label: &str) -> bool {
 }
 
 #[tokio::test]
-#[ignore]
 async fn pp_doclayout_v3_detects_textlike_regions_on_manga_fixture() -> anyhow::Result<()> {
     let runtime = support::cpu_runtime();
     let model = PPDocLayoutV3::load(&runtime, false).await?;

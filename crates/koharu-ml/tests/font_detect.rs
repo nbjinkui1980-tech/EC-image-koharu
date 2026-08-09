@@ -6,7 +6,6 @@ use koharu_ml::font_detector::{FontDetector, TextDirection};
 mod support;
 
 #[tokio::test]
-#[ignore]
 async fn font_detect_inference_on_dialog_fixture() -> Result<()> {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dialog.jpg");
     assert!(
