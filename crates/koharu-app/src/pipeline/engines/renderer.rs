@@ -2174,7 +2174,7 @@ mod tests {
         block.expanded_transform = Some(Transform {
             x: 50.0, y: 20.0, width: 10.0, height: 10.0, rotation_deg: 0.0,
         });
-        let error = validate_and_composite_han_render_output(
+        let _error = validate_and_composite_han_render_output(
             &base, &base, None,
             &[input], &[placement_test_line(id, 20.0, 20.0)], &[],
             RenderOutput { final_render: base.clone(), blocks: vec![block] },
