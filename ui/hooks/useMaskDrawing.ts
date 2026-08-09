@@ -139,7 +139,7 @@ export function useMaskDrawing({
     return () => {
       cancelled = true
     }
-  }, [segmentData, page?.id, page?.width, page?.height, canvasRef, showMask])
+  }, [segmentData, page, canvasRef, showMask])
 
   const bind = isActive ? rawBind : () => ({})
   return { canvasRef, visible: showMask, bind }
