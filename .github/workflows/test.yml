@@ -58,7 +58,10 @@ jobs:
           eval "$(dbus-launch --sh-syntax)"
           echo -n "" | gnome-keyring-daemon --unlock --components=secrets &>/dev/null &
           export $(echo -n "" | gnome-keyring-daemon --start --components=secrets 2>/dev/null)
-          cargo test --workspace --tests
+          # --test-threads=1 avoids diagnostic lock contention between
+          # tests that use lock_diagnostic_capture_test() and tests that
+          # spawn threads interacting with diagnostics.
+          cargo test --workspace --tests -- --test-threads=1
       - name: Test generated artifact checker
         run: bun run test:generated
       - name: Check generated artifacts
