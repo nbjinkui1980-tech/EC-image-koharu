@@ -65,7 +65,7 @@ fn segment_regions(
             .as_deref()
             .is_none_or(|content| content.trim().is_empty())
     }) {
-        bail!("OCR text required before segmentation");
+        bail!("ocr text required before segmentation");
     }
 
     if policy == SourceTextPolicy::AllText {
@@ -296,7 +296,7 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(calls.get(), 0);
-        assert!(error.to_string().contains("OCR text required"));
+        assert!(error.to_string().contains("ocr text required"));
     }
 
     #[test]

@@ -452,7 +452,7 @@ pub async fn run(
         }
         for (seq, &i) in order.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
-                bail!("cancelled");
+                bail!("pipeline run cancelled");
             }
             let info = resolved.infos[i];
 
@@ -4440,7 +4440,7 @@ pub(crate) mod tests {
         let (cpu, compute) = match backend.as_str() {
             "cpu" => (true, ComputePolicy::CpuOnly),
             "metal" => (false, ComputePolicy::PreferGpu),
-            _ => anyhow::bail!("SOURCE_GATE_MATRIX_BACKEND must be cpu or metal"),
+            _ => anyhow::bail!("SOURCE_GATE_MATRIX_BACKEND must be \"cpu\" or \"metal\""),
         };
         let primary_policy = match std::env::var("SOURCE_GATE_MATRIX_POLICY").ok().as_deref() {
             Some("C0") => SourceGateCropPolicy::C0,

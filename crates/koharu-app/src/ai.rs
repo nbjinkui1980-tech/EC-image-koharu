@@ -304,7 +304,7 @@ impl AiManager {
 
 fn check_cancelled(cancel: &std::sync::atomic::AtomicBool) -> Result<()> {
     if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-        bail!("cancelled");
+        bail!("LLM operation cancelled");
     }
     Ok(())
 }
