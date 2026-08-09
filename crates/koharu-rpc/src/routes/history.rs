@@ -58,6 +58,7 @@ pub(crate) fn validate_external_op(op: &Op) -> Result<(), &'static str> {
             &patch.data,
             Some(koharu_core::NodeDataPatch::Text(text))
                 if text.typography_plan_verified.is_some()
+                    || text.style.is_some()
         ),
         Op::Batch { ops, .. } => {
             for child in ops {
@@ -68,7 +69,7 @@ pub(crate) fn validate_external_op(op: &Op) -> Result<(), &'static str> {
         _ => false,
     };
     if forged {
-        Err("typographyPlanVerified is internal and cannot be set by external operations")
+        Err("typographyPlanVerified and style are internal planner fields")
     } else {
         Ok(())
     }
@@ -95,7 +96,7 @@ pub(crate) mod tests {
     use koharu_app::{App, AppConfig, ProjectSession};
     use koharu_core::{
         Node, NodeDataPatch, NodeId, NodeKind, NodePatch, Page, PageId, TextData, TextDataPatch,
-        Transform,
+        TextStyle, Transform,
     };
     use koharu_runtime::{ComputePolicy, RuntimeManager};
     use serde_json::{Value, json};
@@ -104,7 +105,7 @@ pub(crate) mod tests {
     use uuid::Uuid;
 
     pub(crate) const MARKER_ERROR: &str =
-        "typographyPlanVerified is internal and cannot be set by external operations";
+        "typographyPlanVerified and style are internal planner fields";
 
     pub(crate) struct T3MarkerCase {
         pub name: &'static str,
@@ -399,6 +400,18 @@ pub(crate) mod tests {
                     label: "inner".into(),
                 }],
                 label: "outer".into(),
+            },
+            Op::UpdateNode {
+                page: page_id,
+                id: node_id,
+                patch: NodePatch {
+                    data: Some(NodeDataPatch::Text(TextDataPatch {
+                        style: Some(Some(TextStyle::default())),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                },
+                prev: NodePatch::default(),
             },
         ];
         for op in forged {
