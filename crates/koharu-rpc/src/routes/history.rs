@@ -49,10 +49,10 @@ async fn apply_command(
 pub(crate) fn validate_external_op(op: &Op) -> Result<(), &'static str> {
     let forged = match op {
         Op::AddPage { page, .. } => page.nodes.values().any(|node| {
-            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified)
+            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified || text.style.is_some())
         }),
         Op::AddNode { node, .. } => {
-            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified)
+            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified || text.style.is_some())
         }
         Op::UpdateNode { patch, .. } => matches!(
             &patch.data,
@@ -412,6 +412,19 @@ pub(crate) mod tests {
                     ..Default::default()
                 },
                 prev: NodePatch::default(),
+            },
+            Op::AddPage {
+                page: {
+                    let mut page = Page::new("style-only-page", 10, 10);
+                    let mut node = text_node(false);
+                    node.kind = NodeKind::Text(TextData {
+                        style: Some(TextStyle::default()),
+                        ..Default::default()
+                    });
+                    page.nodes.insert(node.id, node);
+                    page
+                },
+                at: 0,
             },
         ];
         for op in forged {

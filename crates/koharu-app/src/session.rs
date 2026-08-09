@@ -247,6 +247,12 @@ impl ProjectSession {
     /// Apply only if no concurrent mutation has advanced the history epoch.
     /// `None` is an expected optimistic-concurrency conflict.
     pub fn apply_if_epoch(&self, expected: u64, op: Op) -> Result<Option<u64>> {
+        if !self.trusted {
+            anyhow::ensure!(
+                !contains_planner_marker(&op),
+                "typographyPlanVerified and style are internal planner fields"
+            );
+        }
         let mut history = self.history.lock();
         let mut scene = self.scene.write();
         if history.epoch() != expected {
@@ -347,10 +353,10 @@ fn load_snapshot(dir: &Utf8Path, creating: bool) -> Result<(Scene, u64)> {
 fn contains_planner_marker(op: &Op) -> bool {
     match op {
         Op::AddPage { page, .. } => page.nodes.values().any(|node| {
-            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified)
+            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified || text.style.is_some())
         }),
         Op::AddNode { node, .. } => {
-            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified)
+            matches!(&node.kind, koharu_core::NodeKind::Text(text) if text.typography_plan_verified || text.style.is_some())
         }
         Op::UpdateNode { patch, .. } => {
             matches!(
@@ -372,7 +378,7 @@ fn clear_typography_markers(scene: &mut Scene) {
         .flat_map(|page| page.nodes.values_mut())
     {
         if let koharu_core::NodeKind::Text(text) = &mut node.kind {
-            if text.typography_plan_verified {
+            if text.typography_plan_verified || text.style.is_some() {
                 text.typography_plan_verified = false;
                 text.style = None;
             }
@@ -721,6 +727,35 @@ mod tests {
         assert!(
             result.is_err(),
             "an untrusted session must reject AddPage with pre-verified text"
+        );
+        assert_eq!(untrusted.epoch(), epoch);
+    }
+
+    #[test]
+    fn hanonly_pre_greenc_red_t3_untrusted_rejects_add_page_with_style_only() {
+        let (_tmp, path) = tmp_dir();
+        stage_untrusted_history(&path);
+        let untrusted = ProjectSession::open_untrusted(&path).unwrap();
+        let epoch = untrusted.epoch();
+        let mut page = Page::new("p3", 320, 240);
+        let node_id = NodeId::new();
+        page.nodes.insert(
+            node_id,
+            Node {
+                id: node_id,
+                transform: Transform::default(),
+                visible: true,
+                kind: NodeKind::Text(TextData {
+                    text: Some("forged-style".into()),
+                    style: Some(planner_owned_style()),
+                    ..Default::default()
+                }),
+            },
+        );
+        let result = untrusted.apply(Op::AddPage { page, at: 1 });
+        assert!(
+            result.is_err(),
+            "an untrusted session must reject AddPage with style but no verified marker"
         );
         assert_eq!(untrusted.epoch(), epoch);
     }
