@@ -5,7 +5,6 @@ use anyhow::Result;
 use image::DynamicImage;
 use image::GrayImage;
 use image::Luma;
-use image::imageops::crop_imm;
 use koharu_core::{BlobRef, ImageData, ImageRole, MaskRole, NodeId, NodeKind, PageId, Scene, TextData, Transform};
 use crate::blobs::BlobStore;
 
