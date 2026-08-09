@@ -256,4 +256,28 @@ mod tests {
         assert_eq!(targets[0].1.line_index, 1);
         assert_eq!(targets[0].1.text, "蜜桃臀");
     }
+
+    #[test]
+    fn collect_targets_returns_empty_when_all_nodes_are_blank() {
+        let scene = scene_with_texts(vec![
+            text_node(node_id(1), Some("")),
+            text_node(node_id(2), Some("   ")),
+            text_node(node_id(3), Some("\t\n")),
+            text_node(node_id(4), None),
+        ]);
+        let targets = collect_translation_targets_from(&scene, page_id(), None);
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn collect_targets_filters_by_allowed_ids_when_specified() {
+        let a = node_id(100);
+        let b = node_id(200);
+        let scene = scene_with_texts(vec![
+            text_node(a, Some("hello")),
+            text_node(b, Some("world")),
+        ]);
+        let targets = collect_translation_targets_from(&scene, page_id(), Some(&[a]));
+        assert_eq!(targets, vec![(a, "hello".to_string())]);
+    }
 }
