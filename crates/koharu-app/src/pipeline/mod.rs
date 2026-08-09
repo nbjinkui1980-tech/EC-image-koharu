@@ -101,6 +101,13 @@ static DIAGNOSTIC_CAPTURE_TEST_LOCK: std::sync::atomic::AtomicBool =
 #[cfg(test)]
 pub(crate) struct DiagnosticCaptureTestGuard;
 
+/// Acquire the global diagnostic capture lock for tests.
+///
+/// Tests that spawn threads which also interact with diagnostics (e.g.
+/// `source_language_gate::diagnostic_capture_rejects_nested_start_and_recovers`,
+/// `renderer_diagnostics_owner_thread_nested_and_unwind_contract`) can fail
+/// with `--test-threads > 1` when another test holds this lock. Run those
+/// tests with `--test-threads=1` or isolate them in a separate test binary.
 #[cfg(test)]
 pub(crate) fn lock_diagnostic_capture_test() -> DiagnosticCaptureTestGuard {
     while DIAGNOSTIC_CAPTURE_TEST_LOCK

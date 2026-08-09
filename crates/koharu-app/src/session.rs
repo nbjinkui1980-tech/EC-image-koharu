@@ -205,7 +205,7 @@ impl ProjectSession {
             let tainted = contains_planner_marker(&op);
             anyhow::ensure!(
                 !tainted,
-                "typographyPlanVerified is internal and cannot be set by external operations"
+                "typographyPlanVerified and style are internal planner fields"
             );
         }
         #[cfg(test)]
