@@ -1,6 +1,6 @@
 # 全项目审查修复 SDD 规格
 
-**状态：APPROVED — 2026-08-10；允许进入 PLAN，不直接授权实现。**
+**状态：APPROVED (AMENDED) — 2026-08-10；允许进入 TASKS 审阅，不直接授权实现。**
 
 **日期：** 2026-08-10
 **基线：** `codex/g005-typography-checkpoint` / `a035d113`
@@ -31,7 +31,7 @@
 2. 合法 BlobRef 是现有 BLAKE3 写入路径生成的 64 位小写 ASCII 十六进制值。
 3. LM Studio 等经用户显式配置的 loopback/RFC1918 provider 仍是合法功能，不能一刀切禁止私网 URL。
 4. 合法 `.khr`、Scene、Op JSON、epoch、undo/redo 和成功 API 响应保持兼容。
-5. 修复控制面认证允许一次明确记录的客户端兼容变更；不保留匿名兼容 shim。
+5. 修复控制面认证允许一次明确记录的客户端兼容变更；同时删除不安全且重复的 `/pages/from-paths` API；不保留匿名兼容 shim。
 6. 当前进行中的 G005 不属于本规格；安全修复不得改写 `.omx/ultragoal` 的 G005-G009 目标、证据或视觉行为。
 7. 本规格在获批后从当前基线创建独立修复分支；不把实现混入 G005 产品切片。
 
@@ -153,8 +153,8 @@ if (generation !== currentGeneration) {
 - 路由使用各自 body limit，JSON/control 不再继承 bulk 上限。
 - ZIP 按实际读取量限制 entry 数、单项、总展开字节和压缩比；不按不可信声明 size 直接分配。
 - history frame 在分配前验证长度；超限完整帧不得当作可忽略截断尾帧。
-- `/pages/from-paths` 只接受普通文件、规范路径和受信的一次性选择能力；拒绝设备、pipe 和特殊文件。
-- 页面导入限制文件数、编码总字节、总像素/解码字节和并发。
+- 删除 `/pages/from-paths`；Tauri dialog 选择后只通过其临时 FS scope 使用 `readFile` 读取 bytes，再复用 multipart `POST /pages`。Axum 不再接收或读取客户端本机路径。
+- 页面导入最多 256 个文件、总编码 bytes 512 MiB、总解码 RGBA bytes 1 GiB、同时 decode 2 个；现有单图解码上限 512 MiB 保持。
 - 所有失败清理 staging，且不修改当前项目、scene 或 blob。
 
 建议初始预算，批准前不得写入产品代码：
@@ -171,6 +171,10 @@ if (generation !== currentGeneration) {
 | `history.log` | 256 MiB |
 | 单 history frame | 16 MiB |
 | 最大压缩比 | 100:1 |
+| 单次图片文件数 | 256 |
+| 单次图片总编码 bytes | 512 MiB |
+| 单次图片总解码 RGBA bytes | 1 GiB |
+| 同时 decode 数 | 2 |
 
 这些值必须在 PLAN 阶段用不读取业务内容的真实项目 size/entry 统计校准。
 
@@ -324,5 +328,7 @@ if (generation !== currentGeneration) {
 7. **Auto-render：** 按 project/page 独立、不可丢失 debounce；关闭/切换项目时取消该项目全部 pending render。
 8. **FS 授权：** 每次 dialog 临时授权，不跨重启保存目录权限。
 9. **依赖审计：** reachable runtime Critical/High 必须为零；不可达传递漏洞仅允许带 owner、理由和到期日的短期 allowlist。
+10. **本机图片导入：** 删除 `/pages/from-paths`；统一使用 dialog 临时 scope `readFile` + multipart `POST /pages`。
+11. **批量图片预算：** 每次 256 files / 512 MiB encoded / 1 GiB decoded / 2 decoders；单图 512 MiB 不变。
 
 任何批准项发生变化时，必须先更新并重新审阅本文件；不得直接改变实现。

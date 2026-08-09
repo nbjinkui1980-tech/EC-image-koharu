@@ -1,6 +1,6 @@
 # 全项目审查修复 SDD 技术实施计划
 
-**状态：APPROVED — 2026-08-10；允许进入 Phase 3 TASKS，不直接授权产品实现。**
+**状态：APPROVED (AMENDED) — 2026-08-10；允许进入 Phase 3 TASKS 审阅，不直接授权产品实现。**
 
 **规格：** `docs/plan/2026-08-10-audit-remediation-sdd-spec.md`（APPROVED）
 **基线：** `a035d113`
@@ -24,7 +24,7 @@ W1 依赖表面冻结 + 现有门禁清噪
   ↓
 W2 共享不变量
   ├─ AR-13 公开错误边界 ──→ Provider / Job 摘要
-  ├─ AR-02 BlobRef ─────────→ Archive / from-paths
+  ├─ AR-02 BlobRef ─────────→ Archive / multipart import
   └─ AR-04 Batch core ──────→ Durable history
   ↓
 W3 网络与持久化边界
@@ -66,6 +66,17 @@ AR-06 初始容量提议：
 | AI jobs globally | 2 |
 | Bulk imports globally | 1 |
 | Completed job retention | 256 |
+
+AR-05 批量图片预算（2026-08-10 补丁批准）：
+
+| Resource | Approved limit |
+| --- | ---: |
+| Files per import | 256 |
+| Total encoded bytes | 512 MiB |
+| Total decoded RGBA bytes | 1 GiB |
+| Concurrent decoders | 2 |
+
+现有单图解码上限 512 MiB 保持。Tauri 图片选择统一通过 dialog 临时 scope `readFile` 转成 `File[]`，再复用 multipart；删除 `/pages/from-paths`，后端不再接受本机路径。
 
 ### Checkpoint C0
 
@@ -215,11 +226,12 @@ Checkpoint：limit−1/limit/limit+1、`u32::MAX`、伪造 size、高压缩比�
 
 ### Lane 4C — AR-05 path/image budget
 
-- `from-paths` 只接受 dialog 一次性 scope 中的 canonical regular file；拒绝 symlink、device、pipe 和失效 capability。
-- decode 前累计文件数与编码字节；decode 后累计总像素/RGBA 预算。
-- 小 semaphore 限制 decode 并发；任一失败发生在 blob/scene mutation 之前。
+- 删除 `/pages/from-paths` 和对应 generated caller；不建立 path-grant registry。
+- Tauri dialog 选择后只用其动态临时 FS scope 调用 `readFile`，转换为 `File[]` 后复用 Web 的 multipart `POST /pages`。
+- multipart 在 decode 前限制 256 files 和 512 MiB 编码总量；decode 后限制 1 GiB RGBA 总量，使用 2-permit semaphore。
+- 任一读取、解码或预算失败发生在 blob/scene mutation 之前。
 
-Checkpoint：特殊文件、总预算和混合失败无部分 blob/scene；正常 multipart/path import 保持。
+Checkpoint：后端无本机 path import route；总预算和混合失败无部分 blob/scene；正常 Web/Tauri multipart import 保持。
 
 ### Lane 4D — AR-06 jobs and retention
 
@@ -367,3 +379,12 @@ Checkpoint：静态 policy test、无凭据 dry-run、容器内 binary digest �
 4. 批准在 Phase 3 前创建一个仅包含 approved spec + approved plan 的 checkpoint commit；如不批准提交，则以记录的文件 digest 继续，但不宣称规格已进入版本控制基线。
 
 本批准只授权生成 Phase 3 TASKS 和创建 spec/plan checkpoint commit；不授权修改产品代码、依赖、CI 或运行配置。Phase 3 TASKS 仍需独立人工批准后才能进入 IMPLEMENT。
+
+### 2026-08-10 Phase 3 规格补丁
+
+用户已批准：
+
+1. 删除 `/pages/from-paths`，统一使用 dialog scoped `readFile` + multipart，不实现一次性 path-grant registry。
+2. 图片预算冻结为 256 files / 512 MiB encoded / 1 GiB decoded / 2 decoders；单图 512 MiB 保持。
+
+该补丁只解除 TASKS 阻塞，不授权 IMPLEMENT 或新的 Git commit。
