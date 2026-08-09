@@ -100,14 +100,14 @@
 
 ### AR13-T01 — 5xx 脱敏与 Sentry PII
 
-- 文件：`crates/koharu-rpc/src/error.rs`、`crates/koharu/src/sentry.rs`、`ui/instrumentation-client.ts`、`ui/components/AppErrorBoundary.tsx`、新 `scripts/sentry-policy.test.ts`。
+- 文件：`crates/koharu-rpc/src/error.rs`、`crates/koharu/src/sentry.rs`、`ui/instrumentation-client.ts`、`ui/components/AppErrorBoundary.tsx`、`ui/app/global-error.tsx`、新 `scripts/sentry-policy.test.ts`。
 - RED：内部错误含绝对路径、anyhow cause、provider body、假 secret；HTTP 5xx/Sentry payload 泄漏原文。
-- GREEN：5xx 只返回稳定有界消息；内部 cause 只进脱敏 tracing；`send_default_pii=false`。
+- GREEN：5xx 只返回稳定有界消息；内部 cause 只进脱敏 tracing；`send_default_pii=false`；所有浏览器错误边界只上报稳定摘要。
 - 验证：`bun cargo test -p koharu-rpc api_error`、`bun cargo test -p koharu sentry`、`bun test scripts/sentry-policy.test.ts`。
 
 ### AR02-T01 — BlobRef parse/Serde 唯一不变量
 
-- 文件：`crates/koharu-core/src/blob.rs`。
+- 文件：`crates/koharu-core/src/blob.rs`，以及因移除非法 public constructor 而必须迁移的测试 fixture。
 - RED：空、63/65 位、uppercase、Unicode、斜杠、反斜杠、点段、绝对路径均能构造或反序列化。
 - GREEN：只接受精确 64 位 `[0-9a-f]`；Serde 复用同一 parser。
 - 验证：`CARGO_TARGET_DIR=/tmp/koharu-sdd-ar02-t01 bun cargo test -p koharu-core blob`。
