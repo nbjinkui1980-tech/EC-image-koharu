@@ -21,6 +21,8 @@
     "generate:api": "bun run generate:openapi && bun run --filter ui generate:api && bun run format:generated",
     "test:generated": "bun test scripts/check-generated.test.ts",
     "test:storage": "bun test scripts/storage.test.ts",
+    "audit:deps": "bun scripts/supply-chain-policy.ts",
+    "test:supply-chain": "bun test scripts/supply-chain-policy.test.ts",
     "verify:generated": "bun run scripts/check-generated.ts",
     "check:generated": "bun run generate:api && bun run verify:generated"
   },
@@ -28,5 +30,15 @@
     "@tauri-apps/cli": "^2.11.3",
     "git-cliff": "^2.13.1",
     "oxfmt": "^0.56.0"
+  },
+  "overrides": {
+    "@babel/core": "7.29.7",
+    "brace-expansion": "5.0.9",
+    "esbuild": "0.28.2",
+    "fast-uri": "3.1.5",
+    "linkify-it": "5.0.2",
+    "markdown-it": "14.3.0",
+    "undici": "7.29.0",
+    "vite": "8.0.16"
   }
 }
