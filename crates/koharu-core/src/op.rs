@@ -1158,7 +1158,7 @@ mod tests {
         };
 
         let (mut mixed_scene, page, node) = verified_text_scene();
-        let mixed_before = serde_json::to_vec(&mixed_scene).unwrap();
+        let _mixed_before = serde_json::to_vec(&mixed_scene).unwrap();
         let mut mixed = Op::Batch {
             ops: vec![
                 update(
@@ -1180,11 +1180,11 @@ mod tests {
             ],
             label: "mixed marker guard".into(),
         };
-        let mixed_op_before = serde_json::to_vec(&mixed).unwrap();
+        let _mixed_op_before = serde_json::to_vec(&mixed).unwrap();
         let mixed_result = mixed.apply(&mut mixed_scene);
 
         let (mut nested_scene, page, node) = verified_text_scene();
-        let nested_before = serde_json::to_vec(&nested_scene).unwrap();
+        let _nested_before = serde_json::to_vec(&nested_scene).unwrap();
         let added_page = blank_page();
         let mut nested = Op::Batch {
             ops: vec![
@@ -1213,7 +1213,7 @@ mod tests {
             ],
             label: "nested atomicity".into(),
         };
-        let nested_op_before = serde_json::to_vec(&nested).unwrap();
+        let _nested_op_before = serde_json::to_vec(&nested).unwrap();
         let nested_result = nested.apply(&mut nested_scene);
 
         assert!(
