@@ -1222,4 +1222,77 @@ mod tests {
         );
         assert!(nested_result.is_err(), "late nested invariant must fail");
     }
+
+    #[test]
+    fn ensure_same_page_set_accepts_identical_order() {
+        let mut scene = Scene::default();
+        let p1 = Page::new("a", 100, 100);
+        let p1_id = p1.id;
+        let p2_id = Page::new("b", 200, 200).id;
+        scene.pages.insert(p1_id, p1);
+        scene.pages.insert(p2_id, Page::new("b", 200, 200));
+        let ids: Vec<_> = scene.pages.keys().copied().collect();
+        assert!(ensure_same_page_set(&scene.pages, &ids).is_ok());
+    }
+
+    #[test]
+    fn ensure_same_page_set_rejects_unknown_page() {
+        let mut scene = Scene::default();
+        let p1 = Page::new("a", 100, 100);
+        let p1_id = p1.id;
+        scene.pages.insert(p1_id, p1);
+        let unknown = PageId::new();
+        assert!(ensure_same_page_set(&scene.pages, &[p1_id, unknown]).is_err());
+    }
+
+    #[test]
+    fn ensure_same_page_set_rejects_missing_page() {
+        let mut scene = Scene::default();
+        let p1 = Page::new("a", 100, 100);
+        let p1_id = p1.id;
+        let p2 = Page::new("b", 200, 200);
+        let p2_id = p2.id;
+        scene.pages.insert(p1_id, p1);
+        scene.pages.insert(p2_id, p2);
+        assert!(ensure_same_page_set(&scene.pages, &[p1_id]).is_err());
+    }
+
+    #[test]
+    fn reorder_indexmap_moves_elements() {
+        let mut map = indexmap::IndexMap::new();
+        map.insert(1u32, "one");
+        map.insert(2, "two");
+        map.insert(3, "three");
+        reorder_indexmap(&mut map, &[3, 1, 2]);
+        let keys: Vec<_> = map.keys().copied().collect();
+        assert_eq!(keys, vec![3, 1, 2]);
+    }
+
+    #[test]
+    fn capture_prev_node_patch_preserves_transform_and_data() {
+        let patch = NodePatch {
+            data: Some(NodeDataPatch::Text(TextDataPatch {
+                text: Some(Some("updated".into())),
+                ..Default::default()
+            })),
+            transform: Some(Transform { x: 10.0, y: 20.0, width: 100.0, height: 50.0, rotation_deg: 0.0 }),
+            visible: Some(false),
+        };
+        let node = Node {
+            id: NodeId::new(),
+            transform: Transform { x: 5.0, y: 5.0, width: 80.0, height: 40.0, rotation_deg: 0.0 },
+            visible: true,
+            kind: NodeKind::Text(TextData { text: Some("original".into()), ..Default::default() }),
+        };
+        let prev = capture_prev_node_patch(&node, &patch);
+        let prev_transform = prev.transform.unwrap();
+        assert_eq!(prev_transform.x, 5.0);
+        assert_eq!(prev_transform.width, 80.0);
+        assert_eq!(prev.visible, Some(true));
+        if let Some(NodeDataPatch::Text(t)) = &prev.data {
+            assert_eq!(t.text, Some(Some("original".into())));
+        } else {
+            panic!("expected Text data patch");
+        }
+    }
 }
