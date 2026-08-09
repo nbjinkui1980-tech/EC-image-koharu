@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use image::{DynamicImage, GenericImageView, GrayImage, Luma};
 use imageproc::{drawing::draw_polygon_mut, point::Point};
 use koharu_core::{
@@ -14,7 +14,7 @@ use koharu_core::{
 };
 use koharu_ml::{comic_text_detector::expanded_text_block_crop_bounds, types::TextRegion};
 
-use crate::{blobs::BlobStore, config::SourceTextPolicy};
+use crate::config::SourceTextPolicy;
 
 #[cfg(test)]
 use serde::{Deserialize, Serialize};
