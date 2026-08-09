@@ -445,7 +445,9 @@ impl PaddleOcrVl {
 
         let gpu = self.backend.supports_gpu_offload();
         let actual = if gpu { "gpu" } else { "cpu" };
-        eprintln!("model_instance_device engine=paddle-ocr-vl-1.6 model=paddle-ocr-vl-1.6 instance=0 actual={actual} gpu_offload={gpu}");
+        eprintln!(
+            "model_instance_device engine=paddle-ocr-vl-1.6 model=paddle-ocr-vl-1.6 instance=0 actual={actual} gpu_offload={gpu}"
+        );
 
         Ok(PaddleOcrVlOutput {
             task,

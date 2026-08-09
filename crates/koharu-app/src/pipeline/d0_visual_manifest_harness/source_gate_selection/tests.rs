@@ -2,10 +2,7 @@ use super::*;
 
 type RasterBounds = (u32, u32, u32, u32);
 
-fn candidates(
-    bbox: (f64, f64, f64, f64),
-    page: (u32, u32),
-) -> [(&'static str, RasterBounds); 4] {
+fn candidates(bbox: (f64, f64, f64, f64), page: (u32, u32)) -> [(&'static str, RasterBounds); 4] {
     const RATIOS: [(&str, u32, u32); 4] = [
         ("S25L4", 1, 25),
         ("S25L5", 1, 20),
@@ -202,10 +199,9 @@ fn source_gate_selection_reports_each_failed_candidate_cell() {
         failed.derived.target_recall = 0.0;
         failed.derived.passed = false;
     }
-    let error =
-        select_smallest_all_pass(&evidence.results, &synthetic_entry_ids("calibration"))
-            .unwrap_err()
-            .to_string();
+    let error = select_smallest_all_pass(&evidence.results, &synthetic_entry_ids("calibration"))
+        .unwrap_err()
+        .to_string();
     for candidate in candidates_schema() {
         assert!(error.contains(&format!(
             "{}: r59-c01/cpu recall=0.000 protected=0 unmatched=0 rotation_excluded=true",
@@ -688,10 +684,8 @@ fn write_required_check(
         b0_sha: b0_sha.into(),
         manifest_sha256: manifest_sha256.into(),
         source_gate_fixture_manifest_sha256: fixture_sha256.into(),
-        checker_endpoint_sha256: sha256_file(
-            &repository_root().unwrap().join(CHECKER_ENDPOINT),
-        )
-        .unwrap(),
+        checker_endpoint_sha256: sha256_file(&repository_root().unwrap().join(CHECKER_ENDPOINT))
+            .unwrap(),
         scanned_roots: ANTI_FIXTURE_SCANNED_ROOTS
             .iter()
             .map(|value| (*value).into())
@@ -1187,18 +1181,14 @@ fn r59_selection_geometry_closes_detector_ownership_preimages() {
                     canonical_line_index: Some(0),
                     scene_quad_f32_bits: target_bits,
                     eligible_text_line_quad_f32_bits: Some(target_bits),
-                    assignment: SourceGateDetectorAssignmentDiagnostic::Target {
-                        target_index: 0,
-                    },
+                    assignment: SourceGateDetectorAssignmentDiagnostic::Target { target_index: 0 },
                 },
                 SourceGateDetectorOwnershipDiagnostic {
                     occurrence_index: 1,
                     canonical_line_index: Some(1),
                     scene_quad_f32_bits: second_target_bits,
                     eligible_text_line_quad_f32_bits: Some(second_target_bits),
-                    assignment: SourceGateDetectorAssignmentDiagnostic::Target {
-                        target_index: 1,
-                    },
+                    assignment: SourceGateDetectorAssignmentDiagnostic::Target { target_index: 1 },
                 },
                 SourceGateDetectorOwnershipDiagnostic {
                     occurrence_index: 2,

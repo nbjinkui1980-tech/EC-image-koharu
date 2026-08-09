@@ -14,11 +14,10 @@ use super::super::engines::bubble_segmentation::bubble_mask_from_result;
 use super::super::engines::ctd_segment::dispatch_segment;
 use super::super::engines::source_language_gate::{
     PpCanonicalLineDiagnostic, PpCanonicalOccurrenceDiagnostic, PpDetectorDiagnostic,
-    PpRecognitionDiagnostic, SourceGateCropPolicy, SourceGateCropPolicyGuard,
-    SourceGateDecision, SourceGateDetectorAssignmentDiagnostic,
-    SourceGateDetectorOwnershipDiagnostic, SourceGateDiagnosticCapture,
-    SourceGateDiagnosticEvent, SourceGateRejectReason, SourceGateTargetGeometryDiagnostic,
-    dispatch_source_gate, rgba_fingerprint,
+    PpRecognitionDiagnostic, SourceGateCropPolicy, SourceGateCropPolicyGuard, SourceGateDecision,
+    SourceGateDetectorAssignmentDiagnostic, SourceGateDetectorOwnershipDiagnostic,
+    SourceGateDiagnosticCapture, SourceGateDiagnosticEvent, SourceGateRejectReason,
+    SourceGateTargetGeometryDiagnostic, dispatch_source_gate, rgba_fingerprint,
 };
 use super::super::engines::support::{
     EraseDiagnosticBranch, EraseDiagnosticCapture, EraseDiagnosticStage, EraseStageMask,
@@ -504,12 +503,10 @@ impl SelectionEnvironment {
             } else {
                 match phase {
                     Phase::CalibrationFreeze => {
-                        calibration_entry_ids.len() == 4
-                            && matches!(holdout_entry_ids.len(), 0 | 4)
+                        calibration_entry_ids.len() == 4 && matches!(holdout_entry_ids.len(), 0 | 4)
                     }
                     Phase::Holdout => {
-                        holdout_entry_ids.len() == 4
-                            && matches!(calibration_entry_ids.len(), 0 | 4)
+                        holdout_entry_ids.len() == 4 && matches!(calibration_entry_ids.len(), 0 | 4)
                     }
                 }
             };
@@ -1244,9 +1241,10 @@ struct CalibrationFailureDiagnostic<'a> {
     calibration_results: &'a [SelectionResult],
 }
 
-
 mod native_log;
-use native_log::{ParsedInferenceLog, ParsedLoadLog, parse_native_inference_log, parse_native_load_log};
+use native_log::{
+    ParsedInferenceLog, ParsedLoadLog, parse_native_inference_log, parse_native_load_log,
+};
 
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1695,9 +1693,7 @@ fn frozen_recall_contract(selected_candidate_id: &str) -> FrozenRecallContract {
             .map(|candidate| candidate.id)
             .collect(),
         selected_candidate_id: selected_candidate_id.into(),
-        ppocr_crop_local_preprocessing_sha256: sha256_hex(
-            PPOCR_PREPROCESSING_PREIMAGE.as_bytes(),
-        ),
+        ppocr_crop_local_preprocessing_sha256: sha256_hex(PPOCR_PREPROCESSING_PREIMAGE.as_bytes()),
         inverse_mapping_rule_sha256: sha256_hex(INVERSE_MAPPING_PREIMAGE.as_bytes()),
         coverage_acceptance_rule_sha256: sha256_hex(COVERAGE_ACCEPTANCE_PREIMAGE.as_bytes()),
         source_removal_preflight_rule_sha256: sha256_hex(
@@ -1824,10 +1820,7 @@ fn load_r52_bridge_request() -> io::Result<(PathBuf, HeldInput, R52BridgeRequest
     ))
 }
 
-fn validate_r52_bridge_request(
-    request_path: &Path,
-    request: &R52BridgeRequest,
-) -> io::Result<()> {
+fn validate_r52_bridge_request(request_path: &Path, request: &R52BridgeRequest) -> io::Result<()> {
     require(
         request.contract == "hanonly-r52-evidence-bridge-request-v1"
             && request.plan_revision == R52_PLAN_REVISION
@@ -1876,8 +1869,7 @@ fn validate_r52_bridge_request(
         "R52 bridge request/result path binding drift",
     )?;
     require(
-        request.repo_root == repository_root()?
-            && git_head(&request.repo_root)? == request.b0_sha,
+        request.repo_root == repository_root()? && git_head(&request.repo_root)? == request.b0_sha,
         "R52 bridge executable worktree lineage drift",
     )?;
     let fixture = request.repo_root.join(FIXTURE_RELATIVE_PATH);
@@ -2028,11 +2020,7 @@ fn load_r52_challenge_manifest(
     Ok((manifest, value))
 }
 
-fn checked_r52_rect(
-    rect: [u64; 4],
-    width: u32,
-    height: u32,
-) -> io::Result<ValidatedHalfOpenRect> {
+fn checked_r52_rect(rect: [u64; 4], width: u32, height: u32) -> io::Result<ValidatedHalfOpenRect> {
     let [left, top, right, bottom] = rect;
     require(
         left < right
@@ -2093,11 +2081,9 @@ fn load_r52_supplemental_entry(
     let mut oracle_targets = Vec::with_capacity(note.targets.len());
     for target in note.targets {
         let source_roi = checked_r52_rect(target.source_roi, note.width, note.height)?;
-        let edit_roi =
-            checked_r52_rect(target.clean_reference_edit_roi, note.width, note.height)?;
+        let edit_roi = checked_r52_rect(target.clean_reference_edit_roi, note.width, note.height)?;
         let mask_len = usize::try_from(
-            u64::from(edit_roi.right - edit_roi.left)
-                * u64::from(edit_roi.bottom - edit_roi.top),
+            u64::from(edit_roi.right - edit_roi.left) * u64::from(edit_roi.bottom - edit_roi.top),
         )
         .map_err(|_| invalid_data("R52 supplemental geometry overflow"))?;
         targets.push(VisualManifestTarget {
@@ -2280,8 +2266,7 @@ fn write_r52_challenge_cell(
         .artifact
         .parent()
         .ok_or_else(|| invalid_data("R52 bridge result has no parent"))?;
-    let original_log =
-        artifact_parent.join(&result.execution_evidence.raw_inference_log_relpath);
+    let original_log = artifact_parent.join(&result.execution_evidence.raw_inference_log_relpath);
     let log_bytes = fs::read(&original_log)?;
     require(
         sha256_hex(&log_bytes) == result.execution_evidence.raw_inference_log_sha256,
@@ -2360,10 +2345,8 @@ fn write_r52_challenge_cell(
     selection.process_evidence_id = cell_process.id;
     selection.execution_evidence.raw_inference_log_relpath = log_artifact.path.clone();
     selection.execution_evidence.raw_inference_log_sha256 = log_artifact.sha256.clone();
-    selection.execution_evidence.source_gate_diagnostic_relpath =
-        diagnostic_artifact.path.clone();
-    selection.execution_evidence.source_gate_diagnostic_sha256 =
-        diagnostic_artifact.sha256.clone();
+    selection.execution_evidence.source_gate_diagnostic_relpath = diagnostic_artifact.path.clone();
+    selection.execution_evidence.source_gate_diagnostic_sha256 = diagnostic_artifact.sha256.clone();
     selection.derived.passed = passed;
     let selection_artifact = publish_r59_artifact(
         environment,
@@ -2451,10 +2434,9 @@ fn run_r52_challenge_bridge(request: &R52BridgeRequest) -> io::Result<()> {
         &h01.source_sha256,
     )
     .map_err(io::Error::other)?;
-    let mut validated_r49 = validate_visual_oracles(
-        validate_dimensions_and_masks(held_r49).map_err(io::Error::other)?,
-    )
-    .map_err(io::Error::other)?;
+    let mut validated_r49 =
+        validate_visual_oracles(validate_dimensions_and_masks(held_r49).map_err(io::Error::other)?)
+            .map_err(io::Error::other)?;
     let h04_index = validated_r49
         .upstream
         .held_schema
@@ -2494,9 +2476,7 @@ fn run_r52_challenge_bridge(request: &R52BridgeRequest) -> io::Result<()> {
         calibration_manifest_sha256: artifact.manifest_sha256,
         evidence_root: request.evidence_root.clone(),
         report_dir: request.evidence_root.join("r52-challenge-bridge"),
-        source_gate_fixture_manifest_sha256: request
-            .source_gate_fixture_manifest_sha256
-            .clone(),
+        source_gate_fixture_manifest_sha256: request.source_gate_fixture_manifest_sha256.clone(),
         artifact: request.result_path.clone(),
         calibration_entry_ids: Vec::new(),
         holdout_entry_ids: challenge
@@ -2606,9 +2586,7 @@ fn run_r52_challenge_bridge(request: &R52BridgeRequest) -> io::Result<()> {
                         .oracle
                         .targets
                         .iter()
-                        .map(|target| {
-                            SourceInkMask::edit_roi(&target.delta_mask, target.edit_roi)
-                        })
+                        .map(|target| SourceInkMask::edit_roi(&target.delta_mask, target.edit_roi))
                         .collect(),
                 }
             }));
@@ -2718,11 +2696,8 @@ fn run_formal_model(environment: &SelectionEnvironment) -> io::Result<RunnerEvid
         })
         .collect::<Vec<_>>();
     let executable_sha256 = sha256_file(&std::env::current_exe()?)?;
-    let bundle_validation_receipt = write_r59_bundle_validation_receipt(
-        environment,
-        &executable_sha256,
-        &validated.receipt,
-    )?;
+    let bundle_validation_receipt =
+        write_r59_bundle_validation_receipt(environment, &executable_sha256, &validated.receipt)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -2783,15 +2758,12 @@ fn prepare_r59_execution_entries(
                     .map_err(|_| invalid_data("R59 execution mask length overflow"))?,
                 );
                 for y in edit_roi.top..edit_roi.bottom {
-                    let start =
-                        y as usize * entry.source_width as usize + edit_roi.left as usize;
-                    let end =
-                        y as usize * entry.source_width as usize + edit_roi.right as usize;
+                    let start = y as usize * entry.source_width as usize + edit_roi.left as usize;
+                    let end = y as usize * entry.source_width as usize + edit_roi.right as usize;
                     local_mask.extend_from_slice(&target.validated_binary_mask[start..end]);
                 }
                 let erase_mask_hash = sha256_hex(&target.erase_source_ink_mask_encoded_bytes);
-                let residual_mask_hash =
-                    sha256_hex(&target.residual_source_ink_mask_encoded_bytes);
+                let residual_mask_hash = sha256_hex(&target.residual_source_ink_mask_encoded_bytes);
                 schema_targets.push(VisualManifestTarget {
                     id: target.id.clone(),
                     source_roi: target.source_roi.map(u64::from),
@@ -2842,8 +2814,7 @@ fn prepare_r59_execution_entries(
                 });
             }
             let max_side = entry.source_width.max(entry.source_height);
-            let aspect = if u64::from(entry.source_width) * 10
-                > u64::from(entry.source_height) * 11
+            let aspect = if u64::from(entry.source_width) * 10 > u64::from(entry.source_height) * 11
             {
                 Aspect::Landscape
             } else if u64::from(entry.source_height) * 10 > u64::from(entry.source_width) * 11 {
@@ -3053,14 +3024,10 @@ async fn run_real_model_async(
                     |_, crop| pp.observe(crop),
                     |crops| {
                         std::future::ready(
-                            vl.inference_images(
-                                &crops,
-                                PaddleOcrVlTask::Ocr,
-                                VL_MAX_NEW_TOKENS,
-                            )
-                            .map(|outputs| {
-                                outputs.into_iter().map(|output| output.text).collect()
-                            }),
+                            vl.inference_images(&crops, PaddleOcrVlTask::Ocr, VL_MAX_NEW_TOKENS)
+                                .map(|outputs| {
+                                    outputs.into_iter().map(|output| output.text).collect()
+                                }),
                         )
                     },
                 )
@@ -3072,14 +3039,9 @@ async fn run_real_model_async(
                 }
                 let eligible_lines = eligible_lines_for_page(&scene, page).0;
                 let readiness = vec!["translation-ready".into(); eligible_lines.len()];
-                for mut op in build_han_only_translation_ops(
-                    &scene,
-                    page,
-                    None,
-                    &eligible_lines,
-                    &readiness,
-                )
-                .map_err(io::Error::other)?
+                for mut op in
+                    build_han_only_translation_ops(&scene, page, None, &eligible_lines, &readiness)
+                        .map_err(io::Error::other)?
                 {
                     op.apply(&mut scene).map_err(io::Error::other)?;
                 }
@@ -3090,14 +3052,11 @@ async fn run_real_model_async(
                 } else {
                     None
                 };
-                let segment_support = dispatch_segment(
-                    &image,
-                    &scene,
-                    page,
-                    SourceTextPolicy::HanOnly,
-                    |image| segmenter.inference_segmentation(image),
-                )
-                .map_err(io::Error::other)?;
+                let segment_support =
+                    dispatch_segment(&image, &scene, page, SourceTextPolicy::HanOnly, |image| {
+                        segmenter.inference_segmentation(image)
+                    })
+                    .map_err(io::Error::other)?;
                 let protected_lines = protected_source_lines_for_page(&scene, page);
                 let removal_support = removal_support_from_prepared(
                     prepare_inpaint_mask(
@@ -3438,8 +3397,7 @@ fn r59_selected_support_from_diagnostics(
             let support = selected
                 .entry(matches[0].to_owned())
                 .or_insert_with(|| vec![0; width as usize * height as usize]);
-            for (pixel, addition) in support.iter_mut().zip(r59_rect_mask(width, height, rect))
-            {
+            for (pixel, addition) in support.iter_mut().zip(r59_rect_mask(width, height, rect)) {
                 *pixel |= addition;
             }
         }
@@ -4281,12 +4239,8 @@ fn validate_formal_runtime_commitment(environment: &SelectionEnvironment) -> io:
     let mut file = fs::File::from(descriptor);
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
-    let validated = validate_r60_runtime_receipt(
-        &bytes,
-        &environment.b0_sha,
-        &marker.sha256,
-        &holdout.freeze,
-    )?;
+    let validated =
+        validate_r60_runtime_receipt(&bytes, &environment.b0_sha, &marker.sha256, &holdout.freeze)?;
     let fresh = custody.revalidate_descriptor()?;
     let named = statat(
         fresh.as_fd(),
@@ -4385,9 +4339,7 @@ fn validate_formal_custody_entry_state(
     directory: BorrowedFd<'_>,
 ) -> io::Result<()> {
     let mut names = Dir::read_from(directory)?
-        .map(|entry| {
-            entry.map(|entry| OsStr::from_bytes(entry.file_name().to_bytes()).to_owned())
-        })
+        .map(|entry| entry.map(|entry| OsStr::from_bytes(entry.file_name().to_bytes()).to_owned()))
         .collect::<rustix::io::Result<Vec<_>>>()
         .map_err(io::Error::from)?;
     names.retain(|name| name != "." && name != "..");
@@ -4588,8 +4540,8 @@ fn r59_detector_diagnostics(
             _ => {}
         }
     }
-    let (width, height) = dimensions
-        .ok_or_else(|| invalid_data("R59 source-gate input diagnostic is missing"))?;
+    let (width, height) =
+        dimensions.ok_or_else(|| invalid_data("R59 source-gate input diagnostic is missing"))?;
     let mut raw_detector_outputs = Vec::new();
     let mut raw_bits = Vec::<[u32; 8]>::new();
     let mut canonical_lines = Vec::new();
@@ -4752,10 +4704,9 @@ fn r59_detector_diagnostics(
             let emitted_scene = target_id.as_ref().and_then(|target_id| {
                 let candidates = supports?.scene_by_target.get(target_id)?;
                 let used = used_scene_supports.entry(target_id.clone()).or_default();
-                let (index, support) =
-                    candidates.iter().enumerate().find(|(index, support)| {
-                        !used.contains(index) && support.mask == detector_mask
-                    })?;
+                let (index, support) = candidates.iter().enumerate().find(|(index, support)| {
+                    !used.contains(index) && support.mask == detector_mask
+                })?;
                 used.insert(index);
                 Some(support)
             });
@@ -4776,9 +4727,7 @@ fn r59_detector_diagnostics(
                 .zip(&emitted_scene_mask)
                 .zip(&line_mask)
                 .zip(&downstream_mask)
-                .map(|(((detector, scene), line), downstream)| {
-                    detector & scene & line & downstream
-                })
+                .map(|(((detector, scene), line), downstream)| detector & scene & line & downstream)
                 .collect::<Vec<_>>();
             let line_support_equals_detector = r57_detector_supports_equal(
                 &detector_mask,
@@ -5349,10 +5298,7 @@ fn write_r59_cell_evidence(
             )?,
             runtime_removal_support_byte_length: runtime_removal_raster.byte_length,
             runtime_removal_support_sha256: runtime_removal_raster.sha256,
-            spatial_validation_receipt_relpath: r59_contract_path(
-                environment,
-                &spatial_receipt,
-            )?,
+            spatial_validation_receipt_relpath: r59_contract_path(environment, &spatial_receipt)?,
             spatial_validation_receipt_byte_length: spatial_receipt.byte_length,
             spatial_validation_receipt_sha256: spatial_receipt.sha256,
             protected_geometry_sha256: spatial_validation["protected_geometry_sha256"]
@@ -5363,9 +5309,7 @@ fn write_r59_cell_evidence(
             bubble_segmenter_id: &supports.bubble_segmenter_id,
             bubble_support_sha256: &supports.bubble_support_sha256,
             oracle_foreground_pixels,
-            runtime_removal_support_foreground_pixels: foreground_count(
-                &runtime_removal_support,
-            ),
+            runtime_removal_support_foreground_pixels: foreground_count(&runtime_removal_support),
             runtime_removal_covered_pixels,
             missing_runtime_removal_pixels,
             protected_overlap_pixels,
@@ -5858,8 +5802,7 @@ fn write_r59_cell_transitions(
     for cell in cells {
         generation += 1;
         records.push(r59_diagnostic_record(cell, "captured_unclassified"));
-        records
-            .sort_by(|left, right| left["cell_key"].as_str().cmp(&right["cell_key"].as_str()));
+        records.sort_by(|left, right| left["cell_key"].as_str().cmp(&right["cell_key"].as_str()));
         previous = Some(write_r59_diagnostic_generation(
             environment,
             generation,
@@ -6006,8 +5949,7 @@ fn write_r59_diagnostic_generations(
     require(
         records.len() == formal.cells.len()
             && terminal_generation == starting_generation + formal.cells.len() as u64 * 2
-            && (formal.cells.len() != expected.len()
-                || terminal_generation == complete_generation),
+            && (formal.cells.len() != expected.len() || terminal_generation == complete_generation),
         "R59 terminal diagnostic count drift",
     )?;
     let unexecuted_cell_keys = expected[formal.cells.len()..].to_vec();
@@ -6185,7 +6127,6 @@ fn runtime_library_hashes(runtime: &RuntimeManager) -> io::Result<BTreeMap<Strin
     Ok(hashes)
 }
 
-
 mod device;
 use device::{enumerated_devices, loaded_model_devices, select_smallest_all_pass};
 
@@ -6348,8 +6289,7 @@ fn validate_artifact(
         "candidate ratios drift",
     )?;
     require(
-        artifact.frozen_recall_contract
-            == frozen_recall_contract(&artifact.selected_candidate_id),
+        artifact.frozen_recall_contract == frozen_recall_contract(&artifact.selected_candidate_id),
         "frozen recall contract drift",
     )?;
     validate_required_checks(artifact, phase, environment)?;
@@ -6384,13 +6324,12 @@ fn validate_artifact(
         ) == expected,
         "selection artifact matrix counts mismatch",
     )?;
-    let frozen_holdout_entry_ids = if phase == Phase::Holdout
-        && formal_revision(environment) == Some(FormalRevision::R60)
-    {
-        r59_entry_ids('h')
-    } else {
-        artifact.holdout_entry_ids.clone()
-    };
+    let frozen_holdout_entry_ids =
+        if phase == Phase::Holdout && formal_revision(environment) == Some(FormalRevision::R60) {
+            r59_entry_ids('h')
+        } else {
+            artifact.holdout_entry_ids.clone()
+        };
     require(
         frozen_projection_sha256_with_holdout_ids(artifact, &frozen_holdout_entry_ids)?
             == artifact.frozen_payload_sha256,
@@ -6782,7 +6721,6 @@ fn write_artifact(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     result
 }
-
 
 #[cfg(test)]
 mod tests;

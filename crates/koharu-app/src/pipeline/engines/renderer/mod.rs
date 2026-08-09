@@ -610,8 +610,7 @@ fn build_render_inputs(
                 let is_supported_rotation = source_transform.rotation_deg == 0.0;
                 let allow_expansion = is_automatic && is_supported_rotation;
                 text.lock_layout_box
-                    || (!allow_expansion
-                        && (lines.len() == 1 || lines.len() < source_line_count))
+                    || (!allow_expansion && (lines.len() == 1 || lines.len() < source_line_count))
             },
             preserve_explicit_lines: true,
             typography_plan_verified: text.typography_plan_verified,
@@ -804,7 +803,7 @@ mod tests {
                 target_language: language.map(str::to_string),
                 ..Default::default()
             };
-        let error = run_renderer_page(
+            let error = run_renderer_page(
                 &scene,
                 page,
                 &blobs,
@@ -2134,7 +2133,7 @@ mod tests {
         }
     }
 
-#[allow(unused_variables)]
+    #[allow(unused_variables)]
     #[test]
     fn han_only_expanded_sprite_rejects_natural_page_overflow() {
         let id = NodeId::new();
@@ -2176,15 +2175,32 @@ mod tests {
         // so opaque pixels extend outside the validated bounds.
         let mut block = placement_test_block(
             id,
-            Transform { x: 5.0, y: 20.0, width: 90.0, height: 60.0, rotation_deg: 0.0 },
+            Transform {
+                x: 5.0,
+                y: 20.0,
+                width: 90.0,
+                height: 60.0,
+                rotation_deg: 0.0,
+            },
         );
         block.expanded_transform = Some(Transform {
-            x: 50.0, y: 20.0, width: 10.0, height: 10.0, rotation_deg: 0.0,
+            x: 50.0,
+            y: 20.0,
+            width: 10.0,
+            height: 10.0,
+            rotation_deg: 0.0,
         });
         let error = validate_and_composite_han_render_output(
-            &base, &base, None,
-            &[input], &[placement_test_line(id, 20.0, 20.0)], &[],
-            RenderOutput { final_render: base.clone(), blocks: vec![block] },
+            &base,
+            &base,
+            None,
+            &[input],
+            &[placement_test_line(id, 20.0, 20.0)],
+            &[],
+            RenderOutput {
+                final_render: base.clone(),
+                blocks: vec![block],
+            },
         )
         .err()
         .expect("opaque pixels outside the expanded transform must fail");
@@ -2560,10 +2576,20 @@ mod tests {
                 // block starts at x=5 but sprite starts at x=0
                 let mut block = placement_test_block(
                     inputs[0].node_id,
-                    Transform { x: 5.0, y: 10.0, width: 90.0, height: 50.0, rotation_deg: 0.0 },
+                    Transform {
+                        x: 5.0,
+                        y: 10.0,
+                        width: 90.0,
+                        height: 50.0,
+                        rotation_deg: 0.0,
+                    },
                 );
                 block.expanded_transform = Some(Transform {
-                    x: 5.0, y: 10.0, width: 10.0, height: 50.0, rotation_deg: 0.0,
+                    x: 5.0,
+                    y: 10.0,
+                    width: 10.0,
+                    height: 50.0,
+                    rotation_deg: 0.0,
                 });
                 Ok(RenderOutput {
                     final_render: base.clone(),

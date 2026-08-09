@@ -165,11 +165,7 @@ impl Runtime {
             self.root().join("models").join("huggingface"),
         ];
         for dir in dirs {
-            anyhow::ensure!(
-                dir.exists(),
-                "missing runtime directory: {}",
-                dir.display()
-            );
+            anyhow::ensure!(dir.exists(), "missing runtime directory: {}", dir.display());
         }
         for package in self
             .inner

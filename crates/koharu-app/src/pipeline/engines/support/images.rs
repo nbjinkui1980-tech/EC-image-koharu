@@ -1,12 +1,14 @@
 //! Image and mask node helpers for pipeline engines.
 
+use crate::blobs::BlobStore;
 use anyhow::Context;
 use anyhow::Result;
 use image::DynamicImage;
 use image::GrayImage;
 use image::Luma;
-use koharu_core::{BlobRef, ImageData, ImageRole, MaskRole, NodeId, NodeKind, PageId, Scene, TextData, Transform};
-use crate::blobs::BlobStore;
+use koharu_core::{
+    BlobRef, ImageData, ImageRole, MaskRole, NodeId, NodeKind, PageId, Scene, TextData, Transform,
+};
 
 pub fn source_node(scene: &Scene, page: PageId) -> Result<(NodeId, &ImageData)> {
     let page = scene
@@ -111,4 +113,3 @@ pub fn contains_protected_latin_word(text: &str) -> bool {
     }
     letters >= 2
 }
-

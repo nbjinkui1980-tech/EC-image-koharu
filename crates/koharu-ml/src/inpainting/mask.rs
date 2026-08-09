@@ -714,15 +714,22 @@ mod tests {
     #[test]
     fn feather_mask_softens_hard_edges() {
         // 128x128 mask: left half = 255, right half = 0
-        let mask = GrayImage::from_fn(128, 128, |x, _y| {
-            if x < 64 { Luma([255]) } else { Luma([0]) }
-        });
+        let mask = GrayImage::from_fn(
+            128,
+            128,
+            |x, _y| {
+                if x < 64 { Luma([255]) } else { Luma([0]) }
+            },
+        );
         let feathered = feather_mask(&mask, 4.0);
 
         // At the edge (x=64), pixel should be blended (neither 0 nor 255)
         let edge = feathered.get_pixel(64, 64).0[0];
         assert!(edge > 0, "edge pixel {edge} should be > 0 after feathering");
-        assert!(edge < 255, "edge pixel {edge} should be < 255 after feathering");
+        assert!(
+            edge < 255,
+            "edge pixel {edge} should be < 255 after feathering"
+        );
 
         // Far from edge should remain largely unchanged
         assert!(feathered.get_pixel(32, 64).0[0] > 200);

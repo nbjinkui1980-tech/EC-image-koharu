@@ -157,7 +157,12 @@ impl ProjectSession {
         Self::open_inner(dir, true, false, true)
     }
 
-    fn open_inner(dir: Utf8PathBuf, creating: bool, strict_history: bool, trusted: bool) -> Result<Arc<Self>> {
+    fn open_inner(
+        dir: Utf8PathBuf,
+        creating: bool,
+        strict_history: bool,
+        trusted: bool,
+    ) -> Result<Arc<Self>> {
         std::fs::create_dir_all(dir.join(BLOBS_DIR).as_std_path())?;
         std::fs::create_dir_all(dir.join(CACHE_DIR).as_std_path())?;
 

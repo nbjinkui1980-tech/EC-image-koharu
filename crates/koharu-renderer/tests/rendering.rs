@@ -53,12 +53,10 @@ fn try_font(family_name: &str) -> Option<Font> {
     // is not installed (CI Linux, bare macOS without Office).
     match family_name {
         "Yu Gothic" => font("Noto Sans CJK JP").ok(),
-        "Microsoft YaHei" => {
-            font("Noto Sans CJK SC")
-                .or_else(|_| font("PingFang SC"))
-                .or_else(|_| font("Heiti SC"))
-                .ok()
-        }
+        "Microsoft YaHei" => font("Noto Sans CJK SC")
+            .or_else(|_| font("PingFang SC"))
+            .or_else(|_| font("Heiti SC"))
+            .ok(),
         _ => None,
     }
 }
@@ -90,7 +88,9 @@ fn non_bg_y_bounds(img: &image::RgbaImage, bg: [u8; 4]) -> Option<(u32, u32)> {
 
 #[test]
 fn render_horizontal() -> Result<()> {
-    let Some(font) = try_font("Yu Gothic") else { return Ok(()); };
+    let Some(font) = try_font("Yu Gothic") else {
+        return Ok(());
+    };
     let lines = TextLayout::new(&font, Some(24.0))
         .with_max_width(1000.0)
         .run(SAMPLE_TEXT)?;
@@ -113,7 +113,9 @@ fn render_horizontal() -> Result<()> {
 
 #[test]
 fn render_vertical() -> Result<()> {
-    let Some(font) = try_font("Yu Gothic") else { return Ok(()); };
+    let Some(font) = try_font("Yu Gothic") else {
+        return Ok(());
+    };
     let lines = TextLayout::new(&font, Some(24.0))
         .with_writing_mode(WritingMode::VerticalRl)
         .with_max_height(1000.0)
@@ -137,7 +139,9 @@ fn render_vertical() -> Result<()> {
 
 #[test]
 fn vertical_flows_top_to_bottom() -> Result<()> {
-    let Some(font) = try_font("Yu Gothic") else { return Ok(()); };
+    let Some(font) = try_font("Yu Gothic") else {
+        return Ok(());
+    };
 
     // Repeated CJK characters so vertical advances are obvious and stable.
     let text = "\u{65E5}\u{672C}\u{8A9E}".repeat(40);
@@ -179,7 +183,9 @@ fn vertical_flows_top_to_bottom() -> Result<()> {
 
 #[test]
 fn render_horizontal_simplified_chinese() -> Result<()> {
-    let Some(font) = try_font("Microsoft YaHei") else { return Ok(()); };
+    let Some(font) = try_font("Microsoft YaHei") else {
+        return Ok(());
+    };
     let lines = TextLayout::new(&font, Some(24.0))
         .with_max_width(1000.0)
         .run(SAMPLE_TEXT_ZH_CN)?;
@@ -202,7 +208,9 @@ fn render_horizontal_simplified_chinese() -> Result<()> {
 
 #[test]
 fn render_vertical_simplified_chinese() -> Result<()> {
-    let Some(font) = try_font("Microsoft YaHei") else { return Ok(()); };
+    let Some(font) = try_font("Microsoft YaHei") else {
+        return Ok(());
+    };
     let lines = TextLayout::new(&font, Some(24.0))
         .with_writing_mode(WritingMode::VerticalRl)
         .with_max_height(1000.0)
@@ -226,7 +234,9 @@ fn render_vertical_simplified_chinese() -> Result<()> {
 
 #[test]
 fn render_rgba_text() -> Result<()> {
-    let Some(font) = try_font("Yu Gothic") else { return Ok(()); };
+    let Some(font) = try_font("Yu Gothic") else {
+        return Ok(());
+    };
     let lines = TextLayout::new(&font, Some(24.0))
         .with_max_width(1000.0)
         .run(SAMPLE_TEXT)?;
@@ -556,9 +566,15 @@ mod hanonly_contracts {
 
 #[test]
 fn render_with_fallback_fonts() -> Result<()> {
-    let Some(primary_font) = try_font("Yu Gothic") else { return Ok(()); };
-    let Some(symbol) = try_font("Segoe UI Symbol") else { return Ok(()); };
-    let Some(emoji) = try_font("Segoe UI Emoji") else { return Ok(()); };
+    let Some(primary_font) = try_font("Yu Gothic") else {
+        return Ok(());
+    };
+    let Some(symbol) = try_font("Segoe UI Symbol") else {
+        return Ok(());
+    };
+    let Some(emoji) = try_font("Segoe UI Emoji") else {
+        return Ok(());
+    };
     let fallback_fonts = vec![symbol, emoji];
 
     let lines = TextLayout::new(&primary_font, Some(24.0))
@@ -582,7 +598,9 @@ fn render_with_fallback_fonts() -> Result<()> {
 
 #[test]
 fn test_arabic_layout_order() -> Result<()> {
-    let Some(font) = try_font("Segoe UI") else { return Ok(()); };
+    let Some(font) = try_font("Segoe UI") else {
+        return Ok(());
+    };
     let text = "مرحبا"; // Marhaba (Hello)
     let layout = TextLayout::new(&font, Some(24.0)).run(text)?;
     let line = &layout.lines[0];
@@ -614,7 +632,9 @@ fn test_arabic_layout_order() -> Result<()> {
 
 #[test]
 fn test_mixed_bidi_render() -> Result<()> {
-    let Some(font) = try_font("Arial") else { return Ok(()); };
+    let Some(font) = try_font("Arial") else {
+        return Ok(());
+    };
     let text = "Hello مرحبا Hello";
     let layout = TextLayout::new(&font, Some(24.0)).run(text)?;
 
@@ -655,7 +675,9 @@ fn test_mixed_bidi_render() -> Result<()> {
 }
 #[test]
 fn test_rtl_multiline() -> Result<()> {
-    let Some(font) = try_font("Arial") else { return Ok(()); };
+    let Some(font) = try_font("Arial") else {
+        return Ok(());
+    };
     // A long text that will wrap.
     let text = "هذا نص طويل باللغة العربية سيتم لفه عبر عدة أسطر للتأكد من أن تخطيط الحروف والاتجاهات يعمل بشكل صحيح في جميع الأسطر. Hello World! وهذا جزء آخر.";
     let layout = TextLayout::new(&font, Some(24.0))
@@ -689,7 +711,9 @@ fn test_rtl_multiline() -> Result<()> {
 
 #[test]
 fn test_rtl_alignment() -> Result<()> {
-    let Some(font) = try_font("Arial") else { return Ok(()); };
+    let Some(font) = try_font("Arial") else {
+        return Ok(());
+    };
     let text = "مرحبا بالعالم"; // Hello World in Arabic
 
     // Test Left Alignment
@@ -733,7 +757,9 @@ fn test_rtl_alignment() -> Result<()> {
 
 #[test]
 fn test_rtl_punctuation_numbers() -> Result<()> {
-    let Some(font) = try_font("Arial") else { return Ok(()); };
+    let Some(font) = try_font("Arial") else {
+        return Ok(());
+    };
     // Text with numbers and trailing punctuation.
     // In LTR, it's: "Arabic 123!"
     // In RTL, "123" stays LTR, but "!" might move to the left side of the word.
@@ -766,7 +792,9 @@ fn test_rtl_punctuation_numbers() -> Result<()> {
 
 #[test]
 fn test_rtl_mixed_complex() -> Result<()> {
-    let Some(font) = try_font("Arial") else { return Ok(()); };
+    let Some(font) = try_font("Arial") else {
+        return Ok(());
+    };
     // Mixed text with LTR and RTL sequences.
     let text = "The word for 'Apple' is تفاحة in Arabic.";
     let layout = TextLayout::new(&font, Some(24.0)).run(text)?;
@@ -788,7 +816,9 @@ fn test_rtl_mixed_complex() -> Result<()> {
 
 #[test]
 fn test_rtl_user_reported_string() -> Result<()> {
-    let Some(font) = try_font("Arial") else { return Ok(()); };
+    let Some(font) = try_font("Arial") else {
+        return Ok(());
+    };
     // The problematic string from the user.
     let text = "هل من المقبول حقاً ارتداء ملابس كهذه، إنها مجرد خيط؟";
     let layout = TextLayout::new(&font, Some(24.0))
@@ -812,7 +842,9 @@ fn test_rtl_user_reported_string() -> Result<()> {
 
 #[test]
 fn test_complex_reordering_and_glyph_count() -> Result<()> {
-    let Some(font) = try_font("Arial") else { return Ok(()); };
+    let Some(font) = try_font("Arial") else {
+        return Ok(());
+    };
     let text = "A مرحبا 😊";
     let layout = TextLayout::new(&font, Some(24.0)).run(text)?;
     let line = &layout.lines[0];

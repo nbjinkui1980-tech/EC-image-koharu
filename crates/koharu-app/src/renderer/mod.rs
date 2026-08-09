@@ -615,8 +615,20 @@ impl Renderer {
                     min_font,
                 )? {
                     if block.typography_plan_verified {
-                        let sx = resolved_box.seed_box.x.round().max(0.0).min(inpainted.width() as f32 - 1.0) as u32;
-                        let sy = resolved_box.seed_box.y.round().max(0.0).min(inpainted.height() as f32 - 1.0) as u32;
+                        let sx = resolved_box
+                            .seed_box
+                            .x
+                            .round()
+                            .max(0.0)
+                            .min(inpainted.width() as f32 - 1.0)
+                            as u32;
+                        let sy = resolved_box
+                            .seed_box
+                            .y
+                            .round()
+                            .max(0.0)
+                            .min(inpainted.height() as f32 - 1.0)
+                            as u32;
                         let rgba = inpainted.to_rgba8();
                         prepared.color = rgba.get_pixel(sx, sy).0;
                         #[cfg(test)]
@@ -2098,11 +2110,7 @@ fn resolve_layout_boxes(
             .unwrap();
         let seeds: Vec<LayoutBox> = matches
             .iter()
-            .filter_map(|(seed, m)| {
-                m.as_ref()
-                    .filter(|bm| bm.id == bubble_id)
-                    .map(|_| *seed)
-            })
+            .filter_map(|(seed, m)| m.as_ref().filter(|bm| bm.id == bubble_id).map(|_| *seed))
             .collect();
         let n = seeds.len();
         let mut expanded_boxes = Vec::with_capacity(n);
@@ -2111,12 +2119,17 @@ fn resolve_layout_boxes(
             let idx = ((seed.x - bubble_layout.x) / slice_w).floor() as usize;
             let clamped = idx.min(n - 1);
             let box_x = bubble_layout.x + slice_w * clamped as f32;
-            expanded_boxes.push((seed, LayoutBox {
-                x: box_x.min(seed.x),
-                y: bubble_layout.y,
-                width: slice_w.max(seed.width),
-                height: bubble_layout.height.max(seed.y + seed.height - bubble_layout.y),
-            }));
+            expanded_boxes.push((
+                seed,
+                LayoutBox {
+                    x: box_x.min(seed.x),
+                    y: bubble_layout.y,
+                    width: slice_w.max(seed.width),
+                    height: bubble_layout
+                        .height
+                        .max(seed.y + seed.height - bubble_layout.y),
+                },
+            ));
         }
         shared_expanded.insert(bubble_id, expanded_boxes);
     }
@@ -2171,7 +2184,7 @@ fn resolve_layout_boxes(
                         #[cfg(test)]
                         diagnostic_branch: RendererLayoutBoxBranch::SharedBubble,
                     }
-                },
+                }
                 None => ResolvedLayoutBox {
                     seed_box,
                     layout_box: seed_box,
@@ -3218,7 +3231,9 @@ mod tests {
             ]
         );
         assert!(
-            shared_events.iter().all(|e| e.resolved_layout_width >= 75.0),
+            shared_events
+                .iter()
+                .all(|e| e.resolved_layout_width >= 75.0),
             "shared-bubble blocks receive expanded width ≥ seed width"
         );
         assert_eq!(
@@ -5521,10 +5536,10 @@ mod tests {
                     (actual.2 as f32 / scale, reference.2 as f32),
                     (actual.3 as f32 / scale, reference.3 as f32),
                 ] {
-                assert!(
-                    (actual - reference).abs() <= 2.0,
-                    "resolver geometry must be scale-metamorphic"
-                );
+                    assert!(
+                        (actual - reference).abs() <= 2.0,
+                        "resolver geometry must be scale-metamorphic"
+                    );
                 }
             }
         }

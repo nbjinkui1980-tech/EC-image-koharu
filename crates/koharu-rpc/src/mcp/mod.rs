@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[tokio::test]
-    
+
     async fn hanonly_pre_greenc_red_t3_mcp_marker_rejection_contract() {
         let app = in_memory_app();
         let (root, session, page_id) = typography_session();
@@ -413,7 +413,11 @@ mod tests {
             let before = crate::routes::history::tests::mutation_state(&session);
             let result = server.apply(Parameters(ApplyInput { op: case.raw })).await;
             if case.reject {
-                assert!(result.is_err(), "{case_name}: expected error", case_name = case.name);
+                assert!(
+                    result.is_err(),
+                    "{case_name}: expected error",
+                    case_name = case.name
+                );
                 assert_eq!(
                     crate::routes::history::tests::mutation_state(&session),
                     before,

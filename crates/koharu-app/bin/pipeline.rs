@@ -151,12 +151,12 @@ fn emit_model_inventory(data_root: &Utf8PathBuf) -> Result<()> {
         .filter(|e| e.file_type().is_file())
     {
         let path = entry.path();
-        let relative = path.strip_prefix(models_dir.as_std_path())
+        let relative = path
+            .strip_prefix(models_dir.as_std_path())
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let bytes = std::fs::read(path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let len = bytes.len() as u64;
         let hash = blake3::hash(&bytes).to_hex().to_string();
         entries.push((relative, len, hash));
@@ -179,8 +179,7 @@ async fn run() -> Result<()> {
     // Stage the project + runtime under a fresh tempdir so repeat runs
     // never collide. TempDir cleans up automatically when the CLI exits.
     let temp_root: Utf8PathBuf = if let Some(ref root) = cli.data_root {
-        Utf8PathBuf::try_from(root.clone())
-            .map_err(|_| anyhow!("data-root path is not UTF-8"))?
+        Utf8PathBuf::try_from(root.clone()).map_err(|_| anyhow!("data-root path is not UTF-8"))?
     } else {
         env!("CARGO_MANIFEST_DIR")
             .parse::<Utf8PathBuf>()

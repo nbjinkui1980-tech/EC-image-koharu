@@ -339,10 +339,8 @@ mod tests {
         let text = TextData {
             translation: Some("Hello".to_string()),
             sprite: Some(
-                BlobRef::parse(
-                    "4a046e33ecf7aced9bfd000747bb1fda7836c8ceeff662af33c2a2c288b4e78c",
-                )
-                .unwrap(),
+                BlobRef::parse("4a046e33ecf7aced9bfd000747bb1fda7836c8ceeff662af33c2a2c288b4e78c")
+                    .unwrap(),
             ),
             sprite_transform: Some(sprite_transform),
             ..Default::default()

@@ -20,7 +20,11 @@ pub struct Model(SpeechBubbleSegmentation);
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
-        crate::pipeline::engine::emit_engine_device("speech-bubble-segmentation", "speech-bubble-segmentation", 0);
+        crate::pipeline::engine::emit_engine_device(
+            "speech-bubble-segmentation",
+            "speech-bubble-segmentation",
+            0,
+        );
         let image = load_source_image(ctx.scene, ctx.page, ctx.blobs)?;
         let result = self.0.inference(&image)?;
         let mask = bubble_mask_from_result(&result);

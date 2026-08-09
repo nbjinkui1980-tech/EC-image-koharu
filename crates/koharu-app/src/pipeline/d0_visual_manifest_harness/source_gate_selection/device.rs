@@ -3,8 +3,8 @@ use std::io;
 
 use koharu_llm::safe::{LlamaBackendDeviceType, list_llama_ggml_backend_devices};
 
-use super::{Candidate, EnumeratedDevice, LoadedModelDevice, SelectionResult, candidates_schema};
 use super::super::invalid_data;
+use super::{Candidate, EnumeratedDevice, LoadedModelDevice, SelectionResult, candidates_schema};
 
 pub(super) fn enumerated_devices() -> io::Result<Vec<EnumeratedDevice>> {
     list_llama_ggml_backend_devices()

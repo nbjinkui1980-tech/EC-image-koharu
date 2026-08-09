@@ -1287,14 +1287,29 @@ mod tests {
                 text: Some(Some("updated".into())),
                 ..Default::default()
             })),
-            transform: Some(Transform { x: 10.0, y: 20.0, width: 100.0, height: 50.0, rotation_deg: 0.0 }),
+            transform: Some(Transform {
+                x: 10.0,
+                y: 20.0,
+                width: 100.0,
+                height: 50.0,
+                rotation_deg: 0.0,
+            }),
             visible: Some(false),
         };
         let node = Node {
             id: NodeId::new(),
-            transform: Transform { x: 5.0, y: 5.0, width: 80.0, height: 40.0, rotation_deg: 0.0 },
+            transform: Transform {
+                x: 5.0,
+                y: 5.0,
+                width: 80.0,
+                height: 40.0,
+                rotation_deg: 0.0,
+            },
             visible: true,
-            kind: NodeKind::Text(TextData { text: Some("original".into()), ..Default::default() }),
+            kind: NodeKind::Text(TextData {
+                text: Some("original".into()),
+                ..Default::default()
+            }),
         };
         let prev = capture_prev_node_patch(&node, &patch);
         let prev_transform = prev.transform.unwrap();

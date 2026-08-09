@@ -422,7 +422,6 @@ fn han_only_visual_manifest_matrix() {
 }
 
 #[cfg(all(test, feature = "hanonly-test-evidence"))]
-
 mod source_gate_selection;
 
 #[cfg(test)]

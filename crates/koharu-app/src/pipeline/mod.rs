@@ -442,10 +442,7 @@ pub async fn run(
                         step_id: "han_only.unsupported_rotation".into(),
                         page_index,
                         total_pages,
-                        message: format!(
-                            "han_only.unsupported_rotation: {} node(s)",
-                            new.len()
-                        ),
+                        message: format!("han_only.unsupported_rotation: {} node(s)", new.len()),
                     });
                 }
             }
@@ -692,7 +689,13 @@ fn new_unsupported_geometry(
 ) -> Vec<engines::support::UnsupportedTextGeometry> {
     let (_, mut unsupported) = engines::support::eligible_lines_for_page(scene, page);
     // Sort by deterministic key for stable warning output
-    unsupported.sort_by_key(|g| (g.rotation_deg.to_bits(), g.line_count, g.node_id.0.as_u128()));
+    unsupported.sort_by_key(|g| {
+        (
+            g.rotation_deg.to_bits(),
+            g.line_count,
+            g.node_id.0.as_u128(),
+        )
+    });
     unsupported.retain(|geometry| seen.insert(geometry.node_id));
     for geometry in &unsupported {
         #[cfg(test)]
@@ -1605,14 +1608,23 @@ pub(crate) mod tests {
             .collect::<Vec<_>>();
         assert!(unsupported.contains(&(fixture.page, fixture.text, 15.0_f32.to_bits())));
         assert!(unsupported.iter().any(|(_, node, _)| *node == mixed));
-        let supported_text = fixture.session.scene_snapshot().node(fixture.page, supported)
+        let supported_text = fixture
+            .session
+            .scene_snapshot()
+            .node(fixture.page, supported)
             .and_then(|node| match &node.kind {
                 NodeKind::Text(text) => Some(text.clone()),
                 _ => None,
             })
             .unwrap();
-        assert!(supported_text.sprite.is_some(), "supported node must have a sprite");
-        assert!(supported_text.sprite_transform.is_some(), "supported node must have a sprite transform");
+        assert!(
+            supported_text.sprite.is_some(),
+            "supported node must have a sprite"
+        );
+        assert!(
+            supported_text.sprite_transform.is_some(),
+            "supported node must have a sprite transform"
+        );
         Ok(())
     }
 
@@ -2519,9 +2531,7 @@ pub(crate) mod tests {
 
     pub(crate) async fn assert_transient_planner_hint_pipeline_contract() -> anyhow::Result<()> {
         use crate::renderer::RendererDiagnosticCapture;
-        use crate::typography::{
-            TypographyDiagnosticCapture, TypographyDiagnosticOutcome,
-        };
+        use crate::typography::{TypographyDiagnosticCapture, TypographyDiagnosticOutcome};
         let fixture = PipelineFixture::new("中文", "abcdef")?;
         let _text_before = fixture
             .session
@@ -2587,7 +2597,8 @@ pub(crate) mod tests {
                 if diagnostic.outcome != TypographyDiagnosticOutcome::Accepted {
                     failures.push(format!("Planner outcome {:?}", diagnostic.outcome));
                 }
-                if diagnostic.accepted_op_count.is_none() || diagnostic.accepted_op_count != Some(1) {
+                if diagnostic.accepted_op_count.is_none() || diagnostic.accepted_op_count != Some(1)
+                {
                     failures.push(format!("accepted ops {:?}", diagnostic.accepted_op_count));
                 }
                 match diagnostic.target_field_outcomes.as_deref() {

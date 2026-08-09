@@ -152,8 +152,7 @@ async fn blob_missing_returns_404() -> anyhow::Result<()> {
         .client
         .get(format!(
             "{}/blobs/{}",
-            app.base_url,
-            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+            app.base_url, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
         ))
         .send()
         .await?;

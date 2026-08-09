@@ -8,19 +8,25 @@ fn one_pixel_rgba() -> DynamicImage {
 
 fn encode_png() -> Vec<u8> {
     let mut buf = Cursor::new(Vec::new());
-    one_pixel_rgba().write_to(&mut buf, image::ImageFormat::Png).unwrap();
+    one_pixel_rgba()
+        .write_to(&mut buf, image::ImageFormat::Png)
+        .unwrap();
     buf.into_inner()
 }
 
 fn encode_jpeg() -> Vec<u8> {
     let mut buf = Cursor::new(Vec::new());
-    one_pixel_rgba().write_to(&mut buf, image::ImageFormat::Jpeg).unwrap();
+    one_pixel_rgba()
+        .write_to(&mut buf, image::ImageFormat::Jpeg)
+        .unwrap();
     buf.into_inner()
 }
 
 fn encode_webp() -> Vec<u8> {
     let mut buf = Cursor::new(Vec::new());
-    one_pixel_rgba().write_to(&mut buf, image::ImageFormat::WebP).unwrap();
+    one_pixel_rgba()
+        .write_to(&mut buf, image::ImageFormat::WebP)
+        .unwrap();
     buf.into_inner()
 }
 
@@ -84,5 +90,8 @@ fn rejects_extension_spoof() {
     let mut spoofed = vec![0x89, 0x50, 0x4E, 0x47]; // PNG magic
     spoofed.extend_from_slice(&jpeg[..]);
     let result = koharu_app::blobs::admit_source_image(&spoofed);
-    assert!(result.is_err(), "PNG magic + JPEG body must be rejected as corrupt");
+    assert!(
+        result.is_err(),
+        "PNG magic + JPEG body must be rejected as corrupt"
+    );
 }

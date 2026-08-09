@@ -226,10 +226,11 @@ fn decode_blob(bytes: &[u8]) -> Result<DynamicImage> {
             height: img.height(),
             has_alpha: true,
         });
-        return     Ok(DynamicImage::ImageRgba8(img));
+        return Ok(DynamicImage::ImageRgba8(img));
     }
     let mut limits = image::Limits::default();
-    limits.reserve(DECODED_RGBA_BUDGET)
+    limits
+        .reserve(DECODED_RGBA_BUDGET)
         .context("decoded RGBA budget exceeded")?;
     let img = image::load_from_memory(bytes)?;
     limits.free(DECODED_RGBA_BUDGET);
@@ -255,21 +256,30 @@ pub fn admit_source_image(bytes: &[u8]) -> Result<DynamicImage> {
     }
     // Byte-sniff: check known magic bytes
     let format = match bytes {
-        [0x89, 0x50, 0x4E, 0x47, ..] => {
-            image::ImageFormat::Png
-        }
-        [0xFF, 0xD8, 0xFF, ..] => {
-            image::ImageFormat::Jpeg
-        }
-        [0x52, 0x49, 0x46, 0x46, _, _, _, _, 0x57, 0x45, 0x42, 0x50, ..] => {
-            image::ImageFormat::WebP
-        }
+        [0x89, 0x50, 0x4E, 0x47, ..] => image::ImageFormat::Png,
+        [0xFF, 0xD8, 0xFF, ..] => image::ImageFormat::Jpeg,
+        [
+            0x52,
+            0x49,
+            0x46,
+            0x46,
+            _,
+            _,
+            _,
+            _,
+            0x57,
+            0x45,
+            0x42,
+            0x50,
+            ..,
+        ] => image::ImageFormat::WebP,
         _ => {
             anyhow::bail!("unsupported source image format")
         }
     };
     let mut limits = image::Limits::default();
-    limits.reserve(DECODED_RGBA_BUDGET)
+    limits
+        .reserve(DECODED_RGBA_BUDGET)
         .context("decoded RGBA budget exceeded")?;
     let img = image::load_from_memory(bytes)
         .with_context(|| format!("cannot decode admitted {:?}", format))?;
