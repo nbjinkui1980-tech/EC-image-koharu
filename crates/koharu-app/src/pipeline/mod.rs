@@ -225,15 +225,20 @@ mod test_probe {
     }
     pub(crate) fn start_pipeline_test_probe() -> anyhow::Result<PipelineTestCapture> {
         let events = Arc::new(Mutex::new(Vec::new()));
-        let mut active = ACTIVE_PROBE
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        anyhow::ensure!(active.is_none(), "pipeline test probe is already active");
-        *active = Some(ActiveProbe {
-            events: events.clone(),
-        });
-        Ok(PipelineTestCapture { events })
+        loop {
+            let mut active = ACTIVE_PROBE
+                .get_or_init(|| Mutex::new(None))
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if active.is_none() {
+                *active = Some(ActiveProbe {
+                    events: events.clone(),
+                });
+                return Ok(PipelineTestCapture { events });
+            }
+            drop(active);
+            std::thread::yield_now();
+        }
     }
     pub(super) fn record(event: PipelineTestEvent) {
         let Some(events) = ACTIVE_PROBE
