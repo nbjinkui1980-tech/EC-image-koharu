@@ -462,6 +462,7 @@ fn composite_masked(
 
 /// Blend `crop_result` into `out` using a feathered mask, producing
 /// smooth transitions at tile boundaries instead of hard cuts.
+#[allow(dead_code)]
 fn composite_feathered(
     out: &mut RgbImage,
     crop_result: &RgbImage,

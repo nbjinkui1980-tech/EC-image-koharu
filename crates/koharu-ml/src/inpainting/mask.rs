@@ -160,7 +160,6 @@ pub fn expand_mask_to_bubble_region_for_inpainting(
 /// smoother inpainting transitions. Sigma controls the blur radius;
 /// typical values for manga inpainting are 1.0–3.0.
 pub fn feather_mask(mask: &GrayImage, sigma: f32) -> GrayImage {
-    let (width, height) = mask.dimensions();
     let img = DynamicImage::ImageLuma8(mask.clone());
     let blurred = img.blur(sigma);
     blurred.to_luma8()
