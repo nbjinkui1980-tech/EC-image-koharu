@@ -118,21 +118,22 @@ async fn create_pages(
     let admitted: Vec<(String, u32, u32, Vec<u8>)> = tokio::task::spawn_blocking(move || {
         files
             .into_par_iter()
-            .map(|(filename, bytes)| -> ApiResult<(String, u32, u32, Vec<u8>)> {
-                let img = koharu_app::blobs::admit_source_image(&bytes)
-                    .map_err(|e| ApiError::bad_request(format!("admit `{filename}`: {e}")))?;
-                let (w, h) = img.dimensions();
-                Ok((filename, w, h, bytes))
-            })
+            .map(
+                |(filename, bytes)| -> ApiResult<(String, u32, u32, Vec<u8>)> {
+                    let img = koharu_app::blobs::admit_source_image(&bytes)
+                        .map_err(|e| ApiError::bad_request(format!("admit `{filename}`: {e}")))?;
+                    let (w, h) = img.dimensions();
+                    Ok((filename, w, h, bytes))
+                },
+            )
             .collect::<ApiResult<Vec<_>>>()
     })
     .await
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
 
     // All files admitted — now safe to mutate the project.
-    let starting_index;
     let mut ops: Vec<Op> = Vec::new();
-    if replace {
+    let starting_index = if replace {
         let scene = session.scene.read();
         let remove_ops: Vec<Op> = scene
             .pages
@@ -146,9 +147,9 @@ async fn create_pages(
             .collect();
         drop(scene);
         ops.extend(remove_ops);
-        starting_index = 0;
+        0
     } else {
-        starting_index = session.scene.read().pages.len();
+        session.scene.read().pages.len()
     };
 
     // Store blobs from admitted bytes, then build pages.
@@ -156,10 +157,12 @@ async fn create_pages(
     let decoded: Vec<(String, u32, u32, BlobRef)> = tokio::task::spawn_blocking(move || {
         admitted
             .into_par_iter()
-            .map(|(filename, w, h, bytes)| -> ApiResult<(String, u32, u32, BlobRef)> {
-                let blob = blobs2.put_bytes(&bytes).map_err(ApiError::internal)?;
-                Ok((filename, w, h, blob))
-            })
+            .map(
+                |(filename, w, h, bytes)| -> ApiResult<(String, u32, u32, BlobRef)> {
+                    let blob = blobs2.put_bytes(&bytes).map_err(ApiError::internal)?;
+                    Ok((filename, w, h, blob))
+                },
+            )
             .collect::<ApiResult<Vec<_>>>()
     })
     .await
@@ -300,9 +303,8 @@ async fn create_pages_from_paths(
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
 
     // All files admitted — now safe to mutate the project.
-    let starting_index;
     let mut ops: Vec<Op> = Vec::new();
-    if req.replace {
+    let starting_index = if req.replace {
         let scene = session.scene.read();
         let remove_ops: Vec<Op> = scene
             .pages
@@ -316,9 +318,9 @@ async fn create_pages_from_paths(
             .collect();
         drop(scene);
         ops.extend(remove_ops);
-        starting_index = 0;
+        0
     } else {
-        starting_index = session.scene.read().pages.len();
+        session.scene.read().pages.len()
     };
 
     // Store blobs from admitted bytes.
@@ -326,10 +328,12 @@ async fn create_pages_from_paths(
     let decoded: Vec<(String, u32, u32, BlobRef)> = tokio::task::spawn_blocking(move || {
         admitted
             .into_par_iter()
-            .map(|(filename, w, h, bytes)| -> ApiResult<(String, u32, u32, BlobRef)> {
-                let blob = blobs.put_bytes(&bytes).map_err(ApiError::internal)?;
-                Ok((filename, w, h, blob))
-            })
+            .map(
+                |(filename, w, h, bytes)| -> ApiResult<(String, u32, u32, BlobRef)> {
+                    let blob = blobs.put_bytes(&bytes).map_err(ApiError::internal)?;
+                    Ok((filename, w, h, blob))
+                },
+            )
             .collect::<ApiResult<Vec<_>>>()
     })
     .await
