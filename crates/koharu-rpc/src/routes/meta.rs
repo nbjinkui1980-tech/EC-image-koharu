@@ -27,7 +27,10 @@ async fn get_engine_catalog(State(_app): State<AppState>) -> ApiResult<Json<Engi
     Ok(Json(koharu_app::pipeline::catalog()))
 }
 
-fn device_label(_app: &AppState) -> String {
-    // TODO: expose current device via koharu-runtime in a follow-up.
-    "auto".to_string()
+fn device_label(app: &AppState) -> String {
+    if app.runtime().wants_gpu() {
+        "gpu".to_string()
+    } else {
+        "cpu".to_string()
+    }
 }
