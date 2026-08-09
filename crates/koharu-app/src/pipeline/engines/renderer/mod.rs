@@ -606,7 +606,7 @@ fn build_render_inputs(
             source_direction: text.source_direction,
             rendered_direction: text.rendered_direction,
             lock_layout_box: {
-                let is_automatic = text.style.as_ref().map_or(true, |s| s.font_size.is_none());
+                let is_automatic = text.style.as_ref().is_none_or(|s| s.font_size.is_none());
                 let is_supported_rotation = source_transform.rotation_deg == 0.0;
                 let allow_expansion = is_automatic && is_supported_rotation;
                 text.lock_layout_box

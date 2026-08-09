@@ -918,6 +918,7 @@ pub(in crate::pipeline) fn canonical_han_mask(
     Ok((retained, allowed))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::pipeline) fn prepare_inpaint_mask<Expand>(
     mask: &DynamicImage,
     bubble_mask: &DynamicImage,

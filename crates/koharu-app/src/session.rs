@@ -366,7 +366,7 @@ fn contains_planner_marker(op: &Op) -> bool {
                         || text.style.is_some()
             )
         }
-        Op::Batch { ops, .. } => ops.iter().any(|child| contains_planner_marker(child)),
+        Op::Batch { ops, .. } => ops.iter().any(contains_planner_marker),
         _ => false,
     }
 }
@@ -377,11 +377,11 @@ fn clear_typography_markers(scene: &mut Scene) {
         .values_mut()
         .flat_map(|page| page.nodes.values_mut())
     {
-        if let koharu_core::NodeKind::Text(text) = &mut node.kind {
-            if text.typography_plan_verified || text.style.is_some() {
-                text.typography_plan_verified = false;
-                text.style = None;
-            }
+        if let koharu_core::NodeKind::Text(text) = &mut node.kind
+            && (text.typography_plan_verified || text.style.is_some())
+        {
+            text.typography_plan_verified = false;
+            text.style = None;
         }
     }
 }

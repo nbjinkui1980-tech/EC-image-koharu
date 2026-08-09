@@ -24,6 +24,12 @@ use crate::pipeline::engines::support::{
 
 pub struct Model(ComicTextDetector);
 
+type SegmentRegions = (
+    Vec<TextRegion>,
+    Vec<(NodeId, EligibleTextLine)>,
+    Vec<(NodeId, EligibleTextLine)>,
+);
+
 #[async_trait]
 impl Engine for Model {
     async fn run(&self, ctx: EngineCtx<'_>) -> Result<Vec<Op>> {
@@ -51,11 +57,7 @@ fn segment_regions(
     scene: &Scene,
     page: PageId,
     policy: SourceTextPolicy,
-) -> Result<(
-    Vec<TextRegion>,
-    Vec<(NodeId, EligibleTextLine)>,
-    Vec<(NodeId, EligibleTextLine)>,
-)> {
+) -> Result<SegmentRegions> {
     let nodes = text_nodes(scene, page);
     if nodes.is_empty() {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
