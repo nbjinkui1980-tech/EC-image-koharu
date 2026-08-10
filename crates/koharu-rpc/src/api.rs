@@ -204,6 +204,50 @@ mod tests {
         (status, headers)
     }
 
+    async fn get_status(
+        addr: std::net::SocketAddr,
+        path: &str,
+        cookie: Option<&str>,
+        bearer: Option<&str>,
+    ) -> u16 {
+        let mut request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+        if let Some(cookie) = cookie {
+            request.push_str(&format!("Cookie: koharu_session={cookie}\r\n"));
+        }
+        if let Some(bearer) = bearer {
+            request.push_str(&format!("Authorization: Bearer {bearer}\r\n"));
+        }
+        request.push_str("\r\n");
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        loop {
+            let mut chunk = [0; 1024];
+            let read =
+                tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut chunk))
+                    .await
+                    .expect("response headers timed out")
+                    .unwrap();
+            if read == 0 {
+                break;
+            }
+            response.extend_from_slice(&chunk[..read]);
+            if response.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&response)
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn session_exchange_rejects_missing_credential() {
         let root = std::env::temp_dir().join(format!("koharu-rpc-session-{}", Uuid::new_v4()));
@@ -293,6 +337,68 @@ mod tests {
 
         let master = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(TEST_SECRET);
         assert_eq!(exchange_status(addr, Some(&master)).await.0, 204);
+
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn session_cookie_reaches_api_readiness_without_master_bearer() {
+        let root = std::env::temp_dir().join(format!("koharu-rpc-session-{}", Uuid::new_v4()));
+        let app = crate::BootstrapManager::new(Arc::new(
+            RuntimeManager::new(&root, ComputePolicy::CpuOnly).unwrap(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let security = SecurityContext::from_secret(TEST_SECRET);
+        let policy = crate::security::OriginHostPolicy::for_listener(
+            addr,
+            false,
+            crate::security::RemoteHostPolicy::empty(),
+        );
+        let session = crate::security::BrowserSessionState::new(None, [0x2C; 32]);
+        let cookie = session.session_token_encoded();
+        let server = tokio::spawn(crate::server::serve_with_listener_with_session(
+            listener, app, security, policy, session,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        assert_eq!(
+            get_status(addr, "/api/v1/meta", Some(&cookie), None).await,
+            503
+        );
+
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn mcp_remains_master_bearer_only() {
+        let root = std::env::temp_dir().join(format!("koharu-rpc-session-{}", Uuid::new_v4()));
+        let app = crate::BootstrapManager::new(Arc::new(
+            RuntimeManager::new(&root, ComputePolicy::CpuOnly).unwrap(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let security = SecurityContext::from_secret(TEST_SECRET);
+        let policy = crate::security::OriginHostPolicy::for_listener(
+            addr,
+            false,
+            crate::security::RemoteHostPolicy::empty(),
+        );
+        let session = crate::security::BrowserSessionState::new(None, [0x2C; 32]);
+        let cookie = session.session_token_encoded();
+        let server = tokio::spawn(crate::server::serve_with_listener_with_session(
+            listener, app, security, policy, session,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        assert_eq!(get_status(addr, "/mcp", None, None).await, 401);
+        assert_eq!(get_status(addr, "/mcp", Some(&cookie), None).await, 401);
+        let master = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(TEST_SECRET);
+        assert_ne!(get_status(addr, "/mcp", None, Some(&master)).await, 401);
 
         server.abort();
         let _ = server.await;

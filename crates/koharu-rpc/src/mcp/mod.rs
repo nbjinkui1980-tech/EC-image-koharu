@@ -276,7 +276,10 @@ pub fn mount(router: axum::Router, state: AppState, security: SecurityContext) -
         }
     });
 
-    router.nest_service("/mcp", service).layer(mcp_auth)
+    let mcp_router = axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(mcp_auth);
+    router.merge(mcp_router)
 }
 
 #[cfg(test)]
