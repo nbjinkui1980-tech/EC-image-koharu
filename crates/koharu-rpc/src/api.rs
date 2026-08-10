@@ -61,32 +61,18 @@ async fn require_ready(State(app): State<ApiState>, request: Request, next: Next
     next.run(request).await
 }
 
-/// Ready-to-serve router. `app` becomes shared state. All routes live under
-/// `/api/v1` so the UI can reach them through a single proxy prefix.
-pub fn router(app: ApiState) -> Router {
-    let (bootstrap, _) = bootstrap_api().split_for_parts();
-    let (guarded, _) = app_api().split_for_parts();
-    let bootstrap = bootstrap.with_state(app.clone());
-    let guarded = guarded
-        .with_state(app.clone())
-        .layer(middleware::from_fn_with_state(app, require_ready));
-    Router::new()
-        .nest("/api/v1", bootstrap.merge(guarded))
-        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
-}
-
-// ── Task‑1 security-aware variant ────────────────────────────────────────
-
-pub(crate) fn router_with_security(app: ApiState, security: crate::security::SecurityContext) -> Router {
-    use axum::middleware::from_fn_with_state;
-
+/// Ready-to-serve router with required authentication.
+pub fn router(app: ApiState, security: crate::security::SecurityContext) -> Router {
     let (bootstrap, _) = bootstrap_api().split_for_parts();
     let (guarded, _) = app_api().split_for_parts();
     let bootstrap = bootstrap.with_state(app.clone());
     let guarded = guarded
         .with_state(app.clone())
         .layer(middleware::from_fn_with_state(app, require_ready))
-        .layer(from_fn_with_state(security, crate::security::require_auth));
+        .layer(middleware::from_fn_with_state(
+            security,
+            crate::security::require_auth,
+        ));
     Router::new()
         .nest("/api/v1", bootstrap.merge(guarded))
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
@@ -94,7 +80,6 @@ pub(crate) fn router_with_security(app: ApiState, security: crate::security::Sec
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::security::SecurityContext;
 
     const TEST_SECRET: [u8; 32] = [0x2A; 32];
@@ -118,7 +103,12 @@ mod tests {
     fn security_context_rejects_wrong_secret() {
         let ctx = SecurityContext::from_secret(TEST_SECRET);
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("authorization", "Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse().unwrap());
+        headers.insert(
+            "authorization",
+            "Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                .parse()
+                .unwrap(),
+        );
         assert!(!ctx.authorizes_bearer(&headers));
     }
 
@@ -126,7 +116,12 @@ mod tests {
     fn security_context_accepts_correct_bearer() {
         let ctx = SecurityContext::from_secret(TEST_SECRET);
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("authorization", "Bearer KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio".parse().unwrap());
+        headers.insert(
+            "authorization",
+            "Bearer KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio"
+                .parse()
+                .unwrap(),
+        );
         assert!(ctx.authorizes_bearer(&headers));
     }
 
@@ -142,7 +137,12 @@ mod tests {
     fn security_context_rejects_duplicate_auth_headers() {
         let ctx = SecurityContext::from_secret(TEST_SECRET);
         let mut headers = axum::http::HeaderMap::new();
-        headers.append("authorization", "Bearer KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio".parse().unwrap());
+        headers.append(
+            "authorization",
+            "Bearer KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio"
+                .parse()
+                .unwrap(),
+        );
         headers.append("authorization", "Bearer extra".parse().unwrap());
         assert!(!ctx.authorizes_bearer(&headers));
     }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use koharu_app::{App, AppConfig, config as app_config};
-use koharu_rpc::{BootstrapManager, server};
+use koharu_rpc::{BootstrapManager, security::SecurityContext, server};
 use koharu_runtime::{ComputePolicy, RuntimeHttpConfig, RuntimeManager};
 use tokio::net::TcpListener;
 use tracing_subscriber::layer::SubscriberExt;
@@ -113,8 +113,11 @@ pub async fn run() -> Result<()> {
     let mut context = tauri::generate_context!();
     let assets = crate::assets::from_context(&mut context);
     let server_state = state.clone();
+    let mut secret = [0u8; 32];
+    getrandom::fill(&mut secret).context("failed to generate master secret")?;
+    let security = SecurityContext::from_secret(secret);
     tauri::async_runtime::spawn(async move {
-        server::serve_with_listener_and_assets(listener, server_state, assets)
+        server::serve_with_listener_and_assets(listener, server_state, security, assets)
             .await
             .expect("failed to start server");
     });

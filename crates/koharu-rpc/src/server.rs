@@ -16,21 +16,25 @@ use tower_http::cors::CorsLayer;
 
 use crate::AppState;
 use crate::api;
+use crate::security::SecurityContext;
 
 /// Function that maps a URL path (e.g. `"/index.html"`) to `(bytes, mime)`.
 /// Returning `None` signals a 404 fall-through.
 pub type AssetResolver = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
 
-/// Wrap `router(app)` with CORS + mount MCP at `/mcp`.
-pub fn router_for(app: AppState) -> Router {
-    let base = api::router(app.clone()).layer(CorsLayer::very_permissive());
+/// Wrap the protected router with CORS + mount MCP.
+pub fn router_for(app: AppState, security: SecurityContext) -> Router {
+    let base = api::router(app.clone(), security.clone()).layer(CorsLayer::very_permissive());
     crate::mcp::mount(base, app)
 }
 
-/// Same as `router_for` but installs `resolver` as a fallback, serving
-/// embedded frontend assets for unmatched GET requests.
-pub fn router_with_assets(app: AppState, resolver: AssetResolver) -> Router {
-    router_for(app).fallback(move |req: Request<Body>| {
+/// Same as `router_for` but installs `resolver` as a fallback.
+pub fn router_with_assets(
+    app: AppState,
+    security: SecurityContext,
+    resolver: AssetResolver,
+) -> Router {
+    router_for(app, security).fallback(move |req: Request<Body>| {
         let resolver = resolver.clone();
         async move { serve_asset(resolver, req).await }
     })
@@ -52,19 +56,23 @@ async fn serve_asset(resolver: AssetResolver, req: Request<Body>) -> Response {
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
-/// Serve HTTP on an already-bound listener. Tauri-friendly.
-pub async fn serve_with_listener(listener: TcpListener, app: AppState) -> Result<()> {
-    axum::serve(listener, router_for(app)).await?;
+/// Serve HTTP on an already-bound listener with required auth.
+pub async fn serve_with_listener(
+    listener: TcpListener,
+    app: AppState,
+    security: SecurityContext,
+) -> Result<()> {
+    axum::serve(listener, router_for(app, security)).await?;
     Ok(())
 }
 
-/// Variant that installs embedded assets as the fallback. Used by the Tauri
-/// production build to serve the bundled UI.
+/// Variant with embedded assets fallback.
 pub async fn serve_with_listener_and_assets(
     listener: TcpListener,
     app: AppState,
+    security: SecurityContext,
     resolver: AssetResolver,
 ) -> Result<()> {
-    axum::serve(listener, router_with_assets(app, resolver)).await?;
+    axum::serve(listener, router_with_assets(app, security, resolver)).await?;
     Ok(())
 }

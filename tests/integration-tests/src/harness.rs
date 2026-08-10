@@ -111,9 +111,10 @@ impl TestApp {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let base_url = format!("http://{addr}/api/v1");
+        let security = koharu_rpc::security::SecurityContext::from_secret([0x2A; 32]);
         let server = tokio::spawn({
             let state = state.clone();
-            async move { server::serve_with_listener(listener, state).await }
+            async move { server::serve_with_listener(listener, state, security).await }
         });
 
         let client_config = Configuration {

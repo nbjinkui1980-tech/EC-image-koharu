@@ -337,7 +337,7 @@ pub(crate) mod tests {
     async fn post_raw(addr: std::net::SocketAddr, raw: &Value) -> (u16, Value) {
         let body = serde_json::to_vec(raw).unwrap();
         let request = format!(
-            "POST /api/v1/history/apply HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "POST /api/v1/history/apply HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         let mut stream = TcpStream::connect(addr).await.unwrap();
@@ -451,7 +451,10 @@ pub(crate) mod tests {
         let (state, session, root, page_id, node_id) = http_app();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(crate::server::serve_with_listener(listener, state));
+        let security = crate::security::SecurityContext::from_secret([0x2A; 32]);
+        let server = tokio::spawn(crate::server::serve_with_listener(
+            listener, state, security,
+        ));
 
         let page = session.scene.read().pages.get(&page_id).unwrap().clone();
         for case in t3_marker_cases(&page, node_id) {
