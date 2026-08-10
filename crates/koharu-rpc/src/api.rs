@@ -74,3 +74,76 @@ pub fn router(app: ApiState) -> Router {
         .nest("/api/v1", bootstrap.merge(guarded))
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
 }
+
+// ── Task‑1 security-aware variant ────────────────────────────────────────
+
+pub(crate) fn router_with_security(app: ApiState, security: crate::security::SecurityContext) -> Router {
+    use axum::middleware::from_fn_with_state;
+
+    let (bootstrap, _) = bootstrap_api().split_for_parts();
+    let (guarded, _) = app_api().split_for_parts();
+    let bootstrap = bootstrap.with_state(app.clone());
+    let guarded = guarded
+        .with_state(app.clone())
+        .layer(middleware::from_fn_with_state(app, require_ready))
+        .layer(from_fn_with_state(security, crate::security::require_auth));
+    Router::new()
+        .nest("/api/v1", bootstrap.merge(guarded))
+        .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::security::SecurityContext;
+
+    const TEST_SECRET: [u8; 32] = [0x2A; 32];
+
+    #[test]
+    fn security_context_rejects_missing_header() {
+        let ctx = SecurityContext::from_secret(TEST_SECRET);
+        let headers = axum::http::HeaderMap::new();
+        assert!(!ctx.authorizes_bearer(&headers));
+    }
+
+    #[test]
+    fn security_context_rejects_malformed_bearer() {
+        let ctx = SecurityContext::from_secret(TEST_SECRET);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer !!!".parse().unwrap());
+        assert!(!ctx.authorizes_bearer(&headers));
+    }
+
+    #[test]
+    fn security_context_rejects_wrong_secret() {
+        let ctx = SecurityContext::from_secret(TEST_SECRET);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse().unwrap());
+        assert!(!ctx.authorizes_bearer(&headers));
+    }
+
+    #[test]
+    fn security_context_accepts_correct_bearer() {
+        let ctx = SecurityContext::from_secret(TEST_SECRET);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio".parse().unwrap());
+        assert!(ctx.authorizes_bearer(&headers));
+    }
+
+    #[test]
+    fn security_context_rejects_cookie_only() {
+        let ctx = SecurityContext::from_secret(TEST_SECRET);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("cookie", "koharu_session=test".parse().unwrap());
+        assert!(!ctx.authorizes_bearer(&headers));
+    }
+
+    #[test]
+    fn security_context_rejects_duplicate_auth_headers() {
+        let ctx = SecurityContext::from_secret(TEST_SECRET);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.append("authorization", "Bearer KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio".parse().unwrap());
+        headers.append("authorization", "Bearer extra".parse().unwrap());
+        assert!(!ctx.authorizes_bearer(&headers));
+    }
+}

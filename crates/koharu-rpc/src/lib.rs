@@ -17,6 +17,7 @@ pub mod events;
 pub mod mcp;
 pub mod psd_export;
 pub mod routes;
+pub mod security;
 pub mod server;
 
 use std::sync::Arc;
