@@ -176,3 +176,94 @@ fn is_allowed(policy: Option<&OriginHostPolicy>, origin: &str, host: &str) -> bo
 fn is_loopback_origin(origin: &str, port: u16) -> bool {
     origin == format!("http://127.0.0.1:{port}") || origin == format!("http://localhost:{port}")
 }
+
+// ── Browser session state ─────────────────────────────────────────────────
+
+use std::sync::Arc;
+use std::sync::Mutex;
+
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use subtle::ConstantTimeEq;
+
+#[derive(Clone)]
+pub struct BrowserSessionState {
+    session_token: [u8; 32],
+    proof: Arc<Mutex<Option<[u8; 32]>>>,
+}
+
+impl BrowserSessionState {
+    pub fn new(proof: Option<[u8; 32]>, session: [u8; 32]) -> Self {
+        Self {
+            session_token: session,
+            proof: Arc::new(Mutex::new(proof)),
+        }
+    }
+
+    pub fn consume_proof(&self, candidate: &[u8; 32]) -> bool {
+        let mut guard = self.proof.lock().unwrap();
+        match guard.as_ref() {
+            Some(stored) if stored.ct_eq(candidate).into() => {
+                *guard = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn has_proof(&self) -> bool {
+        self.proof.lock().unwrap().is_some()
+    }
+
+    pub fn session_token_encoded(&self) -> String {
+        URL_SAFE_NO_PAD.encode(self.session_token)
+    }
+
+    pub fn validate_session(&self, cookie_value: &str) -> bool {
+        decode_url_safe_no_padding(cookie_value)
+            .is_some_and(|token| token.ct_eq(&self.session_token).into())
+    }
+}
+
+pub fn generate_token() -> [u8; 32] {
+    let mut buf = [0u8; 32];
+    getrandom::fill(&mut buf).expect("CSPRNG failure");
+    buf
+}
+
+pub fn authorizes_session(cookie_header: Option<&str>, state: &BrowserSessionState) -> bool {
+    let Some(cookie_str) = cookie_header else {
+        return false;
+    };
+    for part in cookie_str.split(';') {
+        let trimmed = part.trim();
+        if let Some(value) = trimmed.strip_prefix("koharu_session=") {
+            return state.validate_session(value);
+        }
+    }
+    false
+}
+
+pub async fn require_session_auth(
+    axum::extract::State((ctx, session)): axum::extract::State<(
+        SecurityContext,
+        BrowserSessionState,
+    )>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if ctx.authorizes_bearer(request.headers()) {
+        return next.run(request).await;
+    }
+    let cookie = request
+        .headers()
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok());
+    if authorizes_session(cookie, &session) {
+        return next.run(request).await;
+    }
+    (
+        StatusCode::UNAUTHORIZED,
+        [(axum::http::header::WWW_AUTHENTICATE, "Bearer")],
+    )
+        .into_response()
+}

@@ -4388,6 +4388,7 @@ dependencies = [
  "camino",
  "dashmap",
  "futures",
+ "getrandom 0.3.4",
  "image",
  "insta",
  "koharu-app",
