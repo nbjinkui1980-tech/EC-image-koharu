@@ -46,8 +46,15 @@ export function connectEvents(baseUrl = '/api/v1'): () => void {
   fetchEventSource(`${baseUrl}/events`, {
     signal: controller.signal,
     openWhenHidden: true,
+    credentials: 'same-origin',
     headers: { Accept: 'text/event-stream' },
     async onopen(res) {
+      if (res.status === 401) {
+        const { notifyAuthenticationRequired } = await import('@/lib/auth')
+        notifyAuthenticationRequired()
+        store.getState().setStatus('error')
+        throw new FatalSseError(`SSE rejected: 401`)
+      }
       if (res.ok && res.headers.get('content-type')?.includes(EventStreamContentType)) {
         store.getState().setStatus('open')
         return
