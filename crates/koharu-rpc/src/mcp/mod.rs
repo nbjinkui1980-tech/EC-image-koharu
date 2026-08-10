@@ -31,6 +31,7 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::security::SecurityContext;
 
 /// Server state handed to each tool call. Carries the shared `App`.
 #[derive(Clone)]
@@ -251,7 +252,12 @@ impl ServerHandler for KoharuServer {
 // ---------------------------------------------------------------------------
 
 /// Mount the MCP endpoint at `/mcp` on `router`.
-pub fn mount(router: axum::Router, state: AppState) -> axum::Router {
+pub fn mount(router: axum::Router, state: AppState, security: SecurityContext) -> axum::Router {
+    use axum::extract::Request;
+    use axum::http::StatusCode;
+    use axum::middleware;
+    use axum::response::IntoResponse;
+
     let manager = Arc::new(LocalSessionManager::default());
     let factory = {
         let state = state.clone();
@@ -259,7 +265,18 @@ pub fn mount(router: axum::Router, state: AppState) -> axum::Router {
     };
     let service =
         StreamableHttpService::new(factory, manager, StreamableHttpServerConfig::default());
-    router.nest_service("/mcp", service)
+
+    let mcp_auth = middleware::from_fn(move |request: Request, next: middleware::Next| {
+        let security = security.clone();
+        async move {
+            if security.authorizes_bearer(request.headers()) {
+                return next.run(request).await;
+            }
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+    });
+
+    router.nest_service("/mcp", service).layer(mcp_auth)
 }
 
 #[cfg(test)]

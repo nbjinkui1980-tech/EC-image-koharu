@@ -27,7 +27,7 @@ pub fn router_for(app: AppState, security: SecurityContext, policy: OriginHostPo
     let base = api::router(app.clone(), security.clone())
         .layer(middleware::from_fn(crate::security::enforce_origin_host))
         .layer(axum::Extension(policy));
-    crate::mcp::mount(base, app)
+    crate::mcp::mount(base, app, security)
 }
 
 /// Same as `router_for` but installs `resolver` as a fallback.
