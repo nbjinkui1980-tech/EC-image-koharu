@@ -20,7 +20,7 @@ impl SecurityContext {
     }
 }
 
-fn decode_bearer(headers: &HeaderMap) -> Option<[u8; 32]> {
+pub(crate) fn decode_bearer(headers: &HeaderMap) -> Option<[u8; 32]> {
     let mut values = headers.get_all(axum::http::header::AUTHORIZATION).iter();
     let first = values.next()?.to_str().ok()?;
     if values.next().is_some() {
@@ -208,10 +208,6 @@ impl BrowserSessionState {
             }
             _ => false,
         }
-    }
-
-    pub fn has_proof(&self) -> bool {
-        self.proof.lock().unwrap().is_some()
     }
 
     pub fn session_token_encoded(&self) -> String {

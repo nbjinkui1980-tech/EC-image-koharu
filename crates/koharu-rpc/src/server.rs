@@ -30,6 +30,19 @@ pub fn router_for(app: AppState, security: SecurityContext, policy: OriginHostPo
     crate::mcp::mount(base, app, security)
 }
 
+/// Router for browser clients that can exchange a bootstrap credential for a session cookie.
+pub fn router_for_with_session(
+    app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
+    session: crate::security::BrowserSessionState,
+) -> Router {
+    let base = api::router_with_session(app.clone(), security.clone(), session)
+        .layer(middleware::from_fn(crate::security::enforce_origin_host))
+        .layer(axum::Extension(policy));
+    crate::mcp::mount(base, app, security)
+}
+
 /// Same as `router_for` but installs `resolver` as a fallback.
 pub fn router_with_assets(
     app: AppState,
@@ -70,6 +83,22 @@ pub async fn serve_with_listener(
     Ok(())
 }
 
+/// Serve HTTP with browser-session authentication enabled.
+pub async fn serve_with_listener_with_session(
+    listener: TcpListener,
+    app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
+    session: crate::security::BrowserSessionState,
+) -> Result<()> {
+    axum::serve(
+        listener,
+        router_for_with_session(app, security, policy, session),
+    )
+    .await?;
+    Ok(())
+}
+
 /// Variant with embedded assets fallback.
 pub async fn serve_with_listener_and_assets(
     listener: TcpListener,
@@ -81,6 +110,28 @@ pub async fn serve_with_listener_and_assets(
     axum::serve(
         listener,
         router_with_assets(app, security, policy, resolver),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Serve embedded assets with browser-session authentication enabled.
+pub async fn serve_with_listener_and_assets_with_session(
+    listener: TcpListener,
+    app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
+    session: crate::security::BrowserSessionState,
+    resolver: AssetResolver,
+) -> Result<()> {
+    axum::serve(
+        listener,
+        router_for_with_session(app, security, policy, session).fallback(
+            move |req: Request<Body>| {
+                let resolver = resolver.clone();
+                async move { serve_asset(resolver, req).await }
+            },
+        ),
     )
     .await?;
     Ok(())

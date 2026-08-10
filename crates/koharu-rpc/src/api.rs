@@ -124,7 +124,10 @@ async fn handle_session_exchange(
 ) -> Response {
     use axum::http::header;
 
-    if !security.authorizes_bearer(request.headers()) && !session.has_proof() {
+    let authorized = security.authorizes_bearer(request.headers())
+        || crate::security::decode_bearer(request.headers())
+            .is_some_and(|proof| session.consume_proof(&proof));
+    if !authorized {
         return (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],
@@ -146,9 +149,155 @@ async fn handle_session_exchange(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use base64::Engine;
+    use koharu_runtime::{ComputePolicy, RuntimeManager};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+    use uuid::Uuid;
+
     use crate::security::SecurityContext;
 
     const TEST_SECRET: [u8; 32] = [0x2A; 32];
+
+    async fn exchange_status(
+        addr: std::net::SocketAddr,
+        credential: Option<&str>,
+    ) -> (u16, String) {
+        let mut request = format!(
+            "POST /api/v1/auth/session HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n"
+        );
+        if let Some(credential) = credential {
+            request.push_str(&format!("Authorization: Bearer {credential}\r\n"));
+        }
+        request.push_str("\r\n");
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        loop {
+            let mut chunk = [0; 1024];
+            let read =
+                tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut chunk))
+                    .await
+                    .expect("response headers timed out")
+                    .unwrap();
+            if read == 0 {
+                break;
+            }
+            response.extend_from_slice(&chunk[..read]);
+            if response.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let headers = String::from_utf8_lossy(&response).into_owned();
+        let status = headers
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
+        (status, headers)
+    }
+
+    #[tokio::test]
+    async fn session_exchange_rejects_missing_credential() {
+        let root = std::env::temp_dir().join(format!("koharu-rpc-session-{}", Uuid::new_v4()));
+        let app = crate::BootstrapManager::new(Arc::new(
+            RuntimeManager::new(&root, ComputePolicy::CpuOnly).unwrap(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let session = crate::security::BrowserSessionState::new(Some([0x2B; 32]), [0x2C; 32]);
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                super::router_with_session(app, SecurityContext::from_secret(TEST_SECRET), session),
+            )
+            .await
+            .unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let (status, headers) = exchange_status(addr, None).await;
+        assert_eq!(status, 401);
+        assert!(!headers.contains("set-cookie:"));
+
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn session_exchange_accepts_master_or_one_time_proof() {
+        let root = std::env::temp_dir().join(format!("koharu-rpc-session-{}", Uuid::new_v4()));
+        let app = crate::BootstrapManager::new(Arc::new(
+            RuntimeManager::new(&root, ComputePolicy::CpuOnly).unwrap(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let proof = [0x2B; 32];
+        let session = crate::security::BrowserSessionState::new(Some(proof), [0x2C; 32]);
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                super::router_with_session(app, SecurityContext::from_secret(TEST_SECRET), session),
+            )
+            .await
+            .unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(proof);
+        let (status, headers) = exchange_status(addr, Some(&proof)).await;
+        assert_eq!(status, 204);
+        assert!(headers.contains("set-cookie:"));
+        assert!(headers.contains("HttpOnly; SameSite=Strict; Path=/"));
+
+        assert_eq!(exchange_status(addr, Some(&proof)).await.0, 401);
+
+        let master = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(TEST_SECRET);
+        assert_eq!(exchange_status(addr, Some(&master)).await.0, 204);
+
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn session_exchange_is_mounted_by_session_server() {
+        let root = std::env::temp_dir().join(format!("koharu-rpc-session-{}", Uuid::new_v4()));
+        let app = crate::BootstrapManager::new(Arc::new(
+            RuntimeManager::new(&root, ComputePolicy::CpuOnly).unwrap(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let security = SecurityContext::from_secret(TEST_SECRET);
+        let policy = crate::security::OriginHostPolicy::for_listener(
+            addr,
+            false,
+            crate::security::RemoteHostPolicy::empty(),
+        );
+        let server = tokio::spawn(crate::server::serve_with_listener_with_session(
+            listener,
+            app,
+            security,
+            policy,
+            crate::security::BrowserSessionState::new(None, [0x2C; 32]),
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let master = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(TEST_SECRET);
+        assert_eq!(exchange_status(addr, Some(&master)).await.0, 204);
+
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn security_context_rejects_missing_header() {

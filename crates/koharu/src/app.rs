@@ -134,11 +134,12 @@ pub async fn run() -> Result<()> {
             headless.remote_policy.clone(),
         );
         tauri::async_runtime::spawn(async move {
-            server::serve_with_listener(
+            server::serve_with_listener_with_session(
                 listener,
                 server_state.clone(),
                 headless.security,
                 origin_policy,
+                headless.session,
             )
             .await
             .expect("failed to start headless server");
@@ -151,12 +152,14 @@ pub async fn run() -> Result<()> {
 
     let desktop_auth = crate::security::DesktopAuth::generate()?;
     let auth_for_server = desktop_auth.security_context();
+    let desktop_session = desktop_auth.browser_session_state();
     tauri::async_runtime::spawn(async move {
-        server::serve_with_listener_and_assets(
+        server::serve_with_listener_and_assets_with_session(
             listener,
             server_state,
             auth_for_server,
             origin_policy,
+            desktop_session,
             assets,
         )
         .await
