@@ -120,6 +120,35 @@ pub async fn run() -> Result<()> {
         cfg!(debug_assertions),
         RemoteHostPolicy::empty(),
     );
+
+    if cli.headless {
+        let headless = crate::security::HeadlessSecurityOptions {
+            secret_from_env: std::env::var("KOHARU_AUTH_SECRET").ok(),
+            secret_file: cli.auth_secret_file.clone(),
+            allowed_hosts: cli.allowed_host.clone(),
+        }
+        .resolve()?;
+        let origin_policy = OriginHostPolicy::for_listener(
+            listener.local_addr()?,
+            cfg!(debug_assertions),
+            headless.remote_policy.clone(),
+        );
+        tauri::async_runtime::spawn(async move {
+            server::serve_with_listener(
+                listener,
+                server_state.clone(),
+                headless.security,
+                origin_policy,
+            )
+            .await
+            .expect("failed to start headless server");
+        });
+        tracing::info!(port, "headless: open http://127.0.0.1:{port}/ in a browser");
+        bootstrap_app(state, config, cli.cpu).await?;
+        tokio::signal::ctrl_c().await?;
+        return Ok(());
+    }
+
     let desktop_auth = crate::security::DesktopAuth::generate()?;
     let auth_for_server = desktop_auth.security_context();
     tauri::async_runtime::spawn(async move {
@@ -133,13 +162,6 @@ pub async fn run() -> Result<()> {
         .await
         .expect("failed to start server");
     });
-
-    if cli.headless {
-        tracing::info!(port, "headless: open http://127.0.0.1:{port}/ in a browser");
-        bootstrap_app(state, config, cli.cpu).await?;
-        tokio::signal::ctrl_c().await?;
-        return Ok(());
-    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
