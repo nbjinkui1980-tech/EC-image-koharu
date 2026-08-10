@@ -19,6 +19,7 @@ koharu-runtime = { workspace = true }
 anyhow = { workspace = true }
 async-stream = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true }
 camino = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
