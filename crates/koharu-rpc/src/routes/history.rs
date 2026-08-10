@@ -452,8 +452,13 @@ pub(crate) mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let security = crate::security::SecurityContext::from_secret([0x2A; 32]);
+        let policy = crate::security::OriginHostPolicy::for_listener(
+            addr,
+            false,
+            crate::security::RemoteHostPolicy::empty(),
+        );
         let server = tokio::spawn(crate::server::serve_with_listener(
-            listener, state, security,
+            listener, state, security, policy,
         ));
 
         let page = session.scene.read().pages.get(&page_id).unwrap().clone();

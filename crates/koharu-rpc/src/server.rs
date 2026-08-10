@@ -10,21 +10,23 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
 
 use crate::AppState;
 use crate::api;
-use crate::security::SecurityContext;
+use crate::security::{OriginHostPolicy, SecurityContext};
 
 /// Function that maps a URL path (e.g. `"/index.html"`) to `(bytes, mime)`.
 /// Returning `None` signals a 404 fall-through.
 pub type AssetResolver = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
 
-/// Wrap the protected router with CORS + mount MCP.
-pub fn router_for(app: AppState, security: SecurityContext) -> Router {
-    let base = api::router(app.clone(), security.clone()).layer(CorsLayer::very_permissive());
+/// Wrap the protected router with origin/host policy + mount MCP.
+pub fn router_for(app: AppState, security: SecurityContext, policy: OriginHostPolicy) -> Router {
+    let base = api::router(app.clone(), security.clone())
+        .layer(middleware::from_fn(crate::security::enforce_origin_host))
+        .layer(axum::Extension(policy));
     crate::mcp::mount(base, app)
 }
 
@@ -32,9 +34,10 @@ pub fn router_for(app: AppState, security: SecurityContext) -> Router {
 pub fn router_with_assets(
     app: AppState,
     security: SecurityContext,
+    policy: OriginHostPolicy,
     resolver: AssetResolver,
 ) -> Router {
-    router_for(app, security).fallback(move |req: Request<Body>| {
+    router_for(app, security, policy).fallback(move |req: Request<Body>| {
         let resolver = resolver.clone();
         async move { serve_asset(resolver, req).await }
     })
@@ -61,8 +64,9 @@ pub async fn serve_with_listener(
     listener: TcpListener,
     app: AppState,
     security: SecurityContext,
+    policy: OriginHostPolicy,
 ) -> Result<()> {
-    axum::serve(listener, router_for(app, security)).await?;
+    axum::serve(listener, router_for(app, security, policy)).await?;
     Ok(())
 }
 
@@ -71,8 +75,13 @@ pub async fn serve_with_listener_and_assets(
     listener: TcpListener,
     app: AppState,
     security: SecurityContext,
+    policy: OriginHostPolicy,
     resolver: AssetResolver,
 ) -> Result<()> {
-    axum::serve(listener, router_with_assets(app, security, resolver)).await?;
+    axum::serve(
+        listener,
+        router_with_assets(app, security, policy, resolver),
+    )
+    .await?;
     Ok(())
 }

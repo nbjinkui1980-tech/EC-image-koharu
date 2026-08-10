@@ -112,9 +112,14 @@ impl TestApp {
         let addr = listener.local_addr()?;
         let base_url = format!("http://{addr}/api/v1");
         let security = koharu_rpc::security::SecurityContext::from_secret([0x2A; 32]);
+        let policy = koharu_rpc::security::OriginHostPolicy::for_listener(
+            addr,
+            false,
+            koharu_rpc::security::RemoteHostPolicy::empty(),
+        );
         let server = tokio::spawn({
             let state = state.clone();
-            async move { server::serve_with_listener(listener, state, security).await }
+            async move { server::serve_with_listener(listener, state, security, policy).await }
         });
 
         let client_config = Configuration {
