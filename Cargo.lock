@@ -4152,6 +4152,7 @@ name = "koharu"
 version = "0.61.2"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
  "console",
  "getrandom 0.3.4",

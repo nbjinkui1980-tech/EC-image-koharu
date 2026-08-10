@@ -7,8 +7,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use koharu_app::{App, AppConfig, config as app_config};
 use koharu_rpc::{
-    BootstrapManager, security::OriginHostPolicy, security::RemoteHostPolicy,
-    security::SecurityContext, server,
+    BootstrapManager, security::OriginHostPolicy, security::RemoteHostPolicy, server,
 };
 use koharu_runtime::{ComputePolicy, RuntimeHttpConfig, RuntimeManager};
 use tokio::net::TcpListener;
@@ -116,19 +115,18 @@ pub async fn run() -> Result<()> {
     let mut context = tauri::generate_context!();
     let assets = crate::assets::from_context(&mut context);
     let server_state = state.clone();
-    let mut secret = [0u8; 32];
-    getrandom::fill(&mut secret).context("failed to generate master secret")?;
-    let security = SecurityContext::from_secret(secret);
     let origin_policy = OriginHostPolicy::for_listener(
         listener.local_addr()?,
         cfg!(debug_assertions),
         RemoteHostPolicy::empty(),
     );
+    let desktop_auth = crate::security::DesktopAuth::generate()?;
+    let auth_for_server = desktop_auth.security_context();
     tauri::async_runtime::spawn(async move {
         server::serve_with_listener_and_assets(
             listener,
             server_state,
-            security,
+            auth_for_server,
             origin_policy,
             assets,
         )
