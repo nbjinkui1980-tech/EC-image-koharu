@@ -82,38 +82,36 @@ fn router_inner(
 ) -> Router {
     let (bootstrap, _) = bootstrap_api().split_for_parts();
     let (guarded, _) = app_api().split_for_parts();
-    let security_for_guard = security.clone();
-    let session_for_auth = session.clone();
-    let bootstrap = {
-        let mut r = bootstrap.with_state(app.clone());
-        if let Some(s) = session {
-            r = r.route(
-                "/auth/session",
-                axum::routing::post(move |req: Request| {
-                    let security = security.clone();
-                    let session = s.clone();
-                    async move { handle_session_exchange(req, security, session).await }
-                }),
-            );
-        }
-        r
+    let exchange_security = security.clone();
+    let exchange = if let Some(session) = session.clone() {
+        Router::new().route(
+            "/auth/session",
+            axum::routing::post(move |req: Request| {
+                let security = exchange_security.clone();
+                let session = session.clone();
+                async move { handle_session_exchange(req, security, session).await }
+            }),
+        )
+    } else {
+        Router::new()
     };
     let guarded = guarded
         .with_state(app.clone())
-        .layer(middleware::from_fn_with_state(app, require_ready));
-    let guarded = if let Some(s) = session_for_auth {
-        guarded.layer(middleware::from_fn_with_state(
-            (security_for_guard, s),
+        .layer(middleware::from_fn_with_state(app.clone(), require_ready));
+    let protected = bootstrap.with_state(app).merge(guarded);
+    let protected = if let Some(session) = session {
+        protected.layer(middleware::from_fn_with_state(
+            (security, session),
             crate::security::require_session_auth,
         ))
     } else {
-        guarded.layer(middleware::from_fn_with_state(
-            security_for_guard,
+        protected.layer(middleware::from_fn_with_state(
+            security,
             crate::security::require_auth,
         ))
     };
     Router::new()
-        .nest("/api/v1", bootstrap.merge(guarded))
+        .nest("/api/v1", exchange.merge(protected))
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
 }
 
@@ -248,6 +246,55 @@ mod tests {
             .unwrap()
     }
 
+    async fn request_head(
+        addr: std::net::SocketAddr,
+        method: &str,
+        path: &str,
+        host: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (u16, String) {
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\nConnection: close\r\n",
+            body.len()
+        );
+        for (name, value) in headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        request.push_str("\r\n");
+        request.push_str(body);
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        loop {
+            let mut chunk = [0; 1024];
+            let read =
+                tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut chunk))
+                    .await
+                    .expect("response headers timed out")
+                    .unwrap();
+            if read == 0 {
+                break;
+            }
+            response.extend_from_slice(&chunk[..read]);
+            if response.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let headers = String::from_utf8_lossy(&response).into_owned();
+        let status = headers
+            .lines()
+            .next()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse()
+            .unwrap();
+        (status, headers)
+    }
+
     #[tokio::test]
     async fn session_exchange_rejects_missing_credential() {
         let root = std::env::temp_dir().join(format!("koharu-rpc-session-{}", Uuid::new_v4()));
@@ -368,6 +415,99 @@ mod tests {
             get_status(addr, "/api/v1/meta", Some(&cookie), None).await,
             503
         );
+
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_routes_require_authentication() {
+        let root = std::env::temp_dir().join(format!("koharu-rpc-auth-{}", Uuid::new_v4()));
+        let app = crate::BootstrapManager::new(Arc::new(
+            RuntimeManager::new(&root, ComputePolicy::CpuOnly).unwrap(),
+        ));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let policy = crate::security::OriginHostPolicy::for_listener(
+            addr,
+            false,
+            crate::security::RemoteHostPolicy::empty(),
+        );
+        let session = crate::security::BrowserSessionState::new(None, [0x2C; 32]);
+        let cookie = session.session_token_encoded();
+        let server = tokio::spawn(crate::server::serve_with_listener_with_session(
+            listener,
+            app,
+            SecurityContext::from_secret(TEST_SECRET),
+            policy,
+            session,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let host = addr.to_string();
+        let wrong = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        for path in ["/api/v1/events", "/api/v1/downloads", "/api/v1/operations"] {
+            assert_eq!(get_status(addr, path, None, None).await, 401, "{path}");
+            assert_eq!(
+                get_status(addr, path, None, Some(wrong)).await,
+                401,
+                "{path}"
+            );
+        }
+
+        let (status, _) = request_head(
+            addr,
+            "POST",
+            "/api/v1/downloads",
+            &host,
+            &[("Content-Type", "application/json")],
+            r#"{"modelId":"missing:test-model"}"#,
+        )
+        .await;
+        assert_eq!(status, 401);
+
+        let operation_id = format!("auth-cancel-{}", Uuid::new_v4());
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        crate::routes::operations::register_cancel(operation_id.clone(), cancelled.clone());
+        let (status, _) = request_head(
+            addr,
+            "DELETE",
+            &format!("/api/v1/operations/{operation_id}"),
+            &host,
+            &[],
+            "",
+        )
+        .await;
+        assert_eq!(status, 401);
+        assert!(!cancelled.load(std::sync::atomic::Ordering::Relaxed));
+        crate::routes::operations::unregister_cancel(&operation_id);
+
+        let master = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(TEST_SECRET);
+        for path in ["/api/v1/events", "/api/v1/downloads", "/api/v1/operations"] {
+            assert_eq!(
+                get_status(addr, path, None, Some(&master)).await,
+                200,
+                "{path}"
+            );
+            assert_eq!(
+                get_status(addr, path, Some(&cookie), None).await,
+                200,
+                "{path}"
+            );
+        }
+        for path in ["/api/v1/meta", "/api/v1/scene.bin"] {
+            assert_eq!(
+                get_status(addr, path, None, Some(&master)).await,
+                503,
+                "{path}"
+            );
+            assert_eq!(
+                get_status(addr, path, Some(&cookie), None).await,
+                503,
+                "{path}"
+            );
+        }
 
         server.abort();
         let _ = server.await;
