@@ -5,6 +5,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
+import { acquireCargoBuildLease } from './cargo-target-lock'
+import { resolveVerifiedSharedTarget } from './storage'
+
 const exec = promisify(execCallback)
 
 async function pathExists(target: string) {
@@ -94,6 +97,16 @@ async function setupCl() {
 }
 
 async function dev() {
+  const args = process.argv.slice(2)
+  if (args.length === 0) throw new Error('No command provided')
+
+  const runsRustBuild = args[0] === 'cargo' || args[0] === 'tauri'
+  if (runsRustBuild) {
+    process.env.CARGO_TARGET_DIR = await resolveVerifiedSharedTarget(
+      process.env.KOHARU_SHARED_TARGET_DIR,
+    )
+  }
+
   if (process.env.KOHARU_TMPDIR) {
     await mkdir(process.env.KOHARU_TMPDIR, { recursive: true })
     process.env.TMPDIR = process.env.KOHARU_TMPDIR
@@ -115,24 +128,26 @@ async function dev() {
     await setupCl()
   }
 
-  const args = process.argv.slice(2)
-  if (args.length === 0) {
-    throw new Error('No command provided')
+  const targetLease =
+    process.env.CARGO_TARGET_DIR && runsRustBuild
+      ? await acquireCargoBuildLease(process.env.CARGO_TARGET_DIR)
+      : undefined
+
+  try {
+    const code = await new Promise<number>((resolve, reject) => {
+      const proc = spawn(args[0], args.slice(1), {
+        stdio: 'inherit',
+        shell: false,
+        env: process.env,
+      })
+
+      proc.once('error', reject)
+      proc.once('exit', (exitCode) => resolve(exitCode ?? 1))
+    })
+    process.exitCode = code
+  } finally {
+    await targetLease?.release()
   }
-
-  const proc = spawn(args[0], args.slice(1), {
-    stdio: 'inherit',
-    shell: false,
-    env: process.env,
-  })
-
-  proc.on('error', (err) => {
-    throw err
-  })
-
-  proc.on('exit', (code) => {
-    process.exit(code)
-  })
 }
 
 dev().catch((err) => {

@@ -50,7 +50,7 @@
 - 需要改变认证方案、批准预算、项目/history/API 格式、发布主体或 G005，回 SPEC。
 - 需要批准范围外的新依赖、通用 service/queue/policy 框架，回 PLAN。
 - 拒绝路径仍有部分 scene/history/file/job、根外读取或 secret 泄漏，当前卡不得 GREEN。
-- 并行 Rust 卡使用独立 `CARGO_TARGET_DIR=/tmp/koharu-sdd-<task>`；format/audit/lockfile/Orval/Next build 只允许单一 owner 串行执行。
+- 并行 Rust 卡共用受保护的 `KOHARU_SHARED_TARGET_DIR`；不得覆盖 `CARGO_TARGET_DIR` 或创建任务专属 target。format/audit/lockfile/Orval/Next build 只允许单一 owner 串行执行。
 
 ## 3. Wave 1 — 依赖表面与现有门禁
 
@@ -75,7 +75,7 @@
 - 文件：`crates/koharu-app/src/pipeline/engines/ctd_segment.rs`、`renderer/mod.rs`、`support/mod.rs`、`crates/koharu-app/src/session.rs`。
 - RED：当前 `type_complexity`、`unnecessary_map_or`、`too_many_arguments`、`redundant_closure`、`collapsible_if`。
 - GREEN：最小 type alias/参数聚合或直接建议替换；不重构 pipeline。
-- 验证：`CARGO_TARGET_DIR=/tmp/koharu-sdd-ar14-t01 bun cargo clippy --workspace --all-targets -- -D warnings`。
+- 验证：`bun cargo clippy --workspace --all-targets -- -D warnings`。
 
 ### AR14-T02 — UI format 基线
 
@@ -110,7 +110,7 @@
 - 文件：`crates/koharu-core/src/blob.rs`，以及因移除非法 public constructor 而必须迁移的测试 fixture。
 - RED：空、63/65 位、uppercase、Unicode、斜杠、反斜杠、点段、绝对路径均能构造或反序列化。
 - GREEN：只接受精确 64 位 `[0-9a-f]`；Serde 复用同一 parser。
-- 验证：`CARGO_TARGET_DIR=/tmp/koharu-sdd-ar02-t01 bun cargo test -p koharu-core blob`。
+- 验证：`bun cargo test -p koharu-core blob`。
 
 ### AR02-T02 — BlobStore containment 纵深防御
 
@@ -118,7 +118,7 @@
 - 文件：`crates/koharu-app/src/blobs.rs`。
 - RED：绕过 Serde 的非法 BlobRef 可生成根外路径或读取根外哨兵。
 - GREEN：路径生成返回 `Result<PathBuf>` 并证明是 blob root 下的预期两级 hash 路径。
-- 验证：`CARGO_TARGET_DIR=/tmp/koharu-sdd-ar02-t02 bun cargo test -p koharu-app blobs`。
+- 验证：`bun cargo test -p koharu-app blobs`。
 
 ### AR02-T03 — HTTP encoded traversal
 
@@ -149,7 +149,7 @@
 - 文件：`crates/koharu-core/src/op.rs`。
 - RED：Batch 前段成功、后段失败后 Scene bytes 或 `prev_*` 改变。
 - GREEN：在 scratch Scene/ops 顺序执行，全部成功后一次发布；保留 inverse 和单 undo 粒度。
-- 验证：`CARGO_TARGET_DIR=/tmp/koharu-sdd-ar04-t01 bun cargo test -p koharu-core batch`。
+- 验证：`bun cargo test -p koharu-core batch`。
 
 ### Wave 2 gate
 
@@ -170,7 +170,7 @@ Core/App/RPC 定向 suite、fmt/check/clippy 通过；两层 BlobRef 拒绝和 B
 - 文件：新 `crates/koharu-rpc/src/security.rs`、`server.rs`、`api.rs`、`lib.rs`。
 - RED：bootstrap API、普通 API、SSE、blob、download 的无/错 credential 请求到达 handler。
 - GREEN：immutable `SecurityContext`；Host→Origin→Auth→Readiness→handler；cookie/Bearer 正确通过。
-- 验证：`CARGO_TARGET_DIR=/tmp/koharu-sdd-ar01-t01 bun cargo test -p koharu-rpc auth`。
+- 验证：`bun cargo test -p koharu-rpc auth`。
 
 ### AR01-T02 — MCP Bearer 与 route ordering
 
@@ -600,10 +600,10 @@ App/RPC/LLM suite 全绿；REST/SSE/MCP credential matrix、provider redirect、
 串行执行：
 
 ```bash
-CARGO_TARGET_DIR=/tmp/koharu-sdd-final bun cargo fmt --all -- --check
-CARGO_TARGET_DIR=/tmp/koharu-sdd-final bun cargo check --workspace --all-targets
-CARGO_TARGET_DIR=/tmp/koharu-sdd-final bun cargo clippy --workspace --all-targets -- -D warnings
-CARGO_TARGET_DIR=/tmp/koharu-sdd-final bun cargo test --workspace --tests
+bun cargo fmt --all -- --check
+bun cargo check --workspace --all-targets
+bun cargo clippy --workspace --all-targets -- -D warnings
+bun cargo test --workspace --tests
 bun cargo audit
 bun audit --registry https://registry.npmjs.org
 bun run format:check
