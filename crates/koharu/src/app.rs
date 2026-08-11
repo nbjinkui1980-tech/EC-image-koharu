@@ -16,6 +16,17 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::cli::Cli;
 
+fn desktop_builder<R: tauri::Runtime>(
+    builder: tauri::Builder<R>,
+    desktop_auth: crate::security::DesktopAuth,
+) -> tauri::Builder<R> {
+    builder
+        .manage(desktop_auth)
+        .invoke_handler(tauri::generate_handler![
+            crate::security::desktop_bootstrap_proof
+        ])
+}
+
 async fn bootstrap_app(
     state: Arc<BootstrapManager>,
     config: AppConfig,
@@ -166,7 +177,7 @@ pub async fn run() -> Result<()> {
         .expect("failed to start server");
     });
 
-    tauri::Builder::default()
+    desktop_builder(tauri::Builder::default(), desktop_auth)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
@@ -205,4 +216,55 @@ pub async fn run() -> Result<()> {
         .run(context)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine;
+
+    use super::desktop_builder;
+
+    fn invoke(window: &tauri::WebviewWindow<tauri::test::MockRuntime>) -> Result<String, String> {
+        tauri::test::get_ipc_response(
+            window,
+            tauri::webview::InvokeRequest {
+                cmd: "desktop_bootstrap_proof".into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "tauri://localhost".parse().unwrap(),
+                body: tauri::ipc::InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.into(),
+            },
+        )
+        .map(|body| body.deserialize::<String>().unwrap())
+        .map_err(|value| value.as_str().unwrap().to_owned())
+    }
+
+    #[test]
+    fn desktop_auth_command_uses_managed_one_time_proof() {
+        let desktop_auth = crate::security::DesktopAuth::generate().unwrap();
+        let session = desktop_auth.browser_session_state();
+        let app = desktop_builder(tauri::test::mock_builder(), desktop_auth)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        let other = tauri::WebviewWindowBuilder::new(&app, "other", Default::default())
+            .build()
+            .unwrap();
+        assert_eq!(invoke(&other), Err("unauthorized window".into()));
+
+        let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let encoded = invoke(&main).unwrap();
+        assert_eq!(encoded.len(), 43);
+        let decoded: [u8; 32] = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert!(session.consume_proof(&decoded));
+        assert_eq!(invoke(&main), Err("proof already consumed".into()));
+    }
 }

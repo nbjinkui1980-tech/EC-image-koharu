@@ -87,7 +87,7 @@ pub struct ResolvedHeadlessSecurity {
 
 #[tauri::command]
 pub fn desktop_bootstrap_proof(
-    window: tauri::Window,
+    window: tauri::Window<impl tauri::Runtime>,
     state: tauri::State<'_, DesktopAuth>,
 ) -> Result<String, String> {
     if window.label() != "main" {
