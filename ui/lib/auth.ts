@@ -3,25 +3,33 @@ const AUTH_EVENT = 'koharu:auth-required'
 const emitter = new EventTarget()
 
 let authenticated = false
+let desktopBootstrap: Promise<void> | null = null
+let desktopProofRequested = false
 
 export function exchangeSession(credential: string): Promise<void> {
   return fetch('/api/v1/auth/session', {
     method: 'POST',
     headers: { Authorization: `Bearer ${credential}` },
+    credentials: 'same-origin',
   }).then((res) => {
     if (!res.ok) throw new Error(`auth exchange failed: ${res.status}`)
     authenticated = true
   })
 }
 
-export async function bootstrapDesktopSession(): Promise<void> {
-  try {
+export function bootstrapDesktopSession(): Promise<void> {
+  if (desktopBootstrap) return desktopBootstrap
+  if (desktopProofRequested) return Promise.reject(new Error('desktop restart required'))
+
+  desktopProofRequested = true
+  desktopBootstrap = (async () => {
     const { invoke } = await import('@tauri-apps/api/core')
     const proof = (await invoke('desktop_bootstrap_proof')) as string
-    return exchangeSession(proof)
-  } catch {
-    notifyAuthenticationRequired()
-  }
+    await exchangeSession(proof)
+  })().finally(() => {
+    desktopBootstrap = null
+  })
+  return desktopBootstrap
 }
 
 export function notifyAuthenticationRequired(): void {

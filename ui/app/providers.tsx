@@ -9,7 +9,6 @@ import { AuthBootstrap } from '@/components/AuthBootstrap'
 import ClientOnly from '@/components/ClientOnly'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { UpdaterProvider } from '@/components/Updater'
-import { connectEvents } from '@/lib/events'
 import i18n from '@/lib/i18n'
 import { queryClient } from '@/lib/queryClient'
 
@@ -25,17 +24,15 @@ export function Providers({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  useEffect(() => connectEvents(), [])
-
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider attribute='class' defaultTheme='system' enableSystem>
         <ClientOnly>
           <I18nextProvider i18n={i18n}>
             <TooltipProvider delayDuration={0}>
-              <UpdaterProvider>
-                <AuthBootstrap>{children}</AuthBootstrap>
-              </UpdaterProvider>
+              <AuthBootstrap>
+                <UpdaterProvider>{children}</UpdaterProvider>
+              </AuthBootstrap>
             </TooltipProvider>
           </I18nextProvider>
         </ClientOnly>
