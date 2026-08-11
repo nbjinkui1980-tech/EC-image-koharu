@@ -58,14 +58,23 @@ pub async fn require_auth(
 
 // ── Origin / Host policy ─────────────────────────────────────────────────
 
-use std::collections::BTreeSet;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
-use axum::http::{HeaderValue, Method};
+use axum::http::header::{
+    ACCESS_CONTROL_ALLOW_CREDENTIALS, ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
+    ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_REQUEST_HEADERS, ACCESS_CONTROL_REQUEST_METHOD,
+    CACHE_CONTROL, HOST, ORIGIN, VARY,
+};
+use axum::http::uri::Authority;
+use axum::http::{HeaderName, HeaderValue, Method};
+
+const ALLOWED_METHODS: &str = "GET, POST, PUT, PATCH, DELETE";
+const ALLOWED_HEADERS: &str = "authorization, content-type, accept, last-event-id";
+const ALLOWED_HEADER_NAMES: &[&str] = &["authorization", "content-type", "accept", "last-event-id"];
 
 #[derive(Clone, Debug, Default)]
 pub struct RemoteHostPolicy {
-    authorities: BTreeSet<String>,
+    authorities: Vec<Authority>,
 }
 
 impl RemoteHostPolicy {
@@ -74,25 +83,25 @@ impl RemoteHostPolicy {
     }
 
     pub fn parse(raw: &[String]) -> anyhow::Result<Self> {
-        let mut authorities = BTreeSet::new();
+        let mut authorities = Vec::new();
         for entry in raw {
-            let trimmed = entry.trim();
-            if trimmed.is_empty() || trimmed.contains('*') {
-                anyhow::bail!("invalid remote host: {trimmed:?}");
-            }
-            authorities.insert(trimmed.to_ascii_lowercase());
+            let authority = parse_authority(entry.trim())
+                .ok_or_else(|| anyhow::anyhow!("invalid remote host: {entry:?}"))?;
+            authorities.push(authority);
         }
         Ok(Self { authorities })
     }
 
-    fn accepts(&self, host: &str) -> bool {
-        self.authorities.contains(&host.to_ascii_lowercase())
+    fn accepts_https(&self, host: &Authority) -> bool {
+        self.authorities
+            .iter()
+            .any(|allowed| authorities_match(allowed, host, 443))
     }
 }
 
 #[derive(Clone)]
 pub struct OriginHostPolicy {
-    loopback_port: u16,
+    listener: SocketAddr,
     is_debug: bool,
     remotes: RemoteHostPolicy,
 }
@@ -100,7 +109,7 @@ pub struct OriginHostPolicy {
 impl OriginHostPolicy {
     pub fn for_listener(addr: SocketAddr, debug: bool, remotes: RemoteHostPolicy) -> Self {
         Self {
-            loopback_port: addr.port(),
+            listener: addr,
             is_debug: debug,
             remotes,
         }
@@ -108,73 +117,245 @@ impl OriginHostPolicy {
 }
 
 pub async fn enforce_origin_host(request: Request, next: Next) -> Response {
-    let policy: Option<&OriginHostPolicy> = request.extensions().get();
-
-    let origin = request
-        .headers()
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    let host = request
-        .headers()
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    if request.method() == Method::OPTIONS && !origin.is_empty() {
-        let allowed = is_allowed(policy, origin, host);
-        if allowed {
-            return (
-                StatusCode::NO_CONTENT,
-                [(
-                    axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                    HeaderValue::from_static("null"),
-                )],
-            )
-                .into_response();
-        }
+    let Some(policy) = request.extensions().get::<OriginHostPolicy>().cloned() else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let Some(host) = request_authority(&request) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if !host_allowed(&policy, &host) {
         return StatusCode::FORBIDDEN.into_response();
     }
 
-    if is_allowed(policy, origin, host) {
-        return next.run(request).await;
-    }
-    StatusCode::FORBIDDEN.into_response()
-}
-
-fn is_allowed(policy: Option<&OriginHostPolicy>, origin: &str, host: &str) -> bool {
-    let Some(policy) = policy else {
-        return true;
-    };
-    if origin.is_empty() {
-        return true;
-    }
-    if origin == "null" || origin == "*" {
-        return false;
-    }
-    if let Some(origin_host) = origin
-        .strip_prefix("http://")
-        .and_then(|o| o.rsplitn(2, ':').nth(1))
-    {
-        if origin_host == "127.0.0.1" || origin_host == "localhost" {
-            return is_loopback_origin(origin, policy.loopback_port)
-                || (policy.is_debug && origin == "http://localhost:3000");
+    let origin = match single_header(request.headers(), &ORIGIN) {
+        Ok(None) => {
+            let mut response = next.run(request).await;
+            ensure_vary_origin(response.headers_mut());
+            return response;
         }
-        return false;
-    }
-    if let Some(origin_host) = origin
-        .strip_prefix("https://")
-        .and_then(|o| o.rsplitn(2, ':').nth(1))
+        Ok(Some(raw)) => match parse_origin(raw) {
+            Some(origin) if origin_allowed(&policy, &host, &origin) => origin,
+            _ => return origin_forbidden(),
+        },
+        Err(()) => return origin_forbidden(),
+    };
+
+    if request.method() == Method::OPTIONS
+        && request
+            .headers()
+            .contains_key(ACCESS_CONTROL_REQUEST_METHOD)
     {
-        let host_base = host.rsplitn(2, ':').nth(1).unwrap_or(host);
-        return origin_host == host_base && policy.remotes.accepts(host);
+        if !valid_preflight(request.headers()) {
+            return origin_forbidden();
+        }
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        add_cors_headers(response.headers_mut(), &origin.raw);
+        response.headers_mut().insert(
+            ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static(ALLOWED_METHODS),
+        );
+        response.headers_mut().insert(
+            ACCESS_CONTROL_ALLOW_HEADERS,
+            HeaderValue::from_static(ALLOWED_HEADERS),
+        );
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        response
+    } else {
+        let mut response = next.run(request).await;
+        add_cors_headers(response.headers_mut(), &origin.raw);
+        response
     }
-    false
 }
 
-fn is_loopback_origin(origin: &str, port: u16) -> bool {
-    origin == format!("http://127.0.0.1:{port}") || origin == format!("http://localhost:{port}")
+struct ParsedOrigin {
+    raw: String,
+    https: bool,
+    authority: Authority,
+}
+
+fn parse_authority(raw: &str) -> Option<Authority> {
+    if raw.is_empty() || raw != raw.trim() || raw.contains(['*', '@', '/', '?', '#']) {
+        return None;
+    }
+    let bracketed = raw.starts_with('[');
+    if let Some(port) = explicit_port(raw)? {
+        port.parse::<u16>().ok()?;
+    }
+    let authority: Authority = raw.parse().ok()?;
+    if authority.host().is_empty() || (bracketed && host_ip(authority.host()).is_none()) {
+        return None;
+    }
+    Some(authority)
+}
+
+fn explicit_port(raw: &str) -> Option<Option<&str>> {
+    if let Some(bracketed) = raw.strip_prefix('[') {
+        let (_, suffix) = bracketed.split_once(']')?;
+        return match suffix {
+            "" => Some(None),
+            suffix => Some(Some(suffix.strip_prefix(':')?)),
+        };
+    }
+    if raw.contains(['[', ']']) || raw.matches(':').count() > 1 {
+        return None;
+    }
+    Some(raw.rsplit_once(':').map(|(_, port)| port))
+}
+
+fn parse_origin(raw: &str) -> Option<ParsedOrigin> {
+    let (https, authority) = raw
+        .strip_prefix("http://")
+        .map(|authority| (false, authority))
+        .or_else(|| {
+            raw.strip_prefix("https://")
+                .map(|authority| (true, authority))
+        })?;
+    Some(ParsedOrigin {
+        raw: raw.to_owned(),
+        https,
+        authority: parse_authority(authority)?,
+    })
+}
+
+fn single_header<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Result<Option<&'a str>, ()> {
+    let mut values = headers.get_all(name).iter();
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    let first = first.to_str().map_err(|_| ())?;
+    if values.next().is_some() {
+        return Err(());
+    }
+    Ok(Some(first))
+}
+
+fn request_authority(request: &Request) -> Option<Authority> {
+    let (uri, default_port) = match (request.uri().scheme_str(), request.uri().authority()) {
+        (None, None) if request.uri().path().starts_with('/') => (None, 80),
+        (Some("http"), Some(authority)) => (Some(parse_authority(authority.as_str())?), 80),
+        (Some("https"), Some(authority)) => (Some(parse_authority(authority.as_str())?), 443),
+        _ => return None,
+    };
+    let header = match single_header(request.headers(), &HOST) {
+        Ok(Some(raw)) => Some(parse_authority(raw)?),
+        Ok(None) => None,
+        Err(()) => return None,
+    };
+    match (header, uri) {
+        (Some(header), Some(uri)) => {
+            authorities_match(&header, &uri, default_port).then_some(header)
+        }
+        (Some(header), None) => Some(header),
+        (None, Some(uri)) => Some(uri),
+        (None, None) => None,
+    }
+}
+
+fn authority_port(authority: &Authority, default: u16) -> u16 {
+    authority.port_u16().unwrap_or(default)
+}
+
+fn authorities_match(left: &Authority, right: &Authority, default_port: u16) -> bool {
+    hosts_match(left.host(), right.host())
+        && authority_port(left, default_port) == authority_port(right, default_port)
+}
+
+fn host_ip(host: &str) -> Option<IpAddr> {
+    host.strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host)
+        .parse()
+        .ok()
+}
+
+fn hosts_match(left: &str, right: &str) -> bool {
+    match (host_ip(left), host_ip(right)) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => left.eq_ignore_ascii_case(right),
+        _ => false,
+    }
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host_ip(host).is_some_and(|ip| ip.is_loopback())
+}
+
+fn host_allowed(policy: &OriginHostPolicy, host: &Authority) -> bool {
+    if policy.listener.ip().is_loopback() {
+        is_loopback_host(host.host()) && host.port_u16() == Some(policy.listener.port())
+    } else {
+        policy.remotes.accepts_https(host)
+    }
+}
+
+fn origin_allowed(policy: &OriginHostPolicy, host: &Authority, origin: &ParsedOrigin) -> bool {
+    if policy.listener.ip().is_loopback() {
+        if origin.https {
+            return false;
+        }
+        if policy.is_debug && origin.raw == "http://localhost:3000" {
+            return true;
+        }
+        return authorities_match(host, &origin.authority, 80);
+    }
+    origin.https && authorities_match(host, &origin.authority, 443)
+}
+
+fn valid_preflight(headers: &HeaderMap) -> bool {
+    let Ok(Some(method)) = single_header(headers, &ACCESS_CONTROL_REQUEST_METHOD) else {
+        return false;
+    };
+    if !matches!(method, "GET" | "POST" | "PUT" | "PATCH" | "DELETE") {
+        return false;
+    }
+    let Ok(requested) = single_header(headers, &ACCESS_CONTROL_REQUEST_HEADERS) else {
+        return false;
+    };
+    requested.is_none_or(|requested| {
+        requested.split(',').all(|name| {
+            let name = name.trim().to_ascii_lowercase();
+            !name.is_empty() && ALLOWED_HEADER_NAMES.contains(&name.as_str())
+        })
+    })
+}
+
+fn add_cors_headers(headers: &mut HeaderMap, origin: &str) {
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_ORIGIN,
+        origin.parse().expect("validated Origin is a header value"),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        HeaderValue::from_static("true"),
+    );
+    ensure_vary_origin(headers);
+}
+
+fn origin_forbidden() -> Response {
+    let mut response = StatusCode::FORBIDDEN.into_response();
+    ensure_vary_origin(response.headers_mut());
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn ensure_vary_origin(headers: &mut HeaderMap) {
+    let already_varies = headers
+        .get_all(VARY)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .any(|token| token == "*" || token.eq_ignore_ascii_case("Origin"))
+        });
+    if !already_varies {
+        headers.append(VARY, HeaderValue::from_static("Origin"));
+    }
 }
 
 // ── Browser session state ─────────────────────────────────────────────────

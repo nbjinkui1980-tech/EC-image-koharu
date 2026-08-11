@@ -22,12 +22,27 @@ use crate::security::{OriginHostPolicy, SecurityContext};
 /// Returning `None` signals a 404 fall-through.
 pub type AssetResolver = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
 
+fn with_origin_host_policy(router: Router, policy: OriginHostPolicy) -> Router {
+    router
+        .layer(middleware::from_fn(crate::security::enforce_origin_host))
+        .layer(axum::Extension(policy))
+}
+
+fn complete_router(
+    app: AppState,
+    security: SecurityContext,
+    session: Option<crate::security::BrowserSessionState>,
+) -> Router {
+    let api = match session {
+        Some(session) => api::router_with_session(app.clone(), security.clone(), session),
+        None => api::router(app.clone(), security.clone()),
+    };
+    crate::mcp::mount(api, app, security)
+}
+
 /// Wrap the protected router with origin/host policy + mount MCP.
 pub fn router_for(app: AppState, security: SecurityContext, policy: OriginHostPolicy) -> Router {
-    let base = api::router(app.clone(), security.clone())
-        .layer(middleware::from_fn(crate::security::enforce_origin_host))
-        .layer(axum::Extension(policy));
-    crate::mcp::mount(base, app, security)
+    with_origin_host_policy(complete_router(app, security, None), policy)
 }
 
 /// Router for browser clients that can exchange a bootstrap credential for a session cookie.
@@ -37,10 +52,7 @@ pub fn router_for_with_session(
     policy: OriginHostPolicy,
     session: crate::security::BrowserSessionState,
 ) -> Router {
-    let base = api::router_with_session(app.clone(), security.clone(), session)
-        .layer(middleware::from_fn(crate::security::enforce_origin_host))
-        .layer(axum::Extension(policy));
-    crate::mcp::mount(base, app, security)
+    with_origin_host_policy(complete_router(app, security, Some(session)), policy)
 }
 
 /// Same as `router_for` but installs `resolver` as a fallback.
@@ -50,10 +62,11 @@ pub fn router_with_assets(
     policy: OriginHostPolicy,
     resolver: AssetResolver,
 ) -> Router {
-    router_for(app, security, policy).fallback(move |req: Request<Body>| {
+    let complete = complete_router(app, security, None).fallback(move |req: Request<Body>| {
         let resolver = resolver.clone();
         async move { serve_asset(resolver, req).await }
-    })
+    });
+    with_origin_host_policy(complete, policy)
 }
 
 async fn serve_asset(resolver: AssetResolver, req: Request<Body>) -> Response {
@@ -126,11 +139,12 @@ pub async fn serve_with_listener_and_assets_with_session(
 ) -> Result<()> {
     axum::serve(
         listener,
-        router_for_with_session(app, security, policy, session).fallback(
-            move |req: Request<Body>| {
+        with_origin_host_policy(
+            complete_router(app, security, Some(session)).fallback(move |req: Request<Body>| {
                 let resolver = resolver.clone();
                 async move { serve_asset(resolver, req).await }
-            },
+            }),
+            policy,
         ),
     )
     .await?;
