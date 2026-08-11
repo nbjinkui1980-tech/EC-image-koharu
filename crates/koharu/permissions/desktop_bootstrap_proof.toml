@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-desktop-bootstrap-proof"
+description = "Allows the main desktop window to request its one-time bootstrap proof."
+commands.allow = ["desktop_bootstrap_proof"]

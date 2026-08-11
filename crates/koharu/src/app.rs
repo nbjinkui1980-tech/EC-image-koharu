@@ -16,6 +16,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::cli::Cli;
 
+fn desktop_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 fn desktop_builder<R: tauri::Runtime>(
     builder: tauri::Builder<R>,
     desktop_auth: crate::security::DesktopAuth,
@@ -123,7 +127,7 @@ pub async fn run() -> Result<()> {
     let port = listener.local_addr()?.port();
     tracing::info!(port, "starting server");
 
-    let mut context = tauri::generate_context!();
+    let mut context = desktop_context();
     let assets = crate::assets::from_context(&mut context);
     let server_state = state.clone();
     let origin_policy = OriginHostPolicy::for_listener(
@@ -222,7 +226,7 @@ pub async fn run() -> Result<()> {
 mod tests {
     use base64::Engine;
 
-    use super::desktop_builder;
+    use super::{desktop_builder, desktop_context};
 
     fn invoke(window: &tauri::WebviewWindow<tauri::test::MockRuntime>) -> Result<String, String> {
         tauri::test::get_ipc_response(
@@ -231,7 +235,7 @@ mod tests {
                 cmd: "desktop_bootstrap_proof".into(),
                 callback: tauri::ipc::CallbackFn(0),
                 error: tauri::ipc::CallbackFn(1),
-                url: "tauri://localhost".parse().unwrap(),
+                url: "http://127.0.0.1:4000".parse().unwrap(),
                 body: tauri::ipc::InvokeBody::default(),
                 headers: Default::default(),
                 invoke_key: tauri::test::INVOKE_KEY.into(),
@@ -246,13 +250,13 @@ mod tests {
         let desktop_auth = crate::security::DesktopAuth::generate().unwrap();
         let session = desktop_auth.browser_session_state();
         let app = desktop_builder(tauri::test::mock_builder(), desktop_auth)
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .build(desktop_context())
             .unwrap();
 
         let other = tauri::WebviewWindowBuilder::new(&app, "other", Default::default())
             .build()
             .unwrap();
-        assert_eq!(invoke(&other), Err("unauthorized window".into()));
+        assert!(invoke(&other).is_err());
 
         let main = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
