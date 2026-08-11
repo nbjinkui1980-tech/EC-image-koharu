@@ -19,6 +19,10 @@ pub mod psd_export;
 pub mod routes;
 pub mod server;
 
+pub mod security {
+    pub use koharu_rpc_security::*;
+}
+
 use std::sync::Arc;
 
 pub use api::{ApiState, api, router};

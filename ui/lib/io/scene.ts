@@ -19,7 +19,7 @@ import {
   startPipeline,
   undo,
 } from '@/lib/api'
-import { ApiError } from '@/lib/api/fetch'
+import { ApiError, fetchWithAuth } from '@/lib/api/fetch'
 import type {
   ConfigPatch,
   CreateProjectRequest,
@@ -223,7 +223,7 @@ export async function uploadKhrArchive(file: File): Promise<ProjectSummary> {
 export async function exportProject(
   req: ExportProjectRequest,
 ): Promise<{ blob: Blob; filename?: string }> {
-  const res = await fetch(getExportCurrentProjectUrl(), {
+  const res = await fetchWithAuth(getExportCurrentProjectUrl(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),

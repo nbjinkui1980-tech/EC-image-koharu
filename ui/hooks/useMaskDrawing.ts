@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react'
 import { useCanvasDrawing, type CanvasDims } from '@/hooks/useCanvasDrawing'
 import type { PointerToDocumentFn } from '@/hooks/usePointerToDocument'
 import { getConfig } from '@/lib/api'
+import { fetchWithAuth } from '@/lib/api/fetch'
 import type { Page } from '@/lib/api/schemas'
 import { invalidateScene } from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -94,7 +95,7 @@ export function useMaskDrawing({
             height: region.height.toString(),
           })
 
-          const res = await fetch(`/api/v1/pages/${page.id}/masks/segment?${params}`, {
+          const res = await fetchWithAuth(`/api/v1/pages/${page.id}/masks/segment?${params}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'image/png' },
             body: fullPng as unknown as BodyInit,

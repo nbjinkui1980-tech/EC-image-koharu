@@ -111,16 +111,30 @@ impl TestApp {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let base_url = format!("http://{addr}/api/v1");
+        let security = koharu_rpc::security::SecurityContext::from_secret([0x2A; 32]);
+        let policy = koharu_rpc::security::OriginHostPolicy::for_listener(
+            addr,
+            false,
+            koharu_rpc::security::RemoteHostPolicy::empty(),
+        );
         let server = tokio::spawn({
             let state = state.clone();
-            async move { server::serve_with_listener(listener, state).await }
+            async move { server::serve_with_listener(listener, state, security, policy).await }
         });
 
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_static(
+                "Bearer KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio",
+            ),
+        );
         let client_config = Configuration {
             base_path: base_url.clone(),
             user_agent: Some("koharu-integration-tests".to_string()),
             client: reqwest::Client::builder()
                 .no_proxy()
+                .default_headers(default_headers)
                 .timeout(std::time::Duration::from_secs(30))
                 .build()?,
         };

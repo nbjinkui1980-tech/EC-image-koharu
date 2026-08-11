@@ -4152,6 +4152,7 @@ name = "koharu"
 version = "0.61.2"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "clap",
  "console",
  "getrandom 0.3.4",
@@ -4384,7 +4385,6 @@ dependencies = [
  "anyhow",
  "async-stream",
  "axum",
- "base64 0.22.1",
  "camino",
  "dashmap",
  "futures",
@@ -4393,6 +4393,7 @@ dependencies = [
  "koharu-app",
  "koharu-core",
  "koharu-psd",
+ "koharu-rpc-security",
  "koharu-runtime",
  "natord",
  "postcard",
@@ -4408,6 +4409,19 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
+]
+
+[[package]]
+name = "koharu-rpc-security"
+version = "0.61.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "subtle",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

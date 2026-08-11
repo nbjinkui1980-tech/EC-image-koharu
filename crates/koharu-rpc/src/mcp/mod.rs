@@ -31,6 +31,7 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
+use crate::security::SecurityContext;
 
 /// Server state handed to each tool call. Carries the shared `App`.
 #[derive(Clone)]
@@ -251,7 +252,7 @@ impl ServerHandler for KoharuServer {
 // ---------------------------------------------------------------------------
 
 /// Mount the MCP endpoint at `/mcp` on `router`.
-pub fn mount(router: axum::Router, state: AppState) -> axum::Router {
+pub fn mount(router: axum::Router, state: AppState, security: SecurityContext) -> axum::Router {
     let manager = Arc::new(LocalSessionManager::default());
     let factory = {
         let state = state.clone();
@@ -259,7 +260,12 @@ pub fn mount(router: axum::Router, state: AppState) -> axum::Router {
     };
     let service =
         StreamableHttpService::new(factory, manager, StreamableHttpServerConfig::default());
-    router.nest_service("/mcp", service)
+
+    let mcp_router = crate::security::protect_bearer_only_routes(
+        axum::Router::new().nest_service("/mcp", service),
+        security,
+    );
+    router.merge(mcp_router)
 }
 
 #[cfg(test)]

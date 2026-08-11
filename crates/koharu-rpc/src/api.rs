@@ -61,16 +61,34 @@ async fn require_ready(State(app): State<ApiState>, request: Request, next: Next
     next.run(request).await
 }
 
-/// Ready-to-serve router. `app` becomes shared state. All routes live under
-/// `/api/v1` so the UI can reach them through a single proxy prefix.
-pub fn router(app: ApiState) -> Router {
+/// Ready-to-serve router with required authentication.
+pub fn router(app: ApiState, security: crate::security::SecurityContext) -> Router {
+    router_inner(app, security, None)
+}
+
+/// Router that accepts either master Bearer or a valid browser session cookie.
+pub fn router_with_session(
+    app: ApiState,
+    security: crate::security::SecurityContext,
+    session: crate::security::BrowserSessionState,
+) -> Router {
+    router_inner(app, security, Some(session))
+}
+
+fn router_inner(
+    app: ApiState,
+    security: crate::security::SecurityContext,
+    session: Option<crate::security::BrowserSessionState>,
+) -> Router {
     let (bootstrap, _) = bootstrap_api().split_for_parts();
     let (guarded, _) = app_api().split_for_parts();
     let bootstrap = bootstrap.with_state(app.clone());
     let guarded = guarded
         .with_state(app.clone())
         .layer(middleware::from_fn_with_state(app, require_ready));
+    let protected =
+        crate::security::protect_api_routes(bootstrap.merge(guarded), security, session);
     Router::new()
-        .nest("/api/v1", bootstrap.merge(guarded))
+        .nest("/api/v1", protected)
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
 }

@@ -18,4 +18,16 @@ pub(crate) struct Cli {
     pub(crate) headless: bool,
     #[arg(long, help = "Enable debug console output")]
     pub(crate) debug: bool,
+    #[arg(
+        long = "auth-secret-file",
+        value_name = "PATH",
+        help = "Read the 32-byte URL-safe no-padding secret from a file"
+    )]
+    pub(crate) auth_secret_file: Option<String>,
+    #[arg(
+        long = "allowed-host",
+        value_name = "HOST[:PORT]",
+        help = "Remote host allowed to connect (repeatable)"
+    )]
+    pub(crate) allowed_host: Vec<String>,
 }

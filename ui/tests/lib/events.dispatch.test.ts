@@ -12,21 +12,28 @@ type OnMessage = (ev: { id?: string; data: string }) => void
 type OnError = (err: unknown) => number | void
 
 interface Captured {
+  credentials?: RequestCredentials
+  headers?: Record<string, string>
   onopen?: OnOpen
   onmessage?: OnMessage
   onerror?: OnError
 }
 
 const captured: Captured = {}
+const notifyAuthenticationRequired = vi.hoisted(() => vi.fn())
 
 vi.mock('@microsoft/fetch-event-source', () => ({
   EventStreamContentType: 'text/event-stream',
   fetchEventSource: vi.fn(async (_url: string, init: Captured) => {
+    captured.credentials = init.credentials
+    captured.headers = init.headers
     captured.onopen = init.onopen
     captured.onmessage = init.onmessage
     captured.onerror = init.onerror
   }),
 }))
+
+vi.mock('@/lib/auth', () => ({ notifyAuthenticationRequired }))
 
 import { connectEvents } from '@/lib/events'
 import { useDownloadsStore } from '@/lib/stores/downloadsStore'
@@ -55,6 +62,9 @@ beforeEach(() => {
   captured.onopen = undefined
   captured.onmessage = undefined
   captured.onerror = undefined
+  captured.credentials = undefined
+  captured.headers = undefined
+  notifyAuthenticationRequired.mockClear()
   connectEvents()
 })
 
@@ -216,6 +226,11 @@ describe('dispatch()', () => {
 })
 
 describe('connection lifecycle', () => {
+  it('uses same-origin cookies without a bearer header', () => {
+    expect(captured.credentials).toBe('same-origin')
+    expect(captured.headers).toEqual({ Accept: 'text/event-stream' })
+  })
+
   it('onopen with text/event-stream flips status to open', async () => {
     await simulateOpen(200, 'text/event-stream; charset=utf-8')
     expect(useEventsStore.getState().status).toBe('open')
@@ -257,6 +272,20 @@ describe('connection lifecycle', () => {
       onErrorThrew = true
     }
     expect(onErrorThrew).toBe(true)
+    expect(useEventsStore.getState().status).toBe('error')
+  })
+
+  it('401 notifies authentication and remains fatal', async () => {
+    let thrown: Error | null = null
+    try {
+      await captured.onopen!(new Response('', { status: 401 }))
+    } catch (error) {
+      thrown = error as Error
+    }
+
+    expect(notifyAuthenticationRequired).toHaveBeenCalledTimes(1)
+    expect(thrown).toBeInstanceOf(Error)
+    expect(() => captured.onerror?.(thrown)).toThrow()
     expect(useEventsStore.getState().status).toBe('error')
   })
 

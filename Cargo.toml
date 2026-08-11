@@ -31,6 +31,7 @@ koharu-ml = { path = "crates/koharu-ml", default-features = false }
 koharu-psd = { path = "crates/koharu-psd", default-features = false }
 koharu-renderer = { path = "crates/koharu-renderer", default-features = false }
 koharu-rpc = { path = "crates/koharu-rpc", default-features = false }
+koharu-rpc-security = { path = "crates/koharu-rpc-security" }
 koharu-secrets = { path = "crates/koharu-secrets", default-features = false }
 
 # external dependencies
@@ -147,6 +148,7 @@ proptest = "1.6"
 insta = "1.41"
 base64 = "0.22"
 getrandom = "0.3.4"
+subtle = "2.6.1"
 tower-http = { version = "0.7", features = ["cors"] }
 unicode-bidi = "0.3"
 criterion = { version = "0.8", features = ["html_reports"] }

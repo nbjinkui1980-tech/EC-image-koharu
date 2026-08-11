@@ -10,30 +10,81 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
 
 use crate::AppState;
 use crate::api;
+use crate::security::{OriginHostPolicy, SecurityContext};
 
 /// Function that maps a URL path (e.g. `"/index.html"`) to `(bytes, mime)`.
 /// Returning `None` signals a 404 fall-through.
 pub type AssetResolver = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
 
-/// Wrap `router(app)` with CORS + mount MCP at `/mcp`.
-pub fn router_for(app: AppState) -> Router {
-    let base = api::router(app.clone()).layer(CorsLayer::very_permissive());
-    crate::mcp::mount(base, app)
+fn enforce_origin_host(router: Router, policy: OriginHostPolicy) -> Router {
+    router
+        .layer(middleware::from_fn(crate::security::enforce_origin_host))
+        .layer(axum::Extension(policy))
 }
 
-/// Same as `router_for` but installs `resolver` as a fallback, serving
-/// embedded frontend assets for unmatched GET requests.
-pub fn router_with_assets(app: AppState, resolver: AssetResolver) -> Router {
-    router_for(app).fallback(move |req: Request<Body>| {
+/// Wrap the protected router with origin/host policy + mount MCP.
+pub fn router_for(app: AppState, security: SecurityContext, policy: OriginHostPolicy) -> Router {
+    enforce_origin_host(
+        crate::mcp::mount(api::router(app.clone(), security.clone()), app, security),
+        policy,
+    )
+}
+
+/// Router for browser clients that can exchange a bootstrap credential for a session cookie.
+pub fn router_for_with_session(
+    app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
+    session: crate::security::BrowserSessionState,
+) -> Router {
+    enforce_origin_host(
+        crate::mcp::mount(
+            api::router_with_session(app.clone(), security.clone(), session),
+            app,
+            security,
+        ),
+        policy,
+    )
+}
+
+/// Same as `router_for` but installs `resolver` as a fallback.
+pub fn router_with_assets(
+    app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
+    resolver: AssetResolver,
+) -> Router {
+    let router = crate::mcp::mount(api::router(app.clone(), security.clone()), app, security)
+        .fallback(move |req: Request<Body>| {
+            let resolver = resolver.clone();
+            async move { serve_asset(resolver, req).await }
+        });
+    enforce_origin_host(router, policy)
+}
+
+fn router_with_assets_with_session(
+    app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
+    session: crate::security::BrowserSessionState,
+    resolver: AssetResolver,
+) -> Router {
+    let router = crate::mcp::mount(
+        api::router_with_session(app.clone(), security.clone(), session),
+        app,
+        security,
+    )
+    .fallback(move |req: Request<Body>| {
         let resolver = resolver.clone();
         async move { serve_asset(resolver, req).await }
-    })
+    });
+    enforce_origin_host(router, policy)
 }
 
 async fn serve_asset(resolver: AssetResolver, req: Request<Body>) -> Response {
@@ -52,19 +103,62 @@ async fn serve_asset(resolver: AssetResolver, req: Request<Body>) -> Response {
     (StatusCode::NOT_FOUND, "not found").into_response()
 }
 
-/// Serve HTTP on an already-bound listener. Tauri-friendly.
-pub async fn serve_with_listener(listener: TcpListener, app: AppState) -> Result<()> {
-    axum::serve(listener, router_for(app)).await?;
+/// Serve HTTP on an already-bound listener with required auth.
+pub async fn serve_with_listener(
+    listener: TcpListener,
+    app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
+) -> Result<()> {
+    axum::serve(listener, router_for(app, security, policy)).await?;
     Ok(())
 }
 
-/// Variant that installs embedded assets as the fallback. Used by the Tauri
-/// production build to serve the bundled UI.
+/// Serve HTTP with browser-session authentication enabled.
+pub async fn serve_with_listener_with_session(
+    listener: TcpListener,
+    app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
+    session: crate::security::BrowserSessionState,
+) -> Result<()> {
+    axum::serve(
+        listener,
+        router_for_with_session(app, security, policy, session),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Variant with embedded assets fallback.
 pub async fn serve_with_listener_and_assets(
     listener: TcpListener,
     app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
     resolver: AssetResolver,
 ) -> Result<()> {
-    axum::serve(listener, router_with_assets(app, resolver)).await?;
+    axum::serve(
+        listener,
+        router_with_assets(app, security, policy, resolver),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Serve embedded assets with browser-session authentication enabled.
+pub async fn serve_with_listener_and_assets_with_session(
+    listener: TcpListener,
+    app: AppState,
+    security: SecurityContext,
+    policy: OriginHostPolicy,
+    session: crate::security::BrowserSessionState,
+    resolver: AssetResolver,
+) -> Result<()> {
+    axum::serve(
+        listener,
+        router_with_assets_with_session(app, security, policy, session, resolver),
+    )
+    .await?;
     Ok(())
 }

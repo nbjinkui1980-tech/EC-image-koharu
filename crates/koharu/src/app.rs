@@ -6,7 +6,9 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use koharu_app::{App, AppConfig, config as app_config};
-use koharu_rpc::{BootstrapManager, server};
+use koharu_rpc::{
+    BootstrapManager, security::OriginHostPolicy, security::RemoteHostPolicy, server,
+};
 use koharu_runtime::{ComputePolicy, RuntimeHttpConfig, RuntimeManager};
 use tokio::net::TcpListener;
 use tracing_subscriber::layer::SubscriberExt;
@@ -52,6 +54,22 @@ pub async fn run() -> Result<()> {
         crate::windows::enable_ansi_support().ok();
     }
 
+    let bind_host = cli.host.as_deref().unwrap_or("127.0.0.1");
+    let bind_port = cli.port.unwrap_or(4000);
+    let headless = if cli.headless && !cli.download {
+        Some(
+            crate::security::HeadlessSecurityOptions {
+                secret_from_env: std::env::var("KOHARU_AUTH_SECRET").ok(),
+                secret_file: cli.auth_secret_file.clone(),
+                allowed_hosts: cli.allowed_host.clone(),
+                bind_host: bind_host.to_owned(),
+            }
+            .resolve()?,
+        )
+    } else {
+        None
+    };
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::filter::EnvFilter::builder()
@@ -91,8 +109,6 @@ pub async fn run() -> Result<()> {
     #[cfg(target_os = "windows")]
     crate::windows::register_khr().ok();
 
-    let bind_host = cli.host.as_deref().unwrap_or("127.0.0.1");
-    let bind_port = cli.port.unwrap_or(4000);
     let listener: TcpListener = if cfg!(debug_assertions) || cli.port.is_some() {
         TcpListener::bind((bind_host, bind_port)).await?
     } else {
@@ -113,18 +129,51 @@ pub async fn run() -> Result<()> {
     let mut context = tauri::generate_context!();
     let assets = crate::assets::from_context(&mut context);
     let server_state = state.clone();
-    tauri::async_runtime::spawn(async move {
-        server::serve_with_listener_and_assets(listener, server_state, assets)
-            .await
-            .expect("failed to start server");
-    });
+    let origin_policy = OriginHostPolicy::for_listener(
+        listener.local_addr()?,
+        cfg!(debug_assertions),
+        RemoteHostPolicy::empty(),
+    );
 
-    if cli.headless {
-        tracing::info!(port, "headless: open http://127.0.0.1:{port}/ in a browser");
+    if let Some(headless) = headless {
+        let origin_policy = OriginHostPolicy::for_listener(
+            listener.local_addr()?,
+            cfg!(debug_assertions),
+            headless.remote_policy.clone(),
+        );
+        tauri::async_runtime::spawn(async move {
+            server::serve_with_listener_and_assets_with_session(
+                listener,
+                server_state,
+                headless.security,
+                origin_policy,
+                headless.session,
+                assets,
+            )
+            .await
+            .expect("failed to start headless server");
+        });
+        tracing::info!(port, host = bind_host, "headless server ready");
         bootstrap_app(state, config, cli.cpu).await?;
         tokio::signal::ctrl_c().await?;
         return Ok(());
     }
+
+    let desktop_auth = crate::security::DesktopAuth::generate()?;
+    let auth_for_server = desktop_auth.security_context();
+    let desktop_session = desktop_auth.browser_session_state();
+    tauri::async_runtime::spawn(async move {
+        server::serve_with_listener_and_assets_with_session(
+            listener,
+            server_state,
+            auth_for_server,
+            origin_policy,
+            desktop_session,
+            assets,
+        )
+        .await
+        .expect("failed to start server");
+    });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -132,6 +181,10 @@ pub async fn run() -> Result<()> {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .manage(desktop_auth)
+        .invoke_handler(tauri::generate_handler![
+            crate::security::desktop_bootstrap_proof
+        ])
         .setup(move |handle| {
             tauri::async_runtime::spawn(async move {
                 bootstrap_app(state, config, cli.cpu)

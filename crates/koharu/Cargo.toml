@@ -27,6 +27,7 @@ koharu-rpc = { workspace = true }
 koharu-runtime = { workspace = true }
 koharu-llm = { workspace = true }
 anyhow = { workspace = true }
+base64 = { workspace = true }
 clap = { workspace = true }
 getrandom = { workspace = true }
 git-version = { workspace = true }
