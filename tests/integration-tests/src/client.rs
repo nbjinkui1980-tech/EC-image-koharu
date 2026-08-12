@@ -12,19 +12,23 @@ use serde::{Serialize, de::DeserializeOwned};
 pub struct Configuration {
     pub base_path: String,
     pub user_agent: Option<String>,
+    pub bearer_token: Option<String>,
     pub client: reqwest::Client,
 }
 
 impl Configuration {
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
-        let request = self.client.request(
+        let mut request = self.client.request(
             method,
             format!("{}{path}", self.base_path.trim_end_matches('/')),
         );
-        match &self.user_agent {
-            Some(user_agent) => request.header(reqwest::header::USER_AGENT, user_agent),
-            None => request,
+        if let Some(user_agent) = &self.user_agent {
+            request = request.header(reqwest::header::USER_AGENT, user_agent);
         }
+        if let Some(token) = &self.bearer_token {
+            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        request
     }
 
     pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {

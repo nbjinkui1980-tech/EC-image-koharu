@@ -4267,6 +4267,7 @@ name = "koharu-integration-tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "camino",
  "futures",
  "image",

@@ -112,6 +112,15 @@ impl TestApp {
         let addr = listener.local_addr()?;
         let base_url = format!("http://{addr}/api/v1");
         let security = koharu_rpc::security::SecurityContext::from_secret([0x2A; 32]);
+        let bearer_token = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            [0x2A; 32],
+        );
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {bearer_token}"))?,
+        );
         let policy = koharu_rpc::security::OriginHostPolicy::for_listener(
             addr,
             false,
@@ -125,7 +134,9 @@ impl TestApp {
         let client_config = Configuration {
             base_path: base_url.clone(),
             user_agent: Some("koharu-integration-tests".to_string()),
+            bearer_token: Some(bearer_token),
             client: reqwest::Client::builder()
+                .default_headers(default_headers)
                 .no_proxy()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()?,
