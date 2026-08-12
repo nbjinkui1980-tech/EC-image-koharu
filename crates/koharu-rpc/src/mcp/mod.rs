@@ -253,11 +253,6 @@ impl ServerHandler for KoharuServer {
 
 /// Mount the MCP endpoint at `/mcp` on `router`.
 pub fn mount(router: axum::Router, state: AppState, security: SecurityContext) -> axum::Router {
-    use axum::extract::Request;
-    use axum::http::StatusCode;
-    use axum::middleware;
-    use axum::response::IntoResponse;
-
     let manager = Arc::new(LocalSessionManager::default());
     let factory = {
         let state = state.clone();
@@ -266,19 +261,10 @@ pub fn mount(router: axum::Router, state: AppState, security: SecurityContext) -
     let service =
         StreamableHttpService::new(factory, manager, StreamableHttpServerConfig::default());
 
-    let mcp_auth = middleware::from_fn(move |request: Request, next: middleware::Next| {
-        let security = security.clone();
-        async move {
-            if security.authorizes_bearer(request.headers()) {
-                return next.run(request).await;
-            }
-            StatusCode::UNAUTHORIZED.into_response()
-        }
-    });
-
-    let mcp_router = axum::Router::new()
-        .nest_service("/mcp", service)
-        .layer(mcp_auth);
+    let mcp_router = crate::security::protect_bearer_only_routes(
+        axum::Router::new().nest_service("/mcp", service),
+        security,
+    );
     router.merge(mcp_router)
 }
 

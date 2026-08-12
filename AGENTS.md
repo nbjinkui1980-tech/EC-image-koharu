@@ -12,6 +12,9 @@
 - `bun install` installs workspace dependencies from `bun.lock`.
 - `bun run dev` launches the Tauri desktop app; `bun run build` creates the release binary.
 - Use `bun cargo ...` instead of raw Cargo locally so platform features are configured correctly.
+- Never override `CARGO_TARGET_DIR` for reviews or tests, and never create Cargo targets under `/tmp` or `/private/tmp`; all Koharu Rust commands must use the guarded `bun cargo ...` path.
+- All worktrees and subagents must use `KOHARU_SHARED_TARGET_DIR`; never override `CARGO_TARGET_DIR` or create task-specific targets.
+- Run `bun run prune:rust` only in a manual idle window; raw Cargo does not participate in the shared-target lease.
 - `bun cargo check --workspace --all-targets` checks Rust; `bun cargo test --workspace --tests` runs tests.
 - `bun run test:ui`, `bun run lint:ui`, and `bun run format:check` validate the frontend.
 - `bun run check:generated` regenerates OpenAPI/Orval output and rejects drift.
@@ -38,6 +41,14 @@
 - Make surgical changes: every changed line must trace to the request. Do not refactor adjacent code or remove pre-existing dead code; remove only orphans created by the current change.
 - For nontrivial work, use a short goal-to-verification plan. Reproduce bugs with a focused regression test, then loop until the targeted checks pass.
 - If the implementation grows beyond the simplest adequate solution, stop and simplify it before continuing.
+
+## Performance Rules
+
+- Execute simple tasks directly without starting brainstorming or multi-agent workflows.
+- Use Superpowers only for complex refactors, architecture design, and difficult bugs.
+- Do not force a full build for small changes.
+- Prefer fast models and medium/low reasoning.
+- Use high or xhigh reasoning only for high-risk tasks.
 
 ## Testing Guidelines
 

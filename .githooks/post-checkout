@@ -1,0 +1,74 @@
+#!/bin/sh
+# koharu-managed-storage-hook
+set -eu
+
+external_volume="${KOHARU_EXTERNAL_VOLUME:-/Volumes/G}"
+external_root="${KOHARU_EXTERNAL_TARGET_ROOT:-${external_volume}/EC-image-koharu}"
+
+worktree_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+external_target="${external_root}/target"
+external_tmp="${external_root}/tmp"
+
+if /sbin/mount | /usr/bin/grep -F " on ${external_volume} (" >/dev/null 2>&1; then
+  /bin/mkdir -p "${external_target}" "${external_tmp}"
+else
+  printf '%s\n' \
+    "Koharu storage: ${external_volume} is not mounted; builds will fail until it is available." >&2
+fi
+
+local_target="${worktree_root}/target"
+if [ -L "${local_target}" ]; then
+  current_target="$(/usr/bin/readlink "${local_target}")"
+  if [ "${current_target}" != "${external_target}" ]; then
+    /bin/rm "${local_target}"
+  fi
+elif [ -e "${local_target}" ]; then
+  if [ -d "${local_target}" ] && [ -z "$(/bin/ls -A "${local_target}")" ]; then
+    /bin/rmdir "${local_target}"
+  else
+    printf '%s\n' \
+      "Koharu storage: ${local_target} contains local data; clean or move it before enabling external storage." >&2
+    exit 1
+  fi
+fi
+
+if [ ! -L "${local_target}" ]; then
+  /bin/ln -s "${external_target}" "${local_target}"
+fi
+
+env_file="${worktree_root}/.env"
+temp_env="${env_file}.koharu-storage.$$"
+trap '/bin/rm -f "${temp_env}"' EXIT HUP INT TERM
+if [ -f "${env_file}" ]; then
+  /usr/bin/awk -v target="${external_target}" -v temp="${external_tmp}" '
+    BEGIN { cargo_updated = 0; shared_updated = 0; temp_updated = 0 }
+    /^[[:space:]]*(export[[:space:]]+)?CARGO_TARGET_DIR=/ {
+      if (!cargo_updated) print "CARGO_TARGET_DIR=" target
+      cargo_updated = 1
+      next
+    }
+    /^[[:space:]]*(export[[:space:]]+)?KOHARU_SHARED_TARGET_DIR=/ {
+      if (!shared_updated) print "KOHARU_SHARED_TARGET_DIR=" target
+      shared_updated = 1
+      next
+    }
+    /^[[:space:]]*(export[[:space:]]+)?KOHARU_TMPDIR=/ {
+      if (!temp_updated) print "KOHARU_TMPDIR=" temp
+      temp_updated = 1
+      next
+    }
+    { print }
+    END {
+      if (!cargo_updated) print "CARGO_TARGET_DIR=" target
+      if (!shared_updated) print "KOHARU_SHARED_TARGET_DIR=" target
+      if (!temp_updated) print "KOHARU_TMPDIR=" temp
+    }
+  ' "${env_file}" > "${temp_env}"
+else
+  printf 'CARGO_TARGET_DIR=%s\nKOHARU_SHARED_TARGET_DIR=%s\nKOHARU_TMPDIR=%s\n' \
+    "${external_target}" "${external_target}" "${external_tmp}" > "${temp_env}"
+fi
+/bin/mv "${temp_env}" "${env_file}"
+trap - EXIT HUP INT TERM
+
+printf 'Koharu storage: %s -> %s\n' "${local_target}" "${external_target}"

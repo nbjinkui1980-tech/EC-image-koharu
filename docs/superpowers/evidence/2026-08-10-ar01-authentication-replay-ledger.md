@@ -2,7 +2,7 @@
 
 Baseline: db2754822e9ec9ef5ad63200e5addebbff21688f
 Branch: codex/audit-remediation-sdd
-Plan: docs/superpowers/plans/2026-08-10-ar01-authentication-replay-plan.md
+Plan: docs/superpowers/plans/2026-08-11-ar01-remediation-execution-contract.md
 
 ## Commits
 
@@ -52,7 +52,7 @@ Plan: docs/superpowers/plans/2026-08-10-ar01-authentication-replay-plan.md
 - R03A commit: `057b01e317696c470ca2773c900f3ebb96381fde` (`fix(rpc): authenticate bootstrap business routes`), exactly `crates/koharu-rpc/src/api.rs`.
 - R03B RED: the real-listener `origin_host` suite ran 6 tests and failed 0/6 against the old Host/Origin/CORS boundary.
 - R03B GREEN: the same suite passed 6/6; the complete `koharu-rpc` regression, check, Clippy, fmt, and diff gates passed before commit.
-- R03B commit: `583126bf260d573bfc87176e0ea11d5030013e2a` (`fix(rpc): enforce host and origin policy`), exactly `security.rs`, `server.rs`, and `tests/origin_host.rs`.
+- R03B commit: `583126bf260d573bfc87176e0ea11d5030013e2a` (`fix(rpc): enforce host and origin policy`), implemented in the shared RPC security core, `server.rs`, and `tests/origin_host.rs`.
 
 ### R04 — Desktop Tauri proof command/state wiring
 
@@ -89,12 +89,12 @@ Plan: docs/superpowers/plans/2026-08-10-ar01-authentication-replay-plan.md
 
 ### R07 — Constant-time comparison, integration harness authentication, and final evidence
 
-- Constant-time: `subtle::ConstantTimeEq` used for all three sensitive comparisons in `security.rs` — Bearer token verification (`authorizes_bearer`), one-time proof consumption (`consume_proof`), and session cookie validation (`validate_session`). Dependency `9c9f331e` unchanged.
+- Constant-time: `subtle::ConstantTimeEq` used for all three sensitive comparisons in `crates/koharu-rpc-security/src/lib.rs` — Bearer token verification (`authorizes_bearer`), one-time proof consumption (`consume_proof`), and session cookie validation (`validate_session`). Dependency `9c9f331e` unchanged.
 - Integration harness: added Bearer token as `default_headers` on the integration-test `reqwest::Client` so all API requests pass the R03A authentication middleware. All 46 integration tests (binary 6, events 11, LLM 3, meta 8, pipelines 6, projects 8, scene 4) plus 1 platform-skipped (keyring) now pass.
 - Harness commit: `1ca5accc1992eea72cf3f5f4a0964178e474a7a` (`fix(test): authenticate integration test harness`), exactly `Cargo.lock`, `tests/integration-tests/Cargo.toml`, `tests/integration-tests/src/client.rs`, `tests/integration-tests/src/harness.rs`.
 - Evidence commit: `a248f2552aefd4f349d27483582201eb488b07d1` (`docs(evidence): record AR01 R05-R07 remediation evidence`).
 
-## Branch readiness (MERGE-READY)
+## Branch readiness (REVIEW-READY)
 
 ### Final automated gates (post-R07)
 
@@ -103,7 +103,7 @@ Plan: docs/superpowers/plans/2026-08-10-ar01-authentication-replay-plan.md
 | `cargo test -p koharu` | 20/20 PASS |
 | `cargo test -p koharu-rpc` | 43/43 PASS (32 lib + 1 binary + 4 openapi + 6 origin_host) |
 | `cargo test -p koharu-integration-tests` | 46/47 PASS (1 skipped: keyring) |
-| UI `test:ui` | 34 files / 231 tests PASS |
+| UI `test:ui` | 35 files / 231 tests PASS |
 | `cargo check --all-targets` | PASS (koharu, koharu-rpc, integration-tests) |
 | `cargo clippy --all-targets -- -D warnings` | PASS |
 | `cargo fmt --all -- --check` | PASS |
@@ -115,11 +115,11 @@ Plan: docs/superpowers/plans/2026-08-10-ar01-authentication-replay-plan.md
 - **Desktop manual smoke**: PENDING — not executed in this remediation session. R04 Desktop build verified via `KOHARU_CARGO_GUARD_ACTIVE=1 bun run build` during R04/R04-ACL execution; the resulting release binary was confirmed at `/Volumes/G/EC-image-koharu/target/release/koharu` but interactive Desktop smoke (launch → auth bootstrap → app ready) was not performed.
 - **Remote HTTPS reverse-proxy smoke**: PENDING — not executed. Headless mode pre-bind validation is exercised by unit tests and CLI manual QA, but a real reverse-proxy deployment with external TLS termination was not tested.
 - **Docker**: out of scope per execution contract §6.
-- **Release-ready**: NOT CLAIMED — Docker, Desktop smoke, and remote-proxy smoke are all PENDING or out of scope. This branch is MERGE-READY for code review and architectural sign-off, not deployment-ready.
+- **Release-ready**: NOT CLAIMED — Docker, Desktop smoke, and remote-proxy smoke are all PENDING or out of scope. This branch is review-ready, not deployment-ready.
 
-### Branch merge readiness
+### Integration status
 
-All AR01 cards (R01-R07) are committed on `codex/audit-remediation-sdd`. The 10 original product commits and 12 remediation commits form a linear, single-owner history with conventional messages. Every card passed its RED→GREEN→regression→review→commit lifecycle. The branch is ready for independent whole-branch code-reviewer and architect review.
+The remediation branch is merged with `main`; the duplicate RPC security implementation was removed in favor of the shared `koharu-rpc-security` crate, while the structured Host/Origin/CORS boundary tests remain in place. It is **not merge-ready** until the pending Desktop manual smoke and an independent whole-branch review complete. Desktop navigation/ACL proof enforcement remains the separately tracked AR07-T02 prerequisite.
 
 ## Scope
 
@@ -141,12 +141,12 @@ All AR01 cards (R01-R07) are committed on `codex/audit-remediation-sdd`. The 10 
 
 ```
 Products (+ tests):
-crates/koharu-rpc/src/security.rs       (+ session state, host/origin/cors policy)
+crates/koharu-rpc-security/src/lib.rs   (+ session state, constant-time comparison, host/origin/cors policy)
 crates/koharu-rpc/src/api.rs            (+ auth middleware, session route)
 crates/koharu-rpc/src/server.rs         (+ SecurityContext, OriginHostPolicy params)
 crates/koharu-rpc/src/mcp/mod.rs        (+ MCP Bearer auth)
-crates/koharu-rpc/src/lib.rs            (+ pub mod security)
-crates/koharu-rpc/Cargo.toml            (+ subtle, getrandom deps)
+crates/koharu-rpc/src/lib.rs            (+ shared security-core re-export)
+crates/koharu-rpc/Cargo.toml            (+ security-core dependency)
 crates/koharu/src/security.rs           (+ DesktopAuth, HeadlessSecurityOptions)
 crates/koharu/src/app.rs                (+ auth bootstrap, pre-bind validation)
 crates/koharu/capabilities/default.json (+ Desktop proof command permission)

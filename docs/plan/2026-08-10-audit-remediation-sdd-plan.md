@@ -344,8 +344,8 @@ Checkpoint：静态 policy test、无凭据 dry-run、容器内 binary digest �
 ## 12. Parallel Execution Boundaries
 
 - 每条 lane 单一 writer；共享文件冲突时串行。
-- Rust 并行任务使用独立 `CARGO_TARGET_DIR=/tmp/koharu-sdd-target-<ar>`。
-- Full workspace tests 由唯一 verifier 使用独立 target 串行执行。
+- Rust 并行任务共用受保护的 `KOHARU_SHARED_TARGET_DIR`；不得覆盖 `CARGO_TARGET_DIR` 或创建任务专属 target。
+- Full workspace tests 由唯一 verifier 使用受保护的共享 target 串行执行。
 - 不并行运行 Cargo format/audit、依赖更新、lockfile、Orval、Next build 或生成物命令。
 - UI fake timers、global mocks、MSW、stores 必须 restore；`scene.ts` 单例测试使用独立 Vitest 进程。
 - `Cargo.lock`、`bun.lock`、Tauri config、workflow、Dockerfile 是独占写入区。

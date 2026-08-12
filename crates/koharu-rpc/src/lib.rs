@@ -17,8 +17,11 @@ pub mod events;
 pub mod mcp;
 pub mod psd_export;
 pub mod routes;
-pub mod security;
 pub mod server;
+
+pub mod security {
+    pub use koharu_rpc_security::*;
+}
 
 use std::sync::Arc;
 

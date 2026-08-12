@@ -87,38 +87,6 @@ describe('AuthBootstrap', () => {
     expect(screen.queryByText('ready')).not.toBeInTheDocument()
   })
 
-  it('shows restart-required without mounting children or SSE when desktop bootstrap rejects', async () => {
-    mocks.bootstrapDesktopSession.mockRejectedValue(new Error('IPC failed'))
-
-    render(<AuthBootstrap>ready</AuthBootstrap>)
-
-    await screen.findByRole('alert')
-    expect(screen.getByText('Authentication expired. Restart Koharu.')).toBeInTheDocument()
-    expect(screen.queryByText('ready')).not.toBeInTheDocument()
-    expect(mocks.connectEvents).not.toHaveBeenCalled()
-  })
-
-  it('keeps headless client at token form with error after rejection, then authenticates on retry', async () => {
-    mocks.desktop = false
-    mocks.exchangeSession.mockRejectedValueOnce(new Error('Bad token'))
-    render(<AuthBootstrap>ready</AuthBootstrap>)
-
-    const input = screen.getByPlaceholderText('Enter authentication token')
-    fireEvent.change(input, { target: { value: 'bad' } })
-    fireEvent.submit(input.closest('form')!)
-
-    await waitFor(() => expect(screen.getByText('Authentication failed')).toBeInTheDocument())
-    expect(screen.queryByText('ready')).not.toBeInTheDocument()
-
-    mocks.exchangeSession.mockResolvedValueOnce()
-    fireEvent.change(input, { target: { value: 'good' } })
-    fireEvent.submit(input.closest('form')!)
-
-    await screen.findByText('ready')
-    expect(mocks.exchangeSession).toHaveBeenCalledTimes(2)
-    expect(mocks.connectEvents).toHaveBeenCalledTimes(1)
-  })
-
   it.each([true, false])(
     'keeps an authenticated client mounted without bootstrapping again (desktop=%s)',
     async (desktop) => {

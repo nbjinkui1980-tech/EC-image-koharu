@@ -12,7 +12,6 @@ use serde::{Serialize, de::DeserializeOwned};
 pub struct Configuration {
     pub base_path: String,
     pub user_agent: Option<String>,
-    pub bearer_token: Option<String>,
     pub client: reqwest::Client,
 }
 
@@ -24,9 +23,6 @@ impl Configuration {
         );
         if let Some(user_agent) = &self.user_agent {
             request = request.header(reqwest::header::USER_AGENT, user_agent);
-        }
-        if let Some(token) = &self.bearer_token {
-            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
         }
         request
     }

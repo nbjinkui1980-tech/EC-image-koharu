@@ -4390,12 +4390,12 @@ dependencies = [
  "camino",
  "dashmap",
  "futures",
- "getrandom 0.3.4",
  "image",
  "insta",
  "koharu-app",
  "koharu-core",
  "koharu-psd",
+ "koharu-rpc-security",
  "koharu-runtime",
  "natord",
  "postcard",
@@ -4404,7 +4404,6 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
- "subtle",
  "tokio",
  "tokio-stream",
  "tower-http 0.7.0",
@@ -4412,6 +4411,19 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
+]
+
+[[package]]
+name = "koharu-rpc-security"
+version = "0.61.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "subtle",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

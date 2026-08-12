@@ -5,7 +5,7 @@ use koharu_rpc::security::{BrowserSessionState, SecurityContext};
 pub struct DesktopAuth {
     security: SecurityContext,
     session: BrowserSessionState,
-    proof: Arc<Mutex<Option<[u8; 32]>>>,
+    startup_proof: Arc<Mutex<Option<[u8; 32]>>>,
 }
 
 impl DesktopAuth {
@@ -16,7 +16,7 @@ impl DesktopAuth {
         Ok(Self {
             security: SecurityContext::from_secret(master),
             session: BrowserSessionState::new(Some(proof), session),
-            proof: Arc::new(Mutex::new(Some(proof))),
+            startup_proof: Arc::new(Mutex::new(Some(proof))),
         })
     }
 
@@ -28,8 +28,8 @@ impl DesktopAuth {
         self.session.clone()
     }
 
-    pub fn take_proof(&self) -> Option<[u8; 32]> {
-        self.proof.lock().unwrap().take()
+    fn take_startup_proof(&self) -> Option<[u8; 32]> {
+        self.startup_proof.lock().unwrap().take()
     }
 }
 
@@ -37,10 +37,14 @@ pub struct HeadlessSecurityOptions {
     pub secret_from_env: Option<String>,
     pub secret_file: Option<String>,
     pub allowed_hosts: Vec<String>,
+    pub bind_host: String,
 }
 
 impl HeadlessSecurityOptions {
     pub fn resolve(self) -> anyhow::Result<ResolvedHeadlessSecurity> {
+        if !is_loopback_host(&self.bind_host) && self.allowed_hosts.is_empty() {
+            anyhow::bail!("non-loopback headless binding requires at least one --allowed-host")
+        }
         let secret = match (self.secret_from_env, self.secret_file) {
             (Some(_), Some(_)) => {
                 anyhow::bail!("KOHARU_AUTH_SECRET and --auth-secret-file are mutually exclusive")
@@ -58,17 +62,22 @@ impl HeadlessSecurityOptions {
         let remote_policy = koharu_rpc::security::RemoteHostPolicy::parse(&self.allowed_hosts)?;
         Ok(ResolvedHeadlessSecurity {
             security: SecurityContext::from_secret(secret),
-            session: {
-                let token = koharu_rpc::security::generate_token();
-                BrowserSessionState::new(None, token)
-            },
+            session: BrowserSessionState::new(None, koharu_rpc::security::generate_token()),
             remote_policy,
         })
     }
 }
 
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
 fn decode_headless_secret(encoded: &str) -> anyhow::Result<[u8; 32]> {
     use base64::Engine;
+
     if encoded.len() != 43 {
         anyhow::bail!("auth secret must be 43 characters (32 bytes URL-safe no-padding base64)");
     }
@@ -87,15 +96,72 @@ pub struct ResolvedHeadlessSecurity {
 
 #[tauri::command]
 pub fn desktop_bootstrap_proof(
-    window: tauri::Window<impl tauri::Runtime>,
+    window: tauri::Window,
     state: tauri::State<'_, DesktopAuth>,
 ) -> Result<String, String> {
     if window.label() != "main" {
         return Err("unauthorized window".into());
     }
-    let proof = state.take_proof().ok_or("proof already consumed")?;
+    let proof = state
+        .take_startup_proof()
+        .ok_or_else(|| "startup proof already consumed".to_owned())?;
     Ok(base64::Engine::encode(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
         proof,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_SECRET: &str = "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio";
+
+    #[test]
+    fn remote_headless_binding_requires_an_explicit_allowed_host() {
+        let result = HeadlessSecurityOptions {
+            secret_from_env: Some(TEST_SECRET.into()),
+            secret_file: None,
+            allowed_hosts: Vec::new(),
+            bind_host: "0.0.0.0".into(),
+        }
+        .resolve();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn headless_rejects_malformed_conflicting_and_wildcard_credentials() {
+        for options in [
+            HeadlessSecurityOptions {
+                secret_from_env: Some("malformed".into()),
+                secret_file: None,
+                allowed_hosts: Vec::new(),
+                bind_host: "127.0.0.1".into(),
+            },
+            HeadlessSecurityOptions {
+                secret_from_env: Some(TEST_SECRET.into()),
+                secret_file: Some("unused".into()),
+                allowed_hosts: Vec::new(),
+                bind_host: "127.0.0.1".into(),
+            },
+            HeadlessSecurityOptions {
+                secret_from_env: Some(TEST_SECRET.into()),
+                secret_file: None,
+                allowed_hosts: vec!["*.example.com".into()],
+                bind_host: "127.0.0.1".into(),
+            },
+        ] {
+            assert!(options.resolve().is_err());
+        }
+    }
+
+    #[test]
+    fn desktop_startup_proof_is_fixed_and_returned_once() {
+        let auth = DesktopAuth::generate().unwrap();
+        let proof = auth.take_startup_proof().expect("startup proof");
+
+        assert!(auth.take_startup_proof().is_none());
+        assert!(auth.browser_session_state().consume_proof(&proof));
+        assert!(!auth.browser_session_state().consume_proof(&proof));
+    }
 }
