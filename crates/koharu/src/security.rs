@@ -68,6 +68,29 @@ impl HeadlessSecurityOptions {
     }
 }
 
+pub(crate) fn validate_desktop_options(
+    headless: bool,
+    bind_host: &str,
+    secret_file: Option<&str>,
+    allowed_hosts: &[String],
+) -> anyhow::Result<()> {
+    if headless {
+        return Ok(());
+    }
+    if secret_file.is_some() {
+        anyhow::bail!("--auth-secret-file is only valid with --headless");
+    }
+    if !allowed_hosts.is_empty() {
+        anyhow::bail!("--allowed-host is only valid with --headless");
+    }
+    if !is_loopback_host(bind_host) {
+        anyhow::bail!(
+            "Desktop mode only supports loopback binding. Use --headless for remote exposure with --allowed-host."
+        );
+    }
+    Ok(())
+}
+
 fn is_loopback_host(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host
@@ -163,5 +186,18 @@ mod tests {
         assert!(auth.take_startup_proof().is_none());
         assert!(auth.browser_session_state().consume_proof(&proof));
         assert!(!auth.browser_session_state().consume_proof(&proof));
+    }
+
+    #[test]
+    fn desktop_options_fail_closed_before_bind() {
+        assert!(validate_desktop_options(false, "0.0.0.0", None, &[]).is_err());
+        assert!(validate_desktop_options(false, "127.0.0.1", Some("secret"), &[]).is_err());
+        assert!(
+            validate_desktop_options(false, "127.0.0.1", None, &["example.com".into()]).is_err()
+        );
+
+        for host in ["127.0.0.1", "::1", "localhost", "LOCALHOST"] {
+            assert!(validate_desktop_options(false, host, None, &[]).is_ok());
+        }
     }
 }

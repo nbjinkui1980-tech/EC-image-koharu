@@ -56,6 +56,12 @@ pub async fn run() -> Result<()> {
 
     let bind_host = cli.host.as_deref().unwrap_or("127.0.0.1");
     let bind_port = cli.port.unwrap_or(4000);
+    crate::security::validate_desktop_options(
+        cli.headless,
+        bind_host,
+        cli.auth_secret_file.as_deref(),
+        &cli.allowed_host,
+    )?;
     let headless = if cli.headless && !cli.download {
         Some(
             crate::security::HeadlessSecurityOptions {
