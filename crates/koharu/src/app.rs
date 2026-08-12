@@ -110,6 +110,28 @@ pub async fn run() -> Result<()> {
 
     let bind_host = cli.host.as_deref().unwrap_or("127.0.0.1");
     let bind_port = cli.port.unwrap_or(4000);
+
+    validate_pre_bind(&PreBindInput {
+        headless: cli.headless,
+        host: bind_host.to_string(),
+        allowed_hosts: cli.allowed_host.clone(),
+        auth_secret_file: cli.auth_secret_file.clone(),
+        has_env_secret: std::env::var("KOHARU_AUTH_SECRET").is_ok(),
+    })?;
+
+    let headless_security = if cli.headless {
+        Some(
+            crate::security::HeadlessSecurityOptions {
+                secret_from_env: std::env::var("KOHARU_AUTH_SECRET").ok(),
+                secret_file: cli.auth_secret_file.clone(),
+                allowed_hosts: cli.allowed_host.clone(),
+            }
+            .resolve()?,
+        )
+    } else {
+        None
+    };
+
     let listener: TcpListener = if cfg!(debug_assertions) || cli.port.is_some() {
         TcpListener::bind((bind_host, bind_port)).await?
     } else {
@@ -136,13 +158,7 @@ pub async fn run() -> Result<()> {
         RemoteHostPolicy::empty(),
     );
 
-    if cli.headless {
-        let headless = crate::security::HeadlessSecurityOptions {
-            secret_from_env: std::env::var("KOHARU_AUTH_SECRET").ok(),
-            secret_file: cli.auth_secret_file.clone(),
-            allowed_hosts: cli.allowed_host.clone(),
-        }
-        .resolve()?;
+    if let Some(headless) = headless_security {
         let origin_policy = OriginHostPolicy::for_listener(
             listener.local_addr()?,
             cfg!(debug_assertions),
@@ -222,6 +238,56 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct PreBindInput {
+    headless: bool,
+    host: String,
+    allowed_hosts: Vec<String>,
+    auth_secret_file: Option<String>,
+    has_env_secret: bool,
+}
+
+fn is_loopback(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "::1" | "localhost")
+}
+
+fn validate_pre_bind(input: &PreBindInput) -> anyhow::Result<()> {
+    if !input.headless {
+        if input.auth_secret_file.is_some() {
+            anyhow::bail!("--auth-secret-file is only valid with --headless");
+        }
+        if !input.allowed_hosts.is_empty() {
+            anyhow::bail!("--allowed-host is only valid with --headless");
+        }
+    }
+
+    if !input.headless && !is_loopback(&input.host) {
+        anyhow::bail!(
+            "Desktop mode only supports loopback binding. \
+             Use --headless for remote exposure with --allowed-host."
+        );
+    }
+
+    if input.headless {
+        let has_file = input.auth_secret_file.is_some();
+        if !input.has_env_secret && !has_file {
+            anyhow::bail!("headless mode requires KOHARU_AUTH_SECRET or --auth-secret-file");
+        }
+        if input.has_env_secret && has_file {
+            anyhow::bail!("KOHARU_AUTH_SECRET and --auth-secret-file are mutually exclusive");
+        }
+
+        if !is_loopback(&input.host) && input.allowed_hosts.is_empty() {
+            anyhow::bail!(
+                "Non-loopback headless binding requires --allowed-host. \
+                 Specify at least one remote host that is allowed to connect."
+            );
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use base64::Engine;
@@ -270,5 +336,91 @@ mod tests {
             .unwrap();
         assert!(session.consume_proof(&decoded));
         assert_eq!(invoke(&main), Err("proof already consumed".into()));
+    }
+}
+
+#[cfg(test)]
+mod pre_bind_tests {
+    use super::*;
+
+    #[test]
+    fn headless_without_secret_fails_before_bind() {
+        let input = PreBindInput {
+            headless: true,
+            host: "127.0.0.1".into(),
+            ..Default::default()
+        };
+        assert!(validate_pre_bind(&input).is_err());
+    }
+
+    #[test]
+    fn headless_with_non_loopback_host_and_empty_allowed_fails() {
+        let input = PreBindInput {
+            headless: true,
+            host: "0.0.0.0".into(),
+            has_env_secret: true,
+            ..Default::default()
+        };
+        assert!(validate_pre_bind(&input).is_err());
+    }
+
+    #[test]
+    fn desktop_with_non_loopback_host_fails_before_bind() {
+        let input = PreBindInput {
+            host: "0.0.0.0".into(),
+            ..Default::default()
+        };
+        assert!(validate_pre_bind(&input).is_err());
+    }
+
+    #[test]
+    fn desktop_with_auth_secret_file_fails() {
+        let input = PreBindInput {
+            auth_secret_file: Some("/tmp/secret".into()),
+            ..Default::default()
+        };
+        assert!(validate_pre_bind(&input).is_err());
+    }
+
+    #[test]
+    fn desktop_with_allowed_hosts_fails() {
+        let input = PreBindInput {
+            allowed_hosts: vec!["example.com".into()],
+            ..Default::default()
+        };
+        assert!(validate_pre_bind(&input).is_err());
+    }
+
+    #[test]
+    fn headless_with_secret_and_loopback_passes() {
+        let input = PreBindInput {
+            headless: true,
+            host: "127.0.0.1".into(),
+            has_env_secret: true,
+            allowed_hosts: vec!["example.com:443".into()],
+            ..Default::default()
+        };
+        assert!(validate_pre_bind(&input).is_ok());
+    }
+
+    #[test]
+    fn headless_with_secret_allowed_hosts_and_wildcard_host_passes() {
+        let input = PreBindInput {
+            headless: true,
+            host: "0.0.0.0".into(),
+            has_env_secret: true,
+            allowed_hosts: vec!["example.com".into()],
+            ..Default::default()
+        };
+        assert!(validate_pre_bind(&input).is_ok());
+    }
+
+    #[test]
+    fn desktop_with_defaults_passes() {
+        let input = PreBindInput {
+            host: "127.0.0.1".into(),
+            ..Default::default()
+        };
+        assert!(validate_pre_bind(&input).is_ok());
     }
 }
