@@ -70,6 +70,30 @@ Plan: docs/superpowers/plans/2026-08-10-ar01-authentication-replay-plan.md
 - ACL follow-up review: independent code-reviewer APPROVE with zero findings; independent architect CLEAR.
 - ACL follow-up commit: `1dd6b20f178671fd8910817e2f74f6527f33324b` (`fix(desktop): allow bootstrap proof from release origin`), exactly three product files.
 
+### R05 — UI authentication gate for children / SSE / Updater
+
+- RED: the old AuthBootstrap swallowed `bootstrapDesktopSession` errors and rendered children while unauthenticated; `UpdaterProvider` wrapped `AuthBootstrap` so the updater started before the gate; `connectEvents` ran unconditionally in Providers before any auth check.
+- GREEN: `bootstrapDesktopSession` now properly rejects on failure (dedup + one-time proof guard); AuthBootstrap adds `restart-required` state and connects SSE only after authenticated; Providers swaps AuthBootstrap outside UpdaterProvider.
+- Tests: 3 new test files with 13 tests — `auth.test.ts` (5: exchange + bootstrap rejection + one-time guard), `AuthBootstrap.test.tsx` (7: desktop reject/success/re-auth, headless retry, already-authenticated), `providers.test.tsx` (1: updater not mounted before auth).
+- Regression: `bun run test:ui` 34 files / 231 tests PASS; `lint:ui` exit 0; `format:check` PASS.
+- Commit: `47b14322f407e01517ba7ca9839963d2112fd7c9` (`fix(ui): gate children, SSE, and Updater behind authenticated auth state`), exactly 3 product + 3 test files.
+
+### R06 — Headless validation before bind
+
+- RED: 8 pre-bind tests written; stub `validate_pre_bind` returns `Ok(())` → 5 FAIL (violations not rejected), 3 PASS (happy path + defaults pass-through).
+- GREEN: `validate_pre_bind` implemented with checks for Desktop loopback constraint, Desktop headless-only flag rejection, headless secret requirement, and headless remote exposure allowlist requirement. `HeadlessSecurityOptions::resolve()` moved before `TcpListener::bind()`.
+- Tests: 8 unit tests in `app::pre_bind_tests`.
+- Regression: `koharu` 20/20 PASS (incl. 8 pre_bind + 1 desktop_auth); `koharu-rpc` 43/43 PASS; check, Clippy, fmt PASS.
+- Manual QA: 5 CLI scenarios verified — Desktop `--host 0.0.0.0`, `--auth-secret-file`, `--allowed-host` all exit 1 before bind; headless without secret exits 1 before bind; headless with invalid secret decodes before bind.
+- Commit: `bf1a3adb9208555ef6276d7c671bbd842bd4da3c` (`fix(app): validate headless secrets and Desktop --host before bind`), exactly `crates/koharu/src/app.rs`.
+
+### R07 — Constant-time comparison, integration harness, and final evidence
+
+- Constant-time: `subtle::ConstantTimeEq` used for all three sensitive comparisons in `security.rs` — Bearer token verification (`authorizes_bearer`), one-time proof consumption (`consume_proof`), and session cookie validation (`validate_session`). Dependency `9c9f331e` unchanged.
+- Integration harness: added Bearer token as `default_headers` on the integration-test `reqwest::Client`. All 46 integration tests (binary 6, events 11, LLM 3, meta 8, pipelines 6, projects 8, scene 4) plus 1 platform-skipped (keyring) now pass.
+- Files: `tests/integration-tests/src/client.rs` (+bearer_token), `tests/integration-tests/src/harness.rs` (+default_headers), `tests/integration-tests/Cargo.toml` (+base64 workspace dep).
+- Commit: (pending below).
+
 ## Scope
 
 - 10 original product commits covering Waves 3-4 of the audit remediation plan
