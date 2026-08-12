@@ -87,36 +87,68 @@ Plan: docs/superpowers/plans/2026-08-10-ar01-authentication-replay-plan.md
 - Manual QA: 5 CLI scenarios verified — Desktop `--host 0.0.0.0`, `--auth-secret-file`, `--allowed-host` all exit 1 before bind; headless without secret exits 1 before bind; headless with invalid secret decodes before bind.
 - Commit: `bf1a3adb9208555ef6276d7c671bbd842bd4da3c` (`fix(app): validate headless secrets and Desktop --host before bind`), exactly `crates/koharu/src/app.rs`.
 
-### R07 — Constant-time comparison, integration harness, and final evidence
+### R07 — Constant-time comparison, integration harness authentication, and final evidence
 
 - Constant-time: `subtle::ConstantTimeEq` used for all three sensitive comparisons in `security.rs` — Bearer token verification (`authorizes_bearer`), one-time proof consumption (`consume_proof`), and session cookie validation (`validate_session`). Dependency `9c9f331e` unchanged.
-- Integration harness: added Bearer token as `default_headers` on the integration-test `reqwest::Client`. All 46 integration tests (binary 6, events 11, LLM 3, meta 8, pipelines 6, projects 8, scene 4) plus 1 platform-skipped (keyring) now pass.
-- Files: `tests/integration-tests/src/client.rs` (+bearer_token), `tests/integration-tests/src/harness.rs` (+default_headers), `tests/integration-tests/Cargo.toml` (+base64 workspace dep).
-- Commit: (pending below).
+- Integration harness: added Bearer token as `default_headers` on the integration-test `reqwest::Client` so all API requests pass the R03A authentication middleware. All 46 integration tests (binary 6, events 11, LLM 3, meta 8, pipelines 6, projects 8, scene 4) plus 1 platform-skipped (keyring) now pass.
+- Harness commit: `1ca5accc1992eea72cf3f5f4a0964178e474a7a` (`fix(test): authenticate integration test harness`), exactly `Cargo.lock`, `tests/integration-tests/Cargo.toml`, `tests/integration-tests/src/client.rs`, `tests/integration-tests/src/harness.rs`.
+- Evidence commit: `a248f2552aefd4f349d27483582201eb488b07d1` (`docs(evidence): record AR01 R05-R07 remediation evidence`).
+
+## Branch readiness (MERGE-READY)
+
+### Final automated gates (post-R07)
+
+| Gate | Result |
+|---|---|
+| `cargo test -p koharu` | 20/20 PASS |
+| `cargo test -p koharu-rpc` | 43/43 PASS (32 lib + 1 binary + 4 openapi + 6 origin_host) |
+| `cargo test -p koharu-integration-tests` | 46/47 PASS (1 skipped: keyring) |
+| UI `test:ui` | 34 files / 231 tests PASS |
+| `cargo check --all-targets` | PASS (koharu, koharu-rpc, integration-tests) |
+| `cargo clippy --all-targets -- -D warnings` | PASS |
+| `cargo fmt --all -- --check` | PASS |
+| UI `lint:ui` | exit 0 (only pre-existing warnings) |
+| UI `format:check` | PASS |
+
+### Readiness claims
+
+- **Desktop manual smoke**: PENDING — not executed in this remediation session. R04 Desktop build verified via `KOHARU_CARGO_GUARD_ACTIVE=1 bun run build` during R04/R04-ACL execution; the resulting release binary was confirmed at `/Volumes/G/EC-image-koharu/target/release/koharu` but interactive Desktop smoke (launch → auth bootstrap → app ready) was not performed.
+- **Remote HTTPS reverse-proxy smoke**: PENDING — not executed. Headless mode pre-bind validation is exercised by unit tests and CLI manual QA, but a real reverse-proxy deployment with external TLS termination was not tested.
+- **Docker**: out of scope per execution contract §6.
+- **Release-ready**: NOT CLAIMED — Docker, Desktop smoke, and remote-proxy smoke are all PENDING or out of scope. This branch is MERGE-READY for code review and architectural sign-off, not deployment-ready.
+
+### Branch merge readiness
+
+All AR01 cards (R01-R07) are committed on `codex/audit-remediation-sdd`. The 10 original product commits and 12 remediation commits form a linear, single-owner history with conventional messages. Every card passed its RED→GREEN→regression→review→commit lifecycle. The branch is ready for independent whole-branch code-reviewer and architect review.
 
 ## Scope
 
 - 10 original product commits covering Waves 3-4 of the audit remediation plan
-- 6 replay/remediation commits covering R01 through R04, including the R04 ACL follow-up
+- 12 remediation commits covering R01 through R07 (including R04 ACL follow-up + R07 evidence)
 - Master Bearer authentication on all API routes
-- Host/Origin/CORS policy enforcement
+- Host/Origin/CORS policy enforcement (structural Authority parsing, credentialed CORS)
 - MCP Bearer-only authentication
-- Desktop proof-and-session exchange
-- Headless fail-closed startup with KOHARU_AUTH_SECRET and --auth-secret-file
-- UI auth bootstrap with session cookie exchange
+- Desktop proof-and-session exchange with one-time guard
+- Headless fail-closed startup (KOHARU_AUTH_SECRET / --auth-secret-file required before bind)
+- Headless non-loopback binding requires explicit --allowed-host
+- Desktop loopback-only binding enforcement
+- UI auth gate: children, SSE, and Updater all gated behind authenticated state
 - Same-origin credential transport for fetch and SSE
+- Constant-time comparison for all three sensitive token verifications
+- Integration test harness authenticated via default Bearer header
 
 ## Files Changed
 
 ```
-crates/koharu-rpc/src/security.rs       (+ session state, host policy)
+Products (+ tests):
+crates/koharu-rpc/src/security.rs       (+ session state, host/origin/cors policy)
 crates/koharu-rpc/src/api.rs            (+ auth middleware, session route)
 crates/koharu-rpc/src/server.rs         (+ SecurityContext, OriginHostPolicy params)
 crates/koharu-rpc/src/mcp/mod.rs        (+ MCP Bearer auth)
 crates/koharu-rpc/src/lib.rs            (+ pub mod security)
 crates/koharu-rpc/Cargo.toml            (+ subtle, getrandom deps)
 crates/koharu/src/security.rs           (+ DesktopAuth, HeadlessSecurityOptions)
-crates/koharu/src/app.rs                (+ auth bootstrap, headless auth)
+crates/koharu/src/app.rs                (+ auth bootstrap, pre-bind validation)
 crates/koharu/capabilities/default.json (+ Desktop proof command permission)
 crates/koharu/permissions/desktop_bootstrap_proof.toml (+ app command ACL)
 crates/koharu/src/cli.rs                (+ --auth-secret-file, --allowed-host)
@@ -127,8 +159,19 @@ ui/components/AuthBootstrap.tsx          (+ auth gate component)
 ui/app/providers.tsx                    (+ AuthBootstrap wrapper)
 ui/lib/api/fetch.ts                     (+ credentials: same-origin, 401 notify)
 ui/lib/events.ts                        (+ credentials: same-origin, 401 notify)
-tests/integration-tests/src/harness.rs  (+ SecurityContext param)
-crates/koharu-rpc/src/routes/history.rs (+ auth test updates)
+
+Tests:
+crates/koharu-rpc/src/api.rs            (+ bootstrap_routes_require_authentication)
+crates/koharu-rpc/tests/origin_host.rs  (+ 6 real-listener boundary tests)
+crates/koharu/src/app.rs                (+ 8 pre_bind_tests, 1 desktop_auth test)
+ui/tests/lib/auth.test.ts               (+ 5 session + bootstrap rejection tests)
+ui/tests/components/AuthBootstrap.test.tsx (+ 7 component gate tests)
+ui/tests/app/providers.test.tsx         (+ 1 tree ordering test)
+tests/integration-tests/src/client.rs   (+ bearer_token)
+tests/integration-tests/src/harness.rs  (+ default_headers)
+tests/integration-tests/Cargo.toml      (+ base64 workspace dep)
+
+Config + infra:
 Cargo.toml                              (+ subtle workspace dep)
 Cargo.lock                              (dependency updates)
 ```
