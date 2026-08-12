@@ -1,12 +1,12 @@
 # 审计修复 SDD Phase 3 — Loop 执行驱动文档
 
-**状态：DRAFT/REVIEW — 2026-08-12 创建；Loop 空闲，当前无在途 lane。docs-only checkpoint 提交（本地）后转 ACTIVE。**
+**状态：ACTIVE — 2026-08-12 创建；Loop 空闲，当前无在途 lane。（2026-08-12 docs-only checkpoint `cdc357f9` 提交后激活）**
 **规格：** `docs/plan/2026-08-10-audit-remediation-sdd-spec.md`
 **计划：** `docs/plan/2026-08-10-audit-remediation-sdd-plan.md`
 **任务：** `docs/plan/2026-08-10-audit-remediation-sdd-tasks.md`
 **基线盘点日期：** 2026-08-12(HEAD `fc737092`,main 领先 origin/main 1 提交)
 
-本文档是 Phase 3 剩余 47 张任务卡的**唯一执行入口**(DRAFT 期间不得起动任何 lane)。任何会话(人或 AI)按 §7 引导指令接管后,依 §1 循环协议逐 lane 推进,并在本文档 §3/§8 就地更新状态。**本文档不替代 TASKS 的验收标准;卡片验收以 TASKS 原文为准。**
+本文档是 Phase 3 剩余 47 张任务卡的**唯一执行入口**。任何会话(人或 AI)按 §7 引导指令接管后,依 §1 循环协议逐 lane 推进,并在本文档 §3/§8 就地更新状态。**本文档不替代 TASKS 的验收标准;卡片验收以 TASKS 原文为准。**
 
 ---
 
