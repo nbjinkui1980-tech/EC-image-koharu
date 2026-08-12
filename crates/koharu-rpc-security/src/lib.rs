@@ -65,7 +65,6 @@ pub async fn require_auth(
 
 const ALLOWED_METHODS: &str = "GET, POST, PUT, PATCH, DELETE";
 const ALLOWED_HEADERS: &str = "authorization, content-type, accept, last-event-id";
-const ALLOWED_HEADER_NAMES: &[&str] = &["authorization", "content-type", "accept", "last-event-id"];
 
 #[derive(Clone, Debug, Default)]
 pub struct RemoteHostPolicy {
@@ -247,12 +246,9 @@ fn request_authority(request: &Request) -> Option<Authority> {
     }
 }
 
-fn authority_port(authority: &Authority, default: u16) -> u16 {
-    authority.port_u16().unwrap_or(default)
-}
 fn authorities_match(left: &Authority, right: &Authority, default_port: u16) -> bool {
     hosts_match(left.host(), right.host())
-        && authority_port(left, default_port) == authority_port(right, default_port)
+        && left.port_u16().unwrap_or(default_port) == right.port_u16().unwrap_or(default_port)
 }
 fn host_ip(host: &str) -> Option<IpAddr> {
     host.strip_prefix('[')
@@ -291,15 +287,18 @@ fn valid_preflight(headers: &HeaderMap) -> bool {
     let Ok(Some(method)) = single_header(headers, &ACCESS_CONTROL_REQUEST_METHOD) else {
         return false;
     };
-    matches!(method, "GET" | "POST" | "PUT" | "PATCH" | "DELETE")
-        && single_header(headers, &ACCESS_CONTROL_REQUEST_HEADERS).is_ok_and(|requested| {
-            requested.is_none_or(|requested| {
-                requested.split(',').all(|name| {
-                    let name = name.trim().to_ascii_lowercase();
-                    !name.is_empty() && ALLOWED_HEADER_NAMES.contains(&name.as_str())
-                })
+    if !ALLOWED_METHODS.split(", ").any(|allowed| allowed == method) {
+        return false;
+    }
+    single_header(headers, &ACCESS_CONTROL_REQUEST_HEADERS).is_ok_and(|requested| {
+        requested.is_none_or(|requested| {
+            requested.split(',').all(|name| {
+                ALLOWED_HEADERS
+                    .split(", ")
+                    .any(|allowed| allowed.eq_ignore_ascii_case(name.trim()))
             })
         })
+    })
 }
 fn add_cors_headers(headers: &mut HeaderMap, origin: &str) {
     headers.insert(

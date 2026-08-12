@@ -166,12 +166,7 @@ async fn request_bytes(addr: SocketAddr, request: &[u8]) -> (u16, String) {
 }
 
 fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
-    head.lines().find_map(|line| {
-        let (candidate, value) = line.split_once(':')?;
-        candidate
-            .eq_ignore_ascii_case(name)
-            .then(|| value.trim_end_matches('\r').trim())
-    })
+    header_values(head, name).into_iter().next()
 }
 
 fn header_values<'a>(head: &'a str, name: &str) -> Vec<&'a str> {
