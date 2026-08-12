@@ -137,7 +137,6 @@ jobs:
           echo "Certificate imported."
 
       - uses: tauri-apps/tauri-action@v0
-        id: tauri_build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -155,27 +154,13 @@ jobs:
           NEXT_PUBLIC_SENTRY_DSN: ${{ secrets.NEXT_PUBLIC_SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         with:
-          tauriScript: bash scripts/ci-tauri-build.sh
+          tauriScript: npx @tauri-apps/cli
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.ref_name }}
           releaseBody: ${{ steps.release_notes.outputs.release_body }}
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
-
-      - name: Surface Tauri build log on failure
-        if: failure() && steps.tauri_build.conclusion == 'failure'
-        shell: bash
-        run: |
-          if [ -f tauri-build.log ]; then
-            echo '--- Tauri build log tail ---'
-            tail -n 120 tauri-build.log
-            echo '--- End build log tail ---'
-            {
-              echo '::error::Tauri build failed. Last 80 lines of tauri-build.log:'
-              tail -n 80 tauri-build.log | sed 's/^/  /'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
 
   container:
     needs: release
