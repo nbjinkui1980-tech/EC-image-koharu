@@ -86,6 +86,8 @@ Plan: docs/superpowers/plans/2026-08-11-ar01-remediation-execution-contract.md
 - Regression: `koharu` 20/20 PASS (incl. 8 pre_bind + 1 desktop_auth); `koharu-rpc` 43/43 PASS; check, Clippy, fmt PASS.
 - Manual QA: 5 CLI scenarios verified — Desktop `--host 0.0.0.0`, `--auth-secret-file`, `--allowed-host` all exit 1 before bind; headless without secret exits 1 before bind; headless with invalid secret decodes before bind.
 - Commit: `bf1a3adb9208555ef6276d7c671bbd842bd4da3c` (`fix(app): validate headless secrets and Desktop --host before bind`), exactly `crates/koharu/src/app.rs`.
+- Integration repair: narrow current-head review found that merge `67ba1b2f` had dropped the Desktop pre-bind guard and its eight unit tests. Commit `68f7b68844357738a56a036a1db47a0c9c74ceec` restored the three Desktop rejections through shared `security::validate_desktop_options`, while leaving headless secret/allowlist resolution owned by `HeadlessSecurityOptions::resolve()` before bind.
+- Repair verification: focused Desktop validation test PASS; `headless_security` integration test PASS; `bun cargo check -p koharu --all-targets` PASS; all three invalid Desktop CLI cases exited 1 with no listener; fresh release build PASS.
 
 ### R07 — Constant-time comparison, integration harness authentication, and final evidence
 
@@ -94,7 +96,7 @@ Plan: docs/superpowers/plans/2026-08-11-ar01-remediation-execution-contract.md
 - Harness commit: `1ca5accc1992eea72cf3f5f4a0964178e474a7a` (`fix(test): authenticate integration test harness`), exactly `Cargo.lock`, `tests/integration-tests/Cargo.toml`, `tests/integration-tests/src/client.rs`, `tests/integration-tests/src/harness.rs`.
 - Evidence commit: `a248f2552aefd4f349d27483582201eb488b07d1` (`docs(evidence): record AR01 R05-R07 remediation evidence`).
 
-## Branch readiness (REVIEW-READY)
+## Branch readiness (MERGE-READY)
 
 ### Final automated gates (post-R07)
 
@@ -112,18 +114,18 @@ Plan: docs/superpowers/plans/2026-08-11-ar01-remediation-execution-contract.md
 
 ### Readiness claims
 
-- **Desktop manual smoke**: PENDING — not executed in this remediation session. R04 Desktop build verified via `KOHARU_CARGO_GUARD_ACTIVE=1 bun run build` during R04/R04-ACL execution; the resulting release binary was confirmed at `/Volumes/G/EC-image-koharu/target/release/koharu` but interactive Desktop smoke (launch → auth bootstrap → app ready) was not performed.
+- **Desktop manual smoke**: PASS at product HEAD `68f7b688`. A fresh `KOHARU_CARGO_GUARD_ACTIVE=1 bun run build` completed, the release app rendered the Koharu project home, `GET /` returned 200, unauthenticated `GET /api/v1/meta` returned 401, an authenticated WebView connection remained established, and normal quit removed the listener. The macOS keychain prompt was denied without entering credentials; the application continued through its existing fallback path.
 - **Remote HTTPS reverse-proxy smoke**: PENDING — not executed. Headless mode pre-bind validation is exercised by unit tests and CLI manual QA, but a real reverse-proxy deployment with external TLS termination was not tested.
 - **Docker**: out of scope per execution contract §6.
-- **Release-ready**: NOT CLAIMED — Docker, Desktop smoke, and remote-proxy smoke are all PENDING or out of scope. This branch is review-ready, not deployment-ready.
+- **Release-ready**: NOT CLAIMED — Docker remains out of scope and remote-proxy smoke is pending. This branch is merge-ready for AR01, not remote-deployment-ready.
 
 ### Integration status
 
-The remediation branch is merged with `main`; the duplicate RPC security implementation was removed in favor of the shared `koharu-rpc-security` crate, while the structured Host/Origin/CORS boundary tests remain in place. It is **not merge-ready** until the pending Desktop manual smoke and an independent whole-branch review complete. Desktop navigation/ACL proof enforcement remains the separately tracked AR07-T02 prerequisite.
+The remediation branch contains the integrated R01-R07 result; the duplicate RPC security implementation was removed in favor of the shared `koharu-rpc-security` crate, while the structured Host/Origin/CORS boundary tests remain in place. Fresh build, Desktop smoke, targeted regression checks, and independent narrow current-head review are complete. It is **merge-ready for AR01**. Remote HTTPS smoke and the separately tracked AR07-T02 Desktop navigation/ACL proof enforcement remain outside this merge claim.
 
-## Structured self-review (Oracle unavailable — manual verification)
+## Historical structured self-review (superseded)
 
-Oracle was dispatched three times (whole-branch + three focused sub-reviews) but timed out at 30 minutes each. The following structured self-review covers all security-critical acceptance items from R01-R07. Each finding cites file:line and the specific automated test or manual QA that backs it.
+Oracle was dispatched three times (whole-branch + three focused sub-reviews) but timed out at 30 minutes each. This self-review is retained as historical evidence, but its zero-findings verdict was superseded when the final independent code-reviewer and architect both found the R06 merge regression at `f5922a5f`.
 
 ### 1. Constant-time comparison (R07)
 
@@ -139,14 +141,14 @@ All three sensitive token comparisons use constant-time equality. Verified by gr
 
 | # | Scenario | Test | Verdict |
 |---|---|---|---|
-| PB1 | Desktop `--host 0.0.0.0` | `app.rs:317` + CLI QA | ✅ `validate_pre_bind` runs before `TcpListener::bind()` (line order verified: check at L113, bind at L131) |
-| PB2 | Desktop `--auth-secret-file` | `app.rs:326` + CLI QA | ✅ |
-| PB3 | Desktop `--allowed-host` | `app.rs:332` + CLI QA | ✅ |
-| PB4 | Headless without secret | `app.rs:300` + CLI QA | ✅ |
-| PB5 | Headless remote without allowed-hosts | `app.rs:311` + CLI QA | ✅ |
+| PB1 | Desktop `--host 0.0.0.0` | focused `desktop_options_fail_closed_before_bind` test + CLI QA | ✅ `security::validate_desktop_options` runs before `TcpListener::bind()` at repaired HEAD |
+| PB2 | Desktop `--auth-secret-file` | focused test + CLI QA | ✅ |
+| PB3 | Desktop `--allowed-host` | focused test + CLI QA | ✅ |
+| PB4 | Headless without secret | `headless_security` integration test + CLI QA | ✅ |
+| PB5 | Headless remote without allowed-hosts | `HeadlessSecurityOptions::resolve` unit coverage + CLI QA | ✅ |
 | PB6 | Headless secret decode | `security.rs:44-67` (resolve) | ✅ `decode_headless_secret` runs before bind |
 
-No code path exists where `TcpListener::bind()` executes before all six checks pass. Verified by line-order inspection: `validate_pre_bind` at L113, `headless_security = ...resolve()` at L120, `TcpListener::bind` at L131.
+At repaired HEAD, Desktop options pass through `security::validate_desktop_options`, then headless options pass through `HeadlessSecurityOptions::resolve()`, before `TcpListener::bind()` executes.
 
 ### 3. Auth gate — fail-closed integrity (R05)
 
@@ -184,7 +186,15 @@ All 10 R01-R07 acceptance items (from R03A frozen card + R03B frozen card + R05 
 
 ### Review verdict
 
-**APPROVE** with zero CRITICAL, zero HIGH, zero MEDIUM findings. Two items remain PENDING (Desktop manual smoke, remote HTTPS reverse-proxy smoke) per execution contract §6 — neither blocks code review.
+**SUPERSEDED.** The later independent narrow review correctly reported one HIGH/BLOCK caused by merge `67ba1b2f`; repair `68f7b688` and its follow-up review are the authoritative final verdict. Remote HTTPS reverse-proxy smoke remains pending and does not block the AR01 merge claim.
+
+## Final integrated-head review and repair
+
+- Initial integrated head reviewed: `f5922a5f`. Fresh release build and Desktop smoke passed, but independent code-reviewer and architect both identified the dropped R06 Desktop pre-bind guard and blocked merge.
+- Repair: `68f7b68844357738a56a036a1db47a0c9c74ceec` restores only the shared Desktop option validation needed before bind; no dependency or unrelated refactor was added.
+- Focused evidence: Desktop validation test PASS, headless no-secret/no-listener integration test PASS, `bun cargo check -p koharu --all-targets` PASS, three Desktop CLI rejection scenarios PASS, `git diff --check` PASS.
+- Current product head evidence: fresh release build PASS; Desktop smoke PASS with rendered project home, root 200, unauthenticated meta 401, active WebView connection, and clean listener shutdown.
+- Final independent verdicts after focused re-review of `f5922a5f..68f7b688`: code-reviewer **APPROVE** with zero issues; architect **CLEAR**. Prior full-gate evidence was reused rather than repeated.
 
 ## Scope
 
