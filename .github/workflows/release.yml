@@ -18,10 +18,11 @@ env:
 jobs:
   release:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: 'macos-latest' # for Arm based macs (M1 and above).
-            args: '--target aarch64-apple-darwin'
+            args: '--target aarch64-apple-darwin --bundles app'
           - platform: 'ubuntu-latest'
             args: ''
           - platform: 'windows-2022'
@@ -160,19 +161,6 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
-          includeUpdaterJson: true
-          updaterJsonKeepUniversal: true
-
-  winget:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: vedantmgoyal9/winget-releaser@main
-        with:
-          identifier: mayocream.koharu
-          version: ${{ github.ref_name }}
-          installers-regex: '(-setup\.exe|\.msi)$'
-          token: ${{ secrets.WINGET_TOKEN }}
 
   container:
     needs: release
