@@ -111,5 +111,5 @@ export TMP="${KOHARU_TMPDIR}"
 export TEMP="${KOHARU_TMPDIR}"
 export KOHARU_CARGO_GUARD_ACTIVE=1
 
-bun "${root}/scripts/storage.ts" check
+bun "${root}/scripts/storage.ts" check 1>&2
 exec bun "${root}/scripts/dev.ts" cargo "${arguments[@]}"

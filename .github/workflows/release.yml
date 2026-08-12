@@ -160,8 +160,8 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
+          includeUpdaterJson: true
+          updaterJsonKeepUniversal: true
 
   winget:
     needs: release
