@@ -105,6 +105,7 @@ async function dev() {
     process.env.CARGO_TARGET_DIR = await resolveVerifiedSharedTarget(
       process.env.KOHARU_SHARED_TARGET_DIR,
     )
+    process.env.KOHARU_CARGO_GUARD_ACTIVE = '1'
   }
 
   if (process.env.KOHARU_TMPDIR) {
