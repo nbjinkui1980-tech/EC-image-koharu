@@ -77,16 +77,42 @@ jobs:
             echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
-      - name: Install trusted-signing-cli (windows only)
+      - name: Check Azure signing secret (windows only)
+        id: azure_sign
         if: startsWith(matrix.platform, 'windows')
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        shell: bash
+        run: |
+          if [ -n "$AZURE_CLIENT_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install trusted-signing-cli (windows only)
+        if: startsWith(matrix.platform, 'windows') && steps.azure_sign.outputs.enabled == 'true'
         shell: bash
         run: |
           curl -fsSL "https://github.com/Levminer/trusted-signing-cli/releases/download/0.8.0/trusted-signing-cli.exe" -o "$RUNNER_TEMP/trusted-signing-cli.exe"
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/trusted-signing-cli.exe" --version
 
-      - name: Import Apple Developer Certificate
+      - name: Check Apple certificate secret (macos only)
+        id: apple_cert
         if: startsWith(matrix.platform, 'macos')
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+        shell: bash
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import Apple Developer Certificate
+        if: startsWith(matrix.platform, 'macos') && steps.apple_cert.outputs.enabled == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ""
@@ -102,7 +128,7 @@ jobs:
           security find-identity -v -p codesigning build.keychain
 
       - name: Verify Certificate
-        if: startsWith(matrix.platform, 'macos')
+        if: startsWith(matrix.platform, 'macos') && steps.apple_cert.outputs.enabled == 'true'
         run: |
           CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application")
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
