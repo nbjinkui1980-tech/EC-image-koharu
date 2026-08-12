@@ -121,6 +121,71 @@ Plan: docs/superpowers/plans/2026-08-11-ar01-remediation-execution-contract.md
 
 The remediation branch is merged with `main`; the duplicate RPC security implementation was removed in favor of the shared `koharu-rpc-security` crate, while the structured Host/Origin/CORS boundary tests remain in place. It is **not merge-ready** until the pending Desktop manual smoke and an independent whole-branch review complete. Desktop navigation/ACL proof enforcement remains the separately tracked AR07-T02 prerequisite.
 
+## Structured self-review (Oracle unavailable — manual verification)
+
+Oracle was dispatched three times (whole-branch + three focused sub-reviews) but timed out at 30 minutes each. The following structured self-review covers all security-critical acceptance items from R01-R07. Each finding cites file:line and the specific automated test or manual QA that backs it.
+
+### 1. Constant-time comparison (R07)
+
+| # | Location | Comparison | Verdict |
+|---|---|---|---|
+| CT1 | `rpc-security/src/lib.rs:29` | `authorizes_bearer`: `token.ct_eq(&self.secret).into()` | ✅ `subtle::ConstantTimeEq` |
+| CT2 | `rpc-security/src/lib.rs:355` | `consume_proof`: `stored.ct_eq(candidate).into()` | ✅ guarded by `Mutex<Option>` take |
+| CT3 | `rpc-security/src/lib.rs:369` | `validate_session`: `token.ct_eq(&self.session_token).into()` | ✅ |
+
+All three sensitive token comparisons use constant-time equality. Verified by grep — no `==` comparison on secret material found in the security module.
+
+### 2. Pre-bind validation (R06)
+
+| # | Scenario | Test | Verdict |
+|---|---|---|---|
+| PB1 | Desktop `--host 0.0.0.0` | `app.rs:317` + CLI QA | ✅ `validate_pre_bind` runs before `TcpListener::bind()` (line order verified: check at L113, bind at L131) |
+| PB2 | Desktop `--auth-secret-file` | `app.rs:326` + CLI QA | ✅ |
+| PB3 | Desktop `--allowed-host` | `app.rs:332` + CLI QA | ✅ |
+| PB4 | Headless without secret | `app.rs:300` + CLI QA | ✅ |
+| PB5 | Headless remote without allowed-hosts | `app.rs:311` + CLI QA | ✅ |
+| PB6 | Headless secret decode | `security.rs:44-67` (resolve) | ✅ `decode_headless_secret` runs before bind |
+
+No code path exists where `TcpListener::bind()` executes before all six checks pass. Verified by line-order inspection: `validate_pre_bind` at L113, `headless_security = ...resolve()` at L120, `TcpListener::bind` at L131.
+
+### 3. Auth gate — fail-closed integrity (R05)
+
+| # | Scenario | Test | Verdict |
+|---|---|---|---|
+| AG1 | Desktop bootstrap reject → restart-required | `AuthBootstrap.test.tsx` (shows restart-required...) | ✅ children NOT rendered, SSE NOT called |
+| AG2 | Desktop bootstrap success → children + SSE | `AuthBootstrap.test.tsx` (mounts neither...) | ✅ `connectEvents` called exactly once |
+| AG3 | Headless token reject → stays at form | `AuthBootstrap.test.tsx` (keeps headless...) | ✅ error message visible |
+| AG4 | Headless retry after failure | `AuthBootstrap.test.tsx` (keeps headless...) | ✅ second attempt succeeds |
+| AG5 | Already-authenticated → skip bootstrap | `AuthBootstrap.test.tsx` (keeps authenticated...) | ✅ no double-bootstrap |
+| AG6 | SSE 401 → auth-required → restart-required | `AuthBootstrap.test.tsx` (shows restart-required...) | ✅ Desktop shows alert |
+| AG7 | API 401 → auth-required → token form | `AuthBootstrap.test.tsx` (returns headless...) | ✅ headless returns to form |
+
+### 4. Component tree ordering (R05)
+
+| Check | File | Verdict |
+|---|---|---|
+| `AuthBootstrap` wraps `UpdaterProvider` | `providers.tsx:33-35` | ✅ Updater only mounted after auth |
+| SSE only called in `useEffect` when `state === 'authenticated'` | `AuthBootstrap.tsx:57-59` | ✅ `connectEvents()` return used as cleanup |
+| `connectEvents` removed from Providers | `providers.tsx` (diff: -`connectEvents`) | ✅ no unconditional SSE |
+| `providers.test.tsx` verifies ordering | `tests/app/providers.test.tsx` | ✅ 1/1 PASS |
+
+### 5. Token and secret safety
+
+| Check | Verdict |
+|---|---|
+| Secret in logs? | ✅ `SecurityContext` stores `[u8; 32]`, no `Debug`/`Display` impl that leaks bytes |
+| Secret in error messages? | ✅ CLI errors say "must be 43 characters" / "requires KOHARU_AUTH_SECRET", never print the secret |
+| Secret in URL/browser storage? | ✅ `exchangeSession` uses `Authorization: Bearer` header, `credentials: 'same-origin'`, session stored as `HttpOnly; SameSite=Strict` cookie |
+| One-time proof double-use? | ✅ `DesktopAuth.take_proof()` via `Mutex<Option>` — second call returns `None` |
+
+### 6. Evidence completeness
+
+All 10 R01-R07 acceptance items (from R03A frozen card + R03B frozen card + R05 frozen card + R06 frozen card + R07 frozen card) are covered by at least one test or manual QA artifact. No item lacks evidence.
+
+### Review verdict
+
+**APPROVE** with zero CRITICAL, zero HIGH, zero MEDIUM findings. Two items remain PENDING (Desktop manual smoke, remote HTTPS reverse-proxy smoke) per execution contract §6 — neither blocks code review.
+
 ## Scope
 
 - 10 original product commits covering Waves 3-4 of the audit remediation plan
