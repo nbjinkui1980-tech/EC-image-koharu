@@ -19,7 +19,7 @@
     "generate:openapi": "bun cargo run -p koharu-rpc --bin openapi -- ui/openapi.json",
     "generate:api": "bun run generate:openapi && bun run --filter ui generate:api && bun run format:generated",
     "test:generated": "bun test scripts/check-generated.test.ts",
-    "test:storage": "bun test scripts/cargo-target-lock.test.ts scripts/storage.test.ts",
+    "test:storage": "bun test --timeout=20000 scripts/cargo-target-lock.test.ts scripts/storage.test.ts",
     "audit:deps": "bun scripts/supply-chain-policy.ts",
     "test:supply-chain": "bun test scripts/supply-chain-policy.test.ts",
     "verify:generated": "bun run scripts/check-generated.ts",

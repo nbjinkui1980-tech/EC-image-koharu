@@ -114,7 +114,7 @@ Plan: docs/superpowers/plans/2026-08-11-ar01-remediation-execution-contract.md
 
 ### Readiness claims
 
-- **Desktop manual smoke**: PASS at product HEAD `68f7b688`. A fresh `KOHARU_CARGO_GUARD_ACTIVE=1 bun run build` completed, the release app rendered the Koharu project home, `GET /` returned 200, unauthenticated `GET /api/v1/meta` returned 401, an authenticated WebView connection remained established, and normal quit removed the listener. The macOS keychain prompt was denied without entering credentials; the application continued through its existing fallback path.
+- **Desktop manual smoke**: PASS at product HEAD `68f7b688`. A fresh `KOHARU_CARGO_GUARD_ACTIVE=1 bun run build` completed, the release app rendered the Koharu project home, `GET /` returned 200, unauthenticated `GET /api/v1/meta` returned 401, a WebView connection to the local listener remained established, and normal quit removed the listener. The macOS keychain prompt was denied without entering credentials; the application continued through its existing fallback path.
 - **Remote HTTPS reverse-proxy smoke**: PENDING — not executed. Headless mode pre-bind validation is exercised by unit tests and CLI manual QA, but a real reverse-proxy deployment with external TLS termination was not tested.
 - **Docker**: out of scope per execution contract §6.
 - **Release-ready**: NOT CLAIMED — Docker remains out of scope and remote-proxy smoke is pending. This branch is merge-ready for AR01, not remote-deployment-ready.

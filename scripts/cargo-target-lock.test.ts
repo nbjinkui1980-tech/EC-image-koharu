@@ -108,8 +108,11 @@ describe('shared Cargo target coordination', () => {
         expect(secondAcquired).toBeFalse()
 
         resumeRecovery.resolve()
-        const [firstLease, secondLease] = await Promise.all([first, second])
-        await Promise.all([firstLease.release(), secondLease.release()])
+        const firstLease = await first
+        expect(secondAcquired).toBeFalse()
+        await firstLease.release()
+        const secondLease = await second
+        await secondLease.release()
       } finally {
         __cargoTargetLockTestHooks.afterDeadLeaseOwnerRead = undefined
         __cargoTargetLockTestHooks.onRecoveryBlocked = undefined
@@ -118,16 +121,28 @@ describe('shared Cargo target coordination', () => {
     })
   })
 
-  test('allows concurrent builds but grants only one prune lease', async () => {
+  test('serializes builds and grants only one prune lease', async () => {
     await withTarget(async (targetRoot) => {
-      const [firstBuild, secondBuild] = await Promise.all([
-        acquireCargoBuildLease(targetRoot),
-        acquireCargoBuildLease(targetRoot),
-      ])
-      await expect(acquireCargoPruneLease(targetRoot)).rejects.toThrow(
-        'requires all shared-target builds to finish',
-      )
-      await Promise.all([firstBuild.release(), secondBuild.release()])
+      const blocked = deferred()
+      let secondAcquired = false
+      __cargoTargetLockTestHooks.onBuildBlocked = () => blocked.resolve()
+      const firstBuild = await acquireCargoBuildLease(targetRoot)
+      const secondBuildPromise = acquireCargoBuildLease(targetRoot).then((lease) => {
+        secondAcquired = true
+        return lease
+      })
+      try {
+        await blocked.promise
+        expect(secondAcquired).toBeFalse()
+        await expect(acquireCargoPruneLease(targetRoot)).rejects.toThrow(
+          'requires all shared-target builds to finish',
+        )
+      } finally {
+        await firstBuild.release()
+        const secondBuild = await secondBuildPromise
+        await secondBuild.release()
+        __cargoTargetLockTestHooks.onBuildBlocked = undefined
+      }
 
       const results = await Promise.allSettled([
         acquireCargoPruneLease(targetRoot),
