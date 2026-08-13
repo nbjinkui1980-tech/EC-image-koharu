@@ -3,6 +3,7 @@
  * Do not edit manually.
  */
 
+export * from './apiError'
 export * from './appConfig'
 export * from './appEvent'
 export * from './blobRef'

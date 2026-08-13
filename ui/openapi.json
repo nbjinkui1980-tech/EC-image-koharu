@@ -138,6 +138,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Provider base URL authority changed without a new secret",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         }
       }
@@ -944,6 +954,20 @@
   },
   "components": {
     "schemas": {
+      "ApiError": {
+        "type": "object",
+        "required": ["status", "message"],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "AppConfig": {
         "type": "object",
         "properties": {
