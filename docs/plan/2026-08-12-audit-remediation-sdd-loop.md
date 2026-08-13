@@ -116,8 +116,8 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR03-T01 Provider URL/authority 规范化 | ✅ | commit `4a71facf` | L-AR03 收口证据见合同 |
 | AR03-T02 Config authority 冲突 | ✅ | commit `664d4071` | ←T01;review-fix `a1fad0e3` |
 | AR03-T03 Redirect/错误脱敏 | ✅ | commit `d6bd1034` | ←T01;redirect 降级回归锁(实测默认安全) |
-| AR04-T02 Apply/Undo/Redo durable commit | 🚧 | — | L-AR04 在途,合同 `e93680f4` |
-| AR04-T03 损坏尾回滚 fail-stop | 🚧 | — | ←T02;L-AR04 在途 |
+| AR04-T02 Apply/Undo/Redo durable commit | ✅ | commit `141f19ed` | L-AR04 收口证据见合同 |
+| AR04-T03 损坏尾回滚 fail-stop | ✅ | commit `eb8b9ccc` | ←T02 |
 
 ### W4
 
@@ -128,7 +128,7 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR05-T01 Route body limits | 🟡 | — | 现状仅全局 1GiB DefaultBodyLimit(早于本计划,无路由级差异) |
 | AR05-T02 Archive 读取预算 | 🟡 | — | 无依赖 |
 | AR05-T03 Import 原子发布 | 🔴 | — | ←AR04-T03+T02 |
-| AR05-T04 History frame 预算 | 🔴 | — | ←AR04-T03 |
+| AR05-T04 History frame 预算 | 🟡 | — | ←AR04-T03(已 ✅,2026-08-14 L-AR04 收口解锁) |
 | AR05-T05A Tauri picker File | 🟡 | — | 仅依赖已批准 AMEND-01 |
 | AR05-T05B 删除 from-paths API | 🔴 | — | ←T05A;现状 `/pages/from-paths` 仍在 pages.rs |
 | AR05-T06 批量预算/decode admission | 🔴 | — | ←T01 |
@@ -205,7 +205,6 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
-| L-AR04 | Sisyphus/ulw(当前会话) | `audit-remediation-phase3` | `e93680f4d38aa499` | 2026-08-14 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
@@ -290,6 +289,9 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-13 | L-AR03 | lane 收口 ✅(4 commit) | T01 `4a71facf` / T02 `664d4071` / T03 `d6bd1034` / review-fix `a1fad0e3`;门禁全绿(llm 40P/app 444P 二轮/rpc 33P,workspace clippy/fmt/check,check:generated);typography flake 复跑确认(既有,无关);独立 review 因 provider 模型故障(4 次启动失败)降级为对抗性自审——1 minor(409 message 字节截断 panic 路径)已修并验证;docs 证据单独提交;计数不变 → ✅17/◐11/🟡23/🚧0/🔴20/⛔1/⏸0 |
 | 2026-08-14 | — | LOOP-5e 台账补漏(L-AR03) | commit `b0437c98`;§3 矩阵 AR03-T01/T02/T03 🚧→✅、在途登记表清除 L-AR03 行;无依赖传播(无卡等 L-AR03);计数不变 |
 | 2026-08-14 | L-AR04 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `e93680f4d38aa499`;认领基线 main@`b68f123e`,分支 tip `b0437c98`;前置 AR04-T01 ✅`fb7d5546`;子代理基础设施仍故障(子代理模型 ID 均带错误 `siliconflow/` 前缀),侦查经 codegraph 单执行器完成;计数 → ✅17/◐11/🟡22/🚧2/🔴19/⛔1/⏸0 |
+| 2026-08-14 | L-AR04 | T02 ✅(Apply/Undo/Redo durable commit) | commit `141f19ed`;RED 3F/6P(均死于 scene must not change)→GREEN history 9P/0F、session 14P/0F;app suite/clippy/fmt 净;session.rs 未动(发布语义全在 History 内);计数 → ✅18/◐11/🟡22/🚧1/🔴19/⛔1/⏸0 |
+| 2026-08-14 | L-AR04 | T03 ✅(损坏尾回滚 fail-stop) | commit `eb8b9ccc`;RED 3F/15P(坏尾未截断/未 fail-stop)→GREEN session 18P/0F、history 9P/0F;app suite/clippy/fmt 净;计数 → ✅19/◐11/🟡22/🚧0/🔴19/⛔1/⏸0 |
+| 2026-08-14 | L-AR04 | lane 收口 ✅(2 commit) | T02 `141f19ed` / T03 `eb8b9ccc`;门禁全绿(app/rpc/llm suites exit 0,workspace clippy/fmt/check,check:generated 零漂移);CHECK/GEN 曾被 tauri dev 会话租约阻塞,用户关闭后完成(环境事件);独立 review 因 oracle 模型映射仍故障(第 8 次失败)降级对抗性自审——零 blocker/major/minor,1 informational(真实 mid-write 失败留部分尾由 T03 回滚接管,by design);依赖传播:AR05-T04 🔴→🟡(AR05-T03 仍等 AR05-T02);计数 → ✅19/◐11/🟡23/🚧0/🔴18/⛔1/⏸0 |
 | 2026-08-13 | — | Ralplan 收口 blocker 修正 | 主账原子认领+集成后 DONE、10 卡降为 ◐、W1~W6 门禁闭环、回滚单元+反向依赖闭包;计数 → ✅14/◐11/🟡25/🔴20/⛔1/⏸1(共 72,待处理 57) |
 | 2026-08-13 | — | 授权模型改为 Phase 3 一次批准 | 唯一本地 `audit-remediation-phase3` 分支串行全部 lane;每 lane 本地提交+台账更新后自动继续;不合并 main,不远端同步;AR10-T01 转 🟡;计数 → ✅14/◐11/🟡26/🔴20/⛔1/⏸0 |
 

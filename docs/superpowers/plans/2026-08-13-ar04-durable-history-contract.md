@@ -31,6 +31,13 @@
 - **目标文件**:`history.rs`、`session.rs`(≤2)
 - **验收命令**:`bun cargo test -p koharu-app history`、`bun cargo test -p koharu-app session`
 - **证据记录**:RED / GREEN / 注入接缝位置 / commit SHA
+- **证据(T02 收口,2026-08-14)**:
+  - RED:`bun cargo test -p koharu-app history` → exit 101,`6 passed; 3 failed`(apply/undo/redo 三个 `*_leaves_no_trace` 均 FAIL 于 "scene must not change"——先改内存后持久化实证;锁测试 `apply_success_publishes_after_durable_frame` PASS)
+  - GREEN:同命令 → exit 0,`9 passed; 0 failed`;`bun cargo test -p koharu-app session` → exit 0,`14 passed; 0 failed`
+  - 门禁:`bun cargo test -p koharu-app` 全 suite → exit 0;`clippy -p koharu-app --all-targets -D warnings` → exit 0;`fmt -p koharu-app --check` → exit 0
+  - 注入接缝:`History::fail_next_frame_write`(cfg(test) 字段,write_frame 写盘前 bail;先例 `compact_apply_sync`)
+  - 设计落地:候选态先行(scratch scene apply → durable frame → 一次性发布);undo/redo 改 peek(`back()/last().cloned()`)使失败时栈不变;`write_frame` 签名改为携带目标 epoch
+  - Commit:`141f19ed`(1 文件,+135/-10;`session.rs` 未动——发布语义全部在 History 内)
 
 ## 卡:AR04-T03 — 损坏尾回滚与 fail-stop
 
@@ -49,6 +56,14 @@
 - **目标文件**:`history.rs`、`session.rs`(≤2)
 - **验收命令**:`bun cargo test -p koharu-app history`、`bun cargo test -p koharu-app session`
 - **证据记录**:RED / GREEN / 回滚前后 log 字节样例 / commit SHA
+- **证据(T03 收口,2026-08-14)**:
+  - RED:`bun cargo test -p koharu-app session` → exit 101,`15 passed; 3 failed`(partial/undecodable 坏尾未截断 FAIL、open 未 fail-stop FAIL;锁 `untrusted_open_stays_strict_on_corrupt_tail` PASS)
+  - GREEN:同命令 → exit 0,`18 passed; 0 failed`;`bun cargo test -p koharu-app history` → exit 0,`9 passed; 0 failed`
+  - 门禁:`bun cargo test -p koharu-app` 全 suite → exit 0;`clippy -p koharu-app --all-targets -D warnings` → exit 0;`fmt -p koharu-app --check` → exit 0
+  - 注入接缝:thread-local `fail_next_tail_rollback`(cfg(test),防并行测试互窃注入;消费式 `take_tail_rollback_fault`;测试各自 `clear_tail_rollback_fault` 开局)
+  - 设计落地:`ReplayOutcome{epoch, bad_tail_offset}`;`rollback_corrupt_tail` = `set_len(good_end)`+`sync_all`,失败即 open bail(fail-stop);`replay` 公开签名不变;strict(untrusted)语义不变
+  - 回滚前后 log 字节样例:`[frame1 完整] + [len=64][8B 垃圾]` → open 后 log 回到 frame1 原长;apply 追加位置 = 末好帧末尾;重开观察到且仅观察到完整帧(name=second,epoch 2)
+  - Commit:`eb8b9ccc`(2 文件,+185/-6)
 
 ---
 
@@ -60,6 +75,14 @@
 - `bun run check:generated`(无 OpenAPI 面变更,确认零漂移)
 - 独立 scoped code-review 零发现(子代理基础设施当前故障——每次收口重试;仍故障则降级对抗性自审并落档偏差)
 - history fault injection 与损坏尾回滚可重复演示(注入点 + log 字节样例)
+
+**Lane 收口证据(2026-08-14)**:
+
+- 门禁:`bun cargo test -p koharu-app -p koharu-rpc -p koharu-llm` → exit 0;`clippy --workspace --all-targets -D warnings` → exit 0;`fmt --all --check` → exit 0;`check --workspace --all-targets` → exit 0;`bun run check:generated` → exit 0(零漂移,本 lane 无 OpenAPI 面)
+- 环境事件:CHECK/GEN 曾被一个 `tauri dev` 会话持有的共享 target 租约阻塞(00:44 启动,非本 lane 工作);用户确认并关闭后门禁完成——非 lane 缺陷,仅记录
+- 独立 review(偏差记录):oracle 第 8 次启动失败(`siliconflow/moonshotai/Kimi-K2.7-Code` 子代理映射仍未修)→ 降级为对抗性自审(同一结构化清单,`31ec8c62..eb8b9ccc` file:line 取证):**零 blocker/major/minor**;1 informational——真实 mid-write io 失败可能在盘上留部分帧尾(内存零痕迹),由 T03 回滚在下次 open 接管,by design。**与 AR03 拖欠项一并,待子代理修复后补独立 review**
+- 依赖传播:AR05-T04 ←AR04-T03 唯一依赖已满足 → 🔴→🟡;AR05-T03 仍等 AR05-T02(🟡 未完成)维持 🔴
+- 可重复演示:T02 `fail_next_frame_write` / T03 `fail_next_tail_rollback` 注入点 + 回滚前后 log 字节样例(卡级证据区)
 
 ## 风险与决策点(批准时一并确认)
 
