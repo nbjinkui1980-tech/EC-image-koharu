@@ -284,6 +284,10 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-12 | — | 五轴自审修复(4 必修 + 1 Nit) | C1 计数基线、I2 选择规则域优先、I3 AR11/AR12 拆行、I4 LOOP-5c 就绪传播、N5 AR05-T01 措辞 |
 | 2026-08-12 | — | 用户审查修复(3 HIGH + 2 MEDIUM) | HIGH-1 状态转 DRAFT(待 checkpoint)、HIGH-2 lane 认领登记+分支规则、HIGH-3 禁止整文件 checkout、MEDIUM-1 T03A~E 展开五卡、MEDIUM-2 T07 降级 ◐;计数 → ✅24/◐1/🟡25/🔴20/⛔1/⏸1(共 72) |
 | 2026-08-13 | L-AR03 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `22565edc71c01579`;认领基线 main@`b68f123e`;计数 → ✅14/◐11/🟡23/🚧3/🔴20/⛔1/⏸0 |
+| 2026-08-13 | L-AR03 | T01 ✅(provider URL authority 规范化) | commit `4a71facf`;5 断言 RED(exit 101)→GREEN(exit 0);suite 36P/0F,clippy/fmt 净;计数 → ✅15/◐11/🟡23/🚧2/🔴20/⛔1/⏸0 |
+| 2026-08-13 | L-AR03 | T02 ✅(config authority 冲突 409) | commit `664d4071`;4 断言 RED→GREEN;app 444P/rpc 22P,clippy/fmt 净;Orval 重生成(apiError schema);计数 → ✅16/◐11/🟡23/🚧1/🔴20/⛔1/⏸0 |
+| 2026-08-13 | L-AR03 | T03 ✅(provider 错误脱敏;redirect 降级回归锁) | commit `d6bd1034`;RED-0 实测 reqwest 默认全满足(host/port 剥离 Authorization+Cookie,同 authority 保留)→合同范围缩减预案激活,文件域收缩为 providers/mod.rs 单文件;RED 1F/3P→GREEN 4/4;llm suite 40P/0F,clippy/fmt 净;计数 → ✅17/◐11/🟡23/🚧0/🔴20/⛔1/⏸0 |
+| 2026-08-13 | L-AR03 | lane 收口 ✅(4 commit) | T01 `4a71facf` / T02 `664d4071` / T03 `d6bd1034` / review-fix `a1fad0e3`;门禁全绿(llm 40P/app 444P 二轮/rpc 33P,workspace clippy/fmt/check,check:generated);typography flake 复跑确认(既有,无关);独立 review 因 provider 模型故障(4 次启动失败)降级为对抗性自审——1 minor(409 message 字节截断 panic 路径)已修并验证;docs 证据单独提交;计数不变 → ✅17/◐11/🟡23/🚧0/🔴20/⛔1/⏸0 |
 | 2026-08-13 | — | Ralplan 收口 blocker 修正 | 主账原子认领+集成后 DONE、10 卡降为 ◐、W1~W6 门禁闭环、回滚单元+反向依赖闭包;计数 → ✅14/◐11/🟡25/🔴20/⛔1/⏸1(共 72,待处理 57) |
 | 2026-08-13 | — | 授权模型改为 Phase 3 一次批准 | 唯一本地 `audit-remediation-phase3` 分支串行全部 lane;每 lane 本地提交+台账更新后自动继续;不合并 main,不远端同步;AR10-T01 转 🟡;计数 → ✅14/◐11/🟡26/🔴20/⛔1/⏸0 |
 

@@ -51,6 +51,12 @@
 - **目标文件**:`providers/authority.rs`(新)、`providers/openai_compatible.rs`、`providers/mod.rs`(≤3)
 - **验收命令**:`bun cargo test -p koharu-llm authority`
 - **证据记录**:RED 输出(5 断言失败)/ GREEN 输出 / commit SHA
+- **证据(T01 收口,2026-08-13)**:
+  - RED-0:stub 编译通过(`bun cargo test -p koharu-llm authority` 编译阶段 OK;workspace check 产出 libkoharu_llm rmeta 旁证)
+  - RED-1:`bun cargo test -p koharu-llm authority` → exit 101,`0 passed; 5 failed`(authority_rejects_non_http_scheme / authority_rejects_userinfo / authority_rejects_fragment / authority_effective_port / authority_same_path_insensitive)
+  - GREEN-1:同命令 → exit 0,`5 passed; 0 failed`
+  - GREEN-2:`bun cargo test -p koharu-llm` → exit 0,`36 passed; 0 failed; 10 ignored`;`bun cargo clippy -p koharu-llm --all-targets -- -D warnings` → exit 0;`bun cargo fmt -p koharu-llm -- --check` → exit 0
+  - Commit:`4a71facf`(fix(llm): validate provider base URL authority,3 文件 +95 行)
 
 ## 卡:AR03-T02 — Config authority 冲突(409)
 
@@ -64,6 +70,16 @@
 - **目标文件**:`config.rs`、`routes/config.rs`(≤2)
 - **验收命令**:`bun cargo test -p koharu-app provider_authority`、`bun cargo test -p koharu-rpc config_conflict`
 - **证据记录**:RED / GREEN / 409 body 样例 / commit SHA
+- **证据(T02 收口,2026-08-13)**:
+  - RED-0:两 crate 编译通过(stub `provider_authority_conflicts` 返回空)
+  - RED-1:`bun cargo test -p koharu-app provider_authority` → exit 101,`1 passed; 1 failed`(patch_authority_change_without_secret_conflicts FAIL / patch_same_authority_path_change_keeps_secret PASS);`bun cargo test -p koharu-rpc config_conflict` → exit 101(rpc_patch_config_returns_409 FAIL,left=200/right=409,响应体显示已静默合并;rpc_set_secret_then_authority_change_commits PASS)
+  - GREEN-1:两命令 → exit 0,各 `2 passed; 0 failed`
+  - GREEN-2:`bun cargo test -p koharu-app` → 444 passed/0 failed(2 ignored);`bun cargo test -p koharu-rpc` → 22 passed/0 failed;`clippy -p koharu-app -p koharu-rpc --all-targets -D warnings` → exit 0;`fmt -p koharu-app -p koharu-rpc --check` → exit 0
+  - Orval:`bun run check:generated` 重生成,drift = `ui/openapi.json` + `schemas/index.ts` + 新增 `schemas/apiError.ts`(409 body schema),审查后随卡提交
+  - 既有 flake 记录:pipeline/typography `hanonly_pre_greenc_red_t3_*` 2 测试首轮全 suite 失败,隔离复跑与二轮全 suite 均通过;与本卡改动面(config.rs 纯新增)无关,不处理
+  - 决策:显式新 secret 语义 = 同一 PATCH 内携带 apiKey(非 REDACTED/非空,含显式清空);PUT secret 后再 PATCH 改 authority 仍 409(protective default)
+  - 409 body 样例:`{"status":409,"message":"provider base URL authority changed without a new secret: ar03-test-provider"}`(message ≤256 截断)
+  - Commit:`664d4071`(5 文件,+369/-1)
 
 ## 卡:AR03-T03 — Redirect 与 provider 错误脱敏
 
@@ -78,6 +94,21 @@
 - **目标文件**:`openai_compatible.rs`、`providers/mod.rs`(错误摘要)、`llm.rs`、`routes/llm.rs`;条件扩展 `runtime.rs`(≤5)
 - **验收命令**:`bun cargo test -p koharu-llm redirect`、App/RPC provider error tests
 - **证据记录**:RED-0 实测表 / RED / GREEN / B 端 header 捕获样例 / commit SHA
+- **证据(T03 收口,2026-08-13)**:
+  - RED-0 实测表(reqwest 默认 redirect policy;测试客户端显式 `no_proxy()` 隔离本机 clash 系统代理——首轮 cross-host 实测 502 Bad Gateway 暴露代理污染,禁代理后复测干净):
+
+    | 场景 | reqwest 默认行为(实测) | 判定 |
+    |---|---|---|
+    | host 变化(127.0.0.1 → [::1]) | B 收到请求,Authorization 剥离 | 默认安全 |
+    | port 变化(同 host 127.0.0.1:Pa → :Pb) | B 收到请求,Authorization+Cookie 剥离 | 默认安全 |
+    | 同 authority 变 path | Authorization 保留 | 正确(运行所需) |
+  - 范围缩减激活:redirect 部分按合同 RED-0 预案降级为 3 个回归锁定测试;provider 专用 client / `runtime.rs` 条件扩展不实施;文件域收缩为 `providers/mod.rs` 单文件(`openai_compatible.rs`/`llm.rs`/`routes/llm.rs` 未动)
+  - RED-1:`bun cargo test -p koharu-llm redirect` → exit 101,`3 passed; 1 failed`(`provider_error_bounded_and_redacted` FAIL:5115 字符全量透传且含 `sk-live-secret` 原文;3 redirect 锁 PASS)
+  - GREEN:同命令 → exit 0,`4 passed; 0 failed`
+  - 门禁:`bun cargo test -p koharu-llm` → 40 passed/0 failed(10 ignored);`clippy -p koharu-llm --all-targets -D warnings` → exit 0;`fmt -p koharu-llm --check` → exit 0
+  - B 端 header 捕获样例(cross-port):B 收到 `GET /target HTTP/1.1`,`header_value(authorization)=None`,`header_value(cookie)=None`
+  - 设计:错误摘要先脱敏后截断(防截断边界泄漏部分 secret);secret 判定:token 核心字符 `[A-Za-z0-9_-]` 长度 ≥12 且含 `-`/`_`,或 ≥24 且字母数字混合;摘要 ≤160 字符 + `…` 截断标记;quota 检测保持在完整 body 上(既有行为不变)
+  - Commit:`d6bd1034`(1 文件,+313/-1)
 
 ---
 
@@ -89,6 +120,15 @@
 - `bun run check:generated`(Orval 漂移已重生成且审查 diff)
 - 独立 scoped code-review 零发现(对照 AR01 模式)
 - provider redirect 与 config 409 可重复演示(实测表 + header 捕获)
+
+**Lane 收口证据(2026-08-13)**:
+
+- 门禁:`bun cargo test -p koharu-llm -p koharu-app -p koharu-rpc` → llm 40P/0F、rpc 33P/0F、app 444P/0F(二轮);`clippy --workspace --all-targets -D warnings` → exit 0;`fmt --all --check` → exit 0;`check --workspace --all-targets` → exit 0;`bun run check:generated` → exit 0
+- 既有 flake:首轮 app suite `typography::tests::hanonly_pre_greenc_red_t3_transient_planner_hint_contract` 1F(443P),二轮全 suite 444P/0F 通过——与 T02 记录的同族 typography flake 模式一致(首轮失败/复跑通过),与本 lane 改动面无关,不处理
+- 独立 review(偏差记录):oracle ×2 / unspecified-high / general 子代理四次启动均失败(provider 模型配置故障:`siliconflow/moonshotai/Kimi-K2.7-Code`、`siliconflow/zai-org/GLM-5.2` 两个失效模型 ID),独立执行体不可用 → 降级为对抗性自审(同一结构化清单,file:line 取证);**建议模型恢复后补独立 review**
+- 自审结果:**1 minor 已修** —— `routes/config.rs:56` `message.truncate(256)` 字节截断在多字节 UTF-8 边界可 panic(CJK provider id 场景)→ 修为 `chars().take(256)`(commit `a1fad0e3`,rpc suite 33P/0F、clippy/fmt 净);其余各项 clean:(a) authority 比较无绕过(trailing-dot/大小写差异走 409 保护方向,`port_or_known_default` expect 不可达已论证);(b) 无 stale-secret 复用路径(REDACTED 哨兵/无 apiKey 均视为复用,显式清空视为新 secret;409 先于 `apply_patch`,无部分 mutation;409 body 仅含 provider id,不回显 URL);(c) quota 检测保持在完整 body 上,截断 char 安全;(d) diff 无新增日志/panic 路径,唯一非测试 expect 为上述不可达分支
+- 遗留 minor(接受,不阻塞):T03 脱敏规则为合同指定的启发式(<12 字符 token、被空白切断的 token、unicode 形似字符不在覆盖内);T02 既有 base_url 不可解析时不判冲突(注释已论证:不可解析 URL 在请求时根本收不到 secret);redirect cross-host 锁测试在无 IPv6 环回的主机上跳过(cross-port 测试覆盖同一剥离逻辑)
+- 可重复演示:RED-0 实测表 + B 端 header 捕获样例(T03 证据区)+ 409 body 样例(T02 证据区)
 
 ## 风险与决策点(批准时一并确认)
 
