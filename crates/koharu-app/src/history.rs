@@ -201,7 +201,15 @@ impl History {
 /// Replay each frame in `log_path` with epoch greater than `start_epoch`
 /// against `scene`. Returns the final epoch seen.
 pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u64> {
-    replay_with_policy(log_path, start_epoch, scene, false)
+    replay_with_policy(log_path, start_epoch, scene, false).map(|outcome| outcome.epoch)
+}
+
+/// Result of a log replay: the final epoch plus, when a corrupt tail was
+/// tolerated in non-strict mode, the byte offset where that tail starts
+/// (i.e. the end of the last fully-valid frame).
+pub(crate) struct ReplayOutcome {
+    pub epoch: u64,
+    pub bad_tail_offset: Option<u64>,
 }
 
 pub(crate) fn replay_with_policy(
@@ -209,14 +217,21 @@ pub(crate) fn replay_with_policy(
     start_epoch: u64,
     scene: &mut Scene,
     strict: bool,
-) -> Result<u64> {
+) -> Result<ReplayOutcome> {
     if !log_path.exists() {
-        return Ok(start_epoch);
+        return Ok(ReplayOutcome {
+            epoch: start_epoch,
+            bad_tail_offset: None,
+        });
     }
     let file =
         File::open(log_path).with_context(|| format!("open history log {}", log_path.display()))?;
     let mut reader = BufReader::new(file);
     let mut epoch = start_epoch;
+    // End offset of the last fully-valid frame; a tolerated corrupt tail
+    // starts at this position.
+    let mut good_end = 0u64;
+    let mut bad_tail_offset = None;
     loop {
         if reader.fill_buf()?.is_empty() {
             break;
@@ -229,6 +244,7 @@ pub(crate) fn replay_with_policy(
                     path = %log_path.display(),
                     "truncated trailing frame length in history log; discarding"
                 );
+                bad_tail_offset = Some(good_end);
                 break;
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read log frame length")),
@@ -244,6 +260,7 @@ pub(crate) fn replay_with_policy(
                     expected_len = len,
                     "truncated trailing frame in history log; discarding"
                 );
+                bad_tail_offset = Some(good_end);
                 break;
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read log frame body")),
@@ -263,6 +280,7 @@ pub(crate) fn replay_with_policy(
                     error = %err,
                     "undecodable frame in history log; stopping replay"
                 );
+                bad_tail_offset = Some(good_end);
                 break;
             }
             Err(err) => return Err(err.context("decode history log frame")),
@@ -272,10 +290,14 @@ pub(crate) fn replay_with_policy(
             op.apply(scene).context("replay op")?;
             epoch = frame_epoch;
         }
+        good_end += 4 + len as u64;
     }
     // Seek to end so subsequent appends go after the last valid frame.
     let _ = reader.seek(SeekFrom::End(0));
-    Ok(epoch)
+    Ok(ReplayOutcome {
+        epoch,
+        bad_tail_offset,
+    })
 }
 
 #[cfg(test)]
