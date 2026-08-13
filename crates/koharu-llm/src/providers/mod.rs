@@ -16,6 +16,7 @@ pub(crate) fn resolve_system_prompt(custom: Option<&str>, target_language: Langu
     }
 }
 
+pub mod authority;
 pub mod caiyun;
 mod chat_completions;
 pub mod claude;
