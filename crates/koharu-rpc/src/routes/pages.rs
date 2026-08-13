@@ -65,6 +65,111 @@ pub struct CreatePagesResponse {
     pub pages: Vec<PageId>,
 }
 
+// --- Batch import budget (AMEND-02) -----------------------------------------
+
+const MAX_IMPORT_FILES: usize = 256;
+const MAX_IMPORT_ENCODED_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_IMPORT_DECODED_RGBA_BYTES: u64 = 1024 * 1024 * 1024;
+const DECODE_CONCURRENCY: usize = 2;
+
+struct ImportBudget {
+    max_files: usize,
+    max_encoded_bytes: u64,
+    max_decoded_rgba_bytes: u64,
+}
+
+fn import_budget() -> ImportBudget {
+    #[cfg(test)]
+    if let Some(over) = IMPORT_BUDGET_OVERRIDE.with(|cell| cell.get()) {
+        return ImportBudget {
+            max_files: over.max_files,
+            max_encoded_bytes: over.max_encoded_bytes,
+            max_decoded_rgba_bytes: over.max_decoded_rgba_bytes,
+        };
+    }
+    ImportBudget {
+        max_files: MAX_IMPORT_FILES,
+        max_encoded_bytes: MAX_IMPORT_ENCODED_BYTES,
+        max_decoded_rgba_bytes: MAX_IMPORT_DECODED_RGBA_BYTES,
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct ImportBudgetOverride {
+    max_files: usize,
+    max_encoded_bytes: u64,
+    max_decoded_rgba_bytes: u64,
+}
+
+#[cfg(test)]
+impl ImportBudgetOverride {
+    const DEFAULTS: Self = Self {
+        max_files: MAX_IMPORT_FILES,
+        max_encoded_bytes: MAX_IMPORT_ENCODED_BYTES,
+        max_decoded_rgba_bytes: MAX_IMPORT_DECODED_RGBA_BYTES,
+    };
+}
+
+#[cfg(test)]
+thread_local! {
+    static IMPORT_BUDGET_OVERRIDE: std::cell::Cell<Option<ImportBudgetOverride>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn import_budget_override(over: Option<ImportBudgetOverride>) {
+    IMPORT_BUDGET_OVERRIDE.with(|cell| cell.set(over));
+}
+
+// Decode-concurrency gauge: observability only. RED measures the unbounded
+// rayon admission; GREEN pins it at DECODE_CONCURRENCY via a dedicated pool.
+#[cfg(test)]
+static DECODE_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static DECODE_IN_FLIGHT_MAX: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn reset_decode_gauge() {
+    DECODE_IN_FLIGHT_MAX.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn decode_in_flight_max() -> usize {
+    DECODE_IN_FLIGHT_MAX.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+struct DecodeGauge;
+
+#[cfg(test)]
+impl DecodeGauge {
+    fn enter() -> Self {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = DECODE_IN_FLIGHT.fetch_add(1, SeqCst) + 1;
+        DECODE_IN_FLIGHT_MAX.fetch_max(now, SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for DecodeGauge {
+    fn drop(&mut self) {
+        DECODE_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn decode_pool() -> &'static rayon::ThreadPool {
+    static DECODE_POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    DECODE_POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(DECODE_CONCURRENCY)
+            .build()
+            .expect("decode pool")
+    })
+}
+
 #[utoipa::path(
     post,
     path = "/pages",
@@ -79,9 +184,13 @@ async fn create_pages(
         .current_session()
         .ok_or_else(|| ApiError::bad_request("no project open"))?;
 
-    // Collect (filename, bytes) pairs first so we can sort naturally.
+    // Collect (filename, bytes) pairs first so we can sort naturally. The
+    // AMEND-02 batch budget is enforced while collecting — before any decode,
+    // blob write, or scene mutation.
+    let budget = import_budget();
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut replace = false;
+    let mut encoded_total: u64 = 0;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -104,6 +213,26 @@ async fn create_pages(
             .bytes()
             .await
             .map_err(|e| ApiError::bad_request(format!("read file: {e}")))?;
+        encoded_total += bytes.len() as u64;
+        if files.len() + 1 > budget.max_files {
+            return Err(ApiError::new(
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "import budget exceeded: {} files > {}",
+                    files.len() + 1,
+                    budget.max_files
+                ),
+            ));
+        }
+        if encoded_total > budget.max_encoded_bytes {
+            return Err(ApiError::new(
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "import budget exceeded: {encoded_total} encoded bytes > {}",
+                    budget.max_encoded_bytes
+                ),
+            ));
+        }
         files.push((filename, bytes.to_vec()));
     }
 
@@ -111,25 +240,45 @@ async fn create_pages(
 
     // Admit every source image before any mutation. A rejected
     // format leaves the project unchanged. Bytes are preserved
-    // for blob storage after admission passes.
+    // for blob storage after admission passes. Decoding runs on a
+    // dedicated pool so at most DECODE_CONCURRENCY images decode at once.
     if files.is_empty() {
         return Err(ApiError::bad_request("no files in request"));
     }
     let admitted: Vec<(String, u32, u32, Vec<u8>)> = tokio::task::spawn_blocking(move || {
-        files
-            .into_par_iter()
-            .map(
-                |(filename, bytes)| -> ApiResult<(String, u32, u32, Vec<u8>)> {
-                    let img = koharu_app::blobs::admit_source_image(&bytes)
-                        .map_err(|e| ApiError::bad_request(format!("admit `{filename}`: {e}")))?;
-                    let (w, h) = img.dimensions();
-                    Ok((filename, w, h, bytes))
-                },
-            )
-            .collect::<ApiResult<Vec<_>>>()
+        decode_pool().install(|| {
+            files
+                .into_par_iter()
+                .map(
+                    |(filename, bytes)| -> ApiResult<(String, u32, u32, Vec<u8>)> {
+                        #[cfg(test)]
+                        let _gauge = DecodeGauge::enter();
+                        let img = koharu_app::blobs::admit_source_image(&bytes).map_err(|e| {
+                            ApiError::bad_request(format!("admit `{filename}`: {e}"))
+                        })?;
+                        let (w, h) = img.dimensions();
+                        Ok((filename, w, h, bytes))
+                    },
+                )
+                .collect::<ApiResult<Vec<_>>>()
+        })
     })
     .await
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
+
+    let decoded_total: u64 = admitted
+        .iter()
+        .map(|(_, w, h, _)| u64::from(*w) * u64::from(*h) * 4)
+        .sum();
+    if decoded_total > budget.max_decoded_rgba_bytes {
+        return Err(ApiError::new(
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "import budget exceeded: {decoded_total} decoded RGBA bytes > {}",
+                budget.max_decoded_rgba_bytes
+            ),
+        ));
+    }
 
     // All files admitted — now safe to mutate the project.
     let mut ops: Vec<Op> = Vec::new();
@@ -852,6 +1001,154 @@ mod tests {
                     .map_err(|error| error.message)
             }
         }
+    }
+
+    async fn budget_test_state(root: &std::path::Path) -> AppState {
+        let runtime = RuntimeManager::new(root.join("runtime"), ComputePolicy::CpuOnly)
+            .expect("create runtime");
+        runtime.prepare().await.expect("prepare runtime");
+        let runtime = Arc::new(runtime);
+        let app = Arc::new(
+            App::new(AppConfig::default(), runtime.clone(), true, "test").expect("create app"),
+        );
+        let state = crate::BootstrapManager::new(runtime);
+        assert!(state.set_app(app).is_ok(), "set test app");
+        state
+    }
+
+    fn png_files(names: &[&'static str]) -> Vec<ImportFile> {
+        names
+            .iter()
+            .map(|name| ImportFile {
+                name,
+                bytes: Some(encoded_image(image::ImageFormat::Png)),
+            })
+            .collect()
+    }
+
+    async fn budget_import(
+        case_name: &'static str,
+        files: Vec<ImportFile>,
+    ) -> (
+        Result<CreatePagesResponse, String>,
+        ImportSnapshot,
+        ImportSnapshot,
+    ) {
+        let root =
+            TestDir(std::env::temp_dir().join(format!("koharu-import-budget-{}", Uuid::new_v4())));
+        std::fs::create_dir_all(&root.0).expect("create test root");
+        let state = budget_test_state(&root.0).await;
+        let png = encoded_image(image::ImageFormat::Png);
+        let (project_dir, session) = seeded_session(&root.0, case_name, &png);
+        state.app().unwrap().session.store(Some(session.clone()));
+        let case = ImportCase {
+            name: case_name,
+            ingress: ImportIngress::Multipart { malformed: false },
+            files,
+            succeeds: true,
+        };
+        let before = snapshot(&session, &project_dir);
+        let result = run_import(state.clone(), &project_dir, &case).await;
+        let after = snapshot(&session, &project_dir);
+        (result, before, after)
+    }
+
+    // AR05-T06 RED: batch import budget (AMEND-02) — file count, total encoded
+    // bytes, and total decoded RGBA bytes are rejected before any mutation;
+    // decode concurrency is pinned at 2. Every test clears this thread's
+    // budget override first (pooled test threads can inherit one).
+    #[tokio::test]
+    async fn page_import_budget_rejects_over_file_count() {
+        import_budget_override(None);
+        import_budget_override(Some(ImportBudgetOverride {
+            max_files: 2,
+            ..ImportBudgetOverride::DEFAULTS
+        }));
+        let (result, before, after) =
+            budget_import("over-file-count", png_files(&["a.png", "b.png", "c.png"])).await;
+        import_budget_override(None);
+        let error = result.expect_err("3 files over a 2-file budget must be rejected");
+        assert!(error.contains("import budget"), "unexpected error: {error}");
+        assert_eq!(
+            after, before,
+            "rejected import must leave zero side effects"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_import_budget_rejects_over_encoded_bytes() {
+        import_budget_override(None);
+        let single = encoded_image(image::ImageFormat::Png).len() as u64;
+        import_budget_override(Some(ImportBudgetOverride {
+            max_encoded_bytes: single,
+            ..ImportBudgetOverride::DEFAULTS
+        }));
+        let (result, before, after) =
+            budget_import("over-encoded", png_files(&["a.png", "b.png"])).await;
+        import_budget_override(None);
+        let error = result.expect_err("encoded total over budget must be rejected");
+        assert!(error.contains("import budget"), "unexpected error: {error}");
+        assert_eq!(
+            after, before,
+            "rejected import must leave zero side effects"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_import_budget_rejects_over_decoded_rgba() {
+        import_budget_override(None);
+        // The fixture PNG is 2x1 RGBA = 8 bytes decoded; two images = 16 > 8.
+        import_budget_override(Some(ImportBudgetOverride {
+            max_decoded_rgba_bytes: 8,
+            ..ImportBudgetOverride::DEFAULTS
+        }));
+        let (result, before, after) =
+            budget_import("over-decoded", png_files(&["a.png", "b.png"])).await;
+        import_budget_override(None);
+        let error = result.expect_err("decoded RGBA total over budget must be rejected");
+        assert!(error.contains("import budget"), "unexpected error: {error}");
+        assert_eq!(
+            after, before,
+            "rejected import must leave zero side effects"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_import_budget_decode_concurrency_two() {
+        import_budget_override(None);
+        reset_decode_gauge();
+        let names: Vec<&'static str> = (0..8).map(|_| "p.png").collect();
+        let (result, _, _) = budget_import("decode-concurrency", png_files(&names)).await;
+        result.expect("8 valid images must import");
+        assert!(
+            decode_in_flight_max() <= 2,
+            "decode concurrency must stay within 2, observed {}",
+            decode_in_flight_max()
+        );
+    }
+
+    // Lock: a corrupt image in the batch fails the import with zero side
+    // effects (pre-existing admission-before-mutation behavior).
+    #[tokio::test]
+    async fn page_import_budget_corrupt_image_zero_side_effects() {
+        import_budget_override(None);
+        let mut files = png_files(&["a.png"]);
+        files.push(ImportFile {
+            name: "bad.png",
+            bytes: Some(b"not an image".to_vec()),
+        });
+        let (result, before, after) = budget_import("corrupt-mixed", files).await;
+        assert!(result.is_err(), "corrupt image must fail the import");
+        assert_eq!(after, before, "failed import must leave zero side effects");
+    }
+
+    // Lock: a small import under the default budgets succeeds.
+    #[tokio::test]
+    async fn page_import_budget_default_small_import_ok() {
+        import_budget_override(None);
+        let (result, _, _) = budget_import("small-ok", png_files(&["a.png", "b.png"])).await;
+        let response = result.expect("small import must succeed");
+        assert_eq!(response.pages.len(), 2);
     }
 
     #[test]
