@@ -116,8 +116,8 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR03-T01 Provider URL/authority 规范化 | ✅ | commit `4a71facf` | L-AR03 收口证据见合同 |
 | AR03-T02 Config authority 冲突 | ✅ | commit `664d4071` | ←T01;review-fix `a1fad0e3` |
 | AR03-T03 Redirect/错误脱敏 | ✅ | commit `d6bd1034` | ←T01;redirect 降级回归锁(实测默认安全) |
-| AR04-T02 Apply/Undo/Redo durable commit | 🟡 | — | history.rs 自 08-10 零提交 |
-| AR04-T03 损坏尾回滚 fail-stop | 🔴 | — | ←T02 |
+| AR04-T02 Apply/Undo/Redo durable commit | 🚧 | — | L-AR04 在途,合同 `e93680f4` |
+| AR04-T03 损坏尾回滚 fail-stop | 🚧 | — | ←T02;L-AR04 在途 |
 
 ### W4
 
@@ -205,6 +205,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
+| L-AR04 | Sisyphus/ulw(当前会话) | `audit-remediation-phase3` | `e93680f4d38aa499` | 2026-08-14 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
@@ -287,6 +288,8 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-13 | L-AR03 | T02 ✅(config authority 冲突 409) | commit `664d4071`;4 断言 RED→GREEN;app 444P/rpc 22P,clippy/fmt 净;Orval 重生成(apiError schema);计数 → ✅16/◐11/🟡23/🚧1/🔴20/⛔1/⏸0 |
 | 2026-08-13 | L-AR03 | T03 ✅(provider 错误脱敏;redirect 降级回归锁) | commit `d6bd1034`;RED-0 实测 reqwest 默认全满足(host/port 剥离 Authorization+Cookie,同 authority 保留)→合同范围缩减预案激活,文件域收缩为 providers/mod.rs 单文件;RED 1F/3P→GREEN 4/4;llm suite 40P/0F,clippy/fmt 净;计数 → ✅17/◐11/🟡23/🚧0/🔴20/⛔1/⏸0 |
 | 2026-08-13 | L-AR03 | lane 收口 ✅(4 commit) | T01 `4a71facf` / T02 `664d4071` / T03 `d6bd1034` / review-fix `a1fad0e3`;门禁全绿(llm 40P/app 444P 二轮/rpc 33P,workspace clippy/fmt/check,check:generated);typography flake 复跑确认(既有,无关);独立 review 因 provider 模型故障(4 次启动失败)降级为对抗性自审——1 minor(409 message 字节截断 panic 路径)已修并验证;docs 证据单独提交;计数不变 → ✅17/◐11/🟡23/🚧0/🔴20/⛔1/⏸0 |
+| 2026-08-14 | — | LOOP-5e 台账补漏(L-AR03) | commit `b0437c98`;§3 矩阵 AR03-T01/T02/T03 🚧→✅、在途登记表清除 L-AR03 行;无依赖传播(无卡等 L-AR03);计数不变 |
+| 2026-08-14 | L-AR04 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `e93680f4d38aa499`;认领基线 main@`b68f123e`,分支 tip `b0437c98`;前置 AR04-T01 ✅`fb7d5546`;子代理基础设施仍故障(子代理模型 ID 均带错误 `siliconflow/` 前缀),侦查经 codegraph 单执行器完成;计数 → ✅17/◐11/🟡22/🚧2/🔴19/⛔1/⏸0 |
 | 2026-08-13 | — | Ralplan 收口 blocker 修正 | 主账原子认领+集成后 DONE、10 卡降为 ◐、W1~W6 门禁闭环、回滚单元+反向依赖闭包;计数 → ✅14/◐11/🟡25/🔴20/⛔1/⏸1(共 72,待处理 57) |
 | 2026-08-13 | — | 授权模型改为 Phase 3 一次批准 | 唯一本地 `audit-remediation-phase3` 分支串行全部 lane;每 lane 本地提交+台账更新后自动继续;不合并 main,不远端同步;AR10-T01 转 🟡;计数 → ✅14/◐11/🟡26/🔴20/⛔1/⏸0 |
 
