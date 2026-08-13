@@ -45,7 +45,7 @@ async fn patch_config(
     let current = (**app.config.load()).clone();
     let conflicts = config::provider_authority_conflicts(&current, &patch);
     if !conflicts.is_empty() {
-        let mut message = format!(
+        let message = format!(
             "provider base URL authority changed without a new secret: {}",
             conflicts
                 .iter()
@@ -53,7 +53,7 @@ async fn patch_config(
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        message.truncate(256);
+        let message: String = message.chars().take(256).collect();
         return Err(ApiError::new(StatusCode::CONFLICT, message));
     }
     let mut next = current;
