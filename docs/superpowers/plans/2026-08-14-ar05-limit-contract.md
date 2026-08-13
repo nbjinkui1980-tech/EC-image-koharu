@@ -33,6 +33,13 @@
 - **目标文件**:`api.rs`(≤1)
 - **验收命令**:`bun cargo test -p koharu-rpc body_limit`
 - **证据记录**:RED / GREEN / 各层请求-响应状态样例 / commit SHA
+- **证据(T01 收口,2026-08-14)**:
+  - RED:`bun cargo test -p koharu-rpc body_limit` → exit 101,`1 passed; 3 failed`(control 400/mask 400/archive 500——超限 body 全部到达 handler 实证;锁 `body_limit_at_tier_passes` PASS)
+  - GREEN 首轮失败取证:中间件插错 extension 类型(`DefaultBodyLimit` 本身),提取器查找的是 crate 私有 `DefaultBodyLimitKind`——公开逐请求应用点只有 `DefaultBodyLimit::max(n).apply(&mut request)`(axum-core 0.5.6 源码取证);修正后同命令 → exit 0,`4 passed; 0 failed`
+  - 门禁:`bun cargo test -p koharu-rpc` 全 suite → exit 0;`clippy -p koharu-rpc --all-targets -D warnings` → exit 0;`fmt` → exit 0
+  - 机制:路径分类 middleware(`/api/v1/projects/import` → 512 MiB;`/api/v1/pages/*/masks/*` → 64 MiB;其余 → 1 MiB);全局 1 GiB layer 保留为最外 backstop;tier 中间件居内层后写覆写胜出;Multipart 不受 DefaultBodyLimit 约束(由 T06 治理)
+  - 环境事件:用户在途修改 `package.json`/`scripts/dev.ts`(dev 守卫进程树终止)——非本 lane 域,未提交
+  - Commit:`85bc85c1`(1 文件,+203/-0)
 
 ## 卡:AR05-T06 — 批量图片总预算与 decode admission(multipart)
 
@@ -56,6 +63,14 @@
 - **目标文件**:`routes/pages.rs`(≤1)
 - **验收命令**:`bun cargo test -p koharu-rpc page_import_budget`
 - **证据记录**:RED-0 / RED / GREEN / gauge 观测样例 / commit SHA
+- **证据(T06 收口,2026-08-14)**:
+  - RED-0 脚手架:预算常量 + thread-local 覆盖缝 + decode gauge(仅观测)先落,测试可编译
+  - RED:`bun cargo test -p koharu-rpc page_import_budget` → exit 101,`2 passed; 4 failed`(三预算未拒 FAIL + gauge 观测并发 >2 FAIL;两锁 PASS)
+  - GREEN:同命令 → exit 0,`6 passed; 0 failed`
+  - 门禁:`bun cargo test -p koharu-rpc` 全 suite → exit 0;`clippy -p koharu-rpc --all-targets -D warnings` → exit 0;`fmt` → exit 0
+  - 设计落地:计数+编码总量在收集循环累计(读取阶段即拒);解码总量 admission 后、blob 写前拒绝;专用 rayon pool(`num_threads(2)`,OnceLock 静态)钉死 decode 并发;413 + 稳定 `import budget exceeded` 前缀;覆盖缝/gauge 均 cfg(test)
+  - gauge 观测样例:RED 无界 rayon 观测 in-flight max >2 → GREEN 池化后 ≤2
+  - Commit:`2d74327a`(1 文件,+310/-13)
 
 ---
 
@@ -68,6 +83,13 @@
 - 独立 scoped code-review 零发现(重试子代理;故障则对抗性自审并落档偏差)
 - body 分层 413 与批量预算拒绝可重复演示(请求-响应样例 / gauge 观测)
 - **环境前置**:确认无 `tauri dev` 会话持有共享 target 租约(AR04 收口曾因此阻塞 CHECK/GEN)
+
+**Lane 收口证据(2026-08-14)**:
+
+- 门禁:`bun cargo test -p koharu-rpc -p koharu-app -p koharu-llm` → exit 0;`clippy --workspace --all-targets -D warnings` → exit 0;`fmt --all --check` → exit 0;`check --workspace --all-targets` → exit 0;`bun run check:generated` → exit 0(零漂移,本 lane 无 OpenAPI 面变更——分层/预算不改 schema)
+- 独立 review(偏差记录):oracle 第 10 次启动失败 → 对抗性自审(`3df24940..2d74327a` file:line 取证):**零 blocker/major**;**1 minor 接受**:multipart 单字段在编码总量拒绝前会完整缓冲(TASKS"mutation 前累计"语义已满足——拒绝在任何 mutation 之前;真流式中段拒绝需 field.chunk() 重构,超 TASKS 范围);逐项核查:路径分类无逃逸(尾斜杠/大小写/无路由均 404;multipart 不受 DefaultBodyLimit 约束由 T06 接管并有大预算测试实证)、u64 溢出无、零副作用经 snapshot 相等性断言证明、decode 池无线程死锁面。**与 AR03/AR04 拖欠项一并,待子代理修复后补独立 review**
+- 依赖传播:无(无卡依赖 AR05-T06)
+- 可重复演示:body_limit 4 测试(真实 server+手写 client)+ page_import_budget 6 测试(gauge 观测 RED >2 → GREEN ≤2)
 
 ## 风险与决策点(批准时一并确认)
 
