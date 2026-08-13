@@ -97,7 +97,45 @@ pub async fn ensure_provider_success(
         anyhow::bail!("provider_quota_exceeded:{provider}");
     }
 
-    anyhow::bail!("{provider} API request failed ({status}): {body}");
+    anyhow::bail!(
+        "{provider} API request failed ({status}): {}",
+        summarize_provider_error_body(&body)
+    );
+}
+
+const PROVIDER_ERROR_BODY_MAX_CHARS: usize = 160;
+
+// Error bodies can echo the request (including credentials) back to us, so the
+// summary redacts secret-looking tokens first and only then truncates; doing it
+// in this order prevents a truncated boundary from leaking a partial secret.
+fn summarize_provider_error_body(body: &str) -> String {
+    let redacted = redact_secret_like_tokens(body);
+    let mut summary: String = redacted
+        .chars()
+        .take(PROVIDER_ERROR_BODY_MAX_CHARS)
+        .collect();
+    if redacted.chars().count() > PROVIDER_ERROR_BODY_MAX_CHARS {
+        summary.push('…');
+    }
+    summary
+}
+
+fn redact_secret_like_tokens(text: &str) -> String {
+    text.split_whitespace()
+        .map(|word| {
+            let core_len = word
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .count();
+            let has_marker = word.contains('-') || word.contains('_');
+            let has_alpha = word.chars().any(|c| c.is_ascii_alphabetic());
+            let has_digit = word.chars().any(|c| c.is_ascii_digit());
+            let looks_secret =
+                (core_len >= 12 && has_marker) || (core_len >= 24 && has_alpha && has_digit);
+            if looks_secret { "[redacted]" } else { word }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub trait AnyProvider: Send + Sync {
@@ -651,6 +689,280 @@ mod tests {
                 "deepseek-chat",
                 "deepseek-reasoner",
             ],
+        );
+    }
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use super::ensure_provider_success;
+    use reqwest_middleware::ClientWithMiddleware;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    type Seen = Arc<Mutex<Vec<String>>>;
+
+    const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+
+    // RED: reqwest's default redirect policy (current production wiring shares
+    // it), proxy-free to keep the measurement about redirect header handling.
+    // GREEN swaps this helper to the provider-specific client if RED-0 shows
+    // the default is insufficient.
+    fn test_client() -> ClientWithMiddleware {
+        ClientWithMiddleware::from(
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("test client"),
+        )
+    }
+
+    fn new_seen() -> Seen {
+        Arc::new(Mutex::new(Vec::new()))
+    }
+
+    fn recorded(store: &Seen) -> Vec<String> {
+        store.lock().expect("seen lock").clone()
+    }
+
+    async fn read_request(stream: &mut TcpStream) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let read =
+                tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut chunk))
+                    .await
+                    .expect("request read timed out")
+                    .expect("read request");
+            if read == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..read]);
+            if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    async fn serve_once(listener: TcpListener, store: Seen, response: String) {
+        let (mut stream, _) = listener.accept().await.expect("accept");
+        let request = read_request(&mut stream).await;
+        store.lock().expect("seen lock").push(request);
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write response");
+    }
+
+    fn redirect_response(location: &str) -> String {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    }
+
+    fn header_value(request: &str, name: &str) -> Option<String> {
+        request
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.trim().to_string())
+    }
+
+    async fn join(task: tokio::task::JoinHandle<()>) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("server task timed out")
+            .expect("server task");
+    }
+
+    #[tokio::test]
+    async fn redirect_cross_port_strips_authorization() {
+        let a_seen = new_seen();
+        let b_seen = new_seen();
+        let a_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let b_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a_port = a_listener.local_addr().unwrap().port();
+        let b_port = b_listener.local_addr().unwrap().port();
+
+        let location = format!("http://127.0.0.1:{b_port}/target");
+        let a_task = tokio::spawn(serve_once(
+            a_listener,
+            a_seen.clone(),
+            redirect_response(&location),
+        ));
+        let b_task = tokio::spawn(serve_once(
+            b_listener,
+            b_seen.clone(),
+            OK_RESPONSE.to_string(),
+        ));
+
+        let response = test_client()
+            .get(format!("http://127.0.0.1:{a_port}/start"))
+            .header(reqwest::header::AUTHORIZATION, "Bearer sk-test-token")
+            .header(reqwest::header::COOKIE, "session=abc123")
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(response.status(), 200);
+        join(a_task).await;
+        join(b_task).await;
+
+        let b_requests = recorded(&b_seen);
+        assert_eq!(b_requests.len(), 1, "B should receive the redirect");
+        assert_eq!(
+            header_value(&b_requests[0], "authorization"),
+            None,
+            "Authorization must not leak to a different port: {}",
+            b_requests[0]
+        );
+        assert_eq!(
+            header_value(&b_requests[0], "cookie"),
+            None,
+            "Cookie must not leak to a different port: {}",
+            b_requests[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_same_authority_keeps_authorization() {
+        let store = new_seen();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let location = format!("http://127.0.0.1:{port}/final");
+
+        let server_seen = store.clone();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.expect("accept first");
+            let request = read_request(&mut first).await;
+            server_seen.lock().expect("seen lock").push(request);
+            first
+                .write_all(redirect_response(&location).as_bytes())
+                .await
+                .expect("write redirect");
+            drop(first);
+
+            let (mut second, _) = listener.accept().await.expect("accept second");
+            let request = read_request(&mut second).await;
+            server_seen.lock().expect("seen lock").push(request);
+            second
+                .write_all(OK_RESPONSE.as_bytes())
+                .await
+                .expect("write ok");
+        });
+
+        let response = test_client()
+            .get(format!("http://127.0.0.1:{port}/start"))
+            .header(reqwest::header::AUTHORIZATION, "Bearer sk-test-token")
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(response.status(), 200);
+        join(server).await;
+
+        let requests = recorded(&store);
+        assert_eq!(
+            requests.len(),
+            2,
+            "redirect should hit the same server twice"
+        );
+        assert!(
+            requests[1].starts_with("GET /final "),
+            "second request should target /final: {}",
+            requests[1]
+        );
+        assert_eq!(
+            header_value(&requests[1], "authorization"),
+            Some("Bearer sk-test-token".to_string()),
+            "same-authority redirect must keep Authorization"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_cross_host_strips_authorization() {
+        let b_listener = match TcpListener::bind("[::1]:0").await {
+            Ok(listener) => listener,
+            Err(_) => return, // no IPv6 loopback on this host
+        };
+        let a_seen = new_seen();
+        let b_seen = new_seen();
+        let a_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let a_port = a_listener.local_addr().unwrap().port();
+        let b_port = b_listener.local_addr().unwrap().port();
+
+        let location = format!("http://[::1]:{b_port}/target");
+        let a_task = tokio::spawn(serve_once(
+            a_listener,
+            a_seen.clone(),
+            redirect_response(&location),
+        ));
+        let b_task = tokio::spawn(serve_once(
+            b_listener,
+            b_seen.clone(),
+            OK_RESPONSE.to_string(),
+        ));
+
+        let response = test_client()
+            .get(format!("http://127.0.0.1:{a_port}/start"))
+            .header(reqwest::header::AUTHORIZATION, "Bearer sk-test-token")
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(response.status(), 200);
+        join(a_task).await;
+        join(b_task).await;
+
+        let b_requests = recorded(&b_seen);
+        assert_eq!(b_requests.len(), 1, "B should receive the redirect");
+        assert_eq!(
+            header_value(&b_requests[0], "authorization"),
+            None,
+            "Authorization must not cross hosts: {}",
+            b_requests[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_error_bounded_and_redacted() {
+        let secret = "sk-live-secret";
+        let body = format!(
+            "failure reason: invalid key {secret} provided. {}",
+            "y".repeat(5000)
+        );
+        let response_text = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let store = new_seen();
+        let server = tokio::spawn(serve_once(listener, store, response_text));
+
+        let response = test_client()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .expect("request");
+        assert_eq!(response.status(), 500);
+        let error = ensure_provider_success("test-provider", response)
+            .await
+            .expect_err("500 must be an error");
+        join(server).await;
+
+        let message = error.to_string();
+        assert!(
+            message.len() <= 256,
+            "error message must be bounded, got {} chars: {message}",
+            message.len()
+        );
+        assert!(
+            !message.contains(secret),
+            "error message must not leak the secret: {message}"
+        );
+        assert!(
+            message.contains("failure reason"),
+            "error message should keep a useful summary: {message}"
         );
     }
 }
