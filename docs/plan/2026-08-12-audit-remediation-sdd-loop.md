@@ -113,9 +113,9 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | 卡 | 状态 | 证据 | 备注 |
 |---|---|---|---|
 | AR01-T00~T03 | ✅ | 台账 10 product commits | 见 AR01 证据台账 |
-| AR03-T01 Provider URL/authority 规范化 | 🚧 | — | L-AR03 在途,合同 `22565edc` |
-| AR03-T02 Config authority 冲突 | 🚧 | — | ←T01;L-AR03 在途 |
-| AR03-T03 Redirect/错误脱敏 | 🚧 | — | ←T01;L-AR03 在途 |
+| AR03-T01 Provider URL/authority 规范化 | ✅ | commit `4a71facf` | L-AR03 收口证据见合同 |
+| AR03-T02 Config authority 冲突 | ✅ | commit `664d4071` | ←T01;review-fix `a1fad0e3` |
+| AR03-T03 Redirect/错误脱敏 | ✅ | commit `d6bd1034` | ←T01;redirect 降级回归锁(实测默认安全) |
 | AR04-T02 Apply/Undo/Redo durable commit | 🟡 | — | history.rs 自 08-10 零提交 |
 | AR04-T03 损坏尾回滚 fail-stop | 🔴 | — | ←T02 |
 
@@ -205,7 +205,6 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
-| L-AR03 | ses_0097e4b0(Sisyphus/ulw) | `audit-remediation-phase3` | `22565edc71c01579` | 2026-08-13 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
