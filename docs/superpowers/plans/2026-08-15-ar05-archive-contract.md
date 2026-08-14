@@ -83,3 +83,11 @@
   - GREEN:history_frame_limit 2P/0F;history 11P/0F(截断尾容忍/undecodable v1 锁全绿);app suite 463P/0F;clippy `-D warnings`/fmt 净
   - 设计落地:`MAX_HISTORY_FRAME_BYTES = 16 MiB`;长度头读后立即 `ensure!`(strict/tolerant 两模式同为 corruption),分配前拒绝;未超上限截断尾保持 AR04-T03 容忍语义;写侧 u32 检查既有,对称写上限超卡范围(单 op >16 MiB 非现实场景),记录备查
   - Commit:`2b1a394c`(1 文件,+29/-2)
+
+## Lane 收口(2026-08-15)
+
+- 门禁:app 465P/0F、rpc lib 41P/0F、llm 40P/0F、workspace clippy `-D warnings`/fmt/check、check:generated 零漂移
+- 独立 review(oracle,子代理基础设施第 17 次尝试恢复):零 blocker;**1 major**——比率检查基线 `entry.compressed_size()` 可伪造(central directory),`allowed` 可被撑至 u64::MAX 绕过 100:1 门禁 → 以 `min(compressed, archive_len)` 钳制(条目实际压缩字节不可能超过整个归档,诚实归档不受影响);**2 minor**——错误消息子串断言跨 crate 脆弱(裁决记录不改:类型化错误属跨 crate 蔓延,且与既有测试模式一致)/staging 残留断言只查后缀(收紧为空目录断言);**3 informational**——`take` 上限改饱和加法、strict 模式超限断言、Stored 条目比率下限接受锁,均修复
+- review-fix commit:`6f8fb8e8`(3 文件,+65/-6)
+- 提交/回滚单元:T02 `23a9f98a`、T03 `6af405c7`、T04 `2b1a394c`、review-fix `6f8fb8e8`,均可独立 revert
+- 依赖传播:AR06-T05 🔴→🟡(AR05-T03+T01 均 ✅);无 wave 收齐(AR06-T05 未竟)
