@@ -29,12 +29,14 @@ pub fn projects_dir(config: &AppConfig) -> Result<Utf8PathBuf> {
 }
 
 /// Resolve an `id` (directory basename, no extension) to its absolute path.
+/// Only exact canonical ids are accepted: anything slugify would alter
+/// (symbols, case, whitespace, encoded separators) is rejected so a crafted
+/// id can never resolve onto a different project.
 pub fn project_path(config: &AppConfig, id: &str) -> Result<Utf8PathBuf> {
-    let slug = slugify(id);
-    if slug.is_empty() {
+    if id.is_empty() || slugify(id) != id {
         anyhow::bail!("invalid project id: {id}");
     }
-    Ok(projects_dir(config)?.join(format!("{slug}.{PROJECT_EXT}")))
+    Ok(projects_dir(config)?.join(format!("{id}.{PROJECT_EXT}")))
 }
 
 /// Pick a fresh `{projects_dir}/{slug}.khrproj` path for a new project with
@@ -216,6 +218,38 @@ mod tests {
         assert_eq!(slugify("--dashes--"), "dashes");
     }
 
+    // AR13-T02 RED: open/delete must accept only exact canonical ids; any
+    // input that slugify would alter (symbols, case, whitespace, encoded
+    // separators) must be rejected instead of mapped onto a real project.
+    #[test]
+    fn project_path_rejects_non_canonical_id() {
+        let tmp = tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.data.path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        for id in [
+            "my-project!",
+            "My-Project",
+            "my project",
+            "my%2Fproject",
+            "",
+        ] {
+            assert!(
+                project_path(&config, id).is_err(),
+                "non-canonical id must be rejected: {id:?}"
+            );
+        }
+    }
+
+    // Lock: an exact canonical id still resolves.
+    #[test]
+    fn project_path_accepts_exact_canonical_id() {
+        let tmp = tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.data.path = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let path = project_path(&config, "my-project").expect("canonical id resolves");
+        assert!(path.as_str().ends_with("my-project.khrproj"));
+    }
+
     #[test]
     fn incomplete_import_staging_is_not_listed_or_openable_as_managed_project() {
         let tmp = tempdir().unwrap();
@@ -231,6 +265,8 @@ mod tests {
         assert!(list_projects(&config).unwrap().is_empty());
 
         let staging_name = staging.file_name().unwrap();
-        assert_ne!(project_path(&config, staging_name).unwrap(), staging);
+        // Exact-match contract: a staging dir name is not a canonical id, so
+        // it is rejected outright (stronger than the old slugify remap).
+        assert!(project_path(&config, staging_name).is_err());
     }
 }
