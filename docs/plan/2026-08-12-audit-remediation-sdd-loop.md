@@ -1,6 +1,6 @@
 # 审计修复 SDD Phase 3 — Loop 执行驱动文档
 
-**状态：ACTIVE/AUTO — Phase 3 一次批准已于 2026-08-13 授予；Loop 空闲，当前无在途 lane。**
+**状态：ACTIVE/AUTO — Phase 3 一次批准已于 2026-08-13 授予；在途 lane:L-AR05-ARCHIVE。**
 **规格：** `docs/plan/2026-08-10-audit-remediation-sdd-spec.md`
 **计划：** `docs/plan/2026-08-10-audit-remediation-sdd-plan.md`
 **任务：** `docs/plan/2026-08-10-audit-remediation-sdd-tasks.md`
@@ -74,7 +74,7 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | **P1** | **L-AR05-PICKER** 导入路径收口 | AR05-T05A → T05B | 落地 AMEND-01(删 `/pages/from-paths`) | 🟡 就绪 |
 | **P1** | **L-AR06** Job 生命周期 | AR06-T01 → T02 → T03 ∥ T04 → (T05 等 L-AR05-ARCHIVE) | 任务槽/有界注册表 | 🟡 就绪(T05 🔴) |
 | **P1** | **L-AR13B** 边界余量 | AR13-T02 ∥ T03 ∥ T04 | 三张小卡,依赖已齐 | 🟡 就绪 |
-| **P2** | **L-AR05-ARCHIVE** 归档预算 | AR05-T02 →(等 L-AR04)→ T03 → T04 | history/archive 预算线 | 🟡 半就绪(T03/T04 🔴 等 AR04-T03) |
+| **P2** | **L-AR05-ARCHIVE** 归档预算 | AR05-T02 → T03 → T04 | history/archive 预算线 | 🚧 在途 |
 | **P2** | **L-AR07** Tauri 攻击面 | AR07-T01 ∥ T02 →(T03 等 T05A+AR08-T02) | CSP/导航/FS scope | 🟡 半就绪(T03 🔴) |
 | **P2** | **L-AR08** ZIP 安全 | AR08-T01 → T02 | 解锁 AR07-T03 | 🟡 就绪 |
 | **P2** | **L-AR09** 产物完整性 | AR09-T01 → T02 ∥ T03 | 下载 digest 链 | 🟡 就绪 |
@@ -126,9 +126,9 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR01-T04/T04B/T04C/T05 | ✅ | 台账 | |
 | AR01-T06 Docker auth smoke | ⛔ | — | 合同 §6 出范围 |
 | AR05-T01 Route body limits | ✅ | commit `85bc85c1` | L-AR05-LIMIT 收口证据见合同 |
-| AR05-T02 Archive 读取预算 | 🟡 | — | 无依赖 |
-| AR05-T03 Import 原子发布 | 🔴 | — | ←AR04-T03+T02 |
-| AR05-T04 History frame 预算 | 🟡 | — | ←AR04-T03(已 ✅,2026-08-14 L-AR04 收口解锁) |
+| AR05-T02 Archive 读取预算 | 🚧 | — | 无依赖 |
+| AR05-T03 Import 原子发布 | 🚧 | — | ←AR04-T03+T02(均 ✅);AR02-T04 ◐ 已集成 |
+| AR05-T04 History frame 预算 | 🚧 | — | ←AR04-T03(已 ✅,2026-08-14 L-AR04 收口解锁) |
 | AR05-T05A Tauri picker File | ✅ | commit `d13f9b6e` | L-AR05-PICKER 收口证据见合同 |
 | AR05-T05B 删除 from-paths API | ✅ | commit `c1fd37d2` | ←T05A;AMEND-01 落地 |
 | AR05-T06 批量预算/decode admission | ✅ | commit `2d74327a` | ←T01 |
@@ -205,6 +205,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
+| L-AR05-ARCHIVE | Sisyphus/K3 | audit-remediation-phase3 | e554301c1af58e1b | 2026-08-15 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
@@ -312,6 +313,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-13 | — | Ralplan 收口 blocker 修正 | 主账原子认领+集成后 DONE、10 卡降为 ◐、W1~W6 门禁闭环、回滚单元+反向依赖闭包;计数 → ✅14/◐11/🟡25/🔴20/⛔1/⏸1(共 72,待处理 57) |
 | 2026-08-13 | — | 授权模型改为 Phase 3 一次批准 | 唯一本地 `audit-remediation-phase3` 分支串行全部 lane;每 lane 本地提交+台账更新后自动继续;不合并 main,不远端同步;AR10-T01 转 🟡;计数 → ✅14/◐11/🟡26/🔴20/⛔1/⏸0 |
 | 2026-08-15 | — | 接管前遗留工作区分治(非 loop 卡)+环境清理 | 4 commits:`7371b8f2`(dev.ts 进程树终止+dev.test.ts;修复其 bind flake——内核 socket 拆除瞬态窗口,lsof 无监听者/+50ms 可绑,改 waitForBind 轮询,6/6 稳定)/`94705d20`(UI 死代码:Kbd 内联/isDesktop→isTauri/RetryableSseError/useMemo 简化)/`bf7c9dcd`(hanonly 孤儿门禁+Rust 测试占位删除)/`db58bce3`(/.omo/ ignore);门禁:UI 245P(1 次 flake 三跑不复现,既有 typography 模式)、lint/format 净、dev.test 2/2、bus:: 5/5、clippy 双 crate -D warnings、rustfmt 净、ledger py_compile;终止 agent 遗留 tmux `koharu-dev`(持 cargo 租约 1h+,环境事件,同 AR09 先例);计数不变 → ✅38/◐11/🟡15/🚧0/🔴8/⛔1/⏸0 |
+| 2026-08-15 | L-AR05-ARCHIVE | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `e554301c1af58e1b`;认领基线 main@`b68f123e`,分支 tip `24bef959`;前置 AR04-T02/T03 ✅、AR02-T04 ◐(实现已集成,证据待补录);T03 🔴→🚧、T02/T04 🟡→🚧;预算常量值留合同决策点(T02)/TASKS 定 16 MiB(T04);计数 → ✅38/◐11/🟡13/🚧3/🔴7/⛔1/⏸0 |
 
 ---
 
