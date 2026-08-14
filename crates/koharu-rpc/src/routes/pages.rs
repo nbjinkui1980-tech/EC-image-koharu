@@ -42,7 +42,6 @@ pub struct PutMaskParams {
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::default()
         .routes(routes!(create_pages))
-        .routes(routes!(create_pages_from_paths))
         .routes(routes!(put_mask))
         .routes(routes!(reorder_text_nodes))
 }
@@ -318,176 +317,6 @@ async fn create_pages(
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
 
     // Build AddPage ops into the combined batch.
-    let mut created_ids = Vec::with_capacity(decoded.len());
-    for (i, (filename, w, h, blob)) in decoded.into_iter().enumerate() {
-        let mut page = Page::new(&filename, w, h);
-        let page_id = page.id;
-        let source_node_id = NodeId::new();
-        page.nodes.insert(
-            source_node_id,
-            Node {
-                id: source_node_id,
-                transform: Transform::default(),
-                visible: true,
-                kind: NodeKind::Image(ImageData {
-                    role: ImageRole::Source,
-                    blob,
-                    opacity: 1.0,
-                    natural_width: w,
-                    natural_height: h,
-                    name: Some(filename),
-                }),
-            },
-        );
-        created_ids.push(page_id);
-        ops.push(Op::AddPage {
-            page,
-            at: starting_index + i,
-        });
-    }
-
-    app.apply(Op::Batch {
-        ops,
-        label: "Import pages".into(),
-    })
-    .map_err(ApiError::internal)?;
-
-    Ok(Json(CreatePagesResponse { pages: created_ids }))
-}
-
-// ---------------------------------------------------------------------------
-// POST /pages/from-paths — Tauri fast-path: import by reading files directly
-// from disk, skipping multipart upload entirely
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreatePagesFromPathsRequest {
-    pub paths: Vec<String>,
-    #[serde(default)]
-    pub replace: bool,
-}
-
-/// Create pages by reading image files from absolute paths on the server's
-/// filesystem. This is the Tauri desktop import path — the webview picker
-/// returns paths, and the backend reads + decodes + hashes them in parallel
-/// without a round-trip through JS memory or a multipart upload body.
-///
-/// Web clients should keep using `POST /pages` with multipart.
-#[utoipa::path(
-    post,
-    path = "/pages/from-paths",
-    request_body = CreatePagesFromPathsRequest,
-    responses((status = 200, body = CreatePagesResponse))
-)]
-async fn create_pages_from_paths(
-    State(app): State<AppState>,
-    Json(req): Json<CreatePagesFromPathsRequest>,
-) -> ApiResult<Json<CreatePagesResponse>> {
-    let session = app
-        .current_session()
-        .ok_or_else(|| ApiError::bad_request("no project open"))?;
-
-    // Natural-order sort by filename component so `page-2.png` < `page-10.png`.
-    let mut paths = req.paths;
-    paths.sort_by(|a, b| {
-        let af = std::path::Path::new(a)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(a);
-        let bf = std::path::Path::new(b)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(b);
-        natord::compare(af, bf)
-    });
-
-    if paths.is_empty() && req.replace {
-        // Replace with empty is just a clear — no admission needed.
-        let scene = session.scene.read();
-        let remove_ops: Vec<Op> = scene
-            .pages
-            .keys()
-            .copied()
-            .map(|id| Op::RemovePage {
-                id,
-                prev_page: scene.pages[&id].clone(),
-                prev_index: scene.pages.get_index_of(&id).unwrap_or(0),
-            })
-            .collect();
-        drop(scene);
-        if !remove_ops.is_empty() {
-            app.apply(Op::Batch {
-                ops: remove_ops,
-                label: "Replace pages (clear)".into(),
-            })
-            .map_err(ApiError::internal)?;
-        }
-        return Ok(Json(CreatePagesResponse { pages: Vec::new() }));
-    }
-    if paths.is_empty() {
-        return Err(ApiError::bad_request("no paths provided"));
-    }
-
-    // Admit every source image before any mutation.
-    let admitted: Vec<(String, u32, u32, Vec<u8>)> = tokio::task::spawn_blocking(move || {
-        paths
-            .into_par_iter()
-            .map(|path| -> ApiResult<(String, u32, u32, Vec<u8>)> {
-                let filename = std::path::Path::new(&path)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "page.bin".to_string());
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| ApiError::bad_request(format!("read `{filename}`: {e}")))?;
-                let img = koharu_app::blobs::admit_source_image(&bytes)
-                    .map_err(|e| ApiError::bad_request(format!("admit `{filename}`: {e}")))?;
-                let (w, h) = img.dimensions();
-                Ok((filename, w, h, bytes))
-            })
-            .collect::<ApiResult<Vec<_>>>()
-    })
-    .await
-    .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
-
-    // All files admitted — now safe to mutate the project.
-    let mut ops: Vec<Op> = Vec::new();
-    let starting_index = if req.replace {
-        let scene = session.scene.read();
-        let remove_ops: Vec<Op> = scene
-            .pages
-            .keys()
-            .copied()
-            .map(|id| Op::RemovePage {
-                id,
-                prev_page: scene.pages[&id].clone(),
-                prev_index: scene.pages.get_index_of(&id).unwrap_or(0),
-            })
-            .collect();
-        drop(scene);
-        ops.extend(remove_ops);
-        0
-    } else {
-        session.scene.read().pages.len()
-    };
-
-    // Store blobs from admitted bytes.
-    let blobs = session.blobs.clone();
-    let decoded: Vec<(String, u32, u32, BlobRef)> = tokio::task::spawn_blocking(move || {
-        admitted
-            .into_par_iter()
-            .map(
-                |(filename, w, h, bytes)| -> ApiResult<(String, u32, u32, BlobRef)> {
-                    let blob = blobs.put_bytes(&bytes).map_err(ApiError::internal)?;
-                    Ok((filename, w, h, blob))
-                },
-            )
-            .collect::<ApiResult<Vec<_>>>()
-    })
-    .await
-    .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
-
     let mut created_ids = Vec::with_capacity(decoded.len());
     for (i, (filename, w, h, blob)) in decoded.into_iter().enumerate() {
         let mut page = Page::new(&filename, w, h);
@@ -809,7 +638,6 @@ mod tests {
 
     #[derive(Clone)]
     enum ImportIngress {
-        Paths,
         Multipart { malformed: bool },
     }
 
@@ -955,34 +783,8 @@ mod tests {
         (project_dir, session)
     }
 
-    async fn run_import(
-        state: AppState,
-        project_dir: &camino::Utf8Path,
-        case: &ImportCase,
-    ) -> Result<CreatePagesResponse, String> {
+    async fn run_import(state: AppState, case: &ImportCase) -> Result<CreatePagesResponse, String> {
         match &case.ingress {
-            ImportIngress::Paths => {
-                let input_dir = project_dir.join("inputs");
-                std::fs::create_dir_all(&input_dir).unwrap();
-                let mut paths = Vec::new();
-                for file in &case.files {
-                    let path = input_dir.join(file.name);
-                    if let Some(bytes) = &file.bytes {
-                        std::fs::write(&path, bytes).unwrap();
-                    }
-                    paths.push(path.into_string());
-                }
-                create_pages_from_paths(
-                    State(state),
-                    Json(CreatePagesFromPathsRequest {
-                        paths,
-                        replace: true,
-                    }),
-                )
-                .await
-                .map(|Json(response)| response)
-                .map_err(|error| error.message)
-            }
             ImportIngress::Multipart { malformed } => {
                 let (boundary, body) = multipart_body(&case.files, *malformed);
                 let request = Request::builder()
@@ -1048,7 +850,7 @@ mod tests {
             succeeds: true,
         };
         let before = snapshot(&session, &project_dir);
-        let result = run_import(state.clone(), &project_dir, &case).await;
+        let result = run_import(state.clone(), &case).await;
         let after = snapshot(&session, &project_dir);
         (result, before, after)
     }
@@ -1214,21 +1016,6 @@ mod tests {
         };
         let cases = [
             ImportCase {
-                name: "path-valid-corrupt",
-                ingress: ImportIngress::Paths,
-                files: vec![
-                    ImportFile {
-                        name: "page-1.png",
-                        bytes: Some(png.clone()),
-                    },
-                    ImportFile {
-                        name: "page-2.png",
-                        bytes: Some(b"not an image".to_vec()),
-                    },
-                ],
-                succeeds: false,
-            },
-            ImportCase {
                 name: "multipart-valid-corrupt",
                 ingress: ImportIngress::Multipart { malformed: false },
                 files: vec![
@@ -1244,29 +1031,11 @@ mod tests {
                 succeeds: false,
             },
             ImportCase {
-                name: "path-unsupported-gif",
-                ingress: ImportIngress::Paths,
-                files: vec![ImportFile {
-                    name: "page.gif",
-                    bytes: Some(encoded_image(image::ImageFormat::Gif)),
-                }],
-                succeeds: false,
-            },
-            ImportCase {
                 name: "multipart-unsupported-bmp",
                 ingress: ImportIngress::Multipart { malformed: false },
                 files: vec![ImportFile {
                     name: "page.bmp",
                     bytes: Some(encoded_image(image::ImageFormat::Bmp)),
-                }],
-                succeeds: false,
-            },
-            ImportCase {
-                name: "path-overbudget",
-                ingress: ImportIngress::Paths,
-                files: vec![ImportFile {
-                    name: "huge.png",
-                    bytes: Some(overbudget_png()),
                 }],
                 succeeds: false,
             },
@@ -1280,15 +1049,6 @@ mod tests {
                 succeeds: false,
             },
             ImportCase {
-                name: "path-unreadable",
-                ingress: ImportIngress::Paths,
-                files: vec![ImportFile {
-                    name: "missing.png",
-                    bytes: None,
-                }],
-                succeeds: false,
-            },
-            ImportCase {
                 name: "multipart-unreadable",
                 ingress: ImportIngress::Multipart { malformed: true },
                 files: vec![ImportFile {
@@ -1296,12 +1056,6 @@ mod tests {
                     bytes: Some(png.clone()),
                 }],
                 succeeds: false,
-            },
-            ImportCase {
-                name: "path-success-sort",
-                ingress: ImportIngress::Paths,
-                files: sorted(),
-                succeeds: true,
             },
             ImportCase {
                 name: "multipart-success-sort",
@@ -1316,7 +1070,7 @@ mod tests {
             let (project_dir, session) = seeded_session(&root.0, case.name, &png);
             state.app().unwrap().session.store(Some(session.clone()));
             let before = snapshot(&session, &project_dir);
-            let result = run_import(state.clone(), &project_dir, case).await;
+            let result = run_import(state.clone(), case).await;
             let after = snapshot(&session, &project_dir);
             if !case.succeeds {
                 if result.is_ok() {

@@ -11,7 +11,6 @@ import type {
   CodexImageGenerationOptions,
   CodexImageGenerationResponse,
   ConfigPatch,
-  CreatePagesFromPathsRequest,
   CreatePagesResponse,
   CreateProjectRequest,
   EngineCatalog,
@@ -421,29 +420,6 @@ export const createPages = async (
   return fetchApi<CreatePagesResponse>(getCreatePagesUrl(), {
     ...options,
     method: 'POST',
-  })
-}
-
-export const getCreatePagesFromPathsUrl = () => {
-  return `/api/v1/pages/from-paths`
-}
-
-/**
- * Web clients should keep using `POST /pages` with multipart.
- * @summary Create pages by reading image files from absolute paths on the server's
-filesystem. This is the Tauri desktop import path — the webview picker
-returns paths, and the backend reads + decodes + hashes them in parallel
-without a round-trip through JS memory or a multipart upload body.
- */
-export const createPagesFromPaths = async (
-  createPagesFromPathsRequest: CreatePagesFromPathsRequest,
-  options?: Parameters<typeof fetchApi>[1],
-): Promise<CreatePagesResponse> => {
-  return fetchApi<CreatePagesResponse>(getCreatePagesFromPathsUrl(), {
-    ...options,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    body: JSON.stringify(createPagesFromPathsRequest),
   })
 }
 

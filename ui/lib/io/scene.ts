@@ -3,7 +3,6 @@
 import {
   applyCommand,
   createPages,
-  createPagesFromPaths,
   createProject,
   deleteCurrentProject,
   getConfig,
@@ -183,17 +182,6 @@ export async function uploadPages(files: File[], replace: boolean): Promise<stri
   for (const file of files) form.append('file', file, file.name)
   form.append('replace', replace ? 'true' : 'false')
   const res = await createPages({ body: form })
-  await invalidateScene()
-  return res.pages
-}
-
-/**
- * Tauri fast-path: hand the backend a list of absolute file paths. Skips
- * the per-file `readFile` IPC round-trip, skips JS-side buffering, skips
- * multipart upload — the Rust side reads + decodes + hashes in parallel.
- */
-export async function uploadPagesByPaths(paths: string[], replace: boolean): Promise<string[]> {
-  const res = await createPagesFromPaths({ paths, replace })
   await invalidateScene()
   return res.pages
 }

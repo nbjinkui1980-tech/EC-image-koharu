@@ -569,35 +569,6 @@
         }
       }
     },
-    "/pages/from-paths": {
-      "post": {
-        "summary": "Create pages by reading image files from absolute paths on the server's\nfilesystem. This is the Tauri desktop import path — the webview picker\nreturns paths, and the backend reads + decodes + hashes them in parallel\nwithout a round-trip through JS memory or a multipart upload body.",
-        "description": "Web clients should keep using `POST /pages` with multipart.",
-        "operationId": "create_pages_from_paths",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreatePagesFromPathsRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreatePagesResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/pages/{id}/masks/{role}": {
       "put": {
         "summary": "Upsert the `Mask { role }` node on a page with the raw image bytes in\nthe body. Emits `Op::UpdateNode` if a mask of that role exists, else\n`Op::AddNode`. Used by the repair-brush / segment-edit flow; the\nfollow-up localized inpaint is a separate `POST /pipelines` call.",
@@ -1354,21 +1325,6 @@
                 "$ref": "#/components/schemas/TypographyPlannerConfigPatch"
               }
             ]
-          }
-        }
-      },
-      "CreatePagesFromPathsRequest": {
-        "type": "object",
-        "required": ["paths"],
-        "properties": {
-          "paths": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "replace": {
-            "type": "boolean"
           }
         }
       },

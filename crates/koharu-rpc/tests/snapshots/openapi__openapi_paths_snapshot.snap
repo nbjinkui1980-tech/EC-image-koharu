@@ -1,5 +1,5 @@
 ---
-source: koharu-rpc/tests/openapi.rs
+source: crates/koharu-rpc/tests/openapi.rs
 expression: paths
 ---
 [
@@ -142,12 +142,6 @@ expression: paths
     ),
     (
         "/pages",
-        [
-            "post",
-        ],
-    ),
-    (
-        "/pages/from-paths",
         [
             "post",
         ],

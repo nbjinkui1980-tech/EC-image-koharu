@@ -35,7 +35,6 @@ export {
   applyCommand,
   cancelOperation,
   createPages,
-  createPagesFromPaths,
   createProject,
   deleteCodexSession,
   deleteCurrentLlm,
