@@ -26,6 +26,12 @@
 - **目标文件**:上表 T02 行(≤2)
 - **验收命令**:`bun cargo test -p koharu-app projects`、`bun cargo test -p koharu-rpc project`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T02 收口,2026-08-14)**:
+  - RED:`project_path_rejects_non_canonical_id` FAIL(`my-project!`/大小写/空格/encoded separator 经 slugify 均 Ok)+ canonical 锁 PASS → exit 101
+  - GREEN:同命令 → `4 passed; 0 failed`;rpc project 3P/0F
+  - 适配记录:既有 staging 测试断言随新契约收紧(直接 Err 强于旧 remap)——意图不变、覆盖更强
+  - flake 记录:app 首轮全 suite `hanonly_pre_greenc_red_t3_run_state_lifetime_contract` 1F,隔离复跑与二轮全 suite(456P/0F)均过——既有 typography flake 同族,与本卡无关
+  - Commit:`5ee962f2`(1 文件,+40/-4)
 
 ## 卡:AR13-T03 — Mask 复用 generated API
 
@@ -38,6 +44,11 @@
 - **目标文件**:上表 T03 行(≤2)
 - **验收命令**:`bun run --cwd ui test -- tests/hooks/useMaskDrawing.test.tsx`、`bun run lint:ui`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T03 收口,2026-08-14)**:
+  - RED:`putMask` spy 未被调(raw fetch 实证)→ 1 failed
+  - GREEN:同命令 → 1 passed;全 UI 套件 235 passed;lint:ui 0;format 净
+  - **缺陷记录(lane 收口 build 捕获)**:T03 初提交漏了 barrel re-export(`putMask` 不在 `@/lib/api/index.ts`)——vitest mock 面遮蔽,Turbopack build 才暴露;修复 commit `3c991482`,教训:UI 卡门禁必须含 `bun run --cwd ui build`(mock 不验证真实导出)
+  - Commit:`59e53e9f`(2 文件,+32/-22)
 
 ## 卡:AR13-T04 — Export generated API 保留 filename
 
@@ -51,6 +62,12 @@
 - **目标文件**:上表 T04 行
 - **验收命令**:`bun run --cwd ui test -- tests/lib/io/scene.test.ts`、`bun run check:generated`、`bun run lint:ui`
 - **证据记录**:RED / GREEN / generated diff 摘要 / commit SHA
+- **证据(T04 收口,2026-08-14)**:
+  - RED:`exports via the generated exportCurrentProject API and preserves the filename` FAIL(spy 未被调,手写 fetch 实证)+ 13 锁 PASS
+  - GREEN:同命令 → 14 passed;全 UI 236 passed;lint 0;format 净
+  - 生成物:generated.ts 仅 exportCurrentProject 切换 mutator(+3/-2);openapi.json/schemas 零变化;`check:generated` 提交后零漂移
+  - 类型缝隙记录:生成签名按 spec 标 `Promise<Blob>`,mutator 运行时返回 `FullResponse{blob,headers}`——orval mutator 模式固有缝隙;调用处 `as unknown as FullResponse` + 注释矫正;tsc/Turbopack build 验证通过
+  - Commit:`1e4ec083`(6 文件,+74/-21)
 
 ---
 
@@ -63,6 +80,13 @@
 - `bun run test:ui`、`bun run lint:ui`、`bun run format:check`
 - 独立 scoped code-review 零发现(重试子代理;故障则对抗性自审并落档偏差)
 - 精确匹配拒绝/mask generated 调用/export filename 保留可重复演示
+
+**Lane 收口证据(2026-08-14)**:
+
+- 门禁:`bun cargo test -p koharu-app -p koharu-rpc -p koharu-llm` → exit 0;`clippy --workspace --all-targets -D warnings` → exit 0;`fmt --all --check` → exit 0;`check --workspace --all-targets` → exit 0;`check:generated` → 零漂移;UI:236 tests passed、lint:ui 0、format 净、**`bun run --cwd ui build` exit 0**(tsc+Turbopack,新增为 UI 卡 lane 门禁固定项)
+- 独立 review(偏差记录):oracle 第 13 次启动失败 → 对抗性自审(`aa058f53..1e4ec083` + barrel 修复 `3c991482`):**零 blocker/major**;T03 barrel 漏 re-export 属 minor 流程教训(已修,build 门禁补位)。逐项:精确匹配无规范化旁路(slugify 幂等即 canonical 判定)、mask 参数/generated 签名对齐、mutator 错误契约与 fetchApi 一致、barrel 完整、无测试静默通过面
+- 依赖传播:无(T05A ✅ 在先,AR07-T03 仍等 AR08-T02)
+- 可重复演示:projects 4 测试 / useMaskDrawing spy 断言 / scene.test.ts export spy+filename 断言 / build exit 0
 
 ## 风险与决策点(批准时一并确认)
 
