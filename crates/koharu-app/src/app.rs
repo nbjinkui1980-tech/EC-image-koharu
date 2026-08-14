@@ -19,7 +19,7 @@ use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use camino::Utf8PathBuf;
 use dashmap::DashMap;
-use koharu_core::{AppEvent, DownloadProgress, JobSummary, LlmStateStatus};
+use koharu_core::{AppEvent, DownloadProgress, LlmStateStatus};
 use koharu_runtime::{ComputePolicy, RuntimeManager};
 use tokio::sync::Mutex;
 
@@ -40,7 +40,7 @@ const EVENT_BUS_CAPACITY: usize = 256;
 
 #[derive(Clone)]
 pub struct AppSharedState {
-    pub jobs: Arc<DashMap<String, JobSummary>>,
+    pub jobs: Arc<crate::jobs::BoundedJobRegistry>,
     pub downloads: Arc<DashMap<String, DownloadProgress>>,
     pub bus: Arc<EventBus>,
 }
@@ -48,7 +48,7 @@ pub struct AppSharedState {
 impl Default for AppSharedState {
     fn default() -> Self {
         Self {
-            jobs: Arc::new(DashMap::new()),
+            jobs: Arc::new(crate::jobs::BoundedJobRegistry::default()),
             downloads: Arc::new(DashMap::new()),
             bus: EventBus::new(EVENT_BUS_CAPACITY),
         }
@@ -61,7 +61,7 @@ pub struct App {
     pub runtime: Arc<RuntimeManager>,
     pub registry: Arc<Registry>,
     pub session: Arc<ArcSwapOption<ProjectSession>>,
-    pub jobs: Arc<DashMap<String, JobSummary>>,
+    pub jobs: Arc<crate::jobs::BoundedJobRegistry>,
     pub downloads: Arc<DashMap<String, DownloadProgress>>,
     pub bus: Arc<EventBus>,
     pub ai: Arc<AiManager>,

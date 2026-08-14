@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use dashmap::DashMap;
 use koharu_app::bus::EventBus;
 use koharu_app::{App, AppSharedState};
-use koharu_core::{AppEvent, DownloadProgress, JobSummary};
+use koharu_core::{AppEvent, DownloadProgress};
 use koharu_runtime::RuntimeManager;
 
 pub struct BootstrapManager {
@@ -42,7 +42,7 @@ impl BootstrapManager {
         self.shared.clone()
     }
 
-    pub fn jobs(&self) -> Arc<DashMap<String, JobSummary>> {
+    pub fn jobs(&self) -> Arc<koharu_app::jobs::BoundedJobRegistry> {
         self.shared.jobs.clone()
     }
 
