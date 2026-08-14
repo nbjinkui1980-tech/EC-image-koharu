@@ -26,6 +26,11 @@
 - **目标文件**:上表 T01 行(≤2)
 - **验收命令**:`bun run --cwd ui test -- tests/lib/io/saveBlob.test.ts`、`bun run lint:ui`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T01 收口,2026-08-14)**:
+  - RED:4 failed(traversal/absolute-drive-UNC/dot-空段/混合包均有写入)+ 锁 PASS
+  - GREEN:同命令 → `11 passed; 0 failed`;全 UI 241 passed;lint 0;format 净;ui build exit 0
+  - 设计落地:`sanitizeZipEntryName` 纯函数边界(反斜杠归一,段级 `..`/`.`/空段、absolute、drive、UNC 全拒;目录条目跳过);全包验证先于首次 mkdir/write
+  - Commit:`615f8eee`(2 文件,+120/-7)
 
 ## 卡:AR08-T02 — ZIP 全量预验证与预算
 
@@ -41,6 +46,11 @@
 - **目标文件**:上表 T02 行(≤2)
 - **验收命令**:`bun run --cwd ui test -- tests/lib/io/saveBlob.test.ts`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T02 收口,2026-08-14)**:
+  - RED:3 failed(超总预算/超条数/超单文件均正常写出)+ 12 锁 PASS
+  - GREEN:同命令 → `15 passed; 0 failed`;全 UI 245 passed;lint 0;format 净;ui build exit 0
+  - 设计落地:`planZipExtraction` 流式 Unzip(`register(UnzipInflate)`——注意 ZIP 专用 decoder,`Inflate` 签名不匹配会 "ctr is not a constructor");声明尺寸预检 + ondata 实际累计兜底;同步 Unzip 无 terminate,failure 后 onfile 不 start(不解压)+ ondata 守卫丢弃(不分配);`saveBlob` 第三可选参注入预算
+  - Commit:`4a2249e7`(2 文件,+155/-17)
 
 ---
 
@@ -50,6 +60,13 @@
 - `bun cargo check --workspace --all-targets`(零 Rust 面,确认无意外牵连)
 - 独立 scoped code-review 零发现(重试子代理;故障则对抗性自审并落档偏差)
 - traversal 拒绝与零部分写入可重复演示(测试输出)
+
+**Lane 收口证据(2026-08-14)**:
+
+- 门禁:UI 245 tests passed、lint:ui exit 0、format:check 净、`bun run --cwd ui build` exit 0;`bun cargo check --workspace --all-targets` → exit 0(纯 UI lane,rust 零牵连)
+- 独立 review(偏差记录):oracle 第 14 次启动失败 → 对抗性自审(`aa4cc042..4a2249e7`):**零 blocker/major/minor**;1 informational——Windows 保留名(CON/PRN)不拦截,IO 层失败不逃逸目录。逐项:unicode/双分隔/尾随反斜杠/大小写变体无逃逸;预算双轨(声明+实际)有实证;failure 中止等效(不解压不分配);单文件 save 与 web 面无需 entry 验证;预算参数接线经 RED→GREEN 翻转证明非真空
+- 依赖传播:**AR07-T03 ← T05A ✅ + AR08-T02 ✅ → 🔴→🟡**(本 lane 核心解锁)
+- 可重复演示:15 个 saveBlob 测试(traversal 拒绝 + 预算拒绝 + 锁)
 
 ## 风险与决策点(批准时一并确认)
 
