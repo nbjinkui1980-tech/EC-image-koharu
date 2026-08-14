@@ -66,6 +66,8 @@ pub struct App {
     pub bus: Arc<EventBus>,
     /// Project-keyed pipeline admission slots (semaphore = 1 per project).
     pub pipeline_slots: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
+    /// Global AI image-generation admission slots (semaphore = 2).
+    pub ai_slots: Arc<tokio::sync::Semaphore>,
     pub ai: Arc<AiManager>,
     pub llm: Arc<llm::Model>,
     pub renderer: Arc<renderer::Renderer>,
@@ -114,6 +116,7 @@ impl App {
             downloads: shared.downloads,
             bus: shared.bus,
             pipeline_slots: Arc::new(DashMap::new()),
+            ai_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             ai,
             llm,
             renderer,
