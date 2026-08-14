@@ -32,6 +32,11 @@
 - **目标文件**:上表 T01 行(≤4)
 - **验收命令**:`bun cargo test -p koharu-runtime downloads`、`bun cargo test -p koharu-runtime install`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T01 收口,2026-08-14)**:
+  - RED:2 failed(坏缓存原样返回;坏 digest 下载落缓存)+ 2 锁 PASS → exit 101
+  - GREEN:`5 passed; 0 failed`;runtime suite 28P/0F;clippy/fmt 净
+  - 设计落地:`verify_sha256`(流式)+ `cached_download_with_sha256`(命中先验、不符删缓存重下、下后验失败删产物);sha2 0.10.9 入 workspace+crate;新 API 带 `#[allow(dead_code)]` 待 T02/T03 接线
+  - Commit:`25d28f97`(3 文件,+210/-0)
 
 ## 卡:AR09-T02 — llama/ZLUDA artifact 描述
 
@@ -45,6 +50,13 @@
 - **目标文件**:上表 T02 行(≤4)
 - **验收命令**:`bun cargo test -p koharu-runtime llama`、`bun cargo test -p koharu-runtime zluda`
 - **证据记录**:RED / GREEN / digest 值与计算命令 / commit SHA
+- **证据(T02 收口,2026-08-14)**:
+  - RED:3 failed(artifact 无钉值 digest、source_id 无 digest 段、坏 digest 清空安装目录)+ 3 锁 PASS
+  - GREEN:artifact_tests 3/3 + zluda 4/4;runtime suite 31P/0F(含真网络 llama prepare,672s);clippy/fmt 净
+  - digest 钉值(本机下载计算,`curl -sL <release-url> | shasum -a 256`):macos-arm64 `a1d5261c…`、win-cuda `677222c6…`、cudart `f96935e7…`、win-vulkan `6733f635…`、ubuntu-vulkan-x64 `9d35d80a…`、ubuntu-vulkan-arm64 `8af5c6d8…`、zluda `ea9716ec…`
+  - 设计落地:先下载+验证全部 artifact 再 reset(顺序翻转——digest 不符不动现有安装);source_id 编 digest 短缀;孤儿 detect_kind/assets 归 cfg(test)(本卡造成,Karpathy 条款)
+  - 环境事件:G 卷(共享 target)中途掉线致 suite 卡死,重挂后复跑全绿——非本卡缺陷
+  - Commit:`6e5f622d`(5 文件,+267/-28)
 
 ## 卡:AR09-T03 — CUDA PyPI 官方 digest
 
@@ -58,6 +70,12 @@
 - **目标文件**:上表 T03 行(≤3)
 - **验收命令**:`bun cargo test -p koharu-runtime cuda`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T03 收口,2026-08-14)**:
+  - RED:2 failed(缺 digest wheel 被选中;source_id 静态不含 digest)+ 锁全 P
+  - GREEN:cuda tests 全过;runtime suite 33P/0F;clippy/fmt 净
+  - 设计落地:PypiFile.digests.sha256 fail-closed;下载走 with_sha256(运行时 PyPI 值);钉值(10 条,win/linux 双平台)入 WHEELS 供 source_id;先全 select+下载验证再 reset;孤儿 `cached_download` 删除、T01 allow 标记摘除(全接线)
+  - 钉值来源:`pypi.org/pypi/{dist}/{version}/json` → urls[].digests.sha256(脚本化拉取,值见 commit `34191ca3` body)
+  - Commit:`34191ca3`(2 文件,+92/-39)
 
 ---
 
@@ -70,6 +88,14 @@
 - 独立 scoped code-review 零发现(重试子代理;故障则对抗性自审并落档偏差)
 - digest 拒绝/保留已验证安装/fail-closed 可重复演示(测试输出)
 - macOS/Windows/Linux 真实 artifact smoke 依 TASKS 后置(落档)
+
+**Lane 收口证据(2026-08-14)**:
+
+- 门禁:`bun cargo test -p koharu-runtime`(33P/0F,含真网络 llama prepare)、`-p koharu-app`/`-p koharu-rpc`/`-p koharu-llm` → exit 0;`clippy --workspace --all-targets -D warnings` → exit 0;`fmt --all --check` → exit 0;`check --workspace --all-targets` → exit 0;`check:generated` → 零漂移
+- 独立 review(偏差记录):oracle 第 16 次启动失败 → 对抗性自审(`619b79f1..34191ca3`):**零 blocker/major**;2 informational——(1) digest 短缀切片 `[..12]`/`[..8]` 对 &'static 常量安全,未来改运行时值需防短串 panic;(2) HF 模型面经 hf-hub etag 内容寻址(blob_path 即 sha256),天然免疫缓存错配,无需 T01 通道。逐项:verify/rename 无 TOCTOU(已验证缓存早返,mismatch 先删后下);先验后 reset 有测试实证;大小写安全;钉值映射逐文件核对;override 缝 cfg(test) 不进生产。**七条 lane 独立 review 拖欠**
+- 依赖传播:无(无卡等 AR09)
+- 可重复演示:digest_tests 5 测试 + artifact_tests 3 测试 + cuda 2 新测试(全过滤可跑)
+- 环境事件:G 卷(共享 target)T02 期间掉线致 suite 卡死,重挂恢复;真实 artifact 下载经本机完成(钉值证据见 T02/T03 卡级证据)
 
 ## 风险与决策点(批准时一并确认)
 
