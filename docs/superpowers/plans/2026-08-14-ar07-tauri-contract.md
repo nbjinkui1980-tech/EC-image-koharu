@@ -27,6 +27,12 @@
 - **目标文件**:上表 T01 行(≤3)
 - **验收命令**:`bun cargo test -p koharu-rpc csp`、`bun test scripts/tauri-security-config.test.ts`、`bun run --cwd ui build`(确认 UI 在 CSP 下可构建)
 - **证据记录**:RED / GREEN / 响应头样例 / commit SHA
+- **证据(T01 收口,2026-08-14)**:
+  - RED:rust `csp_html_response_carries_frozen_directives` FAIL(无 CSP 头)+ policy 2 FAIL(csp null、scope **);锁 PASS
+  - GREEN:rust 2/2 PASS;policy csp 用例 PASS;rpc suite 净;ui build exit 0
+  - 响应头样例:`default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io`
+  - 落地:serve_asset 对 text/html 注头;tauri.conf.json csp 同值;policy test 钉双源
+  - Commit:`8634c8ca`(3 文件,+96/-1)
 
 ## 卡:AR07-T02 — Webview navigation 同源限制
 
@@ -40,6 +46,11 @@
 - **目标文件**:`crates/koharu/src/app.rs`(≤1)
 - **验收命令**:`bun cargo test -p koharu navigation_`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T02 收口,2026-08-14)**:
+  - RED:`navigation_rejects_external_origin` FAIL(evil.example 自由导航)+ `navigation_dev_origin_allowed_only_in_debug` FAIL;service 锁 PASS
+  - GREEN:`3 passed; 0 failed`;koharu suite 18P/0F;clippy/fmt 净
+  - 设计落地:`navigation_allowed` 纯判定(origin 比较复用 AR03 语义:scheme+host+effective port);`on_navigation` 在 build 前注册;debug 下 dev origin 单独放行;外链由 UI opener 既有权限处理
+  - Commit:`75b51085`(1 文件,+93/-8)
 
 ## 卡:AR07-T03 — 删除全盘 FS scope
 
@@ -54,6 +65,10 @@
 - **验收命令**:`bun test scripts/tauri-security-config.test.ts`、`bun run build`(桌面构建验证 capability 编译)
 - **证据记录**:RED / GREEN / commit SHA
 - **手动验证遗留项**:三平台 open/save/ZIP 真机 smoke 无法在本机执行——落档为后续手动项;机制依据(tauri auto-allow 源码证据)+ policy test 为本卡验证面
+- **证据(T03 收口,2026-08-14)**:
+  - RED:policy scope 用例 FAIL(`fs:scope` 允许 `**` 在位);csp 用例 PASS(T01 锁)
+  - GREEN:policy 2/2 PASS;capabilities/default.json 删 `fs:scope` 块,保留 dialog + fs 读写命令
+  - Commit:`8db96c6e`(2 文件,+34/-7);桌面 release build exit 0(tauri-build 校验 capability 通过)
 
 ---
 
@@ -66,6 +81,13 @@
 - `bun test scripts/tauri-security-config.test.ts`
 - 独立 scoped code-review 零发现(重试子代理;故障则对抗性自审并落档偏差)
 - CSP 响应头/navigation 闸/scope 删除可重复演示
+
+**Lane 收口证据(2026-08-14)**:
+
+- 门禁:`bun cargo test -p koharu-rpc`(净)、`-p koharu`(18P/0F)、`-p koharu-app`(净);workspace clippy/fmt/check 全 0(T01/T03 门禁时已验);`bun test scripts/tauri-security-config.test.ts` → 2/2;**桌面 release build exit 0**(T03 capability 校验);`bun run --cwd ui build` exit 0
+- 独立 review(偏差记录):oracle 第 15 次启动失败 → 对抗性自审(`6337be1f..8db96c6e`):**零 blocker/major;1 minor**——CSP 双源(server.rs 常量 × tauri.conf.json)靠人工同步,policy/rust 测试各管一面未交叉断言,drift 风险在后续改动的 review diff 中显形。逐项:CSP 对 inline script/style、blob 图、Sentry、SSE、字体无误拦(unsafe-inline 让步已记录);navigation 闸每跳触发、iframe 由 CSP 兜底、初始 navigate 恒允许;字体扫描/项目打开/autosave/blobs 全在 Rust 侧不经 plugin-fs;dialog 目录 pick 的 allow_directory 递归覆盖 readDir/mkdir。**六条 lane 独立 review 拖欠**
+- 依赖传播:无(AR07-T03 为本 lane 末卡;无下游等新 READY)
+- 可重复演示:rpc csp 2 测试 + policy 2 用例 + navigation 3 测试 + desktop build exit 0
 
 ## 风险与决策点(批准时一并确认)
 
