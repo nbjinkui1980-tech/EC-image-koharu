@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 /// Default cap for the in-memory undo stack. The log on disk is not capped —
 /// it's compacted on snapshot.
 const DEFAULT_UNDO_LIMIT: usize = 500;
+const MAX_HISTORY_FRAME_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const LOG_FRAME_V2_PREFIX: &[u8] = b"KHARLOG\x02";
 
 // ---------------------------------------------------------------------------
@@ -249,8 +250,12 @@ pub(crate) fn replay_with_policy(
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read log frame length")),
         }
-        let len = u32::from_le_bytes(len_buf) as usize;
-        let mut buf = vec![0u8; len];
+        let len = u32::from_le_bytes(len_buf);
+        anyhow::ensure!(
+            u64::from(len) <= MAX_HISTORY_FRAME_BYTES,
+            "history log frame length {len} exceeds per-frame budget {MAX_HISTORY_FRAME_BYTES}"
+        );
+        let mut buf = vec![0u8; len as usize];
         match reader.read_exact(&mut buf) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !strict => {
@@ -444,5 +449,27 @@ mod tests {
 
         assert_eq!(replay(&path, 7, &mut Scene::default()).unwrap(), 7);
         assert!(replay_with_policy(&path, 7, &mut Scene::default(), true).is_err());
+    }
+
+    #[test]
+    fn history_frame_limit_rejects_oversize_length_header_before_allocating() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut bytes = (16 * 1024 * 1024u32 + 1).to_le_bytes().to_vec();
+        bytes.extend_from_slice(b"partial");
+        std::fs::write(&path, bytes).unwrap();
+
+        let error = replay(&path, 0, &mut Scene::default()).unwrap_err();
+        assert!(error.to_string().contains("per-frame budget"), "{error}");
+    }
+
+    #[test]
+    fn history_frame_limit_rejects_u32_max_length_header() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        std::fs::write(&path, u32::MAX.to_le_bytes()).unwrap();
+
+        let error = replay(&path, 0, &mut Scene::default()).unwrap_err();
+        assert!(error.to_string().contains("per-frame budget"), "{error}");
     }
 }
