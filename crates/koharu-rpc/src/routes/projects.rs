@@ -650,6 +650,32 @@ mod tests {
     }
 
     #[test]
+    fn failed_import_oversized_archive_leaves_no_staging_or_final() {
+        let root = TempRoot::new();
+        let config = root.config();
+        let mut forged = koharu_app::archive::zip_files_to_bytes(&[(
+            "project.toml".into(),
+            b"name = \"oversized\"\n".to_vec(),
+        )])
+        .unwrap();
+        let sig = b"PK\x01\x02";
+        let pos = forged
+            .windows(4)
+            .position(|w| w == sig)
+            .expect("central directory");
+        forged[pos + 24..pos + 28].copy_from_slice(&(256u32 * 1024 * 1024 + 1).to_le_bytes());
+
+        let error = sanitize_and_publish_import(&config, &forged).unwrap_err();
+        assert!(error.to_string().contains("per-entry budget"), "{error}");
+        assert!(project_dirs::list_projects(&config).unwrap().is_empty());
+        let projects = project_dirs::projects_dir(&config).unwrap();
+        assert!(std::fs::read_dir(projects).unwrap().flatten().all(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            !name.ends_with(".khrproj") && !name.contains(".staging")
+        }));
+    }
+
+    #[test]
     fn successful_import_publishes_after_sanitize_and_atomic_rename() {
         let root = TempRoot::new();
         let config = root.config();
