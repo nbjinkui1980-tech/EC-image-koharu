@@ -319,6 +319,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-15 | L-AR05-ARCHIVE | T04 ✅(History frame 分配前上限) | commit `2b1a394c`;RED 2F/0P(16 MiB+1/u32::MAX 头均被当截断尾静默容忍)→GREEN 2/2;history 11P/0F;app suite 463P/0F;clippy/fmt 净;16 MiB 上限两模式同 corruption,未超限截断尾保持 AR04-T03 语义;写侧对称上限记合同备查(超卡范围);计数 → ✅41/◐11/🟡13/🚧0/🔴7/⛔1/⏸0 |
 | 2026-08-15 | L-AR05-ARCHIVE | lane 收口 ✅(4 commit) | T02 `23a9f98a` / T03 `6af405c7`(纯锁定) / T04 `2b1a394c` / review-fix `6f8fb8e8`;门禁全绿(app 465P/rpc 41P/llm 40P,workspace clippy/fmt/check,check:generated 零漂移);独立 review 经 oracle 完成(基础设施第 17 次恢复):零 blocker,1 major(比率检查信可伪造 compressed_size→归档长度钳制)+2 minor(消息断言脆弱裁决记录/staging 断言收紧)+3 informational,修复至零;依赖传播:AR06-T05 🔴→🟡(AR05-T03+T01 均 ✅);无 wave 收齐(AR06-T05 未竟);计数 → ✅41/◐11/🟡14/🚧0/🔴6/⛔1/⏸0 |
 | 2026-08-15 | L-AR06-T05 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `a28f4bc09de45228`;认领基线 main@`b68f123e`,分支 tip `639a742c`;前置 AR05-T03 ✅`6af405c7`、AR06-T01 ✅`2024de62`;单卡 lane(L-AR06 末卡);T05 🟡→🚧;计数 → ✅41/◐11/🟡13/🚧1/🔴6/⛔1/⏸0 |
+| 2026-08-15 | L-AR06-T05 | T05 ✅(Bulk import 单槽) | commit `976ac27e`;RED 1F/2P(第二并发得 200)→GREEN 3/3;rpc lib 44P/app 465P、workspace clippy/fmt 净、check:generated 零漂移;单槽先于 body 读取,429+Retry-After "1",RAII 全路径释放;依赖传播:无下游;L-AR06 全卡齐,W4 全部非 OOS 卡齐(待 WAVE-GREEN);计数 → ✅42/◐11/🟡13/🚧0/🔴6/⛔1/⏸0 |
 
 ---
 
