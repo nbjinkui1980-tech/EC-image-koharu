@@ -9,6 +9,8 @@ use std::sync::atomic::AtomicBool;
 
 use axum::Json;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use koharu_app::AppConfig;
 use koharu_app::pipeline::{
     self, PipelineRunOptions, PipelineSpec, ProgressTick, Scope, WarningTick,
@@ -24,6 +26,22 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::{ApiError, ApiResult};
 use crate::routes::operations::{register_cancel, unregister_cancel};
+
+/// Try to take the pipeline admission slot for the session's project.
+/// One slot per project; the returned permit releases on drop (RAII),
+/// including when the owning task panics.
+pub(crate) fn try_acquire_pipeline_slot(
+    app: &koharu_app::App,
+    session: &koharu_app::ProjectSession,
+) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
+    let slot = app
+        .pipeline_slots
+        .entry(session.dir.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+        .clone();
+    slot.try_acquire_owned()
+        .map_err(|_| anyhow::anyhow!("pipeline slot busy for project {}", session.dir))
+}
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::default().routes(routes!(start_pipeline))
@@ -75,12 +93,15 @@ pub struct StartPipelineResponse {
     post,
     path = "/pipelines",
     request_body = StartPipelineRequest,
-    responses((status = 200, body = StartPipelineResponse))
+    responses(
+        (status = 200, body = StartPipelineResponse),
+        (status = 429, description = "a pipeline is already running for this project")
+    )
 )]
 async fn start_pipeline(
     State(app): State<AppState>,
     Json(req): Json<StartPipelineRequest>,
-) -> ApiResult<Json<StartPipelineResponse>> {
+) -> ApiResult<axum::response::Response> {
     let session = app
         .current_session()
         .ok_or_else(|| ApiError::bad_request("no project open"))?;
@@ -94,9 +115,22 @@ async fn start_pipeline(
         options,
     };
 
-    let operation_id = spawn_pipeline_job(app.as_ref(), session, spec)
-        .map_err(|error| ApiError::bad_request(format!("{error:#}")))?;
-    Ok(Json(StartPipelineResponse { operation_id }))
+    let operation_id = match spawn_pipeline_job(app.as_ref(), session, spec) {
+        Ok(id) => id,
+        Err(error) => {
+            let message = format!("{error:#}");
+            if message.contains("pipeline slot busy") {
+                return Ok((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(axum::http::header::RETRY_AFTER, "1")],
+                    Json(crate::ApiError::new(StatusCode::TOO_MANY_REQUESTS, message)),
+                )
+                    .into_response());
+            }
+            return Err(ApiError::bad_request(message));
+        }
+    };
+    Ok(Json(StartPipelineResponse { operation_id }).into_response())
 }
 
 /// Start a fully registered pipeline job. HTTP and MCP intentionally share
@@ -110,6 +144,10 @@ pub(crate) fn spawn_pipeline_job(
     for id in &spec.steps {
         pipeline::Registry::find(id)?;
     }
+
+    // Admission precedes any registry/event side effect; the permit is moved
+    // into the job task and released when it ends, including on panic.
+    let permit = try_acquire_pipeline_slot(app, &session)?;
 
     let operation_id = Uuid::new_v4().to_string();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -171,6 +209,7 @@ pub(crate) fn spawn_pipeline_job(
         }));
     });
     tokio::spawn(async move {
+        let _permit = permit;
         let result = pipeline::run(
             session_c,
             registry_c,
@@ -244,5 +283,94 @@ mod tests {
         assert_eq!(options.target_language.as_deref(), Some("ja"));
         assert_eq!(req.steps, ["llm"]);
         assert_eq!(req.pages.as_deref(), Some([page].as_slice()));
+    }
+}
+
+#[cfg(test)]
+mod pipeline_admission_tests {
+    use super::*;
+    use koharu_app::{App, AppConfig, ProjectSession};
+    use koharu_runtime::{ComputePolicy, RuntimeManager};
+    use uuid::Uuid;
+
+    async fn test_state() -> (AppState, std::path::PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("koharu-pipeline-admission-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("create test root");
+        let runtime = RuntimeManager::new(root.join("runtime"), ComputePolicy::CpuOnly)
+            .expect("create runtime");
+        runtime.prepare().await.expect("prepare runtime");
+        let runtime = Arc::new(runtime);
+        let app = Arc::new(
+            App::new(AppConfig::default(), runtime.clone(), true, "test").expect("create app"),
+        );
+        let state = crate::BootstrapManager::new(runtime);
+        assert!(state.set_app(app).is_ok(), "set test app");
+        (state, root)
+    }
+
+    fn open_session(state: &AppState, root: &std::path::Path) -> Arc<ProjectSession> {
+        let dir = camino::Utf8PathBuf::from_path_buf(root.join("proj.khrproj")).unwrap();
+        let session = ProjectSession::create(&dir, "admission").expect("create session");
+        state.app().unwrap().session.store(Some(session.clone()));
+        session
+    }
+
+    fn pipeline_request() -> StartPipelineRequest {
+        StartPipelineRequest {
+            steps: vec!["lama-manga".to_string()],
+            pages: None,
+            region: None,
+            text_node_ids: None,
+            target_language: None,
+            system_prompt: None,
+            default_font: None,
+            reading_order: None,
+        }
+    }
+
+    // AR06-T03 RED: a second concurrent pipeline on the same project must be
+    // rejected 429 + Retry-After while the first holds the slot.
+    #[tokio::test]
+    async fn pipeline_admission_second_concurrent_gets_429() {
+        let (state, root) = test_state().await;
+        let session = open_session(&state, &root);
+        let _first = try_acquire_pipeline_slot(state.app().unwrap().as_ref(), &session)
+            .expect("first slot acquires");
+
+        let response = start_pipeline(State(state.clone()), Json(pipeline_request()))
+            .await
+            .expect("handler responds");
+
+        let status = response.status();
+        let retry_after = response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        drop(session);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(status, 429, "second concurrent pipeline must be rejected");
+        assert_eq!(retry_after.as_deref(), Some("1"));
+    }
+
+    // Lock: the slot frees when the permit drops.
+    #[tokio::test]
+    async fn pipeline_admission_slot_released_on_permit_drop() {
+        let (state, root) = test_state().await;
+        let session = open_session(&state, &root);
+        let app = state.app().unwrap();
+        let permit = try_acquire_pipeline_slot(app.as_ref(), &session).expect("first acquire");
+        assert!(
+            try_acquire_pipeline_slot(app.as_ref(), &session).is_err(),
+            "second acquire while held must fail"
+        );
+        drop(permit);
+        assert!(
+            try_acquire_pipeline_slot(app.as_ref(), &session).is_ok(),
+            "acquire after release must succeed"
+        );
+        drop(session);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

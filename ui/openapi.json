@@ -736,6 +736,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "a pipeline is already running for this project"
           }
         }
       }

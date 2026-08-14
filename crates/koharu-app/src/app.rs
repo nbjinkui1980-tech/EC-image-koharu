@@ -64,6 +64,8 @@ pub struct App {
     pub jobs: Arc<crate::jobs::BoundedJobRegistry>,
     pub downloads: Arc<DashMap<String, DownloadProgress>>,
     pub bus: Arc<EventBus>,
+    /// Project-keyed pipeline admission slots (semaphore = 1 per project).
+    pub pipeline_slots: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     pub ai: Arc<AiManager>,
     pub llm: Arc<llm::Model>,
     pub renderer: Arc<renderer::Renderer>,
@@ -111,6 +113,7 @@ impl App {
             jobs: shared.jobs,
             downloads: shared.downloads,
             bus: shared.bus,
+            pipeline_slots: Arc::new(DashMap::new()),
             ai,
             llm,
             renderer,
