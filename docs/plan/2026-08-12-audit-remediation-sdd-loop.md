@@ -129,8 +129,8 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR05-T02 Archive 读取预算 | 🟡 | — | 无依赖 |
 | AR05-T03 Import 原子发布 | 🔴 | — | ←AR04-T03+T02 |
 | AR05-T04 History frame 预算 | 🟡 | — | ←AR04-T03(已 ✅,2026-08-14 L-AR04 收口解锁) |
-| AR05-T05A Tauri picker File | 🟡 | — | 仅依赖已批准 AMEND-01 |
-| AR05-T05B 删除 from-paths API | 🔴 | — | ←T05A;现状 `/pages/from-paths` 仍在 pages.rs |
+| AR05-T05A Tauri picker File | 🚧 | — | L-AR05-PICKER 在途,合同 `cdd7492a` |
+| AR05-T05B 删除 from-paths API | 🚧 | — | ←T05A;L-AR05-PICKER 在途 |
 | AR05-T06 批量预算/decode admission | ✅ | commit `2d74327a` | ←T01 |
 | AR06-T01 有界 JobRegistry | 🟡 | — | 现状无有界注册表/槽位 |
 | AR06-T02 统一 registry | 🔴 | — | ←T01 |
@@ -205,6 +205,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
+| L-AR05-PICKER | Sisyphus/ulw(当前会话) | `audit-remediation-phase3` | `cdd7492a5a3f8ea8` | 2026-08-14 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
@@ -296,6 +297,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-14 | L-AR05-LIMIT | T01 ✅(Route body limits 分层) | commit `85bc85c1`;RED 3F/1P(400/400/500 到达 handler)→GREEN 4/4;关键取证:逐请求限值只能经 `DefaultBodyLimit::apply`(extension 键为 crate 私有 Kind);rpc suite/clippy/fmt 净;计数 → ✅20/◐11/🟡22/🚧1/🔴17/⛔1/⏸0 |
 | 2026-08-14 | L-AR05-LIMIT | T06 ✅(批量预算/decode admission) | commit `2d74327a`;RED-0 脚手架(常量+覆盖缝+gauge)→RED 4F/2P→GREEN 6/6(gauge ≤2);rpc suite/clippy/fmt 净;计数 → ✅21/◐11/🟡22/🚧0/🔴17/⛔1/⏸0 |
 | 2026-08-14 | L-AR05-LIMIT | lane 收口 ✅(2 commit) | T01 `85bc85c1` / T06 `2d74327a`;门禁全绿(rpc/app/llm suites exit 0,workspace clippy/fmt/check,check:generated 零漂移);独立 review 第 10 次启动失败降级对抗性自审——零 blocker/major,1 minor(multipart 单字段在编码总量拒绝前完整缓冲,TASKS"mutation 前累计"语义已满足,流式中段拒绝超范围);无依赖传播(无卡等 T06);计数不变 → ✅21/◐11/🟡22/🚧0/🔴17/⛔1/⏸0 |
+| 2026-08-14 | L-AR05-PICKER | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `cdd7492a5a3f8ea8`;认领基线 main@`b68f123e`,分支 tip `363c9c37`;前置 AMEND-01 已批准;唯一 UI 卡 lane(T05A),子代理仍故障单执行器继续;计数 → ✅21/◐11/🟡21/🚧2/🔴16/⛔1/⏸0 |
 | 2026-08-13 | — | Ralplan 收口 blocker 修正 | 主账原子认领+集成后 DONE、10 卡降为 ◐、W1~W6 门禁闭环、回滚单元+反向依赖闭包;计数 → ✅14/◐11/🟡25/🔴20/⛔1/⏸1(共 72,待处理 57) |
 | 2026-08-13 | — | 授权模型改为 Phase 3 一次批准 | 唯一本地 `audit-remediation-phase3` 分支串行全部 lane;每 lane 本地提交+台账更新后自动继续;不合并 main,不远端同步;AR10-T01 转 🟡;计数 → ✅14/◐11/🟡26/🔴20/⛔1/⏸0 |
 
