@@ -28,6 +28,13 @@
 - **目标文件**:上表 T01 行(≤3)
 - **验收命令**:`bun cargo test -p koharu-app jobs`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T01 收口,2026-08-14)**:
+  - RED:`bun cargo test -p koharu-app jobs` → exit 101,3 failed(len 257/301/257,无淘汰实证)
+  - GREEN:同命令 → `3 passed; 0 failed`;既有锁 `mcp_typography_*` 2 passed
+  - 门禁:`bun cargo test -p koharu-app` 全 suite → 454 passed/0 failed;`clippy -p koharu-app -p koharu-rpc --all-targets -D warnings` → exit 0;`fmt` → exit 0
+  - 域外最小牵连(类型换型编译强制,记录):`bootstrap.rs` jobs() 返回类型一行 + `mcp/mod.rs` get_job_from_registry 签名
+  - 设计落地:DashMap + 完成序 VecDeque(parking_lot Mutex);终态入索引去重,Running 永不入索引(永不淘汰);get_mut 透传仅改 error 字段,不影响淘汰追踪
+  - Commit:`2024de62`(5 文件,+152/-9)
 
 ## 卡:AR06-T02 — SSE/Operations/MCP 统一 registry
 
@@ -39,6 +46,12 @@
 - **目标文件**:上表 T02 行(≤4)
 - **验收命令**:`bun cargo test -p koharu-rpc job_registry`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T02 收口,2026-08-14)**:
+  - 性质:T01 换型后三入口(SSE snapshot_from/operations list/mcp get_job)已结构性读同一 BoundedJobRegistry → 本卡为**纯锁定卡**(类 AR03 redirect 降级)
+  - 锁:`job_registry_three_entries_consistent_at_eviction_boundary`(260 终态填入,三入口 id 集合一致且 == registry 现存 256,最老淘汰)+ `job_registry_unknown_lookup_creates_nothing` → `2 passed; 0 failed`
+  - 生产改动:仅两行 pub(crate)(snapshot_from、get_job_from_registry 供测试访问)
+  - 门禁:rpc suite 34P/0F;clippy/fmt 净
+  - Commit:`533d116d`(3 文件,+93/-2)
 
 ## 卡:AR06-T03 — Pipeline 单槽 admission
 
@@ -50,6 +63,12 @@
 - **目标文件**:上表 T03 行(≤4)
 - **验收命令**:`bun cargo test -p koharu-rpc pipeline_admission`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T03 收口,2026-08-14)**:
+  - RED:`pipeline_admission_second_concurrent_gets_429` FAIL(left 200,并发双进实证)+ permit 释放锁 PASS → exit 101
+  - GREEN:`2 passed; 0 failed`(429 + Retry-After:1 ✓)
+  - 设计落地:project-keyed `Semaphore(1)`(App.pipeline_slots);permit move 进任务体,终态/cancel/panic 随 future drop 释放;admission 先于 registry/event 副作用;HTTP 429 + Retry-After,MCP 经共享 spawn 路径继承;utoipa 加 429 description → openapi.json +3,generated.ts 无 body schema 不变,快照不受影响
+  - 门禁:rpc suite 净;clippy/fmt 净
+  - Commit:`eda1b3f3`(3 文件,+139/-5)
 
 ## 卡:AR06-T04 — AI 双槽 admission
 
@@ -61,6 +80,12 @@
 - **目标文件**:上表 T04 行(≤3)
 - **验收命令**:`bun cargo test -p koharu-rpc ai_admission`
 - **证据记录**:RED / GREEN / commit SHA
+- **证据(T04 收口,2026-08-14)**:
+  - RED:`ai_admission_third_concurrent_gets_429` FAIL(left 200,三并发实证)+ panic 清理锁 PASS → exit 101
+  - GREEN:`2 passed; 0 failed`
+  - 设计落地:全局 `Semaphore(2)`(App.ai_slots);任务体 catch_unwind(futures::FutureExt),四终态(Completed/Cancelled/Failed/Panic)统一走 `finish_ai_job`(registry 终态 + JobFinished + unregister_cancel);panic 不再留永久 Running;第三个请求 429;无真实模型(admission 缝 + 清理 fn 直测)
+  - 门禁:rpc 38P/app 454P 全绿;clippy/fmt 净
+  - Commit:`cfc88385`(2 文件,+162/-23)
 
 ---
 
@@ -73,6 +98,13 @@
 - `bun run test:ui`(SSE/jobsStore 读取面未改契约,确认零回归)
 - 独立 scoped code-review 零发现(重试子代理;故障则对抗性自审并落档偏差)
 - 淘汰边界/单槽/双槽 admission 可重复演示(测试输出)
+
+**Lane 收口证据(2026-08-14)**:
+
+- 门禁:`bun cargo test -p koharu-app`(454P/0F)、`-p koharu-rpc`(38P/0F)、`-p koharu-llm`(40P/0F);`clippy --workspace --all-targets -D warnings` → exit 0;`fmt --all --check` → exit 0;`check --workspace --all-targets` → exit 0;`check:generated` → 零漂移(429 注解增量已随 T03 提交);`bun run --cwd ui test` → 235 passed
+- 独立 review(偏差记录):oracle 第 12 次失败(任务入队成功但运行时仍 `siliconflow/moonshotai/Kimi-K2.7-Code` 404)→ 对抗性自审(`551b3203..cfc88385`):**零 blocker/major**;1 informational——"cancelled" 字符串匹配是既有模式,finish_ai_job 集中化后被固化(非本卡引入)。逐项:淘汰去重/回转守卫/锁序无环、acquire-spawn 无 TOCTOU、permit 释放全路径覆盖、finish_ai_job 唯一调用点、无 cfg(test) 缝入生产。**五条 lane 独立 review 拖欠,待子代理修复后一并补**
+- 依赖传播:无(AR06-T05 仍等 AR05-T03;AR07-T03 仍等 AR08-T02)
+- 可重复演示:jobs 3 测试(淘汰边界)、pipeline_admission 2 测试(429+Retry-After)、ai_admission 2 测试(429+panic 清理)
 
 ## 风险与决策点(批准时一并确认)
 
