@@ -120,7 +120,7 @@ impl EventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koharu_core::{JobStatus, JobSummary};
+    use koharu_core::JobStatus;
 
     fn sample_event(id: &str) -> AppEvent {
         AppEvent::JobStarted {
@@ -193,11 +193,5 @@ mod tests {
         let bus = EventBus::new(4);
         assert_eq!(bus.latest_seq(), None);
         assert_eq!(bus.buffered(), 0);
-    }
-
-    #[test]
-    fn _use_unused_type() {
-        // Silence warnings for JobSummary import in case tests drift.
-        let _: Option<JobSummary> = None;
     }
 }

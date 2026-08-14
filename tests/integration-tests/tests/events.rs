@@ -11,11 +11,9 @@
 //! - Scene/project/config/LLM mutations do *not* broadcast — the bus is
 //!   scoped strictly to long-running processes (regression guard).
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use futures::StreamExt;
 use koharu_core::{AppEvent, JobFinishedEvent, JobStatus};
 use koharu_integration_tests::TestApp;
 use reqwest::multipart::{Form, Part};
@@ -426,16 +424,4 @@ async fn wait_until<F: Fn() -> bool>(cond: F, total: Duration) -> Result<()> {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     Err(anyhow!("timed out waiting for condition"))
-}
-
-// ---------------------------------------------------------------------------
-// Unused imports safety net (silences warnings on helpers we shuffle around)
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-fn _unused() -> (Arc<()>, Box<dyn futures::Stream<Item = u8> + Unpin>) {
-    // Reference the unused futures import so rustc won't complain when
-    // tests get reshuffled.
-    let s: Box<dyn futures::Stream<Item = u8> + Unpin> = Box::new(futures::stream::empty().boxed());
-    (Arc::new(()), s)
 }
