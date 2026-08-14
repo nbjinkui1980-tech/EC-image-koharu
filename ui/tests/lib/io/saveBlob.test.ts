@@ -119,3 +119,52 @@ describe('zip entry path validation (Tauri extract)', () => {
     expect(written).toContain('/chosen/folder/page.png')
   })
 })
+
+// AR08-T02 RED: every entry and the total budget must be validated before
+// the first write; over-budget or invalid archives leave zero files behind.
+describe('zip extraction budget (Tauri extract)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    isTauriMock.mockReturnValue(true)
+    openDialog.mockResolvedValue('/chosen/folder')
+  })
+
+  it('rejects over-budget total bytes before any write', async () => {
+    const budget = { maxEntries: 100, maxTotalBytes: 8, maxFileBytes: 1024 }
+    const blob = zipBlob({
+      'a.png': new Uint8Array([1, 2, 3, 4, 5]),
+      'b.png': new Uint8Array([6, 7, 8, 9]),
+    })
+    await expect(saveBlob(blob, 'export.zip', budget)).rejects.toThrow(/budget/)
+    expect(writeFileMock).not.toHaveBeenCalled()
+    expect(mkdirMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects an entry count over budget', async () => {
+    const budget = { maxEntries: 1, maxTotalBytes: 1024, maxFileBytes: 1024 }
+    const blob = zipBlob({
+      'a.png': new Uint8Array([1]),
+      'b.png': new Uint8Array([2]),
+    })
+    await expect(saveBlob(blob, 'export.zip', budget)).rejects.toThrow(/budget/)
+    expect(writeFileMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a single file over budget via actual decompressed count', async () => {
+    const budget = { maxEntries: 100, maxTotalBytes: 4096, maxFileBytes: 4 }
+    const blob = zipBlob({ 'big.png': new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]) })
+    await expect(saveBlob(blob, 'export.zip', budget)).rejects.toThrow(/budget/)
+    expect(writeFileMock).not.toHaveBeenCalled()
+  })
+
+  // Lock: within budget everything still extracts.
+  it('extracts within budget', async () => {
+    const budget = { maxEntries: 2, maxTotalBytes: 1024, maxFileBytes: 1024 }
+    const blob = zipBlob({
+      'a.png': new Uint8Array([1]),
+      'b.png': new Uint8Array([2]),
+    })
+    await expect(saveBlob(blob, 'export.zip', budget)).resolves.toBe(true)
+    expect(writeFileMock).toHaveBeenCalledTimes(2)
+  })
+})
