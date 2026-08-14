@@ -199,15 +199,23 @@ pub async fn run() -> Result<()> {
             });
 
             let cfg = handle.config();
-            let url: tauri::Url = if cfg!(debug_assertions) {
-                cfg.build
-                    .dev_url
-                    .as_ref()
-                    .expect("dev_url must be set in dev mode")
-                    .as_str()
-                    .parse()?
+            let service_origin: tauri::Url = format!("http://127.0.0.1:{port}").parse()?;
+            let dev_origin: Option<tauri::Url> = if cfg!(debug_assertions) {
+                Some(
+                    cfg.build
+                        .dev_url
+                        .as_ref()
+                        .expect("dev_url must be set in dev mode")
+                        .as_str()
+                        .parse()?,
+                )
             } else {
-                format!("http://127.0.0.1:{port}").parse()?
+                None
+            };
+            let url = if cfg!(debug_assertions) {
+                dev_origin.clone().expect("dev origin in dev mode")
+            } else {
+                service_origin.clone()
             };
             let wc = cfg
                 .app
@@ -216,6 +224,9 @@ pub async fn run() -> Result<()> {
                 .find(|w| w.label == "main")
                 .expect("main window config not found");
             tauri::webview::WebviewWindowBuilder::from_config(handle, wc)?
+                .on_navigation(move |target| {
+                    navigation_allowed(target, &service_origin, dev_origin.as_ref())
+                })
                 .build()?
                 .navigate(url)?;
 
@@ -224,4 +235,78 @@ pub async fn run() -> Result<()> {
         .run(context)?;
 
     Ok(())
+}
+
+/// Decide whether the main webview may navigate to `url`: only the active
+/// service origin, plus the dev-server origin in debug builds. Everything
+/// else is rejected so external content can never replace the main webview.
+fn navigation_allowed(
+    url: &tauri::Url,
+    service_origin: &tauri::Url,
+    dev_origin: Option<&tauri::Url>,
+) -> bool {
+    fn same_origin(a: &tauri::Url, b: &tauri::Url) -> bool {
+        a.scheme() == b.scheme()
+            && a.host() == b.host()
+            && a.port_or_known_default() == b.port_or_known_default()
+    }
+    if same_origin(url, service_origin) {
+        return true;
+    }
+    cfg!(debug_assertions) && dev_origin.is_some_and(|dev| same_origin(url, dev))
+}
+
+#[cfg(test)]
+mod navigation_tests {
+    use super::navigation_allowed;
+
+    fn url(input: &str) -> tauri::Url {
+        tauri::Url::parse(input).unwrap()
+    }
+
+    // AR07-T02 RED: external origins must not replace the main webview; only
+    // the service origin (and the dev origin in debug builds) may navigate.
+    #[test]
+    fn navigation_allows_service_origin() {
+        let service = url("http://127.0.0.1:4000");
+        assert!(navigation_allowed(
+            &url("http://127.0.0.1:4000/"),
+            &service,
+            None
+        ));
+        assert!(navigation_allowed(
+            &url("http://127.0.0.1:4000/api/v1/scene.json"),
+            &service,
+            None
+        ));
+    }
+
+    #[test]
+    fn navigation_rejects_external_origin() {
+        let service = url("http://127.0.0.1:4000");
+        for target in [
+            "https://evil.example/",
+            "http://127.0.0.1:9999/x",
+            "http://localhost:4000/",
+            "about:blank",
+        ] {
+            assert!(
+                !navigation_allowed(&url(target), &service, None),
+                "must reject {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn navigation_dev_origin_allowed_only_in_debug() {
+        let service = url("http://127.0.0.1:4000");
+        let dev = url("http://localhost:3000");
+        let target = url("http://localhost:3000/settings");
+        assert_eq!(
+            navigation_allowed(&target, &service, Some(&dev)),
+            cfg!(debug_assertions),
+            "dev origin allowed only in debug builds"
+        );
+        assert!(!navigation_allowed(&target, &service, None));
+    }
 }
