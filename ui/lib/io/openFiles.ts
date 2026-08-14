@@ -17,27 +17,17 @@ const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp'] as const
 const IMAGE_MIME = ['image/png', 'image/jpeg', 'image/webp']
 const IMAGE_RE = /\.(png|jpe?g|webp)$/i
 
-/**
- * Platform-tagged picker result. On Tauri we hand paths straight to the
- * backend (no JS-side file read — backend reads from disk in parallel);
- * on the web we must round-trip through `File` since we can't escape the
- * sandbox.
- */
-export type ImagePickerResult =
-  | { kind: 'paths'; paths: string[] }
-  | { kind: 'files'; files: File[] }
-
 /** Pick one or more image files. Empty result = user cancelled. */
-export async function openImageFiles(): Promise<ImagePickerResult> {
+export async function openImageFiles(): Promise<File[]> {
   if (isTauri()) {
     const { open } = await import('@tauri-apps/plugin-dialog')
     const picked = await open({
       multiple: true,
       filters: [{ name: 'Images', extensions: [...IMAGE_EXTENSIONS] }],
     })
-    if (!picked) return { kind: 'paths', paths: [] }
+    if (!picked) return []
     const paths = Array.isArray(picked) ? picked : [picked]
-    return { kind: 'paths', paths }
+    return readTauriFiles(paths)
   }
 
   const { fileOpen } = await import('browser-fs-access')
@@ -48,38 +38,35 @@ export async function openImageFiles(): Promise<ImagePickerResult> {
       extensions: IMAGE_EXTENSIONS.map((e) => `.${e}`),
       description: 'Images',
     })
-    return { kind: 'files', files: Array.isArray(result) ? result : [result] }
+    return Array.isArray(result) ? result : [result]
   } catch (e) {
-    if (isAbort(e)) return { kind: 'files', files: [] }
+    if (isAbort(e)) return []
     throw e
   }
 }
 
 /** Pick a folder; return every image file inside it (non-recursive). */
-export async function openImageFolder(): Promise<ImagePickerResult> {
+export async function openImageFolder(): Promise<File[]> {
   if (isTauri()) {
     const { open } = await import('@tauri-apps/plugin-dialog')
     const folder = await open({ directory: true, multiple: false })
-    if (!folder || typeof folder !== 'string') return { kind: 'paths', paths: [] }
+    if (!folder || typeof folder !== 'string') return []
     const { readDir } = await import('@tauri-apps/plugin-fs')
     const entries = await readDir(folder)
     const paths = entries
       .filter((e) => e.isFile && e.name && IMAGE_RE.test(e.name))
       .map((e) => `${folder}/${e.name}`)
       .sort()
-    return { kind: 'paths', paths }
+    return readTauriFiles(paths)
   }
 
   const { directoryOpen } = await import('browser-fs-access')
   try {
     const results = await directoryOpen({ recursive: false })
     const arr = Array.isArray(results) ? results : [results]
-    return {
-      kind: 'files',
-      files: arr.filter((f): f is File => !!f && IMAGE_RE.test(f.name)),
-    }
+    return arr.filter((f): f is File => !!f && IMAGE_RE.test(f.name))
   } catch (e) {
-    if (isAbort(e)) return { kind: 'files', files: [] }
+    if (isAbort(e)) return []
     throw e
   }
 }

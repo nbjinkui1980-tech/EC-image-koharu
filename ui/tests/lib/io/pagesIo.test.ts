@@ -45,8 +45,8 @@ function isInvalidated(key: readonly unknown[]): boolean {
 
 describe('importPages', () => {
   it('no-ops when the user cancels the picker', async () => {
-    asMock(openImageFiles).mockResolvedValue({ kind: 'files', files: [] })
-    asMock(openImageFolder).mockResolvedValue({ kind: 'files', files: [] })
+    asMock(openImageFiles).mockResolvedValue([])
+    asMock(openImageFolder).mockResolvedValue([])
 
     let uploadCalls = 0
     server.use(
@@ -65,8 +65,8 @@ describe('importPages', () => {
 
   it('routes "files" to openImageFiles and "folder" to openImageFolder', async () => {
     const pngFile = new File([new Uint8Array([0])], 'a.png', { type: 'image/png' })
-    asMock(openImageFiles).mockResolvedValue({ kind: 'files', files: [pngFile] })
-    asMock(openImageFolder).mockResolvedValue({ kind: 'files', files: [pngFile] })
+    asMock(openImageFiles).mockResolvedValue([pngFile])
+    asMock(openImageFolder).mockResolvedValue([pngFile])
 
     server.use(http.post('/api/v1/pages', () => HttpResponse.json({ pages: ['p'] })))
 
@@ -84,7 +84,7 @@ describe('importPages', () => {
 
   it('sends the replace flag based on mode', async () => {
     const pngFile = new File([new Uint8Array([0])], 'a.png', { type: 'image/png' })
-    asMock(openImageFiles).mockResolvedValue({ kind: 'files', files: [pngFile] })
+    asMock(openImageFiles).mockResolvedValue([pngFile])
 
     const seen: string[] = []
     server.use(
@@ -97,27 +97,6 @@ describe('importPages', () => {
     await importPages('replace', 'files')
     await importPages('append', 'files')
     expect(seen.every((ct) => ct.startsWith('multipart/form-data'))).toBe(true)
-    expect(isInvalidated(getGetSceneJsonQueryKey())).toBe(true)
-  })
-
-  it('takes the path-based fast path when picker returns paths', async () => {
-    asMock(openImageFiles).mockResolvedValue({
-      kind: 'paths',
-      paths: ['/images/a.png', '/images/b.png'],
-    })
-
-    let seen: { paths?: unknown; replace?: unknown } = {}
-    server.use(
-      http.post('/api/v1/pages/from-paths', async ({ request }) => {
-        seen = (await request.json()) as typeof seen
-        return HttpResponse.json({ pages: ['p1', 'p2'] })
-      }),
-    )
-
-    await importPages('replace', 'files')
-
-    expect(seen.paths).toEqual(['/images/a.png', '/images/b.png'])
-    expect(seen.replace).toBe(true)
     expect(isInvalidated(getGetSceneJsonQueryKey())).toBe(true)
   })
 })
