@@ -53,6 +53,7 @@ export {
   patchConfig,
   putCurrentLlm,
   putCurrentProject,
+  putMask,
   redo,
   reorderTextNodes,
   startCodexDeviceLogin,
