@@ -861,6 +861,9 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "another archive import is in flight"
           }
         }
       }

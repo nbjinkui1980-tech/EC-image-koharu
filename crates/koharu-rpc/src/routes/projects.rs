@@ -204,7 +204,10 @@ pub(crate) fn try_acquire_import_slot(
     post,
     path = "/projects/import",
     request_body(content_type = "application/zip"),
-    responses((status = 200, body = ProjectSummary))
+    responses(
+        (status = 200, body = ProjectSummary),
+        (status = 429, description = "another archive import is in flight")
+    )
 )]
 async fn import_project(State(app): State<AppState>, request: Request) -> ApiResult<Response> {
     let _permit = match try_acquire_import_slot(
@@ -771,6 +774,51 @@ mod tests {
         assert!(result.is_err(), "oversized archive must be rejected");
         let _permit = try_acquire_import_slot(state.app().unwrap().as_ref())
             .expect("import slot released after budget rejection");
+    }
+
+    #[tokio::test]
+    async fn import_admission_success_returns_project_summary() {
+        let (state, root) = admission_state().await;
+        let bytes = verified_archive(&root.0);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects/import")
+            .body(Body::from(bytes))
+            .unwrap();
+
+        let response = import_project(State(state.clone()), request)
+            .await
+            .expect("handler responds");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("read response body");
+        let summary: serde_json::Value =
+            serde_json::from_slice(&body).expect("project summary json");
+        assert!(summary.get("id").is_some(), "summary carries project id");
+        let config = (**state.config.load()).clone();
+        assert_eq!(project_dirs::list_projects(&config).unwrap().len(), 1);
+        assert!(state.current_session().is_some());
+    }
+
+    #[tokio::test]
+    async fn import_admission_slot_released_after_body_limit_rejection() {
+        let (state, root) = admission_state().await;
+        let bytes = verified_archive(&root.0);
+        assert!(bytes.len() > 16, "fixture archive exceeds the tiny limit");
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects/import")
+            .body(Body::from(bytes))
+            .unwrap();
+        axum::extract::DefaultBodyLimit::max(16).apply(&mut request);
+
+        let response = import_project(State(state.clone()), request)
+            .await
+            .expect("handler responds");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let _permit = try_acquire_import_slot(state.app().unwrap().as_ref())
+            .expect("import slot released after body-limit rejection");
     }
 
     #[tokio::test]
