@@ -28,6 +28,11 @@
 - **目标文件**:上表 T05A 行(≤4)
 - **验收命令**:同上 + `bun run lint:ui`
 - **证据记录**:RED / GREEN / 测试输出样例 / commit SHA
+- **证据(T05A 收口,2026-08-14)**:
+  - RED:`bun run --cwd ui test -- tests/lib/io/openFiles.test.ts tests/lib/io/pagesIo.test.ts` → 8 failed/5 passed(openFiles 5 用例返回形状不符;pagesIo 3 个 importPages 用例 TypeError——裸数组无 `.files`,证明当前走 paths 分流;khr/export 5 用例无关面 PASS)
+  - GREEN:同命令 → `2 passed (files)` / **13 passed/0 failed**;全 UI 套件 235 passed;`lint:ui` exit 0(仅既有 RenderControlsPanel 警告);`format:check` 净
+  - 设计落地:Tauri 支路末尾 `readTauriFiles(paths)`;`ImagePickerResult` 坍缩删除;`importPages` 统一 `uploadPages`(multipart);web 支路零改动
+  - Commit:`d13f9b6e`(4 文件,+128/-59)
 
 ## 卡:AR05-T05B — 删除后端 from-paths API
 
@@ -42,6 +47,12 @@
 - **目标文件**:上表 T05B 行
 - **验收命令**:`bun cargo test -p koharu-rpc`、`bun run check:generated`、`rg 'from-paths|uploadPagesByPaths'`(全仓运行时零调用)
 - **证据记录**:rg RED/GREEN 输出 / 重生成 diff 摘要 / commit SHA
+- **证据(T05B 收口,2026-08-14)**:
+  - RED(rg 命中):`pages.rs` 注册行/handler/schema/测试调用 5 处;`ui/openapi.json:572` 路径;`openapi_paths_snapshot.snap:150`;`scene.ts` `uploadPagesByPaths` + `createPagesFromPaths` 生成物引用
+  - GREEN:`grep -rn 'from-paths|createPagesFromPaths|uploadPagesByPaths' crates/koharu-rpc ui/lib ui/openapi.json` → **零命中**;rpc suite 32P/0F;`page_import_budget` 6/6 锁 PASS;`check:generated` 提交后复跑零漂移;clippy/fmt 净
+  - 重生成 diff:纯删除 79 行(openapi.json -44、generated.ts -24、schemas 索引 -1、createPagesFromPathsRequest.ts 删除);`ui/lib/api/index.ts` 手写 barrel 删 1 行
+  - 连带清理:测试 harness `ImportIngress::Paths` 变体 + `run_import` Paths 分支 + 5 个 path-* 用例;`run_import` 死参 `project_dir` 删除
+  - Commit:`c1fd37d2`(8 文件,+4/-347)
 
 ---
 
@@ -54,6 +65,13 @@
 - `bun run test:ui`、`bun run lint:ui`、`bun run format:check`
 - 独立 scoped code-review 零发现(重试子代理;故障则对抗性自审并落档偏差)
 - Tauri picker→File→multipart 与 from-paths 消亡可重复演示(测试输出 + rg 证据)
+
+**Lane 收口证据(2026-08-14)**:
+
+- 门禁:`bun cargo test -p koharu-rpc -p koharu-app -p koharu-llm` → exit 0;`clippy --workspace --all-targets -D warnings` → exit 0;`fmt --all --check` → exit 0;`check --workspace --all-targets` → exit 0;`bun run check:generated` → 零漂移;`bun run --cwd ui test` → 235 passed;`lint:ui` → exit 0
+- 独立 review(偏差记录):oracle 第 11 次启动失败 → 对抗性自审(`e1770ba3..c1fd37d2`):**零 blocker/major/minor**;关键核查——被删 handler 的 replace-empty clear 分支在 UI 侧无调用方(importPages 对空数组提前 return),死语义随死代码删除;`readTauriFiles` 路径分隔符/mime 映射为 `.khr` 导入既有验证代码;生成物全部经 `generate:api` 重生成无手改。**四条 lane 独立 review 拖欠,待子代理修复后一并补**
+- 依赖传播:AR07-T03 需 T05A(✅)+AR08-T02(未做)→ 维持 🔴;无新 READY
+- 可重复演示:openFiles/pagesIo 13 测试 + rg 零命中输出 + 重生成纯删除 diff
 
 ## 风险与决策点(批准时一并确认)
 
