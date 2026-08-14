@@ -65,7 +65,7 @@ export function connectEvents(baseUrl = '/api/v1'): () => void {
       }
       // Treat anything else (5xx, proxy hiccups, wrong content-type) as
       // transient; fetchEventSource will back off and retry.
-      throw new RetryableSseError(`SSE not ready: ${res.status}`)
+      throw new Error(`SSE not ready: ${res.status}`)
     },
     onmessage(ev) {
       store.getState().onMessage(ev.id || null)
@@ -214,7 +214,6 @@ function dispatch(event: AppEvent): void {
 // ---------------------------------------------------------------------------
 
 class FatalSseError extends Error {}
-class RetryableSseError extends Error {}
 
 function isFatalStatus(status: number): boolean {
   // 401 / 403 / 404 are hard stops; 408 + 429 should retry; other 4xx

@@ -1,7 +1,7 @@
 'use client'
 
 import { useDrag } from '@use-gesture/react'
-import { useMemo, useRef } from 'react'
+import { useRef } from 'react'
 import { useHotkeys } from 'react-hotkeys-hook'
 
 import { useBlobImage } from '@/hooks/useBlobData'
@@ -31,10 +31,7 @@ export function TextBlockLayer({ showSprites, scale, style }: TextBlockLayerProp
   const mode = useEditorUiStore((s) => s.mode)
   const interactive = mode === 'select' || mode === 'block'
 
-  const hasSelection = useMemo(() => {
-    for (const id of selectedIds) if (id) return true
-    return false
-  }, [selectedIds])
+  const hasSelection = selectedIds.size > 0
 
   const removeNode = async (id: string) => {
     if (!page) return

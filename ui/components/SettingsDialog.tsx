@@ -45,7 +45,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Kbd } from '@/components/ui/kbd'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -88,6 +87,7 @@ import {
   isModifierKey,
 } from '@/lib/shortcutUtils'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import { cn } from '@/lib/utils'
 
 // Dialog state models `AppConfig` (what `GET /config` returns — snake_case).
 // But `PATCH /config` expects a `ConfigPatch` with camelCase fields because
@@ -1105,7 +1105,14 @@ function KeybindsPane() {
 
     return parts.map((part, i) => (
       <Fragment key={i}>
-        <Kbd className={kbdClass}>{part}</Kbd>
+        <kbd
+          className={cn(
+            'pointer-events-none inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded border border-b-2 bg-muted px-1.5 font-mono text-[10px] leading-none font-medium text-muted-foreground opacity-100 shadow-sm transition-all duration-200 select-none',
+            kbdClass,
+          )}
+        >
+          {part}
+        </kbd>
         {i < parts.length - 1 && <span className='text-muted-foreground'>+</span>}
       </Fragment>
     ))

@@ -46,7 +46,3 @@ export function onAuthenticationRequired(listener: () => void): () => void {
 export function isAuthenticated(): boolean {
   return authenticated
 }
-
-export function isDesktop(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-}

@@ -102,17 +102,8 @@ export function isKeyBlocked(key: string): boolean {
  * Performs a highly efficient shallow comparison between two shortcut objects.
  */
 export function areShortcutsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
-  const keysA = Object.keys(a)
-  const keysB = Object.keys(b)
-
-  if (keysA.length !== keysB.length) return false
-
-  for (let i = 0; i < keysA.length; i++) {
-    const key = keysA[i]
-    if (a[key] !== b[key]) return false
-  }
-
-  return true
+  const keys = Object.keys(a)
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key])
 }
 
 /**

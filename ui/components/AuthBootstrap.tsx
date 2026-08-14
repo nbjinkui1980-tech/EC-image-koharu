@@ -7,9 +7,9 @@ import {
   bootstrapDesktopSession,
   exchangeSession,
   isAuthenticated,
-  isDesktop,
   onAuthenticationRequired,
 } from '@/lib/auth'
+import { isTauri } from '@/lib/backend'
 import { connectEvents } from '@/lib/events'
 
 type AuthState = 'pending' | 'authenticated' | 'error' | 'restart-required'
@@ -33,7 +33,7 @@ export function AuthBootstrap({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    const desktop = isDesktop()
+    const desktop = isTauri()
     const authenticate = () => {
       setState('pending')
       setError('')
@@ -73,7 +73,7 @@ export function AuthBootstrap({ children }: { children: ReactNode }) {
     )
   }
 
-  if (state === 'pending' && isDesktop()) {
+  if (state === 'pending' && isTauri()) {
     return <div>{t('common.initializing')}</div>
   }
 
