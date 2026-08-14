@@ -136,36 +136,10 @@ impl Downloads {
         })
     }
 
-    /// Download a file to the downloads cache, returning the cached path.
-    pub(crate) async fn cached_download(&self, url: &str, file_name: &str) -> Result<PathBuf> {
-        let destination = self.downloads_root.join(file_name);
-        if destination.exists() {
-            return Ok(destination);
-        }
-
-        if let Some(parent) = destination.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .with_context(|| format!("failed to create `{}`", parent.display()))?;
-        }
-
-        let reporter = self.begin(file_name);
-        if let Err(error) = self
-            .ranged_download(url, &destination, &reporter, None)
-            .await
-        {
-            reporter.fail(&error);
-            return Err(error);
-        }
-        reporter.finish();
-        Ok(destination)
-    }
-
-    /// Digest-checked variant of `cached_download`: a cache hit must match
+    /// Digest-checked download to the cache: a cache hit must match
     /// `expected_sha256` (a mismatching cache is deleted and refetched), and
     /// a fresh download that fails verification is deleted instead of being
     /// returned — a bad download never clobbers a verified cache.
-    #[allow(dead_code)] // wired into llama/zluda/cuda by AR09-T02/T03.
     pub(crate) async fn cached_download_with_sha256(
         &self,
         url: &str,
@@ -403,7 +377,6 @@ impl TransferReporter {
 // ---------------------------------------------------------------------------
 
 /// Stream a file and compare its SHA-256 against the expected hex digest.
-#[allow(dead_code)] // wired into llama/zluda/cuda by AR09-T02/T03.
 pub(crate) fn verify_sha256(path: &Path, expected_hex: &str) -> Result<bool> {
     use sha2::Digest;
     let mut file = std::fs::File::open(path)
