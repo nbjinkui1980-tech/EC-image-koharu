@@ -132,10 +132,10 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR05-T05A Tauri picker File | ✅ | commit `d13f9b6e` | L-AR05-PICKER 收口证据见合同 |
 | AR05-T05B 删除 from-paths API | ✅ | commit `c1fd37d2` | ←T05A;AMEND-01 落地 |
 | AR05-T06 批量预算/decode admission | ✅ | commit `2d74327a` | ←T01 |
-| AR06-T01 有界 JobRegistry | 🟡 | — | 现状无有界注册表/槽位 |
-| AR06-T02 统一 registry | 🔴 | — | ←T01 |
-| AR06-T03 Pipeline 单槽 | 🔴 | — | ←T01,T02 |
-| AR06-T04 AI 双槽 | 🔴 | — | ←T01,T02 |
+| AR06-T01 有界 JobRegistry | 🚧 | — | L-AR06 在途,合同 `bebe8dc7` |
+| AR06-T02 统一 registry | 🚧 | — | ←T01;L-AR06 在途 |
+| AR06-T03 Pipeline 单槽 | 🚧 | — | ←T01,T02;L-AR06 在途 |
+| AR06-T04 AI 双槽 | 🚧 | — | ←T01,T02;L-AR06 在途 |
 | AR06-T05 Bulk import 单槽 | 🔴 | — | ←AR05-T03,T01 |
 | AR13-T02 破坏性 Project ID 精确匹配 | 🟡 | — | |
 | AR13-T03 Mask 复用 generated API | 🟡 | — | |
@@ -205,6 +205,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
+| L-AR06 | Sisyphus/ulw(当前会话) | `audit-remediation-phase3` | `bebe8dc7e311128d` | 2026-08-14 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
@@ -298,6 +299,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-14 | L-AR05-LIMIT | lane 收口 ✅(2 commit) | T01 `85bc85c1` / T06 `2d74327a`;门禁全绿(rpc/app/llm suites exit 0,workspace clippy/fmt/check,check:generated 零漂移);独立 review 第 10 次启动失败降级对抗性自审——零 blocker/major,1 minor(multipart 单字段在编码总量拒绝前完整缓冲,TASKS"mutation 前累计"语义已满足,流式中段拒绝超范围);无依赖传播(无卡等 T06);计数不变 → ✅21/◐11/🟡22/🚧0/🔴17/⛔1/⏸0 |
 | 2026-08-14 | L-AR05-PICKER | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `cdd7492a5a3f8ea8`;认领基线 main@`b68f123e`,分支 tip `363c9c37`;前置 AMEND-01 已批准;唯一 UI 卡 lane(T05A),子代理仍故障单执行器继续;计数 → ✅21/◐11/🟡21/🚧2/🔴16/⛔1/⏸0 |
 | 2026-08-14 | L-AR05-PICKER | T05A ✅(picker 统一 File)+T05B ✅(删 from-paths)+lane 收口 | T05A `d13f9b6e`(RED 8F/5P→GREEN 13/13,UI 235 净)/ T05B `c1fd37d2`(rg 零命中,rpc 32P/0F,生成物纯删 79 行,快照更新);门禁全绿(3-crate、workspace clippy/fmt/check、check:generated 零漂移、UI 235P、lint:ui 0);oracle 第 11 次失败→自审零发现;无依赖传播(AR07-T03 仍等 AR08-T02);计数 → ✅23/◐11/🟡21/🚧0/🔴16/⛔1/⏸0 |
+| 2026-08-14 | L-AR06 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `bebe8dc7e311128d`;认领基线 main@`b68f123e`,分支 tip `d46facce`;前置 AR13-T01 ✅`88781c76`;T05 不在本 lane(维持 🔴 等 L-AR05-ARCHIVE);计数 → ✅23/◐11/🟡20/🚧4/🔴13/⛔1/⏸0 |
 | 2026-08-13 | — | Ralplan 收口 blocker 修正 | 主账原子认领+集成后 DONE、10 卡降为 ◐、W1~W6 门禁闭环、回滚单元+反向依赖闭包;计数 → ✅14/◐11/🟡25/🔴20/⛔1/⏸1(共 72,待处理 57) |
 | 2026-08-13 | — | 授权模型改为 Phase 3 一次批准 | 唯一本地 `audit-remediation-phase3` 分支串行全部 lane;每 lane 本地提交+台账更新后自动继续;不合并 main,不远端同步;AR10-T01 转 🟡;计数 → ✅14/◐11/🟡26/🔴20/⛔1/⏸0 |
 
