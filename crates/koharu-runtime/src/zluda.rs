@@ -111,19 +111,21 @@ mod platform {
             return Ok(());
         }
 
-        install.reset()?;
-
-        let url = format!("{RELEASE_BASE_URL}/{RELEASE_TAG}/{ZLUDA_ASSET_NAME}");
+        // Verify the pinned digest before touching the install dir; a bad
+        // download cleans its temp and leaves the current install alone.
+        let artifact = artifact();
         let archive = runtime
             .downloads()
-            .cached_download(&url, ZLUDA_ASSET_NAME)
+            .cached_download_with_sha256(&artifact.url, &artifact.file_name, artifact.sha256)
             .await
-            .with_context(|| format!("failed to download `{url}`"))?;
+            .with_context(|| format!("failed to download `{}`", artifact.url))?;
+
+        install.reset()?;
         archive::extract(
             &archive,
             install_dir,
             ArchiveKind::Zip,
-            ExtractPolicy::Selected(ZLUDA_DLLS),
+            artifact.extract_policy(),
         )?;
 
         install.commit()
@@ -176,7 +178,24 @@ pub(crate) use platform::{package_enabled, package_prepare, package_present};
 
 #[cfg(any(target_os = "windows", test))]
 fn source_id() -> String {
-    format!("zluda;tag={RELEASE_TAG};asset={ZLUDA_ASSET_NAME};extract={ZLUDA_EXTRACT_REVISION}")
+    format!(
+        "zluda;tag={RELEASE_TAG};asset={ZLUDA_ASSET_NAME};extract={ZLUDA_EXTRACT_REVISION};sha256={}",
+        &ZLUDA_SHA256[..12]
+    )
+}
+
+#[cfg(any(target_os = "windows", test))]
+const ZLUDA_SHA256: &str = "ea9716ec78393946012c9102a3970941c282bad446ce8898036b505c25d4e29f";
+
+#[cfg(target_os = "windows")]
+fn artifact() -> crate::install::NativeArtifact {
+    crate::install::NativeArtifact {
+        url: format!("{RELEASE_BASE_URL}/{RELEASE_TAG}/{ZLUDA_ASSET_NAME}"),
+        file_name: ZLUDA_ASSET_NAME.to_string(),
+        sha256: ZLUDA_SHA256,
+        archive_kind: "zip",
+        selected_files: Some(ZLUDA_DLLS),
+    }
 }
 
 crate::declare_native_package!(
