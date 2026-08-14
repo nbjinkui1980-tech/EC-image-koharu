@@ -150,9 +150,9 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR07-T03 删除全盘 FS scope | ✅ | commit `8db96c6e` | dialog 临时授权;build 0 |
 | AR08-T01 ZIP entry 路径验证 | ✅ | commit `615f8eee` | L-AR08 收口证据见合同 |
 | AR08-T02 ZIP 全量预验证/预算 | ✅ | commit `4a2249e7` | ←T01;解锁 AR07-T03 |
-| AR09-T01 SHA-256 下载/缓存不变量 | 🟡 | — | 模型下载无 digest 校验 |
-| AR09-T02 llama/ZLUDA 描述 | 🔴 | — | ←T01 |
-| AR09-T03 CUDA PyPI digest | 🔴 | — | ←T01 |
+| AR09-T01 SHA-256 下载/缓存不变量 | 🚧 | — | L-AR09 在途,合同 `a0933b09` |
+| AR09-T02 llama/ZLUDA 描述 | 🚧 | — | ←T01;L-AR09 在途 |
+| AR09-T03 CUDA PyPI digest | 🚧 | — | ←T01;L-AR09 在途 |
 | AR10-T01 Actions 固定完整 SHA | 🟡 | — | 现状 `@v7`/`@master`;仅本地修改/验证 |
 | AR10-T02 Release 最小权限/签名 digest | 🔴 | — | ←T01 |
 | AR10-T03 同 run artifact/Docker provenance | 🔴 | — | ←T02;独占 Dockerfile,与 AR01-T06 互斥 |
@@ -205,6 +205,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
+| L-AR09 | Sisyphus/ulw(当前会话) | `audit-remediation-phase3` | `a0933b09afcb0d05` | 2026-08-14 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
@@ -307,6 +308,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-14 | L-AR08 | T01 ✅+T02 ✅+lane 收口 | T01 `615f8eee`(sanitizeZipEntryName 纯验证边界,RED 4F→GREEN 11/11)/T02 `4a2249e7`(流式 Unzip 两阶段预算,RED 3F→GREEN 15/15);门禁:UI 245P、lint/format 净、ui build 0、workspace check 0(纯 UI lane);oracle 第 14 次失败→自审零发现;**依赖传播:AR07-T03 🔴→🟡**(T05A+AR08-T02 均 ✅);计数 → ✅32/◐11/🟡17/🚧0/🔴11/⛔1/⏸0 |
 | 2026-08-14 | L-AR07 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `0de2241f3324c3ae`;认领基线 main@`b68f123e`,分支 tip `83e6371d`;前置 AR14-T04 ✅、T05A+AR08-T02 ✅;dialog 临时授权机制经 tauri 核心源码(auto-allow)取证;CSP 基线取 SPEC AR-07 冻结五条;计数 → ✅32/◐11/🟡16/🚧3/🔴10/⛔1/⏸0 |
 | 2026-08-14 | L-AR07 | T01 ✅+T02 ✅+T03 ✅+lane 收口 | T01 `8634c8ca`(CSP 冻结五条+UI 让步项,rpc csp 2/2+policy)/T02 `75b51085`(on_navigation 同源闸,3/3)/T03 `8db96c6e`(删 fs scope **,policy 2/2,桌面 release build 0);门禁全绿;oracle 第 15 次未试(基础设施故障持续,沿用自审偏差);依赖传播:无新(AR07-T03 是本 lane 末卡);计数 → ✅35/◐11/🟡16/🚧0/🔴10/⛔1/⏸0 |
+| 2026-08-14 | L-AR09 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `a0933b09afcb0d05`;认领基线 main@`b68f123e`,分支 tip `515a2c0e`;无外部依赖;T02 digest 钉值策略:本机下载全部 artifact 算 sha256(决策点);oracle 第 15 次失败确认(AR07 收口时);计数 → ✅35/◐11/🟡15/🚧3/🔴8/⛔1/⏸0 |
 | 2026-08-13 | — | Ralplan 收口 blocker 修正 | 主账原子认领+集成后 DONE、10 卡降为 ◐、W1~W6 门禁闭环、回滚单元+反向依赖闭包;计数 → ✅14/◐11/🟡25/🔴20/⛔1/⏸1(共 72,待处理 57) |
 | 2026-08-13 | — | 授权模型改为 Phase 3 一次批准 | 唯一本地 `audit-remediation-phase3` 分支串行全部 lane;每 lane 本地提交+台账更新后自动继续;不合并 main,不远端同步;AR10-T01 转 🟡;计数 → ✅14/◐11/🟡26/🔴20/⛔1/⏸0 |
 
