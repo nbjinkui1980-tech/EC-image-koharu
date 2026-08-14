@@ -58,7 +58,12 @@
   2. 锁:既有 projects.rs:619-641 四测试保持 PASS
 - **目标文件**:上表 T03 行(≤3)
 - **验收命令**:`bun cargo test -p koharu-rpc import`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据(T03 收口,2026-08-15)**:
+  - RED-0 实测:现状 `sanitize_and_publish_import`(projects.rs:218)已是 allocate → extract → open_untrusted → rename 顺序,任意错误 `remove_dir_all(staging)`;损坏 zip/损坏项目/截断 history/非法 blob 已由既有 4 测试锁定不发布 → **范围缩减预案激活(AR03-T03 先例)**,产品代码零改动,文件域收缩为 projects.rs 单文件测试
+  - 缺口修复:既有失败测试未断言 `.import-*.staging` 残留,且无超预算用例 → 新增 `failed_import_oversized_archive_leaves_no_staging_or_final`(伪造声明 size=256 MiB+1 → "per-entry budget" Err;list_projects 空;无 .khrproj/.staging 残留)一次通过,转锁回归;"当前项目不变"由结构保证(sanitize 失败 → 路由不调 open_project)
+  - GREEN-2:rpc lib suite 41P/0F(早前一轮 15 失败为 github.com 不可达致 llama runtime 准备超时的瞬态环境失败,网络恢复后全绿;6 page_import_budget + admission 级联同属此因)
+  - clippy `-D warnings`/fmt 净
+  - Commit:`6af405c7`(1 文件,+26/-0,纯测试)
 
 ## 卡:AR05-T04 — History frame 分配前上限
 
