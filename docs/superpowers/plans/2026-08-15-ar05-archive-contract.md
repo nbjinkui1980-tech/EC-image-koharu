@@ -78,4 +78,8 @@
   3. 锁:未超上限截断尾仍按 AR04-T03 语义回滚/容忍(既有 session/history 测试 PASS)
 - **目标文件**:上表 T04 行(≤1)
 - **验收命令**:`bun cargo test -p koharu-app history_frame_limit`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据(T04 收口,2026-08-15)**:
+  - RED:2 failed(16 MiB+1 头+部分字节、u32::MAX 头均被非 strict 模式当截断尾静默容忍,replay 返回 Ok)→ exit 101
+  - GREEN:history_frame_limit 2P/0F;history 11P/0F(截断尾容忍/undecodable v1 锁全绿);app suite 463P/0F;clippy `-D warnings`/fmt 净
+  - 设计落地:`MAX_HISTORY_FRAME_BYTES = 16 MiB`;长度头读后立即 `ensure!`(strict/tolerant 两模式同为 corruption),分配前拒绝;未超上限截断尾保持 AR04-T03 容忍语义;写侧 u32 检查既有,对称写上限超卡范围(单 op >16 MiB 非现实场景),记录备查
+  - Commit:`2b1a394c`(1 文件,+29/-2)

@@ -316,6 +316,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-15 | L-AR05-ARCHIVE | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `e554301c1af58e1b`;认领基线 main@`b68f123e`,分支 tip `24bef959`;前置 AR04-T02/T03 ✅、AR02-T04 ◐(实现已集成,证据待补录);T03 🔴→🚧、T02/T04 🟡→🚧;预算常量值留合同决策点(T02)/TASKS 定 16 MiB(T04);计数 → ✅38/◐11/🟡13/🚧3/🔴7/⛔1/⏸0 |
 | 2026-08-15 | L-AR05-ARCHIVE | T02 ✅(Archive 读取预算) | commit `23a9f98a`;RED 5F/2P(entry 数/伪造声明 size/单项/总量/100:1 均无检查)→GREEN 7/7;app suite 461P/0F(hanonly_pre_greenc_red_t3 flake 单跑+复跑确认,既有,无关);clippy/fmt 净;预算定值 10_000 entries/256 MiB 单项/4 GiB 总量/100:1(1 MiB 下限);无依赖传播(T03 为本 lane 内下一卡);计数 → ✅39/◐11/🟡13/🚧2/🔴7/⛔1/⏸0 |
 | 2026-08-15 | L-AR05-ARCHIVE | T03 ✅(Import 原子发布,纯锁定卡) | commit `6af405c7`;RED-0 实测现状原子性已满足(allocate→extract→open→rename+错误清理;既有 4 失败模式锁)→范围缩减预案激活(AR03-T03 先例),产品零改动;新增超预算锁(伪造声明 size→per-entry budget Err+无 staging/final 残留,补既有测试未断言 .staging 缺口);rpc lib 41P/0F(早前 15 失败=github 不可达瞬态环境,恢复后全绿);clippy/fmt 净;依赖传播:AR06-T05 仍等 lane 收口后统一评估;计数 → ✅40/◐11/🟡13/🚧1/🔴7/⛔1/⏸0 |
+| 2026-08-15 | L-AR05-ARCHIVE | T04 ✅(History frame 分配前上限) | commit `2b1a394c`;RED 2F/0P(16 MiB+1/u32::MAX 头均被当截断尾静默容忍)→GREEN 2/2;history 11P/0F;app suite 463P/0F;clippy/fmt 净;16 MiB 上限两模式同 corruption,未超限截断尾保持 AR04-T03 语义;写侧对称上限记合同备查(超卡范围);计数 → ✅41/◐11/🟡13/🚧0/🔴7/⛔1/⏸0 |
 
 ---
 
