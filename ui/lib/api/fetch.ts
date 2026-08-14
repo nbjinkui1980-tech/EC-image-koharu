@@ -39,3 +39,26 @@ export const fetchApi = async <T>(url: string, options?: RequestInit): Promise<T
   }
   return res.json()
 }
+
+/**
+ * orval per-operation mutator for binary downloads that must keep response
+ * headers (e.g. Content-Disposition). Same error contract as fetchApi; the
+ * body is returned as a Blob alongside the raw headers.
+ */
+export type FullResponse = { blob: Blob; headers: Headers }
+
+export const fetchApiFullResponse = async <T>(url: string, options?: RequestInit): Promise<T> => {
+  const res = await fetchWithAuth(url, options)
+  if (!res.ok) {
+    const body = await res.json().catch(() => null)
+    const message =
+      (body && typeof body === 'object' && 'message' in body && typeof body.message === 'string'
+        ? body.message
+        : null) ??
+      res.statusText ??
+      `HTTP ${res.status}`
+    throw new ApiError(res.status, message, body)
+  }
+  const blob = await res.blob()
+  return { blob, headers: res.headers } as T
+}

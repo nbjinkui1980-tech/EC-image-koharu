@@ -2,6 +2,7 @@ import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGetConfigQueryKey, getGetCurrentLlmQueryKey, getGetSceneJsonQueryKey } from '@/lib/api'
+import { exportCurrentProject as apiExportCurrentProject } from '@/lib/api'
 import {
   applyOp,
   closeProject,
@@ -17,6 +18,20 @@ import { ops } from '@/lib/ops'
 import { queryClient } from '@/lib/queryClient'
 
 import { server } from '../../msw/server'
+
+// AR13-T04 RED: exportProject must go through the generated
+// exportCurrentProject operation (orval mutator preserving headers), not a
+// handwritten fetch. Spy wraps the real implementation so the HTTP surface
+// stays exercised through msw.
+vi.mock('@/lib/api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api')>('@/lib/api')
+  return {
+    ...actual,
+    exportCurrentProject: vi.fn(actual.exportCurrentProject),
+  }
+})
+
+const exportCurrentProjectSpy = () => vi.mocked(apiExportCurrentProject)
 
 // Seed the shared query cache with known keys so we can observe invalidation.
 function seedCache(): void {
@@ -227,6 +242,25 @@ describe('export', () => {
       status: 400,
       message: 'no project open',
     })
+  })
+
+  it('exports via the generated exportCurrentProject API and preserves the filename', async () => {
+    server.use(
+      http.post('/api/v1/projects/current/export', () =>
+        HttpResponse.arrayBuffer(new Uint8Array([9]).buffer, {
+          headers: {
+            'content-type': 'application/zip',
+            'content-disposition': 'attachment; filename="kept.zip"',
+          },
+        }),
+      ),
+    )
+
+    const { blob, filename } = await exportProject({ format: 'khr' })
+
+    expect(exportCurrentProjectSpy()).toHaveBeenCalledTimes(1)
+    expect(filename).toBe('kept.zip')
+    expect(blob.type).toBe('application/zip')
   })
 })
 

@@ -39,6 +39,7 @@ export {
   deleteCodexSession,
   deleteCurrentLlm,
   deleteCurrentProject,
+  exportCurrentProject,
   fetchGoogleFont,
   getBlob,
   getCatalog,

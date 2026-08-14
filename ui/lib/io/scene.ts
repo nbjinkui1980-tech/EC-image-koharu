@@ -5,8 +5,8 @@ import {
   createPages,
   createProject,
   deleteCurrentProject,
+  exportCurrentProject,
   getConfig,
-  getExportCurrentProjectUrl,
   getGetConfigQueryKey,
   getGetCurrentLlmQueryKey,
   getGetSceneJsonQueryKey,
@@ -18,7 +18,7 @@ import {
   startPipeline,
   undo,
 } from '@/lib/api'
-import { ApiError, fetchWithAuth } from '@/lib/api/fetch'
+import type { FullResponse } from '@/lib/api/fetch'
 import type {
   ConfigPatch,
   CreateProjectRequest,
@@ -211,23 +211,11 @@ export async function uploadKhrArchive(file: File): Promise<ProjectSummary> {
 export async function exportProject(
   req: ExportProjectRequest,
 ): Promise<{ blob: Blob; filename?: string }> {
-  const res = await fetchWithAuth(getExportCurrentProjectUrl(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => null)
-    const message =
-      (body && typeof body === 'object' && 'message' in body && typeof body.message === 'string'
-        ? body.message
-        : null) ??
-      res.statusText ??
-      `HTTP ${res.status}`
-    throw new ApiError(res.status, message, body)
-  }
-  const blob = await res.blob()
-  const filename = filenameFromContentDisposition(res.headers.get('content-disposition'))
+  // The generated signature says Blob per the spec, but the configured
+  // fetchApiFullResponse mutator returns the full response — headers carry
+  // the server's Content-Disposition filename.
+  const { blob, headers } = (await exportCurrentProject(req)) as unknown as FullResponse
+  const filename = filenameFromContentDisposition(headers.get('content-disposition'))
   return { blob, filename }
 }
 

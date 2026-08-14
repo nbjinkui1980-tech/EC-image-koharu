@@ -23,6 +23,12 @@ export default defineConfig({
           createPages: {
             formData: true,
           },
+          export_current_project: {
+            mutator: {
+              path: './lib/api/fetch.ts',
+              name: 'fetchApiFullResponse',
+            },
+          },
         },
       },
     },
