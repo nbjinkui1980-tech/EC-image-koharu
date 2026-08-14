@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   config: undefined as CanvasDrawingConfig | undefined,
   getConfig: vi.fn(),
   invalidateScene: vi.fn(),
+  putMask: vi.fn(),
 }))
 
 vi.mock('@/hooks/useCanvasDrawing', () => ({
@@ -19,7 +20,7 @@ vi.mock('@/hooks/useCanvasDrawing', () => ({
   },
 }))
 
-vi.mock('@/lib/api', () => ({ getConfig: mocks.getConfig }))
+vi.mock('@/lib/api', () => ({ getConfig: mocks.getConfig, putMask: mocks.putMask }))
 vi.mock('@/lib/io/scene', () => ({ invalidateScene: mocks.invalidateScene }))
 
 describe('useMaskDrawing', () => {
@@ -27,6 +28,7 @@ describe('useMaskDrawing', () => {
     mocks.config = undefined
     mocks.getConfig.mockReset().mockResolvedValue({ pipeline: { inpainter: 'lama-manga' } })
     mocks.invalidateScene.mockReset().mockResolvedValue(undefined)
+    mocks.putMask.mockReset().mockResolvedValue({ updated: true })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
     useEditorUiStore.setState({
       mode: 'select',
@@ -57,10 +59,21 @@ describe('useMaskDrawing', () => {
       })
     })
 
-    const fetchMock = vi.mocked(fetch)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock.mock.calls[0]?.[0]).toContain('/api/v1/pages/page-1/masks/segment?')
-    expect(fetchMock.mock.calls[0]?.[0]).not.toContain('brushInpaint')
-    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT' })
+    // AR13-T03 RED: the mask must go through the generated putMask API, not a
+    // duplicated raw fetch; errors and scene invalidation stay as they were.
+    expect(mocks.putMask).toHaveBeenCalledTimes(1)
+    const [id, role, body, params] = mocks.putMask.mock.calls[0]!
+    expect(id).toBe('page-1')
+    expect(role).toBe('segment')
+    expect(body).toBeInstanceOf(Blob)
+    expect(params).toMatchObject({
+      pipeline: 'lama-manga',
+      x: 1,
+      y: 2,
+      width: 3,
+      height: 4,
+    })
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled()
+    expect(mocks.invalidateScene).toHaveBeenCalled()
   })
 })
