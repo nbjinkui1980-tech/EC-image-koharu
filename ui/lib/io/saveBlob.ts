@@ -17,6 +17,23 @@
 
 import { isTauri } from '@/lib/backend'
 
+/**
+ * Normalize a zip entry name to a safe relative path, or return null when the
+ * entry would escape the chosen folder: parent/dot/empty segments, POSIX
+ * absolute paths, drive letters, and UNC paths (after backslash folding) are
+ * all rejected. Directory entries (trailing slash) are handled by the caller.
+ */
+export function sanitizeZipEntryName(name: string): string | null {
+  const normalized = name.replace(/\\/g, '/')
+  if (normalized.startsWith('/')) return null
+  if (/^[A-Za-z]:/.test(normalized)) return null
+  const segments = normalized.split('/')
+  if (segments.some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    return null
+  }
+  return segments.join('/')
+}
+
 export async function saveBlob(blob: Blob, defaultName: string): Promise<boolean> {
   // Zip detection must come from the actual content type — a single-file
   // export (PNG/PSD/khr) whose filename happens to end in `.zip` would
@@ -32,15 +49,23 @@ export async function saveBlob(blob: Blob, defaultName: string): Promise<boolean
       if (!folder || typeof folder !== 'string') return false
       const { unzipSync } = await import('fflate')
       const entries = unzipSync(new Uint8Array(await blob.arrayBuffer()))
+      // Validate every entry before any mkdir/write: one pure
+      // validation/normalization boundary, and a rejected archive leaves
+      // zero partial files behind.
+      const plan: { path: string; bytes: Uint8Array }[] = []
       for (const [name, bytes] of Object.entries(entries)) {
-        const normalized = name.replace(/\\/g, '/')
-        const full = `${folder}/${normalized}`
-        const slash = full.lastIndexOf('/')
+        if (name.replace(/\\/g, '/').endsWith('/')) continue // directory entry
+        const safe = sanitizeZipEntryName(name)
+        if (safe === null) throw new Error(`unsafe zip entry: ${name}`)
+        plan.push({ path: `${folder}/${safe}`, bytes })
+      }
+      for (const { path, bytes } of plan) {
+        const slash = path.lastIndexOf('/')
         if (slash > folder.length) {
-          const dir = full.substring(0, slash)
+          const dir = path.substring(0, slash)
           await mkdir(dir, { recursive: true }).catch(() => {})
         }
-        await writeFile(full, bytes)
+        await writeFile(path, bytes)
       }
       return true
     }
