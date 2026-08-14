@@ -68,6 +68,8 @@ pub struct App {
     pub pipeline_slots: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
     /// Global AI image-generation admission slots (semaphore = 2).
     pub ai_slots: Arc<tokio::sync::Semaphore>,
+    /// Global archive-import admission slot (semaphore = 1).
+    pub import_slots: Arc<tokio::sync::Semaphore>,
     pub ai: Arc<AiManager>,
     pub llm: Arc<llm::Model>,
     pub renderer: Arc<renderer::Renderer>,
@@ -117,6 +119,7 @@ impl App {
             bus: shared.bus,
             pipeline_slots: Arc::new(DashMap::new()),
             ai_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            import_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             ai,
             llm,
             renderer,
