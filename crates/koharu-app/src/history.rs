@@ -471,5 +471,12 @@ mod tests {
 
         let error = replay(&path, 0, &mut Scene::default()).unwrap_err();
         assert!(error.to_string().contains("per-frame budget"), "{error}");
+        let strict_error = replay_with_policy(&path, 0, &mut Scene::default(), true)
+            .err()
+            .expect("strict replay must reject an oversize length header");
+        assert!(
+            strict_error.to_string().contains("per-frame budget"),
+            "{strict_error}"
+        );
     }
 }

@@ -174,7 +174,9 @@ fn extract_khr_bytes_with_budgets(
         let mut out =
             File::create(target.as_std_path()).with_context(|| format!("create {target}"))?;
         let mut entry_bytes = 0u64;
-        let mut limited = entry.by_ref().take(budgets.max_entry_bytes + 1);
+        let mut limited = entry
+            .by_ref()
+            .take(budgets.max_entry_bytes.saturating_add(1));
         let mut buf = [0u8; 64 * 1024];
         loop {
             let read = limited.read(&mut buf)?;
@@ -196,7 +198,8 @@ fn extract_khr_bytes_with_budgets(
             out.write_all(&buf[..read])?;
         }
         if entry_bytes > budgets.ratio_floor_bytes {
-            let allowed = compressed
+            let compressed_bound = compressed.min(bytes.len() as u64);
+            let allowed = compressed_bound
                 .saturating_mul(budgets.max_ratio)
                 .max(budgets.ratio_floor_bytes);
             anyhow::ensure!(
@@ -322,6 +325,16 @@ mod tests {
         bytes
     }
 
+    fn patch_central_compressed_size(mut bytes: Vec<u8>, compressed: u32) -> Vec<u8> {
+        let sig = b"PK\x01\x02";
+        let pos = bytes
+            .windows(4)
+            .position(|w| w == sig)
+            .expect("central directory");
+        bytes[pos + 20..pos + 24].copy_from_slice(&compressed.to_le_bytes());
+        bytes
+    }
+
     fn staging_dir(root: &Utf8Path) -> Utf8PathBuf {
         let dir = root.join("budget.khrproj");
         std::fs::create_dir(dir.as_std_path()).unwrap();
@@ -426,5 +439,44 @@ mod tests {
         };
         let error = extract_khr_bytes_with_budgets(&bytes, &proj, &budgets).unwrap_err();
         assert!(error.to_string().contains("ratio"), "{error}");
+    }
+
+    #[test]
+    fn archive_ratio_guard_cannot_be_bypassed_by_forged_compressed_size() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let proj = staging_dir(&root);
+        let zeros = vec![0u8; 65536];
+        let bytes = zip_of(
+            &[("history.log", zeros.as_slice())],
+            CompressionMethod::Deflated,
+        );
+        let forged = patch_central_compressed_size(bytes, u32::MAX);
+        let budgets = ArchiveBudgets {
+            max_ratio: 100,
+            ratio_floor_bytes: 1024,
+            ..DEFAULT_ARCHIVE_BUDGETS
+        };
+        let error = extract_khr_bytes_with_budgets(&forged, &proj, &budgets).unwrap_err();
+        assert!(error.to_string().contains("ratio"), "{error}");
+    }
+
+    #[test]
+    fn archive_accepts_stored_blob_above_ratio_floor() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let proj = staging_dir(&root);
+        let blob = vec![7u8; 2048];
+        let bytes = zip_of(
+            &[("blobs/ab/cdef", blob.as_slice())],
+            CompressionMethod::Stored,
+        );
+        let budgets = ArchiveBudgets {
+            max_ratio: 100,
+            ratio_floor_bytes: 1024,
+            ..DEFAULT_ARCHIVE_BUDGETS
+        };
+        extract_khr_bytes_with_budgets(&bytes, &proj, &budgets).unwrap();
+        assert_eq!(std::fs::read(proj.join("blobs/ab/cdef")).unwrap(), blob);
     }
 }

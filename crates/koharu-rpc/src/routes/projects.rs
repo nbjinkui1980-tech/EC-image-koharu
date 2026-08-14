@@ -669,10 +669,10 @@ mod tests {
         assert!(error.to_string().contains("per-entry budget"), "{error}");
         assert!(project_dirs::list_projects(&config).unwrap().is_empty());
         let projects = project_dirs::projects_dir(&config).unwrap();
-        assert!(std::fs::read_dir(projects).unwrap().flatten().all(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            !name.ends_with(".khrproj") && !name.contains(".staging")
-        }));
+        assert!(
+            std::fs::read_dir(projects).unwrap().next().is_none(),
+            "failed import must leave the projects directory empty"
+        );
     }
 
     #[test]
