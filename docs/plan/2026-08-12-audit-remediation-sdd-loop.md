@@ -311,6 +311,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-14 | L-AR09 | T01 ✅+T02 ✅+T03 ✅+lane 收口 | T01 `25d28f97`(sha2+验证通道,RED 2F→GREEN 5/5)/T02 `6e5f622d`(NativeArtifact+7 钉值+先验后装)/T03 `34191ca3`(PyPI digest fail-closed+10 钉值,孤儿 cached_download 移除);门禁全绿(runtime 33P 含真网络、3-crate、workspace clippy/fmt/check、check:generated 零漂移);oracle 第 16 次失败→自审零 blocker/major,2 informational;环境事件:G 卷掉线致 suite 卡死,重挂恢复;无依赖传播;计数 → ✅38/◐11/🟡15/🚧0/🔴8/⛔1/⏸0 |
 | 2026-08-13 | — | Ralplan 收口 blocker 修正 | 主账原子认领+集成后 DONE、10 卡降为 ◐、W1~W6 门禁闭环、回滚单元+反向依赖闭包;计数 → ✅14/◐11/🟡25/🔴20/⛔1/⏸1(共 72,待处理 57) |
 | 2026-08-13 | — | 授权模型改为 Phase 3 一次批准 | 唯一本地 `audit-remediation-phase3` 分支串行全部 lane;每 lane 本地提交+台账更新后自动继续;不合并 main,不远端同步;AR10-T01 转 🟡;计数 → ✅14/◐11/🟡26/🔴20/⛔1/⏸0 |
+| 2026-08-15 | — | 接管前遗留工作区分治(非 loop 卡)+环境清理 | 4 commits:`7371b8f2`(dev.ts 进程树终止+dev.test.ts;修复其 bind flake——内核 socket 拆除瞬态窗口,lsof 无监听者/+50ms 可绑,改 waitForBind 轮询,6/6 稳定)/`94705d20`(UI 死代码:Kbd 内联/isDesktop→isTauri/RetryableSseError/useMemo 简化)/`bf7c9dcd`(hanonly 孤儿门禁+Rust 测试占位删除)/`db58bce3`(/.omo/ ignore);门禁:UI 245P(1 次 flake 三跑不复现,既有 typography 模式)、lint/format 净、dev.test 2/2、bus:: 5/5、clippy 双 crate -D warnings、rustfmt 净、ledger py_compile;终止 agent 遗留 tmux `koharu-dev`(持 cargo 租约 1h+,环境事件,同 AR09 先例);计数不变 → ✅38/◐11/🟡15/🚧0/🔴8/⛔1/⏸0 |
 
 ---
 
