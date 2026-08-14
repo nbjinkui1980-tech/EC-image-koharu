@@ -35,7 +35,7 @@ pub fn router() -> OpenApiRouter<AppState> {
 }
 
 /// Build the current registry snapshot.
-fn snapshot_from(app: &AppState) -> SnapshotEvent {
+pub(crate) fn snapshot_from(app: &AppState) -> SnapshotEvent {
     let jobs_state = app.jobs();
     let downloads_state = app.downloads();
     let jobs: Vec<JobSummary> = jobs_state.iter().map(|e| e.value().clone()).collect();

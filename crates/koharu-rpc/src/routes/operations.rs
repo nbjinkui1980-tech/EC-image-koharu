@@ -79,3 +79,94 @@ async fn cancel_operation(
     app.downloads().remove(&id);
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod job_registry_tests {
+    use super::*;
+    use koharu_app::{App, AppConfig};
+    use koharu_core::JobStatus;
+    use koharu_runtime::{ComputePolicy, RuntimeManager};
+    use std::collections::BTreeSet;
+
+    fn test_state() -> AppState {
+        let runtime = RuntimeManager::new(
+            koharu_runtime::default_app_data_root().into_std_path_buf(),
+            ComputePolicy::CpuOnly,
+        )
+        .expect("create runtime");
+        let runtime = Arc::new(runtime);
+        let app =
+            Arc::new(App::new(AppConfig::default(), runtime.clone(), true, "test").expect("app"));
+        let state = crate::BootstrapManager::new(runtime);
+        assert!(state.set_app(app).is_ok(), "set test app");
+        state
+    }
+
+    fn insert_completed(state: &AppState, count: usize) {
+        let jobs = state.jobs();
+        for i in 0..count {
+            let id = format!("done-{i}");
+            jobs.insert(
+                id.clone(),
+                JobSummary {
+                    id,
+                    kind: "test".into(),
+                    status: JobStatus::Completed,
+                    error: None,
+                },
+            );
+        }
+    }
+
+    fn id_set(jobs: &[JobSummary]) -> BTreeSet<String> {
+        jobs.iter().map(|job| job.id.clone()).collect()
+    }
+
+    // AR06-T02 lock: SSE snapshot, operations list, and MCP lookup all read
+    // the same bounded registry — identical id sets at the eviction boundary.
+    #[tokio::test]
+    async fn job_registry_three_entries_consistent_at_eviction_boundary() {
+        let state = test_state();
+        insert_completed(&state, 260);
+
+        let sse_snapshot = crate::events::snapshot_from(&state);
+        let sse_ids = id_set(&sse_snapshot.jobs);
+        let operations = list_operations(State(state.clone()))
+            .await
+            .expect("list operations")
+            .0
+            .operations;
+        let ops_ids = id_set(&operations);
+        let registry_ids: BTreeSet<String> = state
+            .jobs()
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+
+        assert_eq!(
+            sse_ids, registry_ids,
+            "SSE snapshot must mirror the registry"
+        );
+        assert_eq!(
+            ops_ids, registry_ids,
+            "operations list must mirror the registry"
+        );
+        assert_eq!(registry_ids.len(), 256, "registry must be bounded");
+        assert!(!registry_ids.contains("done-0"), "oldest completed evicted");
+        assert!(registry_ids.contains("done-259"));
+
+        // MCP lookup surface: every visible id resolves, evicted id does not.
+        let jobs = state.jobs();
+        assert!(crate::mcp::get_job_from_registry(&jobs, "done-259").is_some());
+        assert!(crate::mcp::get_job_from_registry(&jobs, "done-0").is_none());
+    }
+
+    // Lock: unknown lookup is an error and never creates a registry entry.
+    #[tokio::test]
+    async fn job_registry_unknown_lookup_creates_nothing() {
+        let state = test_state();
+        let jobs = state.jobs();
+        assert!(crate::mcp::get_job_from_registry(&jobs, "missing").is_none());
+        assert!(jobs.is_empty(), "unknown lookup must not create a job");
+    }
+}

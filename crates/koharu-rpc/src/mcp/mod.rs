@@ -49,7 +49,7 @@ impl KoharuServer {
     }
 }
 
-fn get_job_from_registry(
+pub(crate) fn get_job_from_registry(
     jobs: &koharu_app::jobs::BoundedJobRegistry,
     id: &str,
 ) -> Option<JobSummary> {
