@@ -18,7 +18,7 @@
 
 ## 决策点(预算常量,执行时定值并回填)
 
-- T02 预算:`MAX_ENTRIES`、`MAX_ENTRY_BYTES`(单项实际展开)、`MAX_TOTAL_BYTES`(总实际展开)、`MAX_RATIO = 100`(TASKS 定)、伪造声明 size 拒绝阈值 = `MAX_ENTRY_BYTES`。定值依据:`.khr` = project.toml + scene.bin + history.log + blobs/*(webp/jpg,Stored);blobs 单项/总量需覆盖真实大项目(百页级)。
+- T02 预算:`MAX_ENTRIES = 10_000`、`MAX_ENTRY_BYTES = 256 MiB`(单项实际展开)、`MAX_TOTAL_BYTES = 4 GiB`(总实际展开)、`MAX_RATIO = 100`(TASKS 定,1 MiB 下限)、伪造声明 size 拒绝阈值 = `MAX_ENTRY_BYTES`。定值依据:`.khr` = project.toml + scene.bin + history.log + blobs/*(webp/jpg,Stored);blobs 单项/总量需覆盖真实大项目(百页级)。已实现为 `ArchiveBudgets` + `DEFAULT_ARCHIVE_BUDGETS` + with_budgets 覆盖缝(测试用小预算)。
 - T04 预算:TASKS 已定 frame 上限 16 MiB。
 
 ## 卡:AR05-T02 — Archive 实际读取预算
@@ -40,7 +40,11 @@
   6. 锁:现有 round-trip / staging 两测试保持 PASS
 - **目标文件**:上表 T02 行(≤1)
 - **验收命令**:`bun cargo test -p koharu-app archive`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据(T02 收口,2026-08-15)**:
+  - RED:5 failed(entry 数/伪造声明 size/单项/总量/100:1 均无检查)+ 2 锁 PASS → exit 101
+  - GREEN:archive 7P/0F;app suite 461P/0F(`hanonly_pre_greenc_red_t3_run_state_lifetime_contract` 单发失败,单跑+全量复跑均绿,既有 flake,域无关);clippy `-D warnings`/fmt 净
+  - 设计落地:`ArchiveBudgets` + `DEFAULT_ARCHIVE_BUDGETS`(10_000/256 MiB/4 GiB/100:1/1 MiB 下限)+ `extract_khr_bytes_with_budgets` 覆盖缝;声明 size 预检 + 64 KiB 流式按实际读取 bytes 计费 + 压缩比检查;不建 quota framework
+  - Commit:`23a9f98a`(1 文件,+205/-3)
 
 ## 卡:AR05-T03 — Import 原子发布与 cleanup
 

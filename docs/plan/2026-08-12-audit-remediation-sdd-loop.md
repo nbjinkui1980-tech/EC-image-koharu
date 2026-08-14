@@ -314,6 +314,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-13 | — | 授权模型改为 Phase 3 一次批准 | 唯一本地 `audit-remediation-phase3` 分支串行全部 lane;每 lane 本地提交+台账更新后自动继续;不合并 main,不远端同步;AR10-T01 转 🟡;计数 → ✅14/◐11/🟡26/🔴20/⛔1/⏸0 |
 | 2026-08-15 | — | 接管前遗留工作区分治(非 loop 卡)+环境清理 | 4 commits:`7371b8f2`(dev.ts 进程树终止+dev.test.ts;修复其 bind flake——内核 socket 拆除瞬态窗口,lsof 无监听者/+50ms 可绑,改 waitForBind 轮询,6/6 稳定)/`94705d20`(UI 死代码:Kbd 内联/isDesktop→isTauri/RetryableSseError/useMemo 简化)/`bf7c9dcd`(hanonly 孤儿门禁+Rust 测试占位删除)/`db58bce3`(/.omo/ ignore);门禁:UI 245P(1 次 flake 三跑不复现,既有 typography 模式)、lint/format 净、dev.test 2/2、bus:: 5/5、clippy 双 crate -D warnings、rustfmt 净、ledger py_compile;终止 agent 遗留 tmux `koharu-dev`(持 cargo 租约 1h+,环境事件,同 AR09 先例);计数不变 → ✅38/◐11/🟡15/🚧0/🔴8/⛔1/⏸0 |
 | 2026-08-15 | L-AR05-ARCHIVE | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `e554301c1af58e1b`;认领基线 main@`b68f123e`,分支 tip `24bef959`;前置 AR04-T02/T03 ✅、AR02-T04 ◐(实现已集成,证据待补录);T03 🔴→🚧、T02/T04 🟡→🚧;预算常量值留合同决策点(T02)/TASKS 定 16 MiB(T04);计数 → ✅38/◐11/🟡13/🚧3/🔴7/⛔1/⏸0 |
+| 2026-08-15 | L-AR05-ARCHIVE | T02 ✅(Archive 读取预算) | commit `23a9f98a`;RED 5F/2P(entry 数/伪造声明 size/单项/总量/100:1 均无检查)→GREEN 7/7;app suite 461P/0F(hanonly_pre_greenc_red_t3 flake 单跑+复跑确认,既有,无关);clippy/fmt 净;预算定值 10_000 entries/256 MiB 单项/4 GiB 总量/100:1(1 MiB 下限);无依赖传播(T03 为本 lane 内下一卡);计数 → ✅39/◐11/🟡13/🚧2/🔴7/⛔1/⏸0 |
 
 ---
 
