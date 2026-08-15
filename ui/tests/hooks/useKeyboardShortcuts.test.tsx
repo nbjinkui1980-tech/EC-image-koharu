@@ -1,6 +1,6 @@
 import { renderHook } from '@testing-library/react'
 import { fireEvent } from '@testing-library/react'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 import { getGetSceneJsonQueryKey } from '@/lib/api'
@@ -9,6 +9,13 @@ import { queryClient } from '@/lib/queryClient'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { useSelectionStore } from '@/lib/stores/selectionStore'
+
+const sceneOps = vi.hoisted(() => ({ undoOp: vi.fn(), redoOp: vi.fn() }))
+
+vi.mock('@/lib/io/scene', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/io/scene')>('@/lib/io/scene')
+  return { ...actual, undoOp: sceneOps.undoOp, redoOp: sceneOps.redoOp }
+})
 
 function textNode(id: string): Node {
   return {
@@ -73,5 +80,50 @@ describe('useKeyboardShortcuts — Ctrl+A', () => {
     fireEvent.keyDown(window, { key: 'b' })
 
     expect(useEditorUiStore.getState().mode).toBe('select')
+  })
+})
+
+describe('useKeyboardShortcuts — undo/redo in text fields', () => {
+  beforeEach(() => {
+    useSelectionStore.getState().setPage(null)
+    useEditorUiStore.setState({ mode: 'select' })
+    usePreferencesStore.getState().resetPreferences()
+    queryClient.clear()
+    sceneOps.undoOp.mockClear()
+    sceneOps.redoOp.mockClear()
+  })
+
+  it('keeps native text undo/redo inside editable targets', () => {
+    renderHook(() => useKeyboardShortcuts())
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    fireEvent(input, event)
+
+    expect(sceneOps.undoOp).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+
+    document.body.removeChild(input)
+  })
+
+  it('routes undo to scene history outside editable targets', () => {
+    renderHook(() => useKeyboardShortcuts())
+    const event = new KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    fireEvent(window, event)
+
+    expect(sceneOps.undoOp).toHaveBeenCalledTimes(1)
+    expect(event.defaultPrevented).toBe(true)
   })
 })

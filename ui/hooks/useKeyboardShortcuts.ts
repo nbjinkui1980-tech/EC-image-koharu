@@ -31,11 +31,19 @@ export function useKeyboardShortcuts() {
         target instanceof HTMLElement &&
         (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
 
-      // Undo / Redo — these work globally, including from within text fields,
-      // as scene-level history should usually take precedence over native
-      // browser text-undo.
+      // Inside editable targets the browser's native text undo/redo wins;
+      // scene history shortcuts only apply outside text fields.
       const shortcut = formatShortcut(event, isMac)
       const mod = isMac ? event.metaKey : event.ctrlKey
+
+      if (
+        inTextField &&
+        (shortcut === shortcuts.undo ||
+          shortcut === shortcuts.redo ||
+          (mod && (event.key === 'y' || event.key === 'Y')))
+      ) {
+        return
+      }
 
       if (shortcut === shortcuts.undo) {
         event.preventDefault()
