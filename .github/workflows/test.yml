@@ -54,19 +54,10 @@ jobs:
       - name: DIAG bisect rpc lib suite (temporary, revert after diagnosis)
         continue-on-error: true
         run: |
-          for t in \
-            hanonly_pre_b1_red_t2_replace_import_atomicity_contract \
-            page_import_budget_corrupt_image_zero_side_effects \
-            page_import_budget_decode_concurrency_two \
-            page_import_budget_default_small_import_ok \
-            page_import_budget_rejects_over_decoded_rgba \
-            page_import_budget_rejects_over_encoded_bytes \
-            page_import_budget_rejects_over_file_count \
-            repair_brush_engine_ctx_keeps_single_engine_path \
-            repair_options_inherits_source_text_policy; do
-            echo "=== $t ==="
-            cargo test -p koharu-rpc --lib "routes::pages::tests::$t" -- --exact 2>&1 | tail -4 || true
-          done
+          echo "=== budget six together ==="
+          cargo test -p koharu-rpc --lib routes::pages::tests::page_import_budget 2>&1 | tail -4 || true
+          echo "=== pages minus budget six ==="
+          cargo test -p koharu-rpc --lib routes::pages:: -- --skip page_import_budget 2>&1 | tail -4 || true
       - name: Run workspace tests (unit + integration)
         run: |
           # Headless dbus + gnome-keyring so the provider-secret integration
