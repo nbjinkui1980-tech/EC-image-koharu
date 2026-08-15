@@ -1,6 +1,6 @@
 # 审计修复 SDD Phase 3 — Loop 执行驱动文档
 
-**状态：ACTIVE/AUTO — Phase 3 一次批准已于 2026-08-13 授予；在途 lane:L-AR14-T06。**
+**状态：ACTIVE/AUTO — Phase 3 一次批准已于 2026-08-13 授予；Loop 空闲，当前无在途 lane。**
 **规格：** `docs/plan/2026-08-10-audit-remediation-sdd-spec.md`
 **计划：** `docs/plan/2026-08-10-audit-remediation-sdd-plan.md`
 **任务：** `docs/plan/2026-08-10-audit-remediation-sdd-tasks.md`
@@ -180,7 +180,7 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR14-T03C Rust format 分片 C | ◐ | `676603f4` | 同上 |
 | AR14-T03D Rust format 分片 D | ◐ | `676603f4` | 同上 |
 | AR14-T03E Rust format 分片 E | ◐ | `676603f4` | 同上 |
-| AR14-T06 CI 完整门禁 | 🚧 | — | ←AR10-T03(✅`4b8c5caa`) |
+| AR14-T06 CI 完整门禁 | ✅ | commit `f31158fc` | ←AR10-T03;收口证据见合同 |
 | FINAL-T01 单一 verifier 全门禁 | 🔴 | — | |
 | FINAL-T02 平台与凭据状态 | 🔴 | — | 凭据项 PENDING-CREDENTIAL-QA |
 
@@ -205,7 +205,6 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
-| L-AR14-T06 | Sisyphus/K3 | audit-remediation-phase3 | 43cde39fc080f68d | 2026-08-15 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
@@ -328,6 +327,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-15 | L-AR10 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `beb3bdc476beff92`;认领基线 main@`b68f123e`,分支 tip `20ec72c0`;T01 无前置,T02/T03 lane 内链式;§0.2 约束:仅本地修改 workflows,不 push/不触发远端;凭据保持 PENDING-CREDENTIAL-QA;Docker daemon 不可用(T03 本地 build 验证或将环境阻塞,按先例记录);T01 🟡→🚧、T02/T03 🔴→🚧;计数 → ✅54/◐11/🟡0/🚧3/🔴4/⛔1/⏸0 |
 | 2026-08-15 | L-AR10 | lane 收口 ✅(4 commit) | T01 `051ecea9` / T02 `138237e0` / T03 `4b8c5caa` / review-fix `0bb71c3a`;门禁全绿(policy 16P/0F、workspace check 净、check:generated 零漂移、YAML 结构验证;actionlint 工具缺失记录;Docker daemon 环境阻塞记录;未 push/未触发远端 §0.2 遵守);独立 review 经 oracle:3 blocker(actions scope 置零致 artifact 上传/下载必败+sha256 清单路径不匹配)+2 major 修复至零,minor/informational 裁决记录;依赖传播:AR14-T06 🔴→🟡;无 wave 收齐(W6 差 AR14-T06+T03A~E);计数 → ✅57/◐11/🟡1/🚧0/🔴3/⛔1/⏸0 |
 | 2026-08-15 | L-AR14-T06 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `43cde39fc080f68d`;认领基线 main@`b68f123e`,分支 tip `c375d92f`;单卡 lane;RED 3F/16P 已采(缺 all-targets/缺 format:check/无 audit);"实际 PR workflow"验证因远端暂停记环境约束;T06 🟡→🚧;计数 → ✅57/◐11/🟡0/🚧1/🔴3/⛔1/⏸0 |
+| 2026-08-15 | L-AR14-T06 | T06 ✅+收口(CI 完整门禁) | commit `f31158fc`;RED 3F/16P→GREEN 19/19;CI 裸 cargo 取证(guard 强制 /Volumes/G,runner 无此卷);pin 政策域扩至五 workflow;oracle 超时+余额不足两次失败→对抗性自审零 blocker/major,2 informational 记录;依赖传播:无下游;W6 差 AR14-T03A~E ◐;计数 → ✅58/◐11/🟡0/🚧0/🔴3/⛔1/⏸0 |
 
 ---
 
