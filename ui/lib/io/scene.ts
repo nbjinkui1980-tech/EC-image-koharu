@@ -110,29 +110,32 @@ export async function reorderPageTextNodes(pageId: string, order: ReadingOrder):
 
 const AUTO_RENDER_DEBOUNCE_MS = 500
 
-let autoRenderTimer: ReturnType<typeof setTimeout> | null = null
-let autoRenderPendingPageId: string | null = null
+const autoRenderTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
-function cancelQueuedAutoRender(): void {
-  if (autoRenderTimer) clearTimeout(autoRenderTimer)
-  autoRenderTimer = null
-  autoRenderPendingPageId = null
+function cancelQueuedAutoRender(pageId?: string): void {
+  if (pageId === undefined) {
+    for (const timer of autoRenderTimers.values()) clearTimeout(timer)
+    autoRenderTimers.clear()
+    return
+  }
+  const timer = autoRenderTimers.get(pageId)
+  if (timer) clearTimeout(timer)
+  autoRenderTimers.delete(pageId)
 }
 
 export function queueAutoRender(pageId: string): void {
-  autoRenderPendingPageId = pageId
-  if (autoRenderTimer) clearTimeout(autoRenderTimer)
-  autoRenderTimer = setTimeout(() => {
-    autoRenderTimer = null
-    const id = autoRenderPendingPageId
-    autoRenderPendingPageId = null
-    if (!id) return
-    void runAutoRenderWithFeedback(id)
-  }, AUTO_RENDER_DEBOUNCE_MS)
+  cancelQueuedAutoRender(pageId)
+  autoRenderTimers.set(
+    pageId,
+    setTimeout(() => {
+      autoRenderTimers.delete(pageId)
+      void runAutoRenderWithFeedback(pageId)
+    }, AUTO_RENDER_DEBOUNCE_MS),
+  )
 }
 
 export async function runAutoRenderNow(pageId: string): Promise<void> {
-  cancelQueuedAutoRender()
+  cancelQueuedAutoRender(pageId)
   await runAutoRenderWithFeedback(pageId)
 }
 
@@ -182,6 +185,7 @@ export async function switchProject(req: OpenProjectRequest): Promise<void> {
 }
 
 export async function closeProject(): Promise<void> {
+  cancelQueuedAutoRender()
   await deleteCurrentProject()
   await invalidateScene()
 }
