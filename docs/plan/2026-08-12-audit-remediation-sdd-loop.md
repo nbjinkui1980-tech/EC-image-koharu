@@ -194,7 +194,7 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 |---|---|---|---|
 | W1 | PENDING | — | AR14-T07 为 ◐,尚未闭环 |
 | W2 | **PASS** | `490a2d53` | Sisyphus/K3,2026-08-15;AR02 五卡 RED 重证+GREEN 重跑(§8 补录行),Batch 原子 AR04-T01 台账在案;core 30P/app 465P/rpc 46P、workspace clippy `-D warnings`/fmt/check 全净 |
-| W3 | PENDING | — | 尚有未完成卡 |
+| W3 | **PASS** | `48e30941` | Sisyphus/K3,2026-08-15;W3 卡全 ✅(AR01-T00~T03/AR03/AR04-T02~T03);app 465P/0F(两次)、rpc 46P/0F、llm 40P/0F;credential matrix/redirect/history fault injection 均在上述 suite 内;过程一次 app suite 2F 瞬态(未捕获具体名,连续两次复跑全绿,符合 hanonly 合同族既有 flake 模式,记录) |
 | W4 | **PASS** | `e0ac2a00` | Sisyphus/K3,2026-08-15;`bun cargo test --workspace --tests` exit 0(39 suites 全 ok,含集成/ML 慢测);workspace check/clippy `-D warnings`/fmt 净;`check:generated` exit 0 零漂移;`test:ui` 245P/0F、`lint:ui` exit 0、`format:check` 净 |
 | W5 | **PASS** | `6c150bc8` | Sisyphus/K3,2026-08-15;`bun cargo test --workspace --tests` exit 0(39 suites;首轮 hanonly_pre_greenc_red_t3_transient_planner_hint_contract flake,单跑+复跑绿,该族第二次,既有);UI 274P/0F+ui build 0;policy 8P/0F(supply-chain+tauri-security-config+sentry-policy);Tauri desktop release build exit 0;Docker build 环境阻塞(daemon 不可用)记录,不宣称发布就绪 |
 | W6 | PENDING | — | AR14-T03A~E ✅(2026-08-15 补录)、AR14-T06 ✅`f31158fc`;AR14-T07 仍 ◐(环境阻塞)阻止 PASS |
@@ -329,6 +329,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-15 | L-AR14-T06 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `43cde39fc080f68d`;认领基线 main@`b68f123e`,分支 tip `c375d92f`;单卡 lane;RED 3F/16P 已采(缺 all-targets/缺 format:check/无 audit);"实际 PR workflow"验证因远端暂停记环境约束;T06 🟡→🚧;计数 → ✅57/◐11/🟡0/🚧1/🔴3/⛔1/⏸0 |
 | 2026-08-15 | L-AR14-T06 | T06 ✅+收口(CI 完整门禁) | commit `f31158fc`;RED 3F/16P→GREEN 19/19;CI 裸 cargo 取证(guard 强制 /Volumes/G,runner 无此卷);pin 政策域扩至五 workflow;oracle 超时+余额不足两次失败→对抗性自审零 blocker/major,2 informational 记录;依赖传播:无下游;W6 差 AR14-T03A~E ◐;计数 → ✅58/◐11/🟡0/🚧0/🔴3/⛔1/⏸0 |
 | 2026-08-15 | — | ◐ 证据补录:AR02-T01~T05 + AR14-T03A~E 转 ✅;AR14-T07 macOS 部分 | AR02 逐卡:GREEN 重跑全绿(core blob 2P/app blobs 5P/integration binary 6P/app session 18P/rpc import 16P/check:generated 0);RED 重证=精确中性化补丁+stash 逆转(patch 存证 /var .../opencode/ar02-t0{1,2,3,4,5}-red.patch):T01 解析中性化 2F/0P、T02 容纳中性化 1F(逃逸成功)/4P、T03 路由 400 闸中性化 1F/6P(integration)、T04 deserialize 中性化 invalid_blob 导入成功致 never_publishes 1F/15P、T05 注解移除 check:generated exit 1(漂移 blobRef.ts+openapi.json,还原+重生成归零);T03A~E 共闸 `bun cargo fmt --all -- --check`,注入 misformat 实证 exit 1→还原 exit 0;T07 macOS 标准布局 frozen install 无漂移+ui build 0,Linux CI(远端暂停)/Windows(无本机)环境阻塞留 ◐;W2 标 PASS;W6 差 T07;计数 → ✅68/◐1/🟡0/🚧0/🔴3/⛔1/⏸0 |
+| 2026-08-15 | — | W3 波次重估后标 PASS | W3 卡(AR01-T00~T03/AR03-T01~T03/AR04-T02~T03)早已全 ✅,门禁复核:app 465P/0F×2、rpc 46P/0F、llm 40P/0F;一次 2F 瞬态(未捕获具体名,复跑全绿,既有 flake 模式);波次全景:W2/W3/W4/W5 PASS,W1 差 T07 ◐(环境阻塞),W6 差 T07 ◐;FINAL-T01/T02 维持 🔴(W1/W6 未 PASS + 凭据门禁) |
 
 ---
 
