@@ -721,7 +721,6 @@ mod tests {
             koharu_runtime::ComputePolicy::CpuOnly,
         )
         .expect("create runtime");
-        runtime.prepare().await.expect("prepare runtime");
         let runtime = std::sync::Arc::new(runtime);
         let app = std::sync::Arc::new(
             koharu_app::App::new(config, runtime.clone(), true, "test").expect("create app"),

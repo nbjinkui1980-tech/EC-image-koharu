@@ -1045,7 +1045,7 @@ pub(crate) mod tests {
             let dir = tempfile::tempdir()?;
             let runtime = Arc::new(RuntimeManager::new(dir.path(), ComputePolicy::CpuOnly)?);
             let registry = Arc::new(Registry::new());
-            let llm = Arc::new(llm::Model::empty_for_test((*runtime).clone(), true));
+            let llm = Arc::new(llm::Model::new((*runtime).clone(), true));
             let renderer = Arc::new(renderer::Renderer::new()?);
             let font = renderer
                 .available_fonts()?
@@ -4494,7 +4494,7 @@ pub(crate) mod tests {
             "cpu".into()
         };
         let registry = Arc::new(Registry::new());
-        let llm = Arc::new(llm::Model::empty_for_test((*runtime).clone(), cpu));
+        let llm = Arc::new(llm::Model::new((*runtime).clone(), cpu));
         let renderer = Arc::new(renderer::Renderer::new()?);
         let planner = Arc::new(TypographyPlanner::default());
 

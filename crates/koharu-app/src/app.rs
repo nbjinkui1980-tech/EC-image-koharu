@@ -100,8 +100,7 @@ impl App {
         shared: AppSharedState,
         version: &'static str,
     ) -> Result<Self> {
-        let backend = shared_llama_backend(&runtime)?;
-        let llm = Arc::new(llm::Model::new((*runtime).clone(), cpu, backend));
+        let llm = Arc::new(llm::Model::new((*runtime).clone(), cpu));
         let ai = Arc::new(AiManager::new(&runtime));
         let renderer = Arc::new(renderer::Renderer::new()?);
         let config = Arc::new(ArcSwap::from_pointee(config));

@@ -6,9 +6,9 @@
 //!
 //! Construction:
 //! ```ignore
-//! let backend = app::shared_llama_backend(&runtime)?;
-//! let llm = Arc::new(llm::Model::new(runtime, cpu, backend));
+//! let llm = Arc::new(llm::Model::new(runtime, cpu));
 //! // then: llm.load_local(...) or llm.load_provider(...)
+//! // The llama backend initializes lazily on the first local load.
 //! ```
 
 use std::sync::Arc;
@@ -22,7 +22,6 @@ use koharu_llm::providers::{
     AnyProvider, ProviderCatalogModels, ProviderConfig, ProviderDescriptor,
     all_provider_descriptors, build_provider, discover_models,
 };
-use koharu_llm::safe::llama_backend::LlamaBackend;
 use koharu_llm::{Language, Llm, ModelId, language::tags as language_tags};
 use koharu_runtime::RuntimeManager;
 use strum::IntoEnumIterator;
@@ -106,53 +105,20 @@ pub struct Model {
     state_tx: broadcast::Sender<LlmState>,
     runtime: RuntimeManager,
     cpu: bool,
-    #[cfg(not(test))]
-    backend: Arc<LlamaBackend>,
-    #[cfg(test)]
-    backend: Option<Arc<LlamaBackend>>,
 }
 
 impl Model {
-    pub fn new(runtime: RuntimeManager, cpu: bool, backend: Arc<LlamaBackend>) -> Self {
+    pub fn new(runtime: RuntimeManager, cpu: bool) -> Self {
         Self {
             state: Arc::new(RwLock::new(State::Empty)),
             state_tx: broadcast::channel(64).0,
             runtime,
             cpu,
-            #[cfg(not(test))]
-            backend,
-            #[cfg(test)]
-            backend: Some(backend),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn empty_for_test(runtime: RuntimeManager, cpu: bool) -> Self {
-        Self {
-            state: Arc::new(RwLock::new(State::Empty)),
-            state_tx: broadcast::channel(64).0,
-            runtime,
-            cpu,
-            backend: None,
         }
     }
 
     pub fn is_cpu(&self) -> bool {
         self.cpu
-    }
-
-    pub fn backend(&self) -> Arc<LlamaBackend> {
-        #[cfg(not(test))]
-        {
-            self.backend.clone()
-        }
-        #[cfg(test)]
-        {
-            self.backend
-                .as_ref()
-                .expect("local LLM backend is unavailable in this test")
-                .clone()
-        }
     }
 
     /// Load a provider target (remote API) immediately.
@@ -178,9 +144,11 @@ impl Model {
         let state_tx = self.state_tx.clone();
         let runtime = self.runtime.clone();
         let cpu = self.cpu;
-        let backend = self.backend();
         tokio::spawn(async move {
-            let res = Llm::load(&runtime, id, cpu, backend).await;
+            let res = match crate::app::shared_llama_backend(&runtime) {
+                Ok(backend) => Llm::load(&runtime, id, cpu, backend).await,
+                Err(e) => Err(e),
+            };
             let mut guard = state_cloned.write().await;
             match res {
                 Ok(llm) => *guard = State::ReadyLocal(llm),
