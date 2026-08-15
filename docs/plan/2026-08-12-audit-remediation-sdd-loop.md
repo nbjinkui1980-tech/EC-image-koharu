@@ -1,6 +1,6 @@
 # 审计修复 SDD Phase 3 — Loop 执行驱动文档
 
-**状态：ACTIVE/AUTO — Phase 3 一次批准已于 2026-08-13 授予；Loop 空闲，当前无在途 lane。**
+**状态：ACTIVE/AUTO — Phase 3 一次批准已于 2026-08-13 授予；在途 lane:L-AR10。**
 **规格：** `docs/plan/2026-08-10-audit-remediation-sdd-spec.md`
 **计划：** `docs/plan/2026-08-10-audit-remediation-sdd-plan.md`
 **任务：** `docs/plan/2026-08-10-audit-remediation-sdd-tasks.md`
@@ -80,7 +80,7 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | **P2** | **L-AR09** 产物完整性 | AR09-T01 → T02 ∥ T03 | 下载 digest 链 | 🟡 就绪 |
 | **P3** | **L-AR11** UI 所有权 | AR11-T01~T06(相互独立) | UI 数据一致性 | ✅ 收口(2026-08-15) |
 | **P3** | **L-AR12** UI 资源 | AR12-T01~T06(相互独立) | UI 资源生命周期 | ✅ 收口(2026-08-15) |
-| **P4** | **L-AR10** 发布 provenance | AR10-T01 → T02 → T03 | 解锁 AR14-T06;仅本地修改/验证 | 🟡 就绪 |
+| **P4** | **L-AR10** 发布 provenance | AR10-T01 → T02 → T03 | 解锁 AR14-T06;仅本地修改/验证 | 🚧 在途 |
 | **P5** | **L-FINAL** 收敛 | 全部非 OOS 卡已集成执行分支 + W1~W6 PASS → FINAL-T01 → FINAL-T02 | 全门禁 + 平台/凭据验收 | 🔴 阻塞 |
 
 **选择规则**:同一时刻只激活 1 条 lane。每次从依赖已齐的 lane 中按 P0→P5 选最高优先级;同级按表中顺序。当前 lane 收口并提交台账后自动选下一条。
@@ -153,9 +153,9 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR09-T01 SHA-256 下载/缓存不变量 | ✅ | commit `25d28f97` | L-AR09 收口证据见合同 |
 | AR09-T02 llama/ZLUDA 描述 | ✅ | commit `6e5f622d` | ←T01;7 artifact 钉值 |
 | AR09-T03 CUDA PyPI digest | ✅ | commit `34191ca3` | ←T01;fail closed;10 钉值 |
-| AR10-T01 Actions 固定完整 SHA | 🟡 | — | 现状 `@v7`/`@master`;仅本地修改/验证 |
-| AR10-T02 Release 最小权限/签名 digest | 🔴 | — | ←T01 |
-| AR10-T03 同 run artifact/Docker provenance | 🔴 | — | ←T02;独占 Dockerfile,与 AR01-T06 互斥 |
+| AR10-T01 Actions 固定完整 SHA | 🚧 | — | 现状 `@v7`/`@master`;仅本地修改/验证 |
+| AR10-T02 Release 最小权限/签名 digest | 🚧 | — | ←T01(lane 内) |
+| AR10-T03 同 run artifact/Docker provenance | 🚧 | — | ←T02(lane 内);独占 Dockerfile,与 AR01-T06 互斥 |
 | AR11-T01 Mask bitmap 页面代次 | ✅ | commit `5999a1e1` | L-AR11 收口证据见合同 |
 | AR11-T02 Config 保存失败与乱序 | ✅ | commit `e8c6cbf1`+`4429d1dd` | L-AR11 收口证据见合同 |
 | AR11-T03 Style mutation lossless queue | ✅ | commit `9a722c57` | L-AR11 收口证据见合同 |
@@ -205,6 +205,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
+| L-AR10 | Sisyphus/K3 | audit-remediation-phase3 | beb3bdc476beff92 | 2026-08-15 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
@@ -324,6 +325,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-15 | L-AR11 | lane 收口 ✅(8 commit) | T01 `5999a1e1` / T02 `e8c6cbf1`+`4429d1dd` / T03 `9a722c57` / T04 `0fa9b34f` / T05 `4aa36a36` / T06 `944915d6` / review-fix `b72c4c89`;门禁全绿(UI 259P/38 文件、lint 0、format 净、ui build 0、workspace check/clippy/fmt 净、check:generated 零漂移);独立 review 经 oracle:零 blocker,2 major(superseded 失败静默/builder page 货币性)+2 minor(switchProject 定时器/URL 主张实证驳回)+4 informational,修至零;依赖传播:无;W5 未收齐(L-AR12 未竟);计数 → ✅48/◐11/🟡7/🚧0/🔴6/⛔1/⏸0 |
 | 2026-08-15 | L-AR12 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `99de6d5ddee05f88`;认领基线 main@`b68f123e`,分支 tip `7cad9a4f`;无前置依赖(6 卡相互独立;T02/T06 共享 font-select.tsx 串行隔离);T02 stale-load 面与 T04 close 面疑似现状已满足,RED-0 实证后按先例或转锁;T01~T06 🟡→🚧;计数 → ✅48/◐11/🟡1/🚧6/🔴6/⛔1/⏸0 |
 | 2026-08-15 | L-AR12 | lane 收口 ✅(8 commit)+W5 WAVE-GREEN | T01 `ac980ef1` / T02 `3b7dc13f` / T03 `b02c57bf` / T04 `31fa3a1a`(纯锁) / T05 `37fcfa0c` / T06 `769fb1ae` / review-fix `8c4b3af1`;门禁全绿(UI 274P、lint 0、format 净、ui build 0、workspace 净、check:generated 零漂移);独立 review 经 oracle:零 blocker,1 major(整数键序→显式插入序)+4 minor+3 informational 修至零/记录;附加孤儿测试清除 `6c150bc8`;**W5 标 PASS**(§3 波次表);依赖传播:无;计数 → ✅54/◐11/🟡1/🚧0/🔴6/⛔1/⏸0 |
+| 2026-08-15 | L-AR10 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `beb3bdc476beff92`;认领基线 main@`b68f123e`,分支 tip `20ec72c0`;T01 无前置,T02/T03 lane 内链式;§0.2 约束:仅本地修改 workflows,不 push/不触发远端;凭据保持 PENDING-CREDENTIAL-QA;Docker daemon 不可用(T03 本地 build 验证或将环境阻塞,按先例记录);T01 🟡→🚧、T02/T03 🔴→🚧;计数 → ✅54/◐11/🟡0/🚧3/🔴4/⛔1/⏸0 |
 
 ---
 
