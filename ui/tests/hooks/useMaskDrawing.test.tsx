@@ -76,4 +76,71 @@ describe('useMaskDrawing', () => {
     expect(vi.mocked(fetch)).not.toHaveBeenCalled()
     expect(mocks.invalidateScene).toHaveBeenCalled()
   })
+
+  it('stale_bitmap_is_closed_and_not_drawn_after_page_switch', async () => {
+    const staleBitmap = { close: vi.fn() }
+    const freshBitmap = { close: vi.fn() }
+    let resolveStale: (bitmap: typeof staleBitmap) => void = () => {}
+    const createImageBitmapMock = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStale = resolve
+          }),
+      )
+      .mockResolvedValueOnce(freshBitmap)
+    vi.stubGlobal('createImageBitmap', createImageBitmapMock)
+
+    const drawImage = vi.fn()
+    const ctx = {
+      save: vi.fn(),
+      restore: vi.fn(),
+      clearRect: vi.fn(),
+      drawImage,
+      fillStyle: '',
+      fillRect: vi.fn(),
+    }
+
+    const segmentData = new Uint8Array([1, 2, 3])
+    const { rerender } = renderHook(
+      ({ page }) =>
+        useMaskDrawing({
+          mode: 'repairBrush',
+          page,
+          segmentData,
+          pointerToDocument: () => ({ x: 0, y: 0 }),
+          showMask: true,
+          enabled: true,
+        }),
+      { initialProps: { page: { id: 'page-1', width: 8, height: 8 } as Page } },
+    )
+
+    act(() => {
+      mocks.config?.onCanvasInit?.(ctx as unknown as CanvasRenderingContext2D, {
+        width: 8,
+        height: 8,
+        key: 'page-1',
+      })
+    })
+
+    rerender({ page: { id: 'page-2', width: 8, height: 8 } as Page })
+    act(() => {
+      mocks.config?.onCanvasInit?.(ctx as unknown as CanvasRenderingContext2D, {
+        width: 8,
+        height: 8,
+        key: 'page-2',
+      })
+    })
+
+    await act(async () => {
+      resolveStale(staleBitmap)
+      await Promise.resolve()
+    })
+
+    expect(drawImage).toHaveBeenCalledTimes(1)
+    expect(drawImage).toHaveBeenCalledWith(freshBitmap, 0, 0, 8, 8)
+    expect(staleBitmap.close).toHaveBeenCalledTimes(1)
+    expect(freshBitmap.close).toHaveBeenCalledTimes(1)
+  })
 })

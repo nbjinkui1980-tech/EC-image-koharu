@@ -42,6 +42,7 @@ export function useMaskDrawing({
   enabled,
 }: MaskDrawingOptions) {
   const inpaintQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const canvasGenerationRef = useRef(0)
   const isEraseMode = mode === 'eraser'
   const isActive = enabled && (mode === 'repairBrush' || isEraseMode)
 
@@ -59,10 +60,15 @@ export function useMaskDrawing({
     getBrushSize: () => usePreferencesStore.getState().brushConfig.size,
     enabled: showMask,
     onCanvasInit: (ctx, d) => {
+      const generation = ++canvasGenerationRef.current
       if (segmentData) {
         void (async () => {
           try {
             const bitmap = await convertBytesToBitmap(segmentData)
+            if (canvasGenerationRef.current !== generation) {
+              bitmap.close()
+              return
+            }
             ctx.save()
             ctx.clearRect(0, 0, d.width, d.height)
             ctx.drawImage(bitmap, 0, 0, d.width, d.height)
