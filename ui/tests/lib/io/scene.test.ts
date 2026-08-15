@@ -116,6 +116,83 @@ describe('applyOp', () => {
   })
 })
 
+describe('applySceneOp', () => {
+  it('builds each op from the latest scene at execution time', async () => {
+    let epoch = 1
+    const simulated: any = {
+      pages: {
+        p1: {
+          id: 'p1',
+          name: 'P1',
+          width: 900,
+          height: 900,
+          nodes: {
+            t1: {
+              id: 't1',
+              transform: { x: 0, y: 0, width: 10, height: 10, rotationDeg: 0 },
+              visible: true,
+              kind: {
+                text: {
+                  style: {
+                    fontFamilies: ['Arial'],
+                    fontSize: 18,
+                    color: null,
+                    effect: null,
+                    stroke: null,
+                    textAlign: null,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      project: { name: 'P' },
+    }
+    queryClient.setQueryData(getGetSceneJsonQueryKey(), { epoch, scene: simulated })
+    server.use(
+      http.post('/api/v1/history/apply', async ({ request }) => {
+        const op = (await request.json()) as any
+        const update = op.updateNode
+        if (update?.patch?.data?.text?.style) {
+          simulated.pages.p1.nodes[update.id as string].kind.text.style =
+            update.patch.data.text.style
+        }
+        epoch += 1
+        queryClient.setQueryData(getGetSceneJsonQueryKey(), { epoch, scene: simulated })
+        return HttpResponse.json({ epoch })
+      }),
+    )
+
+    const merge = (scene: any, patch: Record<string, unknown>) => ({
+      ...scene.pages.p1.nodes.t1.kind.text.style,
+      ...patch,
+    })
+
+    const first = applyOp((scene) =>
+      ops.updateNode('p1', 't1', {
+        data: { text: { style: merge(scene, { fontSize: 20 }) } },
+      } as never),
+    )
+    const second = applyOp((scene) =>
+      ops.updateNode('p1', 't1', {
+        data: {
+          text: {
+            style: merge(scene, {
+              stroke: { enabled: true, color: [9, 9, 9, 255], widthPx: 2 },
+            }),
+          },
+        },
+      } as never),
+    )
+    await Promise.all([first, second])
+
+    const finalStyle = simulated.pages.p1.nodes.t1.kind.text.style
+    expect(finalStyle.fontSize).toBe(20)
+    expect(finalStyle.stroke).toEqual({ enabled: true, color: [9, 9, 9, 255], widthPx: 2 })
+  })
+})
+
 describe('project lifecycle', () => {
   it('createAndOpenProject returns summary and invalidates scene', async () => {
     server.use(

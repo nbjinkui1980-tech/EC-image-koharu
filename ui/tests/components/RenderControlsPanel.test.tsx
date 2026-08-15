@@ -5,7 +5,11 @@ import { delay, http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { RenderControlsPanel } from '@/components/panels/RenderControlsPanel'
-import { getGetConfigQueryKey, getGetGoogleFontsCatalogQueryKey } from '@/lib/api'
+import {
+  getGetConfigQueryKey,
+  getGetGoogleFontsCatalogQueryKey,
+  getGetSceneJsonQueryKey,
+} from '@/lib/api'
 import type { Op } from '@/lib/api/schemas'
 import * as sceneActions from '@/lib/io/scene'
 import { queryClient } from '@/lib/queryClient'
@@ -116,11 +120,17 @@ function fullyStyledTextNodes() {
   ]
 }
 
+function resolveOpArg(arg: unknown): any {
+  if (typeof arg !== 'function') return arg
+  const latest = queryClient.getQueryData(getGetSceneJsonQueryKey()) as any
+  return arg(latest.scene)
+}
+
 function expectBatchStyleUpdate(update: Record<string, unknown>) {
   const sourceById = new Map(
     fullyStyledTextNodes().map((node) => [node.id, node.kind.text.style] as const),
   )
-  const op = vi.mocked(sceneActions.applyOp).mock.calls[0][0] as any
+  const op = resolveOpArg(vi.mocked(sceneActions.applyOp).mock.calls[0][0])
   expect(op.batch.ops).toHaveLength(3)
   for (const child of op.batch.ops) {
     const id = child.updateNode.id as string
@@ -440,7 +450,7 @@ describe('RenderControlsPanel Font Assignment', () => {
 
     // Verify applyOp was called for t1
     await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalled())
-    const lastOp = (sceneActions.applyOp as any).mock.calls[0][0]
+    const lastOp = resolveOpArg((sceneActions.applyOp as any).mock.calls[0][0])
     expect(lastOp).toHaveProperty('updateNode')
     expect(lastOp.updateNode.id).toBe('t1')
     expect(lastOp.updateNode.patch.data.text.style.fontFamilies).toEqual(['Roboto'])
@@ -464,7 +474,7 @@ describe('RenderControlsPanel Font Assignment', () => {
 
     // Verify applyOp was called with a batch
     await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalled())
-    const lastOp = (sceneActions.applyOp as any).mock.calls[0][0]
+    const lastOp = resolveOpArg((sceneActions.applyOp as any).mock.calls[0][0])
     expect(lastOp).toHaveProperty('batch')
     expect(lastOp.batch.ops).toHaveLength(2)
   })
@@ -529,7 +539,7 @@ describe('RenderControlsPanel Font Assignment', () => {
     await waitFor(() => expect(sceneActions.runAutoRenderNow).toHaveBeenCalledWith('p1'))
 
     expect(usePreferencesStore.getState().defaultFont).toBe('Custom')
-    const op: Op = vi.mocked(sceneActions.applyOp).mock.calls[0][0]
+    const op: Op = resolveOpArg(vi.mocked(sceneActions.applyOp).mock.calls[0][0])
     if (!('batch' in op)) throw new Error('expected a batch op')
     expect(op.batch.ops).toHaveLength(2)
     const [first, second] = op.batch.ops
@@ -583,7 +593,7 @@ describe('RenderControlsPanel Font Assignment', () => {
 
     await waitFor(() => expect(sceneActions.runAutoRenderNow).toHaveBeenCalledWith('p1'))
     expect(usePreferencesStore.getState().defaultFont).toBe('Roboto-Bold')
-    const op: Op = vi.mocked(sceneActions.applyOp).mock.calls[0][0]
+    const op: Op = resolveOpArg(vi.mocked(sceneActions.applyOp).mock.calls[0][0])
     if (!('batch' in op)) throw new Error('expected a batch op')
     expect(op.batch.ops).toHaveLength(2)
     for (const child of op.batch.ops) {
@@ -846,7 +856,7 @@ describe('RenderControlsPanel Font Assignment', () => {
     await userEvent.click(trigger)
 
     await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalled())
-    const op = (sceneActions.applyOp as any).mock.calls[0][0]
+    const op = resolveOpArg((sceneActions.applyOp as any).mock.calls[0][0])
     expect(op.updateNode.id).toBe('t1')
     expect(op.updateNode.patch.data.text.style.color).toEqual([0, 0, 0, 255])
   })
@@ -931,5 +941,52 @@ describe('RenderControlsPanel Font Assignment', () => {
     expect(sceneActions.queueAutoRender).toHaveBeenCalledTimes(1)
     expect(sceneActions.queueAutoRender).toHaveBeenCalledWith('p1')
     expect(sceneActions.runAutoRenderNow).not.toHaveBeenCalled()
+  })
+})
+
+describe('Style mutation queue', () => {
+  it('builds each rapid style update from the latest scene', async () => {
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithTextNodes(fullyStyledTextNodes())),
+      ),
+    )
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().select('t1', false)
+
+    const increase = await screen.findByTestId('render-font-size-increase')
+    await waitFor(() => expect(increase).toBeEnabled())
+    await userEvent.click(increase)
+    await userEvent.click(await screen.findByTestId('render-stroke-enable'))
+
+    await waitFor(() =>
+      expect(vi.mocked(sceneActions.applyOp).mock.calls.length).toBeGreaterThanOrEqual(2),
+    )
+
+    const arg = vi.mocked(sceneActions.applyOp).mock.calls[1][0] as any
+    const sceneAfterFirst = sceneWithTextNodes([
+      {
+        id: 't1',
+        kind: {
+          text: {
+            style: {
+              fontFamilies: ['Arial'],
+              fontSize: 19,
+              color: [1, 2, 3, 255],
+              effect: { bold: true, italic: false },
+              stroke: { enabled: true, color: [7, 8, 9, 255], widthPx: 1.5 },
+              textAlign: 'left',
+            },
+          },
+        },
+      },
+    ]).scene
+    const op = typeof arg === 'function' ? arg(sceneAfterFirst) : arg
+    expect(op.updateNode.patch.data.text.style.fontSize).toBe(19)
+    expect(op.updateNode.patch.data.text.style.stroke).toEqual({
+      enabled: false,
+      color: [7, 8, 9, 255],
+      widthPx: 1.5,
+    })
   })
 })

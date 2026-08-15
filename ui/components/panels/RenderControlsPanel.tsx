@@ -429,15 +429,17 @@ export function RenderControlsPanel() {
     ) {
       return
     }
-    const op =
-      nodes.length === 1
-        ? buildStyleOp(nodes[0], updates)
-        : ops.batch(
-            label,
-            nodes.map((n) => buildStyleOp(n, updates)),
-          )
     try {
-      await applyOp(op)
+      await applyOp((latestScene) => {
+        const pageNodes = latestScene.pages[page.id]?.nodes ?? {}
+        const built = nodes.flatMap((n) => {
+          const kind = pageNodes[n.id]?.kind
+          const latestText = kind && 'text' in kind ? kind.text : undefined
+          return latestText ? [buildStyleOp({ ...n, data: latestText }, updates)] : []
+        })
+        if (built.length === 0) return null
+        return built.length === 1 ? built[0] : ops.batch(label, built)
+      })
     } catch (error) {
       await invalidateScene().catch(() => undefined)
       useEditorUiStore.getState().showError(String(error))

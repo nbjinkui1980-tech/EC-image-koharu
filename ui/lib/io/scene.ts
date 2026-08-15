@@ -27,6 +27,7 @@ import type {
   OpenProjectRequest,
   ProjectSummary,
   ReadingOrder,
+  Scene,
   SceneSnapshot,
 } from '@/lib/api/schemas'
 import { filenameFromContentDisposition } from '@/lib/io/saveBlob'
@@ -62,8 +63,18 @@ const enqueueHistoryMutation = (run: () => Promise<void>): Promise<void> => {
   return next
 }
 
-export async function applyOp(op: Op): Promise<void> {
+export async function applyOp(opOrBuild: Op | ((scene: Scene) => Op | null)): Promise<void> {
   await enqueueHistoryMutation(async () => {
+    let op: Op | null
+    if (typeof opOrBuild === 'function') {
+      const latest = queryClient.getQueryData(getGetSceneJsonQueryKey()) as
+        | SceneSnapshot
+        | undefined
+      op = latest ? opOrBuild(latest.scene) : null
+      if (!op) return
+    } else {
+      op = opOrBuild
+    }
     await applyCommand(op)
     await invalidateScene()
   })
