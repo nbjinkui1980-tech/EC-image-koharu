@@ -193,7 +193,11 @@ test('CI blocks on the full workspace rust gate set', () => {
   expect(ciWorkflowText).toContain('cargo fmt --all -- --check')
   expect(ciWorkflowText).toContain('cargo check --workspace --all-targets')
   expect(ciWorkflowText).toContain('cargo clippy --workspace --all-targets -- -D warnings')
-  expect(ciWorkflowText).toContain('cargo test --workspace --tests')
+  expect(ciWorkflowText).toContain('cargo test --workspace')
+  expect(ciWorkflowText).toContain('--tests')
+  // The rpc lib suite runs split around routes::pages:: until the Linux
+  // heap-corruption-on-exit is root-caused (see test.yml KNOWN ISSUE note).
+  expect(ciWorkflowText).toContain('-p koharu-rpc --lib')
 })
 
 test('CI blocks on the UI format/lint/test gate set', () => {
