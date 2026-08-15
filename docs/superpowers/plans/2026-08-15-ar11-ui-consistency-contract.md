@@ -29,7 +29,7 @@
   1. `stale_bitmap_is_closed_and_not_drawn_after_page_switch` — 绘制 await 期间切页 → 旧 bitmap 不 drawImage、`close()` 被调 → 现状 FAIL
 - **目标文件**:上表 T01 行(≤2)
 - **验收命令**:`bun run --cwd ui test -- tests/hooks/useMaskDrawing.test.tsx`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 1F/1P(stale bitmap 被绘制且未 close)→GREEN 2/2;commit `5999a1e1`
 
 ## 卡:AR11-T02 — Config 保存失败与乱序
 
@@ -41,7 +41,7 @@
   2. `config_save_older_response_does_not_overwrite_newer_edit` — 旧响应后到 → 不覆盖新 draft → 现状 FAIL
 - **目标文件**:上表 T02 行(≤2)
 - **验收命令**:`bun run --cwd ui test -- tests/components/SettingsDialog`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 2F/0P(失败吞错+丢 draft;旧响应覆盖新值)→GREEN 2/2;commit `e8c6cbf1`;类型注解修复 `4429d1dd`(ui build 门禁捕获,L-AR13B 教训再证)
 
 ## 卡:AR11-T03 — Style mutation lossless queue
 
@@ -52,7 +52,7 @@
   1. `rapid_style_updates_apply_in_order_without_overwrite` — 连续 3 个样式 op 全部按序生效 → 现状 FAIL
 - **目标文件**:上表 T03 行(≤4)
 - **验收命令**:`bun run --cwd ui test -- tests/components/RenderControlsPanel tests/lib/io/scene`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 2F/40P(scene 集成+panel builder 均FAIL)→GREEN 42/42;commit `9a722c57`;设计:applyOp 重载 builder 在队列轮次内对最新缓存构造;panel resolveOpArg 读缓存断言模式
 
 ## 卡:AR11-T04 — Auto-render project/page 隔离
 
@@ -64,7 +64,7 @@
   2. `auto_render_timer_cancelled_on_project_close` — 关闭项目后 timer 不执行 → 现状 FAIL
 - **目标文件**:上表 T04 行(≤2)
 - **验收命令**:`bun run --cwd ui test -- tests/lib/io/autoRender`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 2F/7P(跨页互消;关闭后仍触发)→GREEN 9/9;commit `0fa9b34f`
 
 ## 卡:AR11-T05 — Scene 临时错误保留旧数据
 
@@ -76,7 +76,7 @@
   2. `explicit_no_project_clears_scene` — 400 no-project → 清空(锁)
 - **目标文件**:上表 T05 行(≤3)
 - **验收命令**:`bun run --cwd ui test -- tests/hooks/useScene`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 1F/3P(500 清空旧 scene)→GREEN 4/4;commit `4aa36a36`;既有 400 清场测试为锁
 
 ## 卡:AR11-T06 — Verification URL allowlist
 
@@ -88,4 +88,12 @@
   2. `verification_url_allows_fixed_auth_host` — 批准的认证 host HTTPS → 打开(锁)
 - **目标文件**:上表 T06 行(≤3)
 - **验收命令**:`bun run --cwd ui test -- tests/lib/backend`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 1F/1P(三类 URL 未拒绝)→GREEN 6/6(backend+Codex polling+config);commit `944915d6`
+
+## Lane 收口(2026-08-15)
+
+- 门禁:UI suite 259P/0F(38 文件)、lint:ui exit 0、format:check 净、ui build exit 0、workspace check/clippy/fmt 净、check:generated 零漂移
+- 独立 review(oracle):零 blocker;**2 major**——superseded 配置失败仍报错(persistConfig 改 saved/failed/superseded outcome 联合,旧失败静默)/样式 builder 闭包持有点击时 page(执行时与渲染前双重 page 货币性检查);**2 minor**——switchProject 不清 auto-render 定时器(修)/URL :443 与大小写主张不实(URL 归一化,实证裁决;trailing-dot/punycode/编码 userinfo 拒绝补锁);**4 informational**——onBaseUrlBlur 失败静默(修)/理论 unhandled rejection(记录)/color 显式化既有行为(记录)/测试边角(补)
+- review-fix commit:`b72c4c89`(7 文件,+130/-16)
+- 提交/回滚单元:T01 `5999a1e1`、T02 `e8c6cbf1`+`4429d1dd`、T03 `9a722c57`、T04 `0fa9b34f`、T05 `4aa36a36`、T06 `944915d6`、review-fix `b72c4c89`,均可独立 revert
+- 依赖传播:无下游;W5 未收齐(L-AR12 未竟)
