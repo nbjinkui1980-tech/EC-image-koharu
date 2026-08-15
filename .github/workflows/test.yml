@@ -54,10 +54,10 @@ jobs:
       - name: DIAG bisect rpc lib suite (temporary, revert after diagnosis)
         continue-on-error: true
         run: |
-          echo "=== budget six together ==="
-          cargo test -p koharu-rpc --lib routes::pages::tests::page_import_budget 2>&1 | tail -4 || true
-          echo "=== pages minus budget six ==="
-          cargo test -p koharu-rpc --lib routes::pages:: -- --skip page_import_budget 2>&1 | tail -4 || true
+          echo "=== pages half A (first five) ==="
+          cargo test -p koharu-rpc --lib routes::pages:: -- --skip over_encoded_bytes --skip over_file_count --skip repair_brush --skip repair_options 2>&1 | tail -4 || true
+          echo "=== pages half B (last four) ==="
+          cargo test -p koharu-rpc --lib routes::pages:: -- --skip replace_import_atomicity --skip corrupt_image --skip decode_concurrency --skip default_small_import --skip over_decoded_rgba 2>&1 | tail -4 || true
       - name: Run workspace tests (unit + integration)
         run: |
           # Headless dbus + gnome-keyring so the provider-secret integration
