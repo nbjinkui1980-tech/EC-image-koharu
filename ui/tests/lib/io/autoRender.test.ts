@@ -1,7 +1,7 @@
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { closeProject, queueAutoRender, runAutoRenderNow } from '@/lib/io/scene'
+import { closeProject, queueAutoRender, runAutoRenderNow, switchProject } from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
@@ -233,6 +233,29 @@ describe('queueAutoRender', () => {
 
     queueAutoRender('p-1')
     await closeProject()
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(pipelinePosts).toBe(0)
+  })
+
+  it('cancels pending debounced renders when switching projects', async () => {
+    vi.spyOn(usePreferencesStore, 'getState').mockReturnValue({
+      defaultFont: undefined,
+    } as ReturnType<typeof usePreferencesStore.getState>)
+    let pipelinePosts = 0
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ pipeline: { renderer: 'koharu-renderer' } }),
+      ),
+      http.post('/api/v1/pipelines', () => {
+        pipelinePosts += 1
+        return HttpResponse.json({ operationId: 'op-x' })
+      }),
+      http.put('/api/v1/projects/current', () => HttpResponse.json({})),
+    )
+
+    queueAutoRender('p-1')
+    await switchProject({ id: 'other-project' })
     await vi.advanceTimersByTimeAsync(1000)
 
     expect(pipelinePosts).toBe(0)

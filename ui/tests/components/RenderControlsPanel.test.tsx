@@ -989,4 +989,25 @@ describe('Style mutation queue', () => {
       widthPx: 1.5,
     })
   })
+
+  it('skips the op when the page changed before execution', async () => {
+    server.use(
+      http.get('/api/v1/scene.json', () =>
+        HttpResponse.json(sceneWithTextNodes(fullyStyledTextNodes())),
+      ),
+    )
+    renderWithQuery(<RenderControlsPanel />)
+    useSelectionStore.getState().select('t1', false)
+
+    const increase = await screen.findByTestId('render-font-size-increase')
+    await waitFor(() => expect(increase).toBeEnabled())
+    await userEvent.click(increase)
+
+    await waitFor(() => expect(sceneActions.applyOp).toHaveBeenCalledTimes(1))
+    const arg = vi.mocked(sceneActions.applyOp).mock.calls[0][0] as any
+    useSelectionStore.getState().setPage('p2')
+    const latest = queryClient.getQueryData(getGetSceneJsonQueryKey()) as any
+    const op = typeof arg === 'function' ? arg(latest.scene) : arg
+    expect(op).toBeNull()
+  })
 })

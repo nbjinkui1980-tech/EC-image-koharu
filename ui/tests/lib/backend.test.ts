@@ -27,4 +27,17 @@ describe('openVerificationUrl', () => {
       'noopener,noreferrer',
     )
   })
+
+  it('accepts normalized host forms and rejects lookalikes', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
+
+    await openVerificationUrl('https://AUTH.OPENAI.COM/device')
+    await openVerificationUrl('https://auth.openai.com:443/device')
+    expect(openSpy).toHaveBeenCalledTimes(2)
+
+    await expect(openVerificationUrl('https://auth.openai.com./device')).rejects.toThrow()
+    await expect(openVerificationUrl('https://user%40x@auth.openai.com/device')).rejects.toThrow()
+    await expect(openVerificationUrl('https://auth-openai-com.evil.example/x')).rejects.toThrow()
+    expect(openSpy).toHaveBeenCalledTimes(2)
+  })
 })

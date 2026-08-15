@@ -431,6 +431,7 @@ export function RenderControlsPanel() {
     }
     try {
       await applyOp((latestScene) => {
+        if (useSelectionStore.getState().pageId !== page.id) return null
         const pageNodes = latestScene.pages[page.id]?.nodes ?? {}
         const built = nodes.flatMap((n) => {
           const kind = pageNodes[n.id]?.kind
@@ -446,6 +447,7 @@ export function RenderControlsPanel() {
       return
     }
     afterApply?.()
+    if (useSelectionStore.getState().pageId !== page.id) return
     if (renderImmediately) {
       await runAutoRenderNow(page.id)
     } else {

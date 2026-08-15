@@ -180,6 +180,7 @@ export async function createAndOpenProject(req: CreateProjectRequest): Promise<P
 }
 
 export async function switchProject(req: OpenProjectRequest): Promise<void> {
+  cancelQueuedAutoRender()
   await putCurrentProject(req)
   await invalidateScene()
 }

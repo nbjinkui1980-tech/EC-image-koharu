@@ -96,6 +96,11 @@ import { cn } from '@/lib/utils'
 // at the boundary so the dialog internals stay unified.
 type UpdateConfigBody = AppConfig
 
+type PersistOutcome =
+  | { kind: 'saved'; config: UpdateConfigBody }
+  | { kind: 'failed' }
+  | { kind: 'superseded' }
+
 function appConfigToPatch(cfg: AppConfig): ConfigPatch {
   const patch: ConfigPatch = {}
   if (cfg.data?.path) {
@@ -264,25 +269,25 @@ export function SettingsDialog({
       typographyOnly?: boolean
       refreshCatalog?: boolean
     } = {},
-  ) => {
+  ): Promise<PersistOutcome> => {
     const seq = ++configMutationSeq.current
     try {
       const patch = appConfigToPatch(next)
       const saved = await patchConfig(
         typographyOnly ? { typographyPlanner: patch.typographyPlanner } : patch,
       )
-      if (seq !== configMutationSeq.current) return { saved, superseded: true }
+      if (seq !== configMutationSeq.current) return { kind: 'superseded' }
       setAppConfig(saved)
       queryClient.setQueryData(getGetConfigQueryKey(), saved)
       if (refreshCatalog) {
         const catalog = await getLlmCatalog()
-        if (seq !== configMutationSeq.current) return { saved, superseded: true }
+        if (seq !== configMutationSeq.current) return { kind: 'superseded' }
         setProviderCatalogs(catalog.providers)
         queryClient.setQueryData(getGetLlmCatalogQueryKey(), catalog)
       }
-      return { saved, superseded: false }
+      return { kind: 'saved', config: saved }
     } catch {
-      return null
+      return seq === configMutationSeq.current ? { kind: 'failed' } : { kind: 'superseded' }
     }
   }
 
@@ -321,7 +326,7 @@ export function SettingsDialog({
 
     setIsSavingStorageSettings(true)
     setStorageSettingsError(null)
-    const result = await persistConfig({
+    const outcome = await persistConfig({
       ...appConfig,
       data: { path },
       http: {
@@ -331,11 +336,11 @@ export function SettingsDialog({
       },
     })
     setIsSavingStorageSettings(false)
-    if (!result) {
+    if (outcome.kind === 'failed') {
       setStorageSettingsError('Failed')
       return
     }
-    if (result.superseded) return
+    if (outcome.kind === 'superseded') return
     if (!isTauri()) {
       setStorageSettingsError('Restart manually')
       return
@@ -408,7 +413,12 @@ export function SettingsDialog({
                     }))
                   }
                   onBaseUrlBlur={() =>
-                    appConfig && void persistConfig(appConfig, { refreshCatalog: true })
+                    appConfig &&
+                    void persistConfig(appConfig, { refreshCatalog: true }).then((outcome) => {
+                      if (outcome.kind === 'failed') {
+                        useEditorUiStore.getState().showError('Failed to save settings')
+                      }
+                    })
                   }
                   onApiKeyChange={(id, v) => setApiKeyDrafts((c) => ({ ...c, [id]: v }))}
                   onSaveKey={(id) => {
@@ -421,12 +431,12 @@ export function SettingsDialog({
                     if (idx >= 0) providers[idx] = updated
                     else providers.push(updated)
                     void persistConfig({ ...appConfig, providers }, { refreshCatalog: true }).then(
-                      (result) => {
-                        if (!result) {
+                      (outcome) => {
+                        if (outcome.kind === 'failed') {
                           useEditorUiStore.getState().showError('Failed to save API key')
                           return
                         }
-                        if (result.superseded) return
+                        if (outcome.kind === 'superseded') return
                         setApiKeyDrafts((c) => {
                           const n = { ...c }
                           delete n[id]
@@ -441,12 +451,12 @@ export function SettingsDialog({
                     const idx = providers.findIndex((p) => p.id === id)
                     if (idx >= 0) providers[idx] = { ...providers[idx], api_key: null }
                     void persistConfig({ ...appConfig, providers }, { refreshCatalog: true }).then(
-                      (result) => {
-                        if (!result) {
+                      (outcome) => {
+                        if (outcome.kind === 'failed') {
                           useEditorUiStore.getState().showError('Failed to clear API key')
                           return
                         }
-                        if (result.superseded) return
+                        if (outcome.kind === 'superseded') return
                         setApiKeyDrafts((c) => {
                           const n = { ...c }
                           delete n[id]

@@ -108,4 +108,48 @@ describe('SettingsDialog config persistence', () => {
       | undefined
     expect(cached?.providers?.[0]?.api_key).toBe('key-bbb')
   })
+
+  it('stale_save_failure_after_newer_success_stays_silent', async () => {
+    useConfigHandlers()
+    let call = 0
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    server.use(
+      http.patch('/api/v1/config', async ({ request }) => {
+        const body = (await request.json()) as {
+          providers?: Array<{ id: string; apiKey?: string }>
+        }
+        const key = body.providers?.[0]?.apiKey ?? ''
+        call += 1
+        if (call === 1) {
+          await firstGate
+          return HttpResponse.json({ error: 'late failure' }, { status: 500 })
+        }
+        return HttpResponse.json({ providers: [{ id: 'openai', api_key: key }] })
+      }),
+    )
+
+    const { user, input } = await openProviderEditor()
+    await user.type(input, 'key-aaa')
+    await user.click(screen.getByRole('button', { name: 'settings.apiKeySave' }))
+    await waitFor(() => expect(call).toBe(1))
+
+    await user.clear(input)
+    await user.type(input, 'key-bbb')
+    await user.click(screen.getByRole('button', { name: 'settings.apiKeySave' }))
+    await waitFor(() => expect(input.value).toBe(''))
+
+    releaseFirst()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    })
+
+    expect(useEditorUiStore.getState().error).toBeUndefined()
+    const cached = queryClient.getQueryData(getGetConfigQueryKey()) as
+      | { providers?: Array<{ api_key?: string }> }
+      | undefined
+    expect(cached?.providers?.[0]?.api_key).toBe('key-bbb')
+  })
 })
