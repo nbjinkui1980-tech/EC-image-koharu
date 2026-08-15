@@ -45,9 +45,7 @@ mod platform {
     use crate::install::InstallState;
     use crate::loader::{add_runtime_search_path, preload_library};
 
-    use super::{
-        RELEASE_BASE_URL, RELEASE_TAG, ZLUDA_ACTIVE, ZLUDA_ASSET_NAME, ZLUDA_DLLS, source_id,
-    };
+    use super::{RELEASE_TAG, ZLUDA_ACTIVE, ZLUDA_DLLS, artifact, source_id};
 
     const HIP_ROOT_CANDIDATES: &[&str] = &[
         r"C:\hip_sdk",
