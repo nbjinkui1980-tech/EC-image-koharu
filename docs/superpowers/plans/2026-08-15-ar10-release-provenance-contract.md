@@ -32,7 +32,7 @@
   2. `pinned actions carry the version comment` — 缺 `# <tag>` 注释 → FAIL
 - **目标文件**:上表 T01 行(≤4)
 - **验收命令**:`bun test scripts/supply-chain-policy.test.ts`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 2F/4P(tag/branch 引用+无版本注释)→GREEN 6/6;commit `051ecea9`;12 个 action 经 `git ls-remote` peeled 解析(轻量 tag 回退裸 ref;Jimver/cuda-toolkit master 固定 `b8bf9c6c`+注释);actionlint 本地不可用(记录),YAML 结构经 safe_load 验证(注意 YAML 1.1 `on:`→True 陷阱)
 
 ## 卡:AR10-T02 — Release 最小权限与签名 CLI digest
 
@@ -48,7 +48,7 @@
   3. `job permissions stay within the declared allowlist`(锁)
 - **目标文件**:上表 T02 行(≤2)
 - **验收命令**:`bun test scripts/supply-chain-policy.test.ts`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 4F/6P(顶层写权限/id-token/job 白名单/CLI 无 digest)→GREEN 10/10;commit `138237e0`;CLI digest `39ece56f` 本机自 0.8.0 资产计算(决策点回填);id-token:write 删除经取证(Azure 走 service principal secrets,无 OIDC 消费)
 
 ## 卡:AR10-T03 — 同 run artifact、Docker provenance 与 fork
 
@@ -67,4 +67,12 @@
   3. `image name is pinned to the fork authority` → 现状 FAIL
 - **目标文件**:上表 T03 行(≤3)
 - **验收命令**:`bun test scripts/supply-chain-policy.test.ts`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 4F/10P(releases/latest+curl/无同 run 制品/authority 未固定/无 OCI 标签)→GREEN 14/14;commit `4b8c5caa`;Docker daemon 不可用→本地 build 环境阻塞(记录);digest 语义 shell 级实证(well-formed 错误 digest fail-closed exit 1,正确 exit 0;早前一次 exit 误判为管道遮蔽)
+
+## Lane 收口(2026-08-15)
+
+- 门禁:policy 16P/0F(supply-chain 14 + tauri-security-config 2)、workspace check 净、check:generated 零漂移;YAML safe_load 结构验证;actionlint 本地不可用(记录);Docker build 环境阻塞(daemon 不可用,digest 语义 shell 级实证替代);**未 push、未触发远端**(§0.2)
+- 独立 review(oracle):**3 blocker**——job 级 permissions 未声明的 scope 全部置 none,release job 缺 `actions: write`(upload-artifact 必败)、container job 缺 `actions: read`(download-artifact 必败)(均修+政策锁);sha256 清单嵌入 `target/release/koharu` 路径,download-artifact 解包到 dist 后 `sha256sum -c` 找不到文件(修:清单用裸文件名,补"manifest 用裸名"政策断言);**2 major**——CLI 步骤提取正则 6 空格硬编码(修为空白通用)/政策仅覆盖三文件(裁决记录:卡域即三文件,CI workflows 固定留作后续);minor/informational 逐条裁决(GHA 默认 shell 已 `-eo pipefail`;`$KOHARU_SHA256` 已加引号;Dockerfile 全禁 curl 保持;README 上游引用超卡域记录)
+- review-fix commit:`0bb71c3a`(2 文件,+12/-2)
+- 提交/回滚单元:T01 `051ecea9`、T02 `138237e0`、T03 `4b8c5caa`、review-fix `0bb71c3a`,均可独立 revert
+- 依赖传播:AR14-T06 🔴→🟡(←AR10-T03 ✅);无 wave 收齐(W6 差 AR14-T06 + AR14-T03A~E ◐)
