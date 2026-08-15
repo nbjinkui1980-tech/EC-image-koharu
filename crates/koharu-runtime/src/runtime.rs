@@ -223,8 +223,9 @@ mod tests {
             .next()
             .ok_or_else(|| anyhow::anyhow!("no llama library found"))?;
 
-        let _first = crate::load_library_by_name(&lib_name)?;
+        let _first = crate::load_library_by_path(&dir.join(&lib_name))?;
         let _second = crate::load_library_by_name(&lib_name)?;
+        let _third = crate::load_library_by_name(&lib_name)?;
         Ok(())
     }
 }
