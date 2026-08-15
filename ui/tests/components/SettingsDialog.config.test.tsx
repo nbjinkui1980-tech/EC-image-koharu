@@ -71,7 +71,7 @@ describe('SettingsDialog config persistence', () => {
           providers?: Array<{ id: string; apiKey?: string }>
         }
         const key = body.providers?.[0]?.apiKey ?? ''
-        return new Promise<HttpResponse>((resolve) =>
+        return new Promise((resolve) =>
           pending.push({
             key,
             resolve: () =>
