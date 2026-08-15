@@ -54,10 +54,12 @@ jobs:
       - name: DIAG bisect rpc lib suite (temporary, revert after diagnosis)
         continue-on-error: true
         run: |
-          echo "=== half 1: routes:: ==="
-          cargo test -p koharu-rpc --lib routes:: 2>&1 | tail -3 || true
-          echo "=== half 2: non-routes ==="
-          cargo test -p koharu-rpc --lib -- --skip routes:: 2>&1 | tail -3 || true
+          for group in projects:: pages:: ai:: pipelines:: binary config; do
+            echo "=== group routes::$group ==="
+            cargo test -p koharu-rpc --lib "routes::$group" 2>&1 | tail -2 || true
+          done
+          echo "=== rest (skip route groups) ==="
+          cargo test -p koharu-rpc --lib -- --skip routes::projects:: --skip routes::pages:: --skip routes::ai:: --skip routes::pipelines:: --skip routes::binary --skip routes::config 2>&1 | tail -2 || true
       - name: Run workspace tests (unit + integration)
         run: |
           # Headless dbus + gnome-keyring so the provider-secret integration
