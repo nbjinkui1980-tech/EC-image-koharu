@@ -79,4 +79,35 @@ describe('useScene', () => {
     expect(result.current.scene).toBeNull()
     expect(result.current.epoch).toBe(0)
   })
+
+  it('keeps the previous scene when a refetch fails transiently (500)', async () => {
+    let firstCall = true
+    server.use(
+      http.get('/api/v1/scene.json', () => {
+        if (firstCall) {
+          firstCall = false
+          return HttpResponse.json({
+            epoch: 5,
+            scene: {
+              pages: { 'p-1': { id: 'p-1', name: 'A', width: 1, height: 1, nodes: {} } },
+              project: { name: 'X' },
+            },
+          })
+        }
+        return HttpResponse.json({ message: 'server exploded' }, { status: 500 })
+      }),
+    )
+
+    const client = makeQueryClient()
+    const { result } = renderHook(() => useScene(), { wrapper: withQueryClient(client) })
+
+    await waitFor(() => expect(result.current.scene).not.toBeNull())
+
+    await client.invalidateQueries({ queryKey: ['/api/v1/scene.json'] })
+    await waitFor(() => expect(client.isFetching()).toBe(0))
+
+    expect(result.current.scene).not.toBeNull()
+    expect(result.current.scene!.pages['p-1']).toBeTruthy()
+    expect(result.current.epoch).toBe(5)
+  })
 })
