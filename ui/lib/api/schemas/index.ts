@@ -3,6 +3,7 @@
  * Do not edit manually.
  */
 
+export * from './apiError'
 export * from './appConfig'
 export * from './appEvent'
 export * from './blobRef'
@@ -13,7 +14,6 @@ export * from './codexDeviceLoginStatus'
 export * from './codexImageGenerationOptions'
 export * from './codexImageGenerationResponse'
 export * from './configPatch'
-export * from './createPagesFromPathsRequest'
 export * from './createPagesResponse'
 export * from './createProjectRequest'
 export * from './dataConfig'

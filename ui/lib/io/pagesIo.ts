@@ -4,7 +4,7 @@ import { getGetSceneJsonQueryKey } from '@/lib/api'
 import type { SceneSnapshot } from '@/lib/api/schemas'
 import { openImageFiles, openImageFolder, openKhrFile } from '@/lib/io/openFiles'
 import { saveBlob } from '@/lib/io/saveBlob'
-import { exportProject, uploadKhrArchive, uploadPages, uploadPagesByPaths } from '@/lib/io/scene'
+import { exportProject, uploadKhrArchive, uploadPages } from '@/lib/io/scene'
 import { queryClient } from '@/lib/queryClient'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 
@@ -17,15 +17,9 @@ export async function importPages(
   mode: 'replace' | 'append',
   source: 'files' | 'folder',
 ): Promise<void> {
-  const picked = source === 'folder' ? await openImageFolder() : await openImageFiles()
-  const replace = mode === 'replace'
-  if (picked.kind === 'paths') {
-    if (picked.paths.length === 0) return
-    await uploadPagesByPaths(picked.paths, replace)
-    return
-  }
-  if (picked.files.length === 0) return
-  await uploadPages(picked.files, replace)
+  const files = source === 'folder' ? await openImageFolder() : await openImageFiles()
+  if (files.length === 0) return
+  await uploadPages(files, mode === 'replace')
 }
 
 /**

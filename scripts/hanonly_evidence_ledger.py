@@ -8350,30 +8350,8 @@ def execute(argv):
         return _rehydrate(arguments)
     if arguments.command == "validate-b0-artifact":
         return _validate_b0_artifact(arguments)
-    if arguments.command == "write-r51-b0-preflight-attestation":
-        return _r51_write_preflight(arguments)
-    if arguments.command == "snapshot-r51-preflight-custody":
-        return _r51_canonical_json(_r51_preflight_custody_snapshot(arguments)) + b"\n"
-    if arguments.command == "validate-r51-b0-authorization":
-        return _r51_validate_authorization(arguments)
-    if arguments.command == "project-r52-calibration-manifest":
-        return _r52_project_calibration(arguments)
-    if arguments.command == "write-r52-b0-preflight-attestation":
-        return _r52_write_preflight(arguments)
-    if arguments.command == "write-r52-r51-holdout-adoption":
-        return _r52_write_adoption(arguments)
-    if arguments.command == "run-r52-challenge":
-        return _r52_run_challenge(arguments)
-    if arguments.command == "run-r52-holdout":
-        return _r52_run_holdout(arguments)
-    if arguments.command == "validate-r52-b0-authorization":
-        return _r52_validate_authorization(arguments)
     if arguments.command == "r57-validate-source-ink":
         return _r57_validate_source_ink(sys.stdin.buffer.read())
-    if arguments.command == "validate-r60-b0-preflight":
-        return _r60_validate_preflight(arguments)
-    if arguments.command == "validate-r60-b0-authorization":
-        return _r60_validate_authorization(arguments)
     raise LedgerError("unknown ledger command")
 
 

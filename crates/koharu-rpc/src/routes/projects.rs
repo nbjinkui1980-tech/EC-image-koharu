@@ -11,8 +11,8 @@
 
 use axum::Json;
 use axum::body::{Body, Bytes};
-use axum::extract::{Path, State};
-use axum::http::{HeaderValue, header};
+use axum::extract::{FromRequest, Path, Request, State};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use koharu_app::projects as project_dirs;
 use koharu_core::{ImageRole, PageId, ProjectSummary};
@@ -187,16 +187,48 @@ async fn delete_project(
 // POST /projects/import — extract an archive into a fresh allocated dir
 // ---------------------------------------------------------------------------
 
+/// Try to take the single global archive-import admission slot. The
+/// returned permit releases on drop (RAII), including task panic.
+pub(crate) fn try_acquire_import_slot(
+    app: &koharu_app::App,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+    app.import_slots.clone().try_acquire_owned().map_err(|_| {
+        ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "import slot busy: another archive import is in flight",
+        )
+    })
+}
+
 #[utoipa::path(
     post,
     path = "/projects/import",
     request_body(content_type = "application/zip"),
-    responses((status = 200, body = ProjectSummary))
+    responses(
+        (status = 200, body = ProjectSummary),
+        (status = 429, description = "another archive import is in flight")
+    )
 )]
-async fn import_project(
-    State(app): State<AppState>,
-    body: Bytes,
-) -> ApiResult<Json<ProjectSummary>> {
+async fn import_project(State(app): State<AppState>, request: Request) -> ApiResult<Response> {
+    let _permit = match try_acquire_import_slot(
+        app.app()
+            .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "app not ready"))?
+            .as_ref(),
+    ) {
+        Ok(permit) => permit,
+        Err(busy) => {
+            return Ok((
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, "1")],
+                Json(busy),
+            )
+                .into_response());
+        }
+    };
+    let body = match Bytes::from_request(request, &app).await {
+        Ok(body) => body,
+        Err(rejection) => return Ok(rejection.into_response()),
+    };
     if body.is_empty() {
         return Err(ApiError::bad_request("empty archive body"));
     }
@@ -212,7 +244,7 @@ async fn import_project(
         .open_project(published, None)
         .await
         .map_err(ApiError::internal)?;
-    Ok(Json(koharu_app::app::project_summary(&session)))
+    Ok(Json(koharu_app::app::project_summary(&session)).into_response())
 }
 
 fn sanitize_and_publish_import(
@@ -647,6 +679,156 @@ mod tests {
                 .flatten()
                 .all(|entry| !entry.file_name().to_string_lossy().ends_with(".khrproj"))
         );
+    }
+
+    fn forged_oversized_archive() -> Vec<u8> {
+        let mut forged = koharu_app::archive::zip_files_to_bytes(&[(
+            "project.toml".into(),
+            b"name = \"oversized\"\n".to_vec(),
+        )])
+        .unwrap();
+        let sig = b"PK\x01\x02";
+        let pos = forged
+            .windows(4)
+            .position(|w| w == sig)
+            .expect("central directory");
+        forged[pos + 24..pos + 28].copy_from_slice(&(256u32 * 1024 * 1024 + 1).to_le_bytes());
+        forged
+    }
+
+    #[test]
+    fn failed_import_oversized_archive_leaves_no_staging_or_final() {
+        let root = TempRoot::new();
+        let config = root.config();
+        let forged = forged_oversized_archive();
+
+        let error = sanitize_and_publish_import(&config, &forged).unwrap_err();
+        assert!(error.to_string().contains("per-entry budget"), "{error}");
+        assert!(project_dirs::list_projects(&config).unwrap().is_empty());
+        let projects = project_dirs::projects_dir(&config).unwrap();
+        assert!(
+            std::fs::read_dir(projects).unwrap().next().is_none(),
+            "failed import must leave the projects directory empty"
+        );
+    }
+
+    async fn admission_state() -> (AppState, TempRoot) {
+        let root = TempRoot::new();
+        let mut config = AppConfig::default();
+        config.data.path = root.0.clone();
+        let runtime = koharu_runtime::RuntimeManager::new(
+            root.0.join("runtime").as_std_path().to_path_buf(),
+            koharu_runtime::ComputePolicy::CpuOnly,
+        )
+        .expect("create runtime");
+        let runtime = std::sync::Arc::new(runtime);
+        let app = std::sync::Arc::new(
+            koharu_app::App::new(config, runtime.clone(), true, "test").expect("create app"),
+        );
+        let state = crate::BootstrapManager::new(runtime);
+        assert!(state.set_app(app).is_ok(), "set test app");
+        (state, root)
+    }
+
+    #[tokio::test]
+    async fn import_admission_second_concurrent_gets_429() {
+        let (state, root) = admission_state().await;
+        let held = state
+            .app()
+            .unwrap()
+            .import_slots
+            .clone()
+            .try_acquire_owned()
+            .expect("first import slot acquires");
+        let bytes = verified_archive(&root.0);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects/import")
+            .body(Body::from(bytes))
+            .unwrap();
+
+        let response = import_project(State(state.clone()), request)
+            .await
+            .expect("handler responds");
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry_after = response
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        assert_eq!(retry_after.as_deref(), Some("1"));
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn import_admission_slot_released_after_budget_rejection() {
+        let (state, _root) = admission_state().await;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects/import")
+            .body(Body::from(forged_oversized_archive()))
+            .unwrap();
+
+        let result = import_project(State(state.clone()), request).await;
+        assert!(result.is_err(), "oversized archive must be rejected");
+        let _permit = try_acquire_import_slot(state.app().unwrap().as_ref())
+            .expect("import slot released after budget rejection");
+    }
+
+    #[tokio::test]
+    async fn import_admission_success_returns_project_summary() {
+        let (state, root) = admission_state().await;
+        let bytes = verified_archive(&root.0);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects/import")
+            .body(Body::from(bytes))
+            .unwrap();
+
+        let response = import_project(State(state.clone()), request)
+            .await
+            .expect("handler responds");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("read response body");
+        let summary: serde_json::Value =
+            serde_json::from_slice(&body).expect("project summary json");
+        assert!(summary.get("id").is_some(), "summary carries project id");
+        let config = (**state.config.load()).clone();
+        assert_eq!(project_dirs::list_projects(&config).unwrap().len(), 1);
+        assert!(state.current_session().is_some());
+    }
+
+    #[tokio::test]
+    async fn import_admission_slot_released_after_body_limit_rejection() {
+        let (state, root) = admission_state().await;
+        let bytes = verified_archive(&root.0);
+        assert!(bytes.len() > 16, "fixture archive exceeds the tiny limit");
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/projects/import")
+            .body(Body::from(bytes))
+            .unwrap();
+        axum::extract::DefaultBodyLimit::max(16).apply(&mut request);
+
+        let response = import_project(State(state.clone()), request)
+            .await
+            .expect("handler responds");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let _permit = try_acquire_import_slot(state.app().unwrap().as_ref())
+            .expect("import slot released after body-limit rejection");
+    }
+
+    #[tokio::test]
+    async fn import_admission_slot_released_on_permit_drop() {
+        let (state, _root) = admission_state().await;
+        let app = state.app().unwrap();
+        {
+            let permit = try_acquire_import_slot(app.as_ref()).expect("first acquire");
+            drop(permit);
+        }
+        let _permit = try_acquire_import_slot(app.as_ref()).expect("re-acquire after permit drop");
     }
 
     #[test]

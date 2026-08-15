@@ -22,6 +22,12 @@ use crate::security::{OriginHostPolicy, SecurityContext};
 /// Returning `None` signals a 404 fall-through.
 pub type AssetResolver = Arc<dyn Fn(&str) -> Option<(Vec<u8>, String)> + Send + Sync>;
 
+/// CSP delivered with HTML responses and mirrored in `tauri.conf.json`. The
+/// first five directives are the SPEC AR-07 frozen baseline; the rest are the
+/// minimal allowances the UI needs (inline Next bootstrap scripts, React
+/// inline styles, blob/data images and fonts, Sentry egress).
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://*.sentry.io https://*.ingest.sentry.io";
+
 fn enforce_origin_host(router: Router, policy: OriginHostPolicy) -> Router {
     router
         .layer(middleware::from_fn(crate::security::enforce_origin_host))
@@ -98,6 +104,12 @@ async fn serve_asset(resolver: AssetResolver, req: Request<Body>) -> Response {
     {
         let mut resp = Response::new(Body::from(bytes));
         resp.headers_mut().insert(CONTENT_TYPE, header);
+        if mime == "text/html" {
+            resp.headers_mut().insert(
+                axum::http::header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+            );
+        }
         return resp;
     }
     (StatusCode::NOT_FOUND, "not found").into_response()
@@ -161,4 +173,62 @@ pub async fn serve_with_listener_and_assets_with_session(
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod csp_tests {
+    use super::*;
+
+    fn test_resolver() -> AssetResolver {
+        Arc::new(|path: &str| match path {
+            "index.html" => Some((
+                b"<html><head></head><body>app</body></html>".to_vec(),
+                "text/html".to_string(),
+            )),
+            "app.js" => Some((b"content".to_vec(), "text/javascript".to_string())),
+            _ => None,
+        })
+    }
+
+    // AR07-T01 RED: HTML responses must carry the SPEC AR-07 frozen CSP
+    // directives; today serve_asset sets only Content-Type.
+    #[tokio::test]
+    async fn csp_html_response_carries_frozen_directives() {
+        let response = serve_asset(
+            test_resolver(),
+            Request::builder().uri("/").body(Body::empty()).unwrap(),
+        )
+        .await;
+        let csp = response
+            .headers()
+            .get(axum::http::header::CONTENT_SECURITY_POLICY)
+            .and_then(|value| value.to_str().ok())
+            .expect("HTML response must carry a Content-Security-Policy header");
+        for directive in [
+            "default-src 'self'",
+            "object-src 'none'",
+            "base-uri 'none'",
+            "frame-ancestors 'none'",
+            "form-action 'none'",
+        ] {
+            assert!(
+                csp.contains(directive),
+                "missing frozen directive: {directive}"
+            );
+        }
+    }
+
+    // Lock: non-HTML assets keep serving normally.
+    #[tokio::test]
+    async fn csp_non_html_asset_serves_normally() {
+        let response = serve_asset(
+            test_resolver(),
+            Request::builder()
+                .uri("/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 }

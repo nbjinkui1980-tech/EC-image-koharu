@@ -19,7 +19,7 @@ use anyhow::Result;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use camino::Utf8PathBuf;
 use dashmap::DashMap;
-use koharu_core::{AppEvent, DownloadProgress, JobSummary, LlmStateStatus};
+use koharu_core::{AppEvent, DownloadProgress, LlmStateStatus};
 use koharu_runtime::{ComputePolicy, RuntimeManager};
 use tokio::sync::Mutex;
 
@@ -40,7 +40,7 @@ const EVENT_BUS_CAPACITY: usize = 256;
 
 #[derive(Clone)]
 pub struct AppSharedState {
-    pub jobs: Arc<DashMap<String, JobSummary>>,
+    pub jobs: Arc<crate::jobs::BoundedJobRegistry>,
     pub downloads: Arc<DashMap<String, DownloadProgress>>,
     pub bus: Arc<EventBus>,
 }
@@ -48,7 +48,7 @@ pub struct AppSharedState {
 impl Default for AppSharedState {
     fn default() -> Self {
         Self {
-            jobs: Arc::new(DashMap::new()),
+            jobs: Arc::new(crate::jobs::BoundedJobRegistry::default()),
             downloads: Arc::new(DashMap::new()),
             bus: EventBus::new(EVENT_BUS_CAPACITY),
         }
@@ -61,9 +61,15 @@ pub struct App {
     pub runtime: Arc<RuntimeManager>,
     pub registry: Arc<Registry>,
     pub session: Arc<ArcSwapOption<ProjectSession>>,
-    pub jobs: Arc<DashMap<String, JobSummary>>,
+    pub jobs: Arc<crate::jobs::BoundedJobRegistry>,
     pub downloads: Arc<DashMap<String, DownloadProgress>>,
     pub bus: Arc<EventBus>,
+    /// Project-keyed pipeline admission slots (semaphore = 1 per project).
+    pub pipeline_slots: Arc<DashMap<String, Arc<tokio::sync::Semaphore>>>,
+    /// Global AI image-generation admission slots (semaphore = 2).
+    pub ai_slots: Arc<tokio::sync::Semaphore>,
+    /// Global archive-import admission slot (semaphore = 1).
+    pub import_slots: Arc<tokio::sync::Semaphore>,
     pub ai: Arc<AiManager>,
     pub llm: Arc<llm::Model>,
     pub renderer: Arc<renderer::Renderer>,
@@ -94,8 +100,7 @@ impl App {
         shared: AppSharedState,
         version: &'static str,
     ) -> Result<Self> {
-        let backend = shared_llama_backend(&runtime)?;
-        let llm = Arc::new(llm::Model::new((*runtime).clone(), cpu, backend));
+        let llm = Arc::new(llm::Model::new((*runtime).clone(), cpu));
         let ai = Arc::new(AiManager::new(&runtime));
         let renderer = Arc::new(renderer::Renderer::new()?);
         let config = Arc::new(ArcSwap::from_pointee(config));
@@ -111,6 +116,9 @@ impl App {
             jobs: shared.jobs,
             downloads: shared.downloads,
             bus: shared.bus,
+            pipeline_slots: Arc::new(DashMap::new()),
+            ai_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            import_slots: Arc::new(tokio::sync::Semaphore::new(1)),
             ai,
             llm,
             renderer,

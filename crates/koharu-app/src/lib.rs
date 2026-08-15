@@ -12,6 +12,7 @@ pub mod bus;
 pub mod config;
 pub mod google_fonts;
 pub mod history;
+pub mod jobs;
 pub mod llm;
 mod persistence_v1;
 pub mod pipeline;

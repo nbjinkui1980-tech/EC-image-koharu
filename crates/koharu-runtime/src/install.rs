@@ -7,6 +7,27 @@ use anyhow::{Context, Result};
 
 const INSTALL_MARKER: &str = ".installed";
 
+/// A native runtime artifact: where to fetch it, its pinned SHA-256, and how
+/// to unpack it. `selected_files: None` extracts per the runtime-libraries
+/// policy; `Some` extracts exactly those archive members.
+#[derive(Debug, Clone)]
+pub(crate) struct NativeArtifact {
+    pub url: String,
+    pub file_name: String,
+    pub sha256: &'static str,
+    pub archive_kind: &'static str,
+    pub selected_files: Option<&'static [&'static str]>,
+}
+
+impl NativeArtifact {
+    pub(crate) fn extract_policy(&self) -> crate::archive::ExtractPolicy<'_> {
+        match self.selected_files {
+            Some(files) => crate::archive::ExtractPolicy::Selected(files),
+            None => crate::archive::ExtractPolicy::RuntimeLibraries,
+        }
+    }
+}
+
 pub(crate) struct InstallState<'a> {
     directory: &'a Path,
     source_id: &'a str,

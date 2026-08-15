@@ -1,6 +1,7 @@
 'use client'
 
 import { useGetSceneJson } from '@/lib/api'
+import { ApiError } from '@/lib/api/fetch'
 import type { Scene } from '@/lib/api/schemas'
 
 /**
@@ -13,7 +14,7 @@ import type { Scene } from '@/lib/api/schemas'
  * that as an error and `scene` is `null`.
  */
 export function useScene(): { scene: Scene | null; epoch: number } {
-  const { data, isError } = useGetSceneJson({
+  const { data, error, isError } = useGetSceneJson({
     query: {
       retry: false,
       staleTime: Infinity,
@@ -21,11 +22,13 @@ export function useScene(): { scene: Scene | null; epoch: number } {
       structuralSharing: true,
     },
   })
-  // React Query preserves `data` across a failed refetch, so closing a
-  // project would leave the stale scene visible until the cache is
-  // manually cleared. Treat an error response (e.g. 400 "no project open")
-  // as an explicit "no scene".
-  if (isError) return { scene: null, epoch: 0 }
+  // React Query preserves `data` across a failed refetch. Only an explicit
+  // 400 "no project open" clears the scene (project closed); transient
+  // failures (5xx/network) keep the last good scene, and the next
+  // invalidation refetches.
+  if (isError && error instanceof ApiError && error.status === 400) {
+    return { scene: null, epoch: 0 }
+  }
   return {
     scene: data?.scene ?? null,
     epoch: data?.epoch ?? 0,

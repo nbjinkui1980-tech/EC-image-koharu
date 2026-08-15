@@ -3,11 +3,10 @@
 import {
   applyCommand,
   createPages,
-  createPagesFromPaths,
   createProject,
   deleteCurrentProject,
+  exportCurrentProject,
   getConfig,
-  getExportCurrentProjectUrl,
   getGetConfigQueryKey,
   getGetCurrentLlmQueryKey,
   getGetSceneJsonQueryKey,
@@ -19,7 +18,7 @@ import {
   startPipeline,
   undo,
 } from '@/lib/api'
-import { ApiError, fetchWithAuth } from '@/lib/api/fetch'
+import type { FullResponse } from '@/lib/api/fetch'
 import type {
   ConfigPatch,
   CreateProjectRequest,
@@ -28,6 +27,7 @@ import type {
   OpenProjectRequest,
   ProjectSummary,
   ReadingOrder,
+  Scene,
   SceneSnapshot,
 } from '@/lib/api/schemas'
 import { filenameFromContentDisposition } from '@/lib/io/saveBlob'
@@ -63,8 +63,18 @@ const enqueueHistoryMutation = (run: () => Promise<void>): Promise<void> => {
   return next
 }
 
-export async function applyOp(op: Op): Promise<void> {
+export async function applyOp(opOrBuild: Op | ((scene: Scene) => Op | null)): Promise<void> {
   await enqueueHistoryMutation(async () => {
+    let op: Op | null
+    if (typeof opOrBuild === 'function') {
+      const latest = queryClient.getQueryData(getGetSceneJsonQueryKey()) as
+        | SceneSnapshot
+        | undefined
+      op = latest ? opOrBuild(latest.scene) : null
+      if (!op) return
+    } else {
+      op = opOrBuild
+    }
     await applyCommand(op)
     await invalidateScene()
   })
@@ -100,29 +110,32 @@ export async function reorderPageTextNodes(pageId: string, order: ReadingOrder):
 
 const AUTO_RENDER_DEBOUNCE_MS = 500
 
-let autoRenderTimer: ReturnType<typeof setTimeout> | null = null
-let autoRenderPendingPageId: string | null = null
+const autoRenderTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
-function cancelQueuedAutoRender(): void {
-  if (autoRenderTimer) clearTimeout(autoRenderTimer)
-  autoRenderTimer = null
-  autoRenderPendingPageId = null
+function cancelQueuedAutoRender(pageId?: string): void {
+  if (pageId === undefined) {
+    for (const timer of autoRenderTimers.values()) clearTimeout(timer)
+    autoRenderTimers.clear()
+    return
+  }
+  const timer = autoRenderTimers.get(pageId)
+  if (timer) clearTimeout(timer)
+  autoRenderTimers.delete(pageId)
 }
 
 export function queueAutoRender(pageId: string): void {
-  autoRenderPendingPageId = pageId
-  if (autoRenderTimer) clearTimeout(autoRenderTimer)
-  autoRenderTimer = setTimeout(() => {
-    autoRenderTimer = null
-    const id = autoRenderPendingPageId
-    autoRenderPendingPageId = null
-    if (!id) return
-    void runAutoRenderWithFeedback(id)
-  }, AUTO_RENDER_DEBOUNCE_MS)
+  cancelQueuedAutoRender(pageId)
+  autoRenderTimers.set(
+    pageId,
+    setTimeout(() => {
+      autoRenderTimers.delete(pageId)
+      void runAutoRenderWithFeedback(pageId)
+    }, AUTO_RENDER_DEBOUNCE_MS),
+  )
 }
 
 export async function runAutoRenderNow(pageId: string): Promise<void> {
-  cancelQueuedAutoRender()
+  cancelQueuedAutoRender(pageId)
   await runAutoRenderWithFeedback(pageId)
 }
 
@@ -167,11 +180,13 @@ export async function createAndOpenProject(req: CreateProjectRequest): Promise<P
 }
 
 export async function switchProject(req: OpenProjectRequest): Promise<void> {
+  cancelQueuedAutoRender()
   await putCurrentProject(req)
   await invalidateScene()
 }
 
 export async function closeProject(): Promise<void> {
+  cancelQueuedAutoRender()
   await deleteCurrentProject()
   await invalidateScene()
 }
@@ -183,17 +198,6 @@ export async function uploadPages(files: File[], replace: boolean): Promise<stri
   for (const file of files) form.append('file', file, file.name)
   form.append('replace', replace ? 'true' : 'false')
   const res = await createPages({ body: form })
-  await invalidateScene()
-  return res.pages
-}
-
-/**
- * Tauri fast-path: hand the backend a list of absolute file paths. Skips
- * the per-file `readFile` IPC round-trip, skips JS-side buffering, skips
- * multipart upload — the Rust side reads + decodes + hashes in parallel.
- */
-export async function uploadPagesByPaths(paths: string[], replace: boolean): Promise<string[]> {
-  const res = await createPagesFromPaths({ paths, replace })
   await invalidateScene()
   return res.pages
 }
@@ -223,23 +227,11 @@ export async function uploadKhrArchive(file: File): Promise<ProjectSummary> {
 export async function exportProject(
   req: ExportProjectRequest,
 ): Promise<{ blob: Blob; filename?: string }> {
-  const res = await fetchWithAuth(getExportCurrentProjectUrl(), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  })
-  if (!res.ok) {
-    const body = await res.json().catch(() => null)
-    const message =
-      (body && typeof body === 'object' && 'message' in body && typeof body.message === 'string'
-        ? body.message
-        : null) ??
-      res.statusText ??
-      `HTTP ${res.status}`
-    throw new ApiError(res.status, message, body)
-  }
-  const blob = await res.blob()
-  const filename = filenameFromContentDisposition(res.headers.get('content-disposition'))
+  // The generated signature says Blob per the spec, but the configured
+  // fetchApiFullResponse mutator returns the full response — headers carry
+  // the server's Content-Disposition filename.
+  const { blob, headers } = (await exportCurrentProject(req)) as unknown as FullResponse
+  const filename = filenameFromContentDisposition(headers.get('content-disposition'))
   return { blob, filename }
 }
 

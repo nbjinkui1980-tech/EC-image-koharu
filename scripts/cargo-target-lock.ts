@@ -8,6 +8,7 @@ const BUILDS = 'builds'
 const PRUNING = 'pruning'
 const GATE_RETRIES = 600
 const GATE_RETRY_MS = 10
+const BUILD_RETRY_MS = 100
 const OWNER_WRITE_GRACE_MS = 5_000
 const RECOVERING = '.recovering-'
 
@@ -22,6 +23,7 @@ export type CargoTargetLease = {
 
 export const __cargoTargetLockTestHooks: {
   afterDeadLeaseOwnerRead?: (directory: string) => Promise<void>
+  onBuildBlocked?: (directory: string) => void
   onRecoveryBlocked?: (directory: string) => void
 } = {}
 
@@ -44,6 +46,10 @@ function isMissing(error: unknown) {
 
 async function waitForGate() {
   await new Promise((resolve) => setTimeout(resolve, GATE_RETRY_MS))
+}
+
+async function waitForBuild() {
+  await new Promise((resolve) => setTimeout(resolve, BUILD_RETRY_MS))
 }
 
 function processIsAlive(pid: number) {
@@ -219,20 +225,28 @@ export async function acquireCargoBuildLease(targetRoot: string): Promise<CargoT
   const { builds, pruning } = lockPaths(targetRoot)
   let marker = ''
 
-  await withGate(targetRoot, async () => {
-    await removeDeadLease(pruning)
-    try {
-      await readdir(pruning)
-      throw new Error('Rust cache pruning is in progress; retry the build after it finishes.')
-    } catch (error) {
-      if (!isMissing(error)) throw error
-    }
+  while (!marker) {
+    await withGate(targetRoot, async () => {
+      await removeDeadLease(pruning)
+      try {
+        await readdir(pruning)
+        throw new Error('Rust cache pruning is in progress; retry the build after it finishes.')
+      } catch (error) {
+        if (!isMissing(error)) throw error
+      }
 
-    await mkdir(builds, { recursive: true })
-    const token = randomUUID()
-    marker = path.join(builds, `${process.pid}-${token}`)
-    await writeFile(marker, JSON.stringify({ pid: process.pid, token } satisfies LeaseOwner))
-  })
+      await mkdir(builds, { recursive: true })
+      if ((await activeBuildMarkers(builds)).length > 0) {
+        __cargoTargetLockTestHooks.onBuildBlocked?.(builds)
+        return
+      }
+
+      const token = randomUUID()
+      marker = path.join(builds, `${process.pid}-${token}`)
+      await writeFile(marker, JSON.stringify({ pid: process.pid, token } satisfies LeaseOwner))
+    })
+    if (!marker) await waitForBuild()
+  }
 
   return {
     release: async () => {

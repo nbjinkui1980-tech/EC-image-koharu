@@ -20,6 +20,7 @@ futures = { workspace = true }
 hf-hub = { workspace = true }
 indexmap = { workspace = true }
 indicatif = { workspace = true }
+sha2 = { workspace = true }
 inventory = { workspace = true }
 reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }

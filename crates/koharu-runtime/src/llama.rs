@@ -5,12 +5,31 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 
 use crate::Runtime;
-use crate::archive::{self, ExtractPolicy};
+use crate::archive;
 use crate::install::InstallState;
 use crate::loader::{add_runtime_search_path, preload_library};
 
 const LLAMA_CPP_TAG: &str = env!("LLAMA_CPP_TAG");
 const RELEASE_BASE_URL: &str = "https://github.com/ggml-org/llama.cpp/releases/download";
+
+fn release_base_url() -> String {
+    #[cfg(test)]
+    if let Some(over) = RELEASE_BASE_OVERRIDE.with(|cell| cell.get()) {
+        return over.to_string();
+    }
+    RELEASE_BASE_URL.to_string()
+}
+
+#[cfg(test)]
+thread_local! {
+    static RELEASE_BASE_OVERRIDE: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn override_release_base(base: Option<&'static str>) {
+    RELEASE_BASE_OVERRIDE.with(|cell| cell.set(base));
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -71,17 +90,57 @@ impl LlamaDistribution {
         }
     }
 
+    #[cfg(test)]
     fn assets(self) -> Vec<String> {
+        self.artifacts()
+            .into_iter()
+            .map(|artifact| artifact.file_name)
+            .collect()
+    }
+
+    fn artifacts(&self) -> Vec<crate::install::NativeArtifact> {
+        // Pinned SHA-256 digests for LLAMA_CPP_TAG release artifacts. When
+        // the tag moves, every digest must be recomputed and repinned.
+        let base = release_base_url();
         let tag = LLAMA_CPP_TAG;
+        let artifact = |file: String, sha256: &'static str| crate::install::NativeArtifact {
+            url: format!("{base}/{tag}/{file}"),
+            archive_kind: if file.ends_with(".zip") {
+                "zip"
+            } else {
+                "tar.gz"
+            },
+            file_name: file,
+            sha256,
+            selected_files: None,
+        };
         match self {
             Self::WindowsCuda13X64 => vec![
-                format!("llama-{tag}-bin-win-cuda-13.1-x64.zip"),
-                "cudart-llama-bin-win-cuda-13.1-x64.zip".to_string(),
+                artifact(
+                    format!("llama-{tag}-bin-win-cuda-13.1-x64.zip"),
+                    "677222c68c38f8d3e63ed76e7f93ea907b856394072cc79810b44993f563929f",
+                ),
+                artifact(
+                    "cudart-llama-bin-win-cuda-13.1-x64.zip".to_string(),
+                    "f96935e7e385e3b2d0189239077c10fe8fd7e95690fea4afec455b1b6c7e3f18",
+                ),
             ],
-            Self::WindowsVulkanX64 => vec![format!("llama-{tag}-bin-win-vulkan-x64.zip")],
-            Self::LinuxVulkanX64 => vec![format!("llama-{tag}-bin-ubuntu-vulkan-x64.tar.gz")],
-            Self::LinuxVulkanArm64 => vec![format!("llama-{tag}-bin-ubuntu-vulkan-arm64.tar.gz")],
-            Self::MacosArm64 => vec![format!("llama-{tag}-bin-macos-arm64.tar.gz")],
+            Self::WindowsVulkanX64 => vec![artifact(
+                format!("llama-{tag}-bin-win-vulkan-x64.zip"),
+                "6733f6354fdf171ba384057ede7a40574f9276af14142d310d7cbbf1d641b3a0",
+            )],
+            Self::LinuxVulkanX64 => vec![artifact(
+                format!("llama-{tag}-bin-ubuntu-vulkan-x64.tar.gz"),
+                "9d35d80aa48dd53eecc6bc67cc2a63f15861d51df263a52a929b519b23664ac3",
+            )],
+            Self::LinuxVulkanArm64 => vec![artifact(
+                format!("llama-{tag}-bin-ubuntu-vulkan-arm64.tar.gz"),
+                "8af5c6d8b8e471e41c65b2ddf6293b8663680cc87f93b6241679b2833d14c9d6",
+            )],
+            Self::MacosArm64 => vec![artifact(
+                format!("llama-{tag}-bin-macos-arm64.tar.gz"),
+                "a1d5261c3f14e7e094eb1f831d7e3a8971df69bfc7dd8c6b3421d5319f1cde53",
+            )],
         }
     }
 
@@ -197,7 +256,12 @@ impl LlamaDistribution {
     }
 
     fn source_id(self) -> String {
-        format!("llama-{LLAMA_CPP_TAG}-{}", self.id())
+        let digest = self
+            .artifacts()
+            .first()
+            .map(|artifact| &artifact.sha256[..12])
+            .unwrap_or("none");
+        format!("llama-{LLAMA_CPP_TAG}-{};sha256={digest}", self.id())
     }
 }
 
@@ -231,22 +295,29 @@ pub(crate) async fn ensure_ready(runtime: &Runtime) -> Result<()> {
     let install = InstallState::new(&install_dir, &source_id);
 
     if !install.is_current() {
-        install.reset()?;
-
-        for asset in &distribution.assets() {
-            let url = format!("{RELEASE_BASE_URL}/{LLAMA_CPP_TAG}/{asset}");
+        // Download and verify every artifact before touching the install
+        // dir: a digest failure cleans the download temp and leaves any
+        // existing installation untouched.
+        let artifacts = distribution.artifacts();
+        let mut archives = Vec::with_capacity(artifacts.len());
+        for artifact in &artifacts {
             let archive = runtime
                 .downloads()
-                .cached_download(&url, asset)
+                .cached_download_with_sha256(&artifact.url, &artifact.file_name, artifact.sha256)
                 .await
-                .with_context(|| format!("failed to download `{url}`"))?;
-            let kind = archive::detect_kind(asset)?;
-            archive::extract(
-                &archive,
-                &install_dir,
-                kind,
-                ExtractPolicy::RuntimeLibraries,
-            )?;
+                .with_context(|| format!("failed to download `{}`", artifact.url))?;
+            archives.push(archive);
+        }
+
+        install.reset()?;
+
+        for (archive, artifact) in archives.iter().zip(&artifacts) {
+            let kind = match artifact.archive_kind {
+                "zip" => archive::ArchiveKind::Zip,
+                "tar.gz" => archive::ArchiveKind::TarGz,
+                other => bail!("unsupported archive kind `{other}`"),
+            };
+            archive::extract(archive, &install_dir, kind, artifact.extract_policy())?;
         }
 
         for library in distribution.libraries() {
@@ -344,5 +415,131 @@ mod tests {
                 LlamaDistribution::WindowsVulkanX64
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod artifact_tests {
+    use super::*;
+
+    fn is_hex_64(value: &str) -> bool {
+        value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    // AR09-T02 RED: every llama artifact must carry a pinned SHA-256, and the
+    // source id must track the digest.
+    #[test]
+    fn llama_artifacts_have_pinned_sha256() {
+        let runtime = Runtime::new("/tmp/koharu-runtime", crate::ComputePolicy::CpuOnly).unwrap();
+        let distribution = LlamaDistribution::detect(&runtime).unwrap();
+        let artifacts = distribution.artifacts();
+        assert!(!artifacts.is_empty());
+        for artifact in &artifacts {
+            assert!(
+                artifact.url.starts_with("http"),
+                "url missing: {artifact:?}"
+            );
+            assert!(
+                is_hex_64(artifact.sha256),
+                "artifact `{}` must pin a 64-hex sha256",
+                artifact.file_name
+            );
+            assert!(matches!(artifact.archive_kind, "zip" | "tar.gz"));
+        }
+    }
+
+    #[test]
+    fn llama_source_id_includes_digest() {
+        let runtime = Runtime::new("/tmp/koharu-runtime", crate::ComputePolicy::CpuOnly).unwrap();
+        let distribution = LlamaDistribution::detect(&runtime).unwrap();
+        assert!(
+            distribution.source_id().contains("sha256="),
+            "source id must embed the artifact digest"
+        );
+    }
+
+    // A failed digest check must leave any existing install untouched —
+    // including the marker and every file in the install dir.
+    #[tokio::test]
+    async fn llama_bad_digest_keeps_existing_install() {
+        let root =
+            std::env::temp_dir().join(format!("koharu-llama-artifact-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let runtime = Runtime::new(&root, crate::ComputePolicy::CpuOnly).unwrap();
+        let distribution = LlamaDistribution::detect(&runtime).unwrap();
+        let install_dir = distribution.install_dir(&runtime);
+        std::fs::create_dir_all(&install_dir).unwrap();
+        std::fs::write(install_dir.join("sentinel"), b"keep me").unwrap();
+        crate::install::InstallState::new(&install_dir, "stale-source")
+            .commit()
+            .unwrap();
+
+        let bytes: &'static [u8] = b"not-a-real-archive";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    let read = stream.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..read]);
+                    let response = if request.starts_with("HEAD") {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            bytes.len()
+                        )
+                        .into_bytes()
+                    } else {
+                        let range = request
+                            .lines()
+                            .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+                            .and_then(|line| line.split_once("bytes="))
+                            .and_then(|(_, spec)| spec.trim().split_once('-'))
+                            .map(|(a, b)| {
+                                (
+                                    a.parse::<usize>().unwrap_or(0),
+                                    b.parse::<usize>().unwrap_or(bytes.len() - 1),
+                                )
+                            })
+                            .unwrap_or((0, bytes.len() - 1));
+                        let (start, stop) = range;
+                        let body = &bytes[start..=stop.min(bytes.len() - 1)];
+                        let mut response = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+                            body.len(),
+                            start,
+                            start + body.len() - 1,
+                            bytes.len()
+                        )
+                        .into_bytes();
+                        response.extend_from_slice(body);
+                        response
+                    };
+                    let _ = stream.write_all(&response).await;
+                });
+            }
+        });
+        override_release_base(Some(Box::leak(
+            format!("http://127.0.0.1:{port}").into_boxed_str(),
+        )));
+        let result = ensure_ready(&runtime).await;
+        override_release_base(None);
+        server.abort();
+
+        assert!(result.is_err(), "bad digest must fail ensure_ready");
+        assert!(
+            install_dir.join("sentinel").exists(),
+            "existing install must be untouched"
+        );
+        assert_eq!(
+            std::fs::read(install_dir.join(".installed")).unwrap(),
+            b"stale-source",
+            "marker must not be rewritten"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 /// Default cap for the in-memory undo stack. The log on disk is not capped —
 /// it's compacted on snapshot.
 const DEFAULT_UNDO_LIMIT: usize = 500;
+const MAX_HISTORY_FRAME_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const LOG_FRAME_V2_PREFIX: &[u8] = b"KHARLOG\x02";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,8 @@ pub struct History {
     undo_stack: VecDeque<Op>,
     redo_stack: Vec<Op>,
     limit: usize,
+    #[cfg(test)]
+    fail_next_frame_write: bool,
 }
 
 impl History {
@@ -64,6 +67,8 @@ impl History {
             undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
             limit: DEFAULT_UNDO_LIMIT,
+            #[cfg(test)]
+            fail_next_frame_write: false,
         })
     }
 
@@ -73,15 +78,28 @@ impl History {
         self
     }
 
+    /// Test-only fault injection: make the next `write_frame` fail before it
+    /// touches the file, simulating write/flush/sync errors on the durable path.
+    #[cfg(test)]
+    pub(crate) fn fail_next_frame_write(&mut self) {
+        self.fail_next_frame_write = true;
+    }
+
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
 
     /// Apply an op to the scene, fsync a frame to disk, push to the undo stack.
+    ///
+    /// Durability-first ordering: the op is applied to a scratch scene and the
+    /// frame is made durable before any in-memory state is published, so a
+    /// failed write leaves no trace in memory or on disk.
     pub fn apply(&mut self, scene: &mut Scene, mut op: Op) -> Result<u64> {
-        op.apply(scene).context("apply op to scene")?;
+        let mut candidate = scene.clone();
+        op.apply(&mut candidate).context("apply op to scene")?;
+        self.write_frame(self.epoch + 1, &op)?;
+        *scene = candidate;
         self.epoch += 1;
-        self.write_frame(&op)?;
         self.push_undo(op);
         self.redo_stack.clear();
         Ok(self.epoch)
@@ -92,13 +110,16 @@ impl History {
     /// epoch + the inverse op that was just applied (so the RPC layer can
     /// broadcast it for clients to patch their mirrors without refetching).
     pub fn undo(&mut self, scene: &mut Scene) -> Result<Option<(u64, Op)>> {
-        let Some(original) = self.undo_stack.pop_back() else {
+        let Some(original) = self.undo_stack.back().cloned() else {
             return Ok(None);
         };
         let mut inverse = original.inverse();
-        inverse.apply(scene).context("apply inverse op")?;
+        let mut candidate = scene.clone();
+        inverse.apply(&mut candidate).context("apply inverse op")?;
+        self.write_frame(self.epoch + 1, &inverse)?;
+        *scene = candidate;
         self.epoch += 1;
-        self.write_frame(&inverse)?;
+        self.undo_stack.pop_back();
         let inverse_out = inverse.clone();
         self.redo_stack.push(original);
         Ok(Some((self.epoch, inverse_out)))
@@ -107,12 +128,15 @@ impl History {
     /// Re-apply the most recent undo. Symmetric with `undo`. Returns the new
     /// epoch + the op that was just re-applied.
     pub fn redo(&mut self, scene: &mut Scene) -> Result<Option<(u64, Op)>> {
-        let Some(mut op) = self.redo_stack.pop() else {
+        let Some(mut op) = self.redo_stack.last().cloned() else {
             return Ok(None);
         };
-        op.apply(scene).context("re-apply op")?;
+        let mut candidate = scene.clone();
+        op.apply(&mut candidate).context("re-apply op")?;
+        self.write_frame(self.epoch + 1, &op)?;
+        *scene = candidate;
         self.epoch += 1;
-        self.write_frame(&op)?;
+        self.redo_stack.pop();
         let applied = op.clone();
         self.push_undo(op);
         Ok(Some((self.epoch, applied)))
@@ -141,9 +165,14 @@ impl History {
 
     // --- internals ---------------------------------------------------------
 
-    fn write_frame(&mut self, op: &Op) -> Result<()> {
+    fn write_frame(&mut self, epoch: u64, op: &Op) -> Result<()> {
+        #[cfg(test)]
+        if self.fail_next_frame_write {
+            self.fail_next_frame_write = false;
+            anyhow::bail!("injected frame write failure");
+        }
         let frame = LogFrame {
-            epoch: self.epoch,
+            epoch,
             op: op.clone(),
         };
         let encoded = postcard::to_allocvec(&frame).context("encode log frame")?;
@@ -173,7 +202,15 @@ impl History {
 /// Replay each frame in `log_path` with epoch greater than `start_epoch`
 /// against `scene`. Returns the final epoch seen.
 pub fn replay(log_path: &Path, start_epoch: u64, scene: &mut Scene) -> Result<u64> {
-    replay_with_policy(log_path, start_epoch, scene, false)
+    replay_with_policy(log_path, start_epoch, scene, false).map(|outcome| outcome.epoch)
+}
+
+/// Result of a log replay: the final epoch plus, when a corrupt tail was
+/// tolerated in non-strict mode, the byte offset where that tail starts
+/// (i.e. the end of the last fully-valid frame).
+pub(crate) struct ReplayOutcome {
+    pub epoch: u64,
+    pub bad_tail_offset: Option<u64>,
 }
 
 pub(crate) fn replay_with_policy(
@@ -181,14 +218,21 @@ pub(crate) fn replay_with_policy(
     start_epoch: u64,
     scene: &mut Scene,
     strict: bool,
-) -> Result<u64> {
+) -> Result<ReplayOutcome> {
     if !log_path.exists() {
-        return Ok(start_epoch);
+        return Ok(ReplayOutcome {
+            epoch: start_epoch,
+            bad_tail_offset: None,
+        });
     }
     let file =
         File::open(log_path).with_context(|| format!("open history log {}", log_path.display()))?;
     let mut reader = BufReader::new(file);
     let mut epoch = start_epoch;
+    // End offset of the last fully-valid frame; a tolerated corrupt tail
+    // starts at this position.
+    let mut good_end = 0u64;
+    let mut bad_tail_offset = None;
     loop {
         if reader.fill_buf()?.is_empty() {
             break;
@@ -201,12 +245,17 @@ pub(crate) fn replay_with_policy(
                     path = %log_path.display(),
                     "truncated trailing frame length in history log; discarding"
                 );
+                bad_tail_offset = Some(good_end);
                 break;
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read log frame length")),
         }
-        let len = u32::from_le_bytes(len_buf) as usize;
-        let mut buf = vec![0u8; len];
+        let len = u32::from_le_bytes(len_buf);
+        anyhow::ensure!(
+            u64::from(len) <= MAX_HISTORY_FRAME_BYTES,
+            "history log frame length {len} exceeds per-frame budget {MAX_HISTORY_FRAME_BYTES}"
+        );
+        let mut buf = vec![0u8; len as usize];
         match reader.read_exact(&mut buf) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !strict => {
@@ -216,6 +265,7 @@ pub(crate) fn replay_with_policy(
                     expected_len = len,
                     "truncated trailing frame in history log; discarding"
                 );
+                bad_tail_offset = Some(good_end);
                 break;
             }
             Err(e) => return Err(anyhow::Error::new(e).context("read log frame body")),
@@ -235,6 +285,7 @@ pub(crate) fn replay_with_policy(
                     error = %err,
                     "undecodable frame in history log; stopping replay"
                 );
+                bad_tail_offset = Some(good_end);
                 break;
             }
             Err(err) => return Err(err.context("decode history log frame")),
@@ -244,10 +295,14 @@ pub(crate) fn replay_with_policy(
             op.apply(scene).context("replay op")?;
             epoch = frame_epoch;
         }
+        good_end += 4 + len as u64;
     }
     // Seek to end so subsequent appends go after the last valid frame.
     let _ = reader.seek(SeekFrom::End(0));
-    Ok(epoch)
+    Ok(ReplayOutcome {
+        epoch,
+        bad_tail_offset,
+    })
 }
 
 #[cfg(test)]
@@ -255,6 +310,103 @@ mod tests {
     use super::*;
     use koharu_core::{ProjectMetaPatch, op::Op};
     use tempfile::tempdir;
+
+    fn meta_op(name: &str) -> Op {
+        Op::UpdateProjectMeta {
+            patch: ProjectMetaPatch {
+                name: Some(name.into()),
+                ..Default::default()
+            },
+            prev: ProjectMetaPatch::default(),
+        }
+    }
+
+    fn log_len(path: &std::path::Path) -> u64 {
+        std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+    }
+
+    // AR04-T02 RED: a failed durable frame write must leave no trace — scene,
+    // epoch, both stacks, and the log on disk all unchanged. Current code
+    // mutates memory before persisting, so these fail until GREEN reorders.
+    #[test]
+    fn apply_frame_write_failure_leaves_no_trace() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut history = History::open(&path, 0).unwrap();
+        history.apply(&mut scene, meta_op("first")).unwrap();
+        let log_before = log_len(&path);
+
+        history.fail_next_frame_write();
+        let result = history.apply(&mut scene, meta_op("second"));
+
+        assert!(result.is_err(), "injected write failure must surface");
+        assert_eq!(scene.project.name, "first", "scene must not change");
+        assert_eq!(history.epoch(), 1, "epoch must not advance");
+        assert_eq!(history.undo_stack.len(), 1, "undo stack must not change");
+        assert!(history.redo_stack.is_empty(), "redo stack must not change");
+        assert_eq!(log_len(&path), log_before, "log must not grow");
+    }
+
+    #[test]
+    fn undo_frame_write_failure_leaves_no_trace() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut history = History::open(&path, 0).unwrap();
+        history.apply(&mut scene, meta_op("first")).unwrap();
+        let log_before = log_len(&path);
+
+        history.fail_next_frame_write();
+        let result = history.undo(&mut scene);
+
+        assert!(result.is_err(), "injected write failure must surface");
+        assert_eq!(scene.project.name, "first", "scene must not change");
+        assert_eq!(history.epoch(), 1, "epoch must not advance");
+        assert_eq!(history.undo_stack.len(), 1, "op must remain undoable");
+        assert!(history.redo_stack.is_empty(), "redo stack must not change");
+        assert_eq!(log_len(&path), log_before, "log must not grow");
+    }
+
+    #[test]
+    fn redo_frame_write_failure_leaves_no_trace() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut history = History::open(&path, 0).unwrap();
+        history.apply(&mut scene, meta_op("first")).unwrap();
+        history.undo(&mut scene).unwrap();
+        let log_before = log_len(&path);
+
+        history.fail_next_frame_write();
+        let result = history.redo(&mut scene);
+
+        assert!(result.is_err(), "injected write failure must surface");
+        assert_eq!(scene.project.name, "", "scene must not change");
+        assert_eq!(history.epoch(), 2, "epoch must not advance");
+        assert!(history.undo_stack.is_empty(), "undo stack must not change");
+        assert_eq!(history.redo_stack.len(), 1, "op must remain redoable");
+        assert_eq!(log_len(&path), log_before, "log must not grow");
+    }
+
+    // Lock: the success path keeps its observable semantics.
+    #[test]
+    fn apply_success_publishes_after_durable_frame() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut scene = Scene::default();
+        let mut history = History::open(&path, 0).unwrap();
+        history.apply(&mut scene, meta_op("first")).unwrap();
+        history.apply(&mut scene, meta_op("second")).unwrap();
+        history.undo(&mut scene).unwrap();
+
+        assert_eq!(history.epoch(), 3);
+        assert_eq!(scene.project.name, "first");
+
+        let mut replayed = Scene::default();
+        assert_eq!(replay(&path, 0, &mut replayed).unwrap(), 3);
+        assert_eq!(replayed.project.name, "first");
+    }
 
     #[test]
     fn current_history_frame_uses_v2_prefix_and_replays() {
@@ -297,5 +449,34 @@ mod tests {
 
         assert_eq!(replay(&path, 7, &mut Scene::default()).unwrap(), 7);
         assert!(replay_with_policy(&path, 7, &mut Scene::default(), true).is_err());
+    }
+
+    #[test]
+    fn history_frame_limit_rejects_oversize_length_header_before_allocating() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        let mut bytes = (16 * 1024 * 1024u32 + 1).to_le_bytes().to_vec();
+        bytes.extend_from_slice(b"partial");
+        std::fs::write(&path, bytes).unwrap();
+
+        let error = replay(&path, 0, &mut Scene::default()).unwrap_err();
+        assert!(error.to_string().contains("per-frame budget"), "{error}");
+    }
+
+    #[test]
+    fn history_frame_limit_rejects_u32_max_length_header() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("history.log");
+        std::fs::write(&path, u32::MAX.to_le_bytes()).unwrap();
+
+        let error = replay(&path, 0, &mut Scene::default()).unwrap_err();
+        assert!(error.to_string().contains("per-frame budget"), "{error}");
+        let strict_error = replay_with_policy(&path, 0, &mut Scene::default(), true)
+            .err()
+            .expect("strict replay must reject an oversize length header");
+        assert!(
+            strict_error.to_string().contains("per-frame budget"),
+            "{strict_error}"
+        );
     }
 }

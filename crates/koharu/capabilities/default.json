@@ -33,12 +33,6 @@
     "fs:allow-write-file",
     "fs:allow-read-dir",
     "fs:allow-mkdir",
-    "fs:allow-exists",
-    {
-      "identifier": "fs:scope",
-      "allow": [
-        { "path": "**" }
-      ]
-    }
+    "fs:allow-exists"
   ]
 }

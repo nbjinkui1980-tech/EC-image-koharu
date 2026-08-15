@@ -16,15 +16,15 @@ jobs:
     name: crates.io
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v7
-      - uses: oven-sh/setup-bun@v2
-      - uses: Swatinem/rust-cache@v2
-      - uses: Jimver/cuda-toolkit@master
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # master (pinned 2026-08-15)
         with:
           cuda: '13.1.0'
           method: 'network'
           sub-packages: '["nvcc", "cudart", "crt", "thrust", "nvvm", "cublas", "cublas_dev", "cufft", "cufft_dev", "curand", "curand_dev", "nvrtc", "nvrtc_dev"]'
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
       - run: bun install
       - working-directory: ./ui
         run: bun run build

@@ -252,4 +252,12 @@ describe('Navigator', () => {
 
     expect(applied).toBe(false)
   })
+
+  it('delete button exposes an accessible name and becomes visible on focus', async () => {
+    server.use(http.get('/api/v1/scene.json', () => HttpResponse.json(sceneWithPages(['a', 'b']))))
+    renderWithQuery(<Navigator />)
+    const button = await screen.findByTestId('navigator-page-delete-0')
+    expect(button).toHaveAttribute('aria-label', 'common.delete')
+    expect(button.className).toContain('focus-visible:opacity-100')
+  })
 })

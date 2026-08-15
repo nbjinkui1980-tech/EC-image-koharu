@@ -4,8 +4,7 @@ import { useEffect, useRef } from 'react'
 
 import { useCanvasDrawing, type CanvasDims } from '@/hooks/useCanvasDrawing'
 import type { PointerToDocumentFn } from '@/hooks/usePointerToDocument'
-import { getConfig } from '@/lib/api'
-import { fetchWithAuth } from '@/lib/api/fetch'
+import { getConfig, putMask } from '@/lib/api'
 import type { Page } from '@/lib/api/schemas'
 import { invalidateScene } from '@/lib/io/scene'
 import { useEditorUiStore } from '@/lib/stores/editorUiStore'
@@ -43,6 +42,7 @@ export function useMaskDrawing({
   enabled,
 }: MaskDrawingOptions) {
   const inpaintQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const canvasGenerationRef = useRef(0)
   const isEraseMode = mode === 'eraser'
   const isActive = enabled && (mode === 'repairBrush' || isEraseMode)
 
@@ -60,10 +60,15 @@ export function useMaskDrawing({
     getBrushSize: () => usePreferencesStore.getState().brushConfig.size,
     enabled: showMask,
     onCanvasInit: (ctx, d) => {
+      const generation = ++canvasGenerationRef.current
       if (segmentData) {
         void (async () => {
           try {
             const bitmap = await convertBytesToBitmap(segmentData)
+            if (canvasGenerationRef.current !== generation) {
+              bitmap.close()
+              return
+            }
             ctx.save()
             ctx.clearRect(0, 0, d.width, d.height)
             ctx.drawImage(bitmap, 0, 0, d.width, d.height)
@@ -87,20 +92,18 @@ export function useMaskDrawing({
           const config = await getConfig()
           const inpainter = config.pipeline?.inpainter || 'lama-manga'
 
-          const params = new URLSearchParams({
-            pipeline: inpainter,
-            x: region.x.toString(),
-            y: region.y.toString(),
-            width: region.width.toString(),
-            height: region.height.toString(),
-          })
-
-          const res = await fetchWithAuth(`/api/v1/pages/${page.id}/masks/segment?${params}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'image/png' },
-            body: fullPng as unknown as BodyInit,
-          })
-          if (!res.ok) throw new Error(`mask PUT failed: ${res.status}`)
+          await putMask(
+            page.id,
+            'segment',
+            new Blob([fullPng as unknown as BlobPart], { type: 'image/png' }),
+            {
+              pipeline: inpainter,
+              x: region.x,
+              y: region.y,
+              width: region.width,
+              height: region.height,
+            },
+          )
           await invalidateScene()
           useEditorUiStore.getState().setShowInpaintedImage(true)
         } catch (e) {

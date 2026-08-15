@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::Language;
 
+use super::authority::provider_authority;
 use super::chat_completions::{ChatCompletionsAuth, ChatCompletionsRequest, send_chat_completion};
 use super::{AnyProvider, ensure_provider_success, resolve_system_prompt};
 
@@ -33,6 +34,7 @@ fn normalized_base_url(base_url: &str) -> anyhow::Result<String> {
     if normalized.is_empty() {
         anyhow::bail!("OpenAI-compatible base URL is required");
     }
+    provider_authority(&normalized)?;
     Ok(normalized)
 }
 

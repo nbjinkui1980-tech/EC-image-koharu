@@ -34,9 +34,16 @@ struct PypiRelease {
 }
 
 #[derive(Debug, Deserialize)]
+struct PypiDigests {
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct PypiFile {
     filename: String,
     url: String,
+    #[serde(default)]
+    digests: Option<PypiDigests>,
 }
 
 #[allow(dead_code)]
@@ -44,31 +51,43 @@ struct WheelSpec {
     package: &'static str,
     windows_dylibs: &'static [&'static str],
     linux_dylibs: &'static [&'static str],
+    sha256_windows: &'static str,
+    sha256_linux: &'static str,
 }
 
 const WHEELS: &[WheelSpec] = &[
     WheelSpec {
         package: "nvidia-cuda-runtime/13.0.96",
+        sha256_windows: "f79298c8a098cec150a597c8eba58ecdab96e3bdc4b9bc4f9983635031740492",
+        sha256_linux: "7f82250d7782aa23b6cfe765ecc7db554bd3c2870c43f3d1821f1d18aebf0548",
         windows_dylibs: &["cudart64_13.dll"],
         linux_dylibs: &["libcudart.so.13"],
     },
     WheelSpec {
         package: "nvidia-cublas/13.0.2.14",
+        sha256_windows: "5f7a90456b1392db60e28719547ba6e00696bfa81304b6887cf287f9edf2c1d7",
+        sha256_linux: "0cf238ffdbe46c00cb9aa98e7bca745c223a5ca5a53e686ac8b3e5a08fe80d6c",
         windows_dylibs: &["cublasLt64_13.dll", "cublas64_13.dll"],
         linux_dylibs: &["libcublasLt.so.13", "libcublas.so.13"],
     },
     WheelSpec {
         package: "nvidia-cufft/12.1.0.78",
+        sha256_windows: "46ba83a139d5839f47d63301e7c8e216258d49ed22cd5cfe0528b32b905a582e",
+        sha256_linux: "e1ceed544d2c1d92a19e91c3de20d7eaca58075e43d4b09efbda7f603607f1c2",
         windows_dylibs: &["cufft64_12.dll"],
         linux_dylibs: &["libcufft.so.12"],
     },
     WheelSpec {
         package: "nvidia-curand/10.4.1.81",
+        sha256_windows: "e3f3678a07e5e3dbc125af2e4571eb6f298554637465cc8f66090af2417b1fb0",
+        sha256_linux: "6ea66d0de7e71472b800829b525df15027bd3d8d0c475778a4d2b2abc7b453bb",
         windows_dylibs: &["curand64_10.dll"],
         linux_dylibs: &["libcurand.so.10"],
     },
     WheelSpec {
         package: "nvidia-cudnn-cu13/9.21.0.82",
+        sha256_windows: "18a80a637607a9e0406cfa41c121cf5ac0734d2082af4b6645a464d9e9119753",
+        sha256_linux: "f11b5ef83acf79e82c07943c2f2f74830d31943e90050570d6ec9f6a99394cbb",
         windows_dylibs: &[
             "cudnn64_9.dll",
             "cudnn_adv64_9.dll",
@@ -311,15 +330,22 @@ pub(crate) async fn ensure_ready(runtime: &Runtime) -> Result<()> {
     let install = InstallState::new(&install_dir, &source_id);
 
     if !install.is_current() {
-        install.reset()?;
-
+        // Fail-closed selection first (PyPI digests.sha256 required), then
+        // download + verify every wheel before touching the install dir.
+        let mut downloads = Vec::with_capacity(WHEELS.len());
         for wheel in WHEELS {
             let asset = select_wheel(runtime, wheel).await?;
             let archive = runtime
                 .downloads()
-                .cached_download(&asset.url, &asset.filename)
+                .cached_download_with_sha256(&asset.url, &asset.filename, &asset.sha256)
                 .await
                 .with_context(|| format!("failed to download `{}`", asset.url))?;
+            downloads.push((wheel, archive));
+        }
+
+        install.reset()?;
+
+        for (wheel, archive) in downloads {
             archive::extract(
                 &archive,
                 &install_dir,
@@ -356,6 +382,7 @@ crate::declare_native_package!(
 struct WheelAsset {
     url: String,
     filename: String,
+    sha256: String,
 }
 
 fn driver_library_available() -> bool {
@@ -406,12 +433,28 @@ impl WheelSpec {
 
 fn source_id() -> Result<String> {
     let packages = WHEELS.iter().map(|wheel| wheel.package).collect::<Vec<_>>();
-    Ok(format!(
-        "cuda;platform={};wheels={};extract={}",
-        platform_tags()?.join(","),
-        packages.join(","),
-        CUDA_EXTRACT_REVISION
+    let digests = WHEELS
+        .iter()
+        .map(|wheel| {
+            let pinned = if cfg!(target_os = "windows") {
+                wheel.sha256_windows
+            } else {
+                wheel.sha256_linux
+            };
+            &pinned[..8]
+        })
+        .collect::<Vec<_>>();
+    Ok(compose_source_id(
+        &platform_tags()?.join(","),
+        &packages.join(","),
+        &digests.join(","),
     ))
+}
+
+fn compose_source_id(platform: &str, wheels: &str, digests: &str) -> String {
+    format!(
+        "cuda;platform={platform};wheels={wheels};extract={CUDA_EXTRACT_REVISION};sha256={digests}"
+    )
 }
 
 async fn select_wheel(runtime: &Runtime, wheel: &WheelSpec) -> Result<WheelAsset> {
@@ -432,21 +475,58 @@ async fn select_wheel(runtime: &Runtime, wheel: &WheelSpec) -> Result<WheelAsset
         .with_context(|| format!("failed to parse metadata for `{distribution}`"))?;
 
     let tags = platform_tags()?;
-    for file in release.urls {
+    pick_wheel_file(release.urls, tags, &format!("{distribution} {version}"))
+}
+
+/// Pick the platform wheel from PyPI metadata. Only the official
+/// `digests.sha256` is trusted; a wheel without it fails closed.
+fn pick_wheel_file(files: Vec<PypiFile>, tags: &[&str], what: &str) -> Result<WheelAsset> {
+    for file in files {
         if file.filename.ends_with(".whl") && tags.iter().any(|tag| file.filename.contains(tag)) {
+            let sha256 = file
+                .digests
+                .map(|digests| digests.sha256)
+                .filter(|digest| !digest.is_empty())
+                .ok_or_else(|| anyhow!("missing PyPI digests.sha256 for `{}`", file.filename))?;
             return Ok(WheelAsset {
                 url: file.url,
                 filename: file.filename,
+                sha256,
             });
         }
     }
-
-    bail!("no wheel found for `{distribution}` {version} on {tags:?}")
+    bail!("no wheel found for {what} on {tags:?}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // AR09-T03 RED: only PyPI digests.sha256 is trusted; a wheel missing it
+    // must fail closed, and the source id must track the pinned digests.
+    #[test]
+    fn cuda_wheel_missing_digest_fails_closed() {
+        let file = PypiFile {
+            filename: "foo-1.0-py3-none-win_amd64.whl".to_string(),
+            url: "https://example.invalid/foo.whl".to_string(),
+            digests: None,
+        };
+        assert!(
+            pick_wheel_file(vec![file], &["win_amd64"], "foo 1.0").is_err(),
+            "wheel without PyPI digests.sha256 must fail closed"
+        );
+    }
+
+    #[test]
+    fn cuda_source_id_tracks_wheel_digests() {
+        let base = compose_source_id("win_amd64", "a/1.0", "aaaaaaaa");
+        let other = compose_source_id("win_amd64", "a/1.0", "bbbbbbbb");
+        assert!(
+            base.contains("sha256="),
+            "source id must embed wheel digests"
+        );
+        assert_ne!(base, other, "digest change must change the source id");
+    }
 
     #[test]
     #[cfg(any(target_os = "windows", target_os = "linux"))]

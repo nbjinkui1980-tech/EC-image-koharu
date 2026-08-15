@@ -14,8 +14,6 @@
 
 use std::sync::Arc;
 
-use dashmap::DashMap;
-
 use camino::Utf8PathBuf;
 use koharu_app::{
     App, AppConfig,
@@ -51,7 +49,10 @@ impl KoharuServer {
     }
 }
 
-fn get_job_from_registry(jobs: &DashMap<String, JobSummary>, id: &str) -> Option<JobSummary> {
+pub(crate) fn get_job_from_registry(
+    jobs: &koharu_app::jobs::BoundedJobRegistry,
+    id: &str,
+) -> Option<JobSummary> {
     jobs.get(id).map(|entry| entry.value().clone())
 }
 

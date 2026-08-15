@@ -2,6 +2,7 @@ use std::fs;
 
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
+use koharu_llm::providers::authority::provider_authority;
 use koharu_runtime::default_app_data_root;
 use koharu_secrets::{DEFAULT_SECRET_SERVICE, SecretStore};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -429,6 +430,67 @@ fn provider_api_key_secret_key(provider_id: &str) -> String {
     format!("{PROVIDER_API_KEY_SECRET_PREFIX}{provider_id}")
 }
 
+// ---------------------------------------------------------------------------
+// Provider authority conflicts
+// ---------------------------------------------------------------------------
+
+/// A provider whose stored secret would be silently reused against a changed
+/// base-URL authority if the patch were applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderAuthorityConflict {
+    pub provider_id: String,
+    pub existing_base_url: Option<String>,
+    pub patched_base_url: Option<String>,
+}
+
+/// Detect providers that hold a secret whose base-URL authority would change
+/// under `patch` while the patch reuses the existing secret.
+pub fn provider_authority_conflicts(
+    config: &AppConfig,
+    patch: &koharu_core::ConfigPatch,
+) -> Vec<ProviderAuthorityConflict> {
+    let Some(providers) = &patch.providers else {
+        return Vec::new();
+    };
+    let mut conflicts = Vec::new();
+    for provider in providers {
+        let Some(existing) = config.providers.iter().find(|e| e.id == provider.id) else {
+            continue;
+        };
+        if existing.api_key.is_none() {
+            continue;
+        }
+        let reuses_existing_secret = matches!(provider.api_key.as_deref(), None | Some(REDACTED));
+        if !reuses_existing_secret {
+            continue;
+        }
+        let existing_base_url = existing.base_url.as_deref();
+        let patched_base_url = provider.base_url.as_deref().or(existing_base_url);
+        let authority_changed = match (existing_base_url, patched_base_url) {
+            (None, Some(_)) => true,
+            (Some(existing_url), Some(patched_url)) => {
+                match (
+                    provider_authority(existing_url),
+                    provider_authority(patched_url),
+                ) {
+                    (Ok(existing), Ok(patched)) => existing != patched,
+                    // An unparsable URL cannot receive the secret at request time.
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+        if authority_changed {
+            conflicts.push(ProviderAuthorityConflict {
+                provider_id: provider.id.clone(),
+                existing_base_url: existing.base_url.clone(),
+                patched_base_url: patched_base_url.map(str::to_string),
+            });
+        }
+    }
+    conflicts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +746,63 @@ mod tests {
         assert_eq!(
             config.pipeline.typography_planner,
             PipelineConfig::default().typography_planner
+        );
+    }
+}
+
+#[cfg(test)]
+mod provider_authority_tests {
+    use super::*;
+
+    fn config_with_secret(base_url: &str) -> AppConfig {
+        let mut config = AppConfig::default();
+        config.providers.push(ProviderConfig {
+            id: "openai-compatible".into(),
+            base_url: Some(base_url.into()),
+            api_key: Some(RedactedSecret::new("stored-secret")),
+        });
+        config
+    }
+
+    fn base_url_patch(base_url: &str) -> koharu_core::ConfigPatch {
+        serde_json::from_value(serde_json::json!({
+            "providers": [{"id": "openai-compatible", "baseUrl": base_url}]
+        }))
+        .expect("provider patch")
+    }
+
+    #[test]
+    fn patch_authority_change_without_secret_conflicts() {
+        let config = config_with_secret("http://h:8080/v1");
+        let patch = base_url_patch("http://h:9090/v1");
+
+        let conflicts = provider_authority_conflicts(&config, &patch);
+
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].provider_id, "openai-compatible");
+        assert_eq!(
+            conflicts[0].existing_base_url.as_deref(),
+            Some("http://h:8080/v1")
+        );
+        assert_eq!(
+            conflicts[0].patched_base_url.as_deref(),
+            Some("http://h:9090/v1")
+        );
+    }
+
+    #[test]
+    fn patch_same_authority_path_change_keeps_secret() {
+        let mut config = config_with_secret("http://h:8080/v1");
+        let patch = base_url_patch("http://h:8080/api");
+
+        assert!(provider_authority_conflicts(&config, &patch).is_empty());
+        apply_patch(&mut config, patch);
+
+        let provider = &config.providers[0];
+        assert_eq!(provider.base_url.as_deref(), Some("http://h:8080/api"));
+        assert_eq!(
+            provider.api_key.as_ref().map(RedactedSecret::expose),
+            Some("stored-secret")
         );
     }
 }

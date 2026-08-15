@@ -49,9 +49,16 @@ export function useGoogleFontPreview(
   stateRef.current = state
 
   useEffect(() => {
+    const next = source === 'system' ? 'ready' : 'idle'
+    stateRef.current = next
+    setState(next)
+  }, [family, source])
+
+  useEffect(() => {
     if (source !== 'google' || !cached || !isVisible || stateRef.current !== 'idle') return
 
     let cancelled = false
+    let addedFace: FontFace | null = null
     setState('loading')
 
     const url = getGetGoogleFontFileUrl(encodeURIComponent(family), 'file')
@@ -62,6 +69,7 @@ export function useGoogleFontPreview(
       .then((face) => {
         if (cancelled || !face) return
         document.fonts.add(face)
+        addedFace = face
         setState('ready')
       })
       .catch(() => {
@@ -70,6 +78,7 @@ export function useGoogleFontPreview(
 
     return () => {
       cancelled = true
+      if (addedFace) document.fonts.delete(addedFace)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [family, source, isVisible, cached])
@@ -156,6 +165,7 @@ function FontRow({
             e.stopPropagation()
             onToggleFavorite(font.postScriptName)
           }}
+          onKeyDown={(e) => e.stopPropagation()}
         >
           <StarIcon className={cn('size-3', isFavorite && 'fill-current')} />
         </button>

@@ -42,7 +42,6 @@ pub struct PutMaskParams {
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::default()
         .routes(routes!(create_pages))
-        .routes(routes!(create_pages_from_paths))
         .routes(routes!(put_mask))
         .routes(routes!(reorder_text_nodes))
 }
@@ -65,6 +64,111 @@ pub struct CreatePagesResponse {
     pub pages: Vec<PageId>,
 }
 
+// --- Batch import budget (AMEND-02) -----------------------------------------
+
+const MAX_IMPORT_FILES: usize = 256;
+const MAX_IMPORT_ENCODED_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_IMPORT_DECODED_RGBA_BYTES: u64 = 1024 * 1024 * 1024;
+const DECODE_CONCURRENCY: usize = 2;
+
+struct ImportBudget {
+    max_files: usize,
+    max_encoded_bytes: u64,
+    max_decoded_rgba_bytes: u64,
+}
+
+fn import_budget() -> ImportBudget {
+    #[cfg(test)]
+    if let Some(over) = IMPORT_BUDGET_OVERRIDE.with(|cell| cell.get()) {
+        return ImportBudget {
+            max_files: over.max_files,
+            max_encoded_bytes: over.max_encoded_bytes,
+            max_decoded_rgba_bytes: over.max_decoded_rgba_bytes,
+        };
+    }
+    ImportBudget {
+        max_files: MAX_IMPORT_FILES,
+        max_encoded_bytes: MAX_IMPORT_ENCODED_BYTES,
+        max_decoded_rgba_bytes: MAX_IMPORT_DECODED_RGBA_BYTES,
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+struct ImportBudgetOverride {
+    max_files: usize,
+    max_encoded_bytes: u64,
+    max_decoded_rgba_bytes: u64,
+}
+
+#[cfg(test)]
+impl ImportBudgetOverride {
+    const DEFAULTS: Self = Self {
+        max_files: MAX_IMPORT_FILES,
+        max_encoded_bytes: MAX_IMPORT_ENCODED_BYTES,
+        max_decoded_rgba_bytes: MAX_IMPORT_DECODED_RGBA_BYTES,
+    };
+}
+
+#[cfg(test)]
+thread_local! {
+    static IMPORT_BUDGET_OVERRIDE: std::cell::Cell<Option<ImportBudgetOverride>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn import_budget_override(over: Option<ImportBudgetOverride>) {
+    IMPORT_BUDGET_OVERRIDE.with(|cell| cell.set(over));
+}
+
+// Decode-concurrency gauge: observability only. RED measures the unbounded
+// rayon admission; GREEN pins it at DECODE_CONCURRENCY via a dedicated pool.
+#[cfg(test)]
+static DECODE_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static DECODE_IN_FLIGHT_MAX: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn reset_decode_gauge() {
+    DECODE_IN_FLIGHT_MAX.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn decode_in_flight_max() -> usize {
+    DECODE_IN_FLIGHT_MAX.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+struct DecodeGauge;
+
+#[cfg(test)]
+impl DecodeGauge {
+    fn enter() -> Self {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = DECODE_IN_FLIGHT.fetch_add(1, SeqCst) + 1;
+        DECODE_IN_FLIGHT_MAX.fetch_max(now, SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for DecodeGauge {
+    fn drop(&mut self) {
+        DECODE_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn decode_pool() -> &'static rayon::ThreadPool {
+    static DECODE_POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    DECODE_POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(DECODE_CONCURRENCY)
+            .build()
+            .expect("decode pool")
+    })
+}
+
 #[utoipa::path(
     post,
     path = "/pages",
@@ -79,9 +183,13 @@ async fn create_pages(
         .current_session()
         .ok_or_else(|| ApiError::bad_request("no project open"))?;
 
-    // Collect (filename, bytes) pairs first so we can sort naturally.
+    // Collect (filename, bytes) pairs first so we can sort naturally. The
+    // AMEND-02 batch budget is enforced while collecting — before any decode,
+    // blob write, or scene mutation.
+    let budget = import_budget();
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     let mut replace = false;
+    let mut encoded_total: u64 = 0;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -104,6 +212,26 @@ async fn create_pages(
             .bytes()
             .await
             .map_err(|e| ApiError::bad_request(format!("read file: {e}")))?;
+        encoded_total += bytes.len() as u64;
+        if files.len() + 1 > budget.max_files {
+            return Err(ApiError::new(
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "import budget exceeded: {} files > {}",
+                    files.len() + 1,
+                    budget.max_files
+                ),
+            ));
+        }
+        if encoded_total > budget.max_encoded_bytes {
+            return Err(ApiError::new(
+                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "import budget exceeded: {encoded_total} encoded bytes > {}",
+                    budget.max_encoded_bytes
+                ),
+            ));
+        }
         files.push((filename, bytes.to_vec()));
     }
 
@@ -111,25 +239,45 @@ async fn create_pages(
 
     // Admit every source image before any mutation. A rejected
     // format leaves the project unchanged. Bytes are preserved
-    // for blob storage after admission passes.
+    // for blob storage after admission passes. Decoding runs on a
+    // dedicated pool so at most DECODE_CONCURRENCY images decode at once.
     if files.is_empty() {
         return Err(ApiError::bad_request("no files in request"));
     }
     let admitted: Vec<(String, u32, u32, Vec<u8>)> = tokio::task::spawn_blocking(move || {
-        files
-            .into_par_iter()
-            .map(
-                |(filename, bytes)| -> ApiResult<(String, u32, u32, Vec<u8>)> {
-                    let img = koharu_app::blobs::admit_source_image(&bytes)
-                        .map_err(|e| ApiError::bad_request(format!("admit `{filename}`: {e}")))?;
-                    let (w, h) = img.dimensions();
-                    Ok((filename, w, h, bytes))
-                },
-            )
-            .collect::<ApiResult<Vec<_>>>()
+        decode_pool().install(|| {
+            files
+                .into_par_iter()
+                .map(
+                    |(filename, bytes)| -> ApiResult<(String, u32, u32, Vec<u8>)> {
+                        #[cfg(test)]
+                        let _gauge = DecodeGauge::enter();
+                        let img = koharu_app::blobs::admit_source_image(&bytes).map_err(|e| {
+                            ApiError::bad_request(format!("admit `{filename}`: {e}"))
+                        })?;
+                        let (w, h) = img.dimensions();
+                        Ok((filename, w, h, bytes))
+                    },
+                )
+                .collect::<ApiResult<Vec<_>>>()
+        })
     })
     .await
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
+
+    let decoded_total: u64 = admitted
+        .iter()
+        .map(|(_, w, h, _)| u64::from(*w) * u64::from(*h) * 4)
+        .sum();
+    if decoded_total > budget.max_decoded_rgba_bytes {
+        return Err(ApiError::new(
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "import budget exceeded: {decoded_total} decoded RGBA bytes > {}",
+                budget.max_decoded_rgba_bytes
+            ),
+        ));
+    }
 
     // All files admitted — now safe to mutate the project.
     let mut ops: Vec<Op> = Vec::new();
@@ -169,176 +317,6 @@ async fn create_pages(
     .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
 
     // Build AddPage ops into the combined batch.
-    let mut created_ids = Vec::with_capacity(decoded.len());
-    for (i, (filename, w, h, blob)) in decoded.into_iter().enumerate() {
-        let mut page = Page::new(&filename, w, h);
-        let page_id = page.id;
-        let source_node_id = NodeId::new();
-        page.nodes.insert(
-            source_node_id,
-            Node {
-                id: source_node_id,
-                transform: Transform::default(),
-                visible: true,
-                kind: NodeKind::Image(ImageData {
-                    role: ImageRole::Source,
-                    blob,
-                    opacity: 1.0,
-                    natural_width: w,
-                    natural_height: h,
-                    name: Some(filename),
-                }),
-            },
-        );
-        created_ids.push(page_id);
-        ops.push(Op::AddPage {
-            page,
-            at: starting_index + i,
-        });
-    }
-
-    app.apply(Op::Batch {
-        ops,
-        label: "Import pages".into(),
-    })
-    .map_err(ApiError::internal)?;
-
-    Ok(Json(CreatePagesResponse { pages: created_ids }))
-}
-
-// ---------------------------------------------------------------------------
-// POST /pages/from-paths — Tauri fast-path: import by reading files directly
-// from disk, skipping multipart upload entirely
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreatePagesFromPathsRequest {
-    pub paths: Vec<String>,
-    #[serde(default)]
-    pub replace: bool,
-}
-
-/// Create pages by reading image files from absolute paths on the server's
-/// filesystem. This is the Tauri desktop import path — the webview picker
-/// returns paths, and the backend reads + decodes + hashes them in parallel
-/// without a round-trip through JS memory or a multipart upload body.
-///
-/// Web clients should keep using `POST /pages` with multipart.
-#[utoipa::path(
-    post,
-    path = "/pages/from-paths",
-    request_body = CreatePagesFromPathsRequest,
-    responses((status = 200, body = CreatePagesResponse))
-)]
-async fn create_pages_from_paths(
-    State(app): State<AppState>,
-    Json(req): Json<CreatePagesFromPathsRequest>,
-) -> ApiResult<Json<CreatePagesResponse>> {
-    let session = app
-        .current_session()
-        .ok_or_else(|| ApiError::bad_request("no project open"))?;
-
-    // Natural-order sort by filename component so `page-2.png` < `page-10.png`.
-    let mut paths = req.paths;
-    paths.sort_by(|a, b| {
-        let af = std::path::Path::new(a)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(a);
-        let bf = std::path::Path::new(b)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(b);
-        natord::compare(af, bf)
-    });
-
-    if paths.is_empty() && req.replace {
-        // Replace with empty is just a clear — no admission needed.
-        let scene = session.scene.read();
-        let remove_ops: Vec<Op> = scene
-            .pages
-            .keys()
-            .copied()
-            .map(|id| Op::RemovePage {
-                id,
-                prev_page: scene.pages[&id].clone(),
-                prev_index: scene.pages.get_index_of(&id).unwrap_or(0),
-            })
-            .collect();
-        drop(scene);
-        if !remove_ops.is_empty() {
-            app.apply(Op::Batch {
-                ops: remove_ops,
-                label: "Replace pages (clear)".into(),
-            })
-            .map_err(ApiError::internal)?;
-        }
-        return Ok(Json(CreatePagesResponse { pages: Vec::new() }));
-    }
-    if paths.is_empty() {
-        return Err(ApiError::bad_request("no paths provided"));
-    }
-
-    // Admit every source image before any mutation.
-    let admitted: Vec<(String, u32, u32, Vec<u8>)> = tokio::task::spawn_blocking(move || {
-        paths
-            .into_par_iter()
-            .map(|path| -> ApiResult<(String, u32, u32, Vec<u8>)> {
-                let filename = std::path::Path::new(&path)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "page.bin".to_string());
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| ApiError::bad_request(format!("read `{filename}`: {e}")))?;
-                let img = koharu_app::blobs::admit_source_image(&bytes)
-                    .map_err(|e| ApiError::bad_request(format!("admit `{filename}`: {e}")))?;
-                let (w, h) = img.dimensions();
-                Ok((filename, w, h, bytes))
-            })
-            .collect::<ApiResult<Vec<_>>>()
-    })
-    .await
-    .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
-
-    // All files admitted — now safe to mutate the project.
-    let mut ops: Vec<Op> = Vec::new();
-    let starting_index = if req.replace {
-        let scene = session.scene.read();
-        let remove_ops: Vec<Op> = scene
-            .pages
-            .keys()
-            .copied()
-            .map(|id| Op::RemovePage {
-                id,
-                prev_page: scene.pages[&id].clone(),
-                prev_index: scene.pages.get_index_of(&id).unwrap_or(0),
-            })
-            .collect();
-        drop(scene);
-        ops.extend(remove_ops);
-        0
-    } else {
-        session.scene.read().pages.len()
-    };
-
-    // Store blobs from admitted bytes.
-    let blobs = session.blobs.clone();
-    let decoded: Vec<(String, u32, u32, BlobRef)> = tokio::task::spawn_blocking(move || {
-        admitted
-            .into_par_iter()
-            .map(
-                |(filename, w, h, bytes)| -> ApiResult<(String, u32, u32, BlobRef)> {
-                    let blob = blobs.put_bytes(&bytes).map_err(ApiError::internal)?;
-                    Ok((filename, w, h, blob))
-                },
-            )
-            .collect::<ApiResult<Vec<_>>>()
-    })
-    .await
-    .map_err(|e| ApiError::internal(anyhow::anyhow!("import task panicked: {e}")))??;
-
     let mut created_ids = Vec::with_capacity(decoded.len());
     for (i, (filename, w, h, blob)) in decoded.into_iter().enumerate() {
         let mut page = Page::new(&filename, w, h);
@@ -660,7 +638,6 @@ mod tests {
 
     #[derive(Clone)]
     enum ImportIngress {
-        Paths,
         Multipart { malformed: bool },
     }
 
@@ -806,34 +783,8 @@ mod tests {
         (project_dir, session)
     }
 
-    async fn run_import(
-        state: AppState,
-        project_dir: &camino::Utf8Path,
-        case: &ImportCase,
-    ) -> Result<CreatePagesResponse, String> {
+    async fn run_import(state: AppState, case: &ImportCase) -> Result<CreatePagesResponse, String> {
         match &case.ingress {
-            ImportIngress::Paths => {
-                let input_dir = project_dir.join("inputs");
-                std::fs::create_dir_all(&input_dir).unwrap();
-                let mut paths = Vec::new();
-                for file in &case.files {
-                    let path = input_dir.join(file.name);
-                    if let Some(bytes) = &file.bytes {
-                        std::fs::write(&path, bytes).unwrap();
-                    }
-                    paths.push(path.into_string());
-                }
-                create_pages_from_paths(
-                    State(state),
-                    Json(CreatePagesFromPathsRequest {
-                        paths,
-                        replace: true,
-                    }),
-                )
-                .await
-                .map(|Json(response)| response)
-                .map_err(|error| error.message)
-            }
             ImportIngress::Multipart { malformed } => {
                 let (boundary, body) = multipart_body(&case.files, *malformed);
                 let request = Request::builder()
@@ -852,6 +803,154 @@ mod tests {
                     .map_err(|error| error.message)
             }
         }
+    }
+
+    async fn budget_test_state(root: &std::path::Path) -> AppState {
+        let runtime = RuntimeManager::new(root.join("runtime"), ComputePolicy::CpuOnly)
+            .expect("create runtime");
+        runtime.prepare().await.expect("prepare runtime");
+        let runtime = Arc::new(runtime);
+        let app = Arc::new(
+            App::new(AppConfig::default(), runtime.clone(), true, "test").expect("create app"),
+        );
+        let state = crate::BootstrapManager::new(runtime);
+        assert!(state.set_app(app).is_ok(), "set test app");
+        state
+    }
+
+    fn png_files(names: &[&'static str]) -> Vec<ImportFile> {
+        names
+            .iter()
+            .map(|name| ImportFile {
+                name,
+                bytes: Some(encoded_image(image::ImageFormat::Png)),
+            })
+            .collect()
+    }
+
+    async fn budget_import(
+        case_name: &'static str,
+        files: Vec<ImportFile>,
+    ) -> (
+        Result<CreatePagesResponse, String>,
+        ImportSnapshot,
+        ImportSnapshot,
+    ) {
+        let root =
+            TestDir(std::env::temp_dir().join(format!("koharu-import-budget-{}", Uuid::new_v4())));
+        std::fs::create_dir_all(&root.0).expect("create test root");
+        let state = budget_test_state(&root.0).await;
+        let png = encoded_image(image::ImageFormat::Png);
+        let (project_dir, session) = seeded_session(&root.0, case_name, &png);
+        state.app().unwrap().session.store(Some(session.clone()));
+        let case = ImportCase {
+            name: case_name,
+            ingress: ImportIngress::Multipart { malformed: false },
+            files,
+            succeeds: true,
+        };
+        let before = snapshot(&session, &project_dir);
+        let result = run_import(state.clone(), &case).await;
+        let after = snapshot(&session, &project_dir);
+        (result, before, after)
+    }
+
+    // AR05-T06 RED: batch import budget (AMEND-02) — file count, total encoded
+    // bytes, and total decoded RGBA bytes are rejected before any mutation;
+    // decode concurrency is pinned at 2. Every test clears this thread's
+    // budget override first (pooled test threads can inherit one).
+    #[tokio::test]
+    async fn page_import_budget_rejects_over_file_count() {
+        import_budget_override(None);
+        import_budget_override(Some(ImportBudgetOverride {
+            max_files: 2,
+            ..ImportBudgetOverride::DEFAULTS
+        }));
+        let (result, before, after) =
+            budget_import("over-file-count", png_files(&["a.png", "b.png", "c.png"])).await;
+        import_budget_override(None);
+        let error = result.expect_err("3 files over a 2-file budget must be rejected");
+        assert!(error.contains("import budget"), "unexpected error: {error}");
+        assert_eq!(
+            after, before,
+            "rejected import must leave zero side effects"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_import_budget_rejects_over_encoded_bytes() {
+        import_budget_override(None);
+        let single = encoded_image(image::ImageFormat::Png).len() as u64;
+        import_budget_override(Some(ImportBudgetOverride {
+            max_encoded_bytes: single,
+            ..ImportBudgetOverride::DEFAULTS
+        }));
+        let (result, before, after) =
+            budget_import("over-encoded", png_files(&["a.png", "b.png"])).await;
+        import_budget_override(None);
+        let error = result.expect_err("encoded total over budget must be rejected");
+        assert!(error.contains("import budget"), "unexpected error: {error}");
+        assert_eq!(
+            after, before,
+            "rejected import must leave zero side effects"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_import_budget_rejects_over_decoded_rgba() {
+        import_budget_override(None);
+        // The fixture PNG is 2x1 RGBA = 8 bytes decoded; two images = 16 > 8.
+        import_budget_override(Some(ImportBudgetOverride {
+            max_decoded_rgba_bytes: 8,
+            ..ImportBudgetOverride::DEFAULTS
+        }));
+        let (result, before, after) =
+            budget_import("over-decoded", png_files(&["a.png", "b.png"])).await;
+        import_budget_override(None);
+        let error = result.expect_err("decoded RGBA total over budget must be rejected");
+        assert!(error.contains("import budget"), "unexpected error: {error}");
+        assert_eq!(
+            after, before,
+            "rejected import must leave zero side effects"
+        );
+    }
+
+    #[tokio::test]
+    async fn page_import_budget_decode_concurrency_two() {
+        import_budget_override(None);
+        reset_decode_gauge();
+        let names: Vec<&'static str> = (0..8).map(|_| "p.png").collect();
+        let (result, _, _) = budget_import("decode-concurrency", png_files(&names)).await;
+        result.expect("8 valid images must import");
+        assert!(
+            decode_in_flight_max() <= 2,
+            "decode concurrency must stay within 2, observed {}",
+            decode_in_flight_max()
+        );
+    }
+
+    // Lock: a corrupt image in the batch fails the import with zero side
+    // effects (pre-existing admission-before-mutation behavior).
+    #[tokio::test]
+    async fn page_import_budget_corrupt_image_zero_side_effects() {
+        import_budget_override(None);
+        let mut files = png_files(&["a.png"]);
+        files.push(ImportFile {
+            name: "bad.png",
+            bytes: Some(b"not an image".to_vec()),
+        });
+        let (result, before, after) = budget_import("corrupt-mixed", files).await;
+        assert!(result.is_err(), "corrupt image must fail the import");
+        assert_eq!(after, before, "failed import must leave zero side effects");
+    }
+
+    // Lock: a small import under the default budgets succeeds.
+    #[tokio::test]
+    async fn page_import_budget_default_small_import_ok() {
+        import_budget_override(None);
+        let (result, _, _) = budget_import("small-ok", png_files(&["a.png", "b.png"])).await;
+        let response = result.expect("small import must succeed");
+        assert_eq!(response.pages.len(), 2);
     }
 
     #[test]
@@ -917,21 +1016,6 @@ mod tests {
         };
         let cases = [
             ImportCase {
-                name: "path-valid-corrupt",
-                ingress: ImportIngress::Paths,
-                files: vec![
-                    ImportFile {
-                        name: "page-1.png",
-                        bytes: Some(png.clone()),
-                    },
-                    ImportFile {
-                        name: "page-2.png",
-                        bytes: Some(b"not an image".to_vec()),
-                    },
-                ],
-                succeeds: false,
-            },
-            ImportCase {
                 name: "multipart-valid-corrupt",
                 ingress: ImportIngress::Multipart { malformed: false },
                 files: vec![
@@ -947,29 +1031,11 @@ mod tests {
                 succeeds: false,
             },
             ImportCase {
-                name: "path-unsupported-gif",
-                ingress: ImportIngress::Paths,
-                files: vec![ImportFile {
-                    name: "page.gif",
-                    bytes: Some(encoded_image(image::ImageFormat::Gif)),
-                }],
-                succeeds: false,
-            },
-            ImportCase {
                 name: "multipart-unsupported-bmp",
                 ingress: ImportIngress::Multipart { malformed: false },
                 files: vec![ImportFile {
                     name: "page.bmp",
                     bytes: Some(encoded_image(image::ImageFormat::Bmp)),
-                }],
-                succeeds: false,
-            },
-            ImportCase {
-                name: "path-overbudget",
-                ingress: ImportIngress::Paths,
-                files: vec![ImportFile {
-                    name: "huge.png",
-                    bytes: Some(overbudget_png()),
                 }],
                 succeeds: false,
             },
@@ -983,15 +1049,6 @@ mod tests {
                 succeeds: false,
             },
             ImportCase {
-                name: "path-unreadable",
-                ingress: ImportIngress::Paths,
-                files: vec![ImportFile {
-                    name: "missing.png",
-                    bytes: None,
-                }],
-                succeeds: false,
-            },
-            ImportCase {
                 name: "multipart-unreadable",
                 ingress: ImportIngress::Multipart { malformed: true },
                 files: vec![ImportFile {
@@ -999,12 +1056,6 @@ mod tests {
                     bytes: Some(png.clone()),
                 }],
                 succeeds: false,
-            },
-            ImportCase {
-                name: "path-success-sort",
-                ingress: ImportIngress::Paths,
-                files: sorted(),
-                succeeds: true,
             },
             ImportCase {
                 name: "multipart-success-sort",
@@ -1019,7 +1070,7 @@ mod tests {
             let (project_dir, session) = seeded_session(&root.0, case.name, &png);
             state.app().unwrap().session.store(Some(session.clone()));
             let before = snapshot(&session, &project_dir);
-            let result = run_import(state.clone(), &project_dir, case).await;
+            let result = run_import(state.clone(), case).await;
             let after = snapshot(&session, &project_dir);
             if !case.succeeds {
                 if result.is_ok() {

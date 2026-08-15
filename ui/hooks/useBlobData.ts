@@ -1,9 +1,10 @@
 'use client'
 
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
 
 import { getBlob } from '@/lib/api'
-import { convertToBlob } from '@/lib/io/blobConvert'
+import { convertToBlob, revokeObjectUrlLater } from '@/lib/io/blobConvert'
 
 const blobQueryOptions = (hash: string) => ({
   queryKey: ['blob', hash] as const,
@@ -34,14 +35,18 @@ const blobImageQueryOptions = (hash: string) => ({
     const buf = await (response as Blob).arrayBuffer()
     const bytes = new Uint8Array(buf)
     const blob = await convertToBlob(bytes)
-    const url = URL.createObjectURL(blob)
-    await new Promise<void>((resolve, reject) => {
-      const img = new Image()
-      img.onload = () => resolve()
-      img.onerror = () => reject(new Error('Failed to preload sprite'))
-      img.src = url
-    })
-    return url
+    const preloadUrl = URL.createObjectURL(blob)
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const img = new Image()
+        img.onload = () => resolve()
+        img.onerror = () => reject(new Error('Failed to preload sprite'))
+        img.src = preloadUrl
+      })
+    } finally {
+      URL.revokeObjectURL(preloadUrl)
+    }
+    return blob
   },
   staleTime: Infinity,
   gcTime: 10 * 60 * 1000,
@@ -49,13 +54,27 @@ const blobImageQueryOptions = (hash: string) => ({
 })
 
 /**
- * Fetch blob, convert to displayable format, and preload — returns a
- * ready-to-paint object URL. Keeps the previous URL while a new one loads.
+ * Fetch blob, convert to displayable format, and preload. The query cache
+ * holds the Blob; each hook instance owns an object URL it creates and
+ * schedules for revoke on replacement or unmount. `data` keeps the previous
+ * URL while a new one loads.
  */
 export function useBlobImage(hash: string | undefined) {
-  return useQuery({
+  const query = useQuery({
     ...blobImageQueryOptions(hash ?? ''),
     enabled: !!hash,
     placeholderData: keepPreviousData,
   })
+  const blob = hash ? query.data : undefined
+  const [url, setUrl] = useState<string>()
+  useEffect(() => {
+    if (!blob) {
+      setUrl(undefined)
+      return
+    }
+    const objectUrl = URL.createObjectURL(blob)
+    setUrl(objectUrl)
+    return () => revokeObjectUrlLater(objectUrl)
+  }, [blob])
+  return useMemo(() => ({ ...query, data: url }), [query, url])
 }

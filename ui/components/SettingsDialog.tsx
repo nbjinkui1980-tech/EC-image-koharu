@@ -45,7 +45,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Kbd } from '@/components/ui/kbd'
 import { Label } from '@/components/ui/label'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -77,7 +76,7 @@ import type {
   LlmProviderCatalog,
   ProviderConfig,
 } from '@/lib/api/schemas'
-import { isTauri, openExternalUrl } from '@/lib/backend'
+import { isTauri, openExternalUrl, openVerificationUrl } from '@/lib/backend'
 import { supportedLanguages } from '@/lib/i18n'
 import {
   areShortcutsEqual,
@@ -87,13 +86,20 @@ import {
   isKeyBlocked,
   isModifierKey,
 } from '@/lib/shortcutUtils'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
+import { cn } from '@/lib/utils'
 
 // Dialog state models `AppConfig` (what `GET /config` returns — snake_case).
 // But `PATCH /config` expects a `ConfigPatch` with camelCase fields because
 // the patch schema derives `rename_all = "camelCase"` serde attrs. Translate
 // at the boundary so the dialog internals stay unified.
 type UpdateConfigBody = AppConfig
+
+type PersistOutcome =
+  | { kind: 'saved'; config: UpdateConfigBody }
+  | { kind: 'failed' }
+  | { kind: 'superseded' }
 
 function appConfigToPatch(cfg: AppConfig): ConfigPatch {
   const patch: ConfigPatch = {}
@@ -201,6 +207,7 @@ export function SettingsDialog({
   const [isSavingStorageSettings, setIsSavingStorageSettings] = useState(false)
   const [engineCatalog, setEngineCatalog] = useState<GetEngineCatalog200 | null>(null)
   const [appVersion, setAppVersion] = useState<string>()
+  const configMutationSeq = useRef(0)
   const updater = useUpdater()
 
   useEffect(() => {
@@ -262,22 +269,25 @@ export function SettingsDialog({
       typographyOnly?: boolean
       refreshCatalog?: boolean
     } = {},
-  ) => {
+  ): Promise<PersistOutcome> => {
+    const seq = ++configMutationSeq.current
     try {
       const patch = appConfigToPatch(next)
       const saved = await patchConfig(
         typographyOnly ? { typographyPlanner: patch.typographyPlanner } : patch,
       )
+      if (seq !== configMutationSeq.current) return { kind: 'superseded' }
       setAppConfig(saved)
       queryClient.setQueryData(getGetConfigQueryKey(), saved)
       if (refreshCatalog) {
         const catalog = await getLlmCatalog()
+        if (seq !== configMutationSeq.current) return { kind: 'superseded' }
         setProviderCatalogs(catalog.providers)
         queryClient.setQueryData(getGetLlmCatalogQueryKey(), catalog)
       }
-      return saved
+      return { kind: 'saved', config: saved }
     } catch {
-      return null
+      return seq === configMutationSeq.current ? { kind: 'failed' } : { kind: 'superseded' }
     }
   }
 
@@ -316,7 +326,7 @@ export function SettingsDialog({
 
     setIsSavingStorageSettings(true)
     setStorageSettingsError(null)
-    const saved = await persistConfig({
+    const outcome = await persistConfig({
       ...appConfig,
       data: { path },
       http: {
@@ -326,10 +336,11 @@ export function SettingsDialog({
       },
     })
     setIsSavingStorageSettings(false)
-    if (!saved) {
+    if (outcome.kind === 'failed') {
       setStorageSettingsError('Failed')
       return
     }
+    if (outcome.kind === 'superseded') return
     if (!isTauri()) {
       setStorageSettingsError('Restart manually')
       return
@@ -402,7 +413,12 @@ export function SettingsDialog({
                     }))
                   }
                   onBaseUrlBlur={() =>
-                    appConfig && void persistConfig(appConfig, { refreshCatalog: true })
+                    appConfig &&
+                    void persistConfig(appConfig, { refreshCatalog: true }).then((outcome) => {
+                      if (outcome.kind === 'failed') {
+                        useEditorUiStore.getState().showError('Failed to save settings')
+                      }
+                    })
                   }
                   onApiKeyChange={(id, v) => setApiKeyDrafts((c) => ({ ...c, [id]: v }))}
                   onSaveKey={(id) => {
@@ -415,12 +431,18 @@ export function SettingsDialog({
                     if (idx >= 0) providers[idx] = updated
                     else providers.push(updated)
                     void persistConfig({ ...appConfig, providers }, { refreshCatalog: true }).then(
-                      () =>
+                      (outcome) => {
+                        if (outcome.kind === 'failed') {
+                          useEditorUiStore.getState().showError('Failed to save API key')
+                          return
+                        }
+                        if (outcome.kind === 'superseded') return
                         setApiKeyDrafts((c) => {
                           const n = { ...c }
                           delete n[id]
                           return n
-                        }),
+                        })
+                      },
                     )
                   }}
                   onClearKey={(id) => {
@@ -429,12 +451,18 @@ export function SettingsDialog({
                     const idx = providers.findIndex((p) => p.id === id)
                     if (idx >= 0) providers[idx] = { ...providers[idx], api_key: null }
                     void persistConfig({ ...appConfig, providers }, { refreshCatalog: true }).then(
-                      () =>
+                      (outcome) => {
+                        if (outcome.kind === 'failed') {
+                          useEditorUiStore.getState().showError('Failed to clear API key')
+                          return
+                        }
+                        if (outcome.kind === 'superseded') return
                         setApiKeyDrafts((c) => {
                           const n = { ...c }
                           delete n[id]
                           return n
-                        }),
+                        })
+                      },
                     )
                   }}
                 />
@@ -816,7 +844,7 @@ function CodexSettingsPane() {
       setCopied(false)
       setLoginOpen(true)
       void invalidateAuth()
-      void openExternalUrl(next.verificationUrl)
+      void openVerificationUrl(next.verificationUrl).catch((err) => setActionError(String(err)))
     } catch (err) {
       setActionError(String(err))
     } finally {
@@ -923,7 +951,12 @@ function CodexSettingsPane() {
             size='sm'
             className='w-full gap-1.5'
             disabled={!login}
-            onClick={() => login && void openExternalUrl(login.verificationUrl)}
+            onClick={() =>
+              login &&
+              void openVerificationUrl(login.verificationUrl).catch((err) =>
+                setActionError(String(err)),
+              )
+            }
           >
             <ExternalLinkIcon className='size-3.5' />
             {t('ai.openBrowser')}
@@ -1105,7 +1138,14 @@ function KeybindsPane() {
 
     return parts.map((part, i) => (
       <Fragment key={i}>
-        <Kbd className={kbdClass}>{part}</Kbd>
+        <kbd
+          className={cn(
+            'pointer-events-none inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded border border-b-2 bg-muted px-1.5 font-mono text-[10px] leading-none font-medium text-muted-foreground opacity-100 shadow-sm transition-all duration-200 select-none',
+            kbdClass,
+          )}
+        >
+          {part}
+        </kbd>
         {i < parts.length - 1 && <span className='text-muted-foreground'>+</span>}
       </Fragment>
     ))

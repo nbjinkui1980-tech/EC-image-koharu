@@ -97,6 +97,28 @@ impl CompactApplySync {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_TAIL_ROLLBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test-only fault injection: fail the next corrupt-tail rollback attempted
+/// on this thread during open, simulating an io error on truncate/sync.
+#[cfg(test)]
+pub(crate) fn fail_next_tail_rollback() {
+    FAIL_TAIL_ROLLBACK.with(|fault| fault.set(true));
+}
+
+#[cfg(test)]
+fn clear_tail_rollback_fault() {
+    FAIL_TAIL_ROLLBACK.with(|fault| fault.set(false));
+}
+
+#[cfg(test)]
+fn take_tail_rollback_fault() -> bool {
+    FAIL_TAIL_ROLLBACK.with(|fault| fault.replace(false))
+}
+
 /// A loaded project.
 pub struct ProjectSession {
     pub dir: Utf8PathBuf,
@@ -109,6 +131,29 @@ pub struct ProjectSession {
     trusted: bool,
     #[cfg(test)]
     compact_apply_sync: Mutex<Option<Arc<CompactApplySync>>>,
+}
+
+/// Durably roll a tolerated corrupt history tail back to the last good frame
+/// and sync the truncation. Failure fail-stops the open: no session is
+/// produced, so no mutation can ever land after the bad tail.
+fn rollback_corrupt_tail(log_path: &Utf8Path, good_end: u64) -> Result<()> {
+    #[cfg(test)]
+    if take_tail_rollback_fault() {
+        anyhow::bail!("injected tail rollback failure");
+    }
+    let file = File::options()
+        .write(true)
+        .open(log_path.as_std_path())
+        .with_context(|| format!("open {} for tail rollback", log_path))?;
+    file.set_len(good_end)
+        .with_context(|| format!("truncate corrupt history tail in {}", log_path))?;
+    file.sync_all()?;
+    tracing::warn!(
+        path = %log_path,
+        good_end,
+        "rolled back corrupt history tail to the last good frame"
+    );
+    Ok(())
 }
 
 impl ProjectSession {
@@ -184,9 +229,13 @@ impl ProjectSession {
         let (mut scene, mut epoch) = load_snapshot(&dir, creating)?;
         // Replay any log frames past the snapshot epoch.
         let log_path = dir.join(LOG_FILE);
-        epoch =
+        let outcome =
             history::replay_with_policy(log_path.as_std_path(), epoch, &mut scene, strict_history)
                 .with_context(|| format!("replay log {}", log_path))?;
+        epoch = outcome.epoch;
+        if let Some(good_end) = outcome.bad_tail_offset {
+            rollback_corrupt_tail(&log_path, good_end)?;
+        }
 
         let history_obj = History::open(log_path.as_std_path(), epoch)?;
 
@@ -203,7 +252,6 @@ impl ProjectSession {
     }
 
     // --- scene mutation ----------------------------------------------------
-
     /// Apply an Op. Returns the epoch after apply.
     pub fn apply(&self, op: Op) -> Result<u64> {
         if !self.trusted {
@@ -419,6 +467,115 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).unwrap();
         (dir, path.join("proj.khrproj"))
+    }
+
+    fn meta_op(name: &str) -> Op {
+        Op::UpdateProjectMeta {
+            patch: ProjectMetaPatch {
+                name: Some(name.into()),
+                ..Default::default()
+            },
+            prev: ProjectMetaPatch::default(),
+        }
+    }
+
+    fn seed_log_with_frame(path: &Utf8Path) -> u64 {
+        let session = ProjectSession::create(path, "seed").unwrap();
+        session.apply(meta_op("first")).unwrap();
+        let log_len = std::fs::metadata(path.join(LOG_FILE).as_std_path())
+            .unwrap()
+            .len();
+        drop(session);
+        log_len
+    }
+
+    fn append_log_bytes(path: &Utf8Path, bytes: &[u8]) {
+        let mut file = File::options()
+            .append(true)
+            .open(path.join(LOG_FILE).as_std_path())
+            .unwrap();
+        file.write_all(bytes).unwrap();
+        file.sync_all().unwrap();
+    }
+
+    fn append_partial_tail(path: &Utf8Path) {
+        // Length header promises 64 payload bytes; only 8 are present.
+        append_log_bytes(path, &64u32.to_le_bytes());
+        append_log_bytes(path, &[0xAA; 8]);
+    }
+
+    // AR04-T03 RED: a tolerated corrupt tail must be rolled back durably on
+    // open; appending after the bad tail loses later frames on next replay.
+    // Each test clears this thread's rollback fault first, since pooled test
+    // threads can inherit a fault set by a previous test on the same thread.
+    #[test]
+    fn trusted_open_rolls_back_partial_tail() {
+        clear_tail_rollback_fault();
+        let (_dir, path) = tmp_dir();
+        let good_len = seed_log_with_frame(&path);
+        append_partial_tail(&path);
+
+        let session = ProjectSession::open(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(path.join(LOG_FILE).as_std_path())
+                .unwrap()
+                .len(),
+            good_len,
+            "corrupt tail must be truncated to the last good frame"
+        );
+        session.apply(meta_op("second")).unwrap();
+        drop(session);
+
+        // Reopen must observe exactly the complete frames (first + second).
+        let session = ProjectSession::open(&path).unwrap();
+        assert_eq!(session.scene.read().project.name, "second");
+        assert_eq!(session.epoch(), 2);
+    }
+
+    #[test]
+    fn trusted_open_rolls_back_undecodable_tail() {
+        clear_tail_rollback_fault();
+        let (_dir, path) = tmp_dir();
+        let good_len = seed_log_with_frame(&path);
+        // Complete-length frame whose payload cannot decode (empty postcard).
+        let prefix = crate::history::LOG_FRAME_V2_PREFIX;
+        append_log_bytes(&path, &(prefix.len() as u32).to_le_bytes());
+        append_log_bytes(&path, prefix);
+
+        let _session = ProjectSession::open(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(path.join(LOG_FILE).as_std_path())
+                .unwrap()
+                .len(),
+            good_len,
+            "undecodable tail must be truncated to the last good frame"
+        );
+    }
+
+    #[test]
+    fn tail_rollback_failure_fail_stops_open() {
+        clear_tail_rollback_fault();
+        let (_dir, path) = tmp_dir();
+        seed_log_with_frame(&path);
+        append_partial_tail(&path);
+
+        fail_next_tail_rollback();
+        let result = ProjectSession::open(&path);
+        assert!(
+            result.is_err(),
+            "open must fail-stop when tail rollback fails"
+        );
+    }
+
+    // Lock: untrusted opens stay strict — a corrupt tail fails the open.
+    #[test]
+    fn untrusted_open_stays_strict_on_corrupt_tail() {
+        clear_tail_rollback_fault();
+        let (_dir, path) = tmp_dir();
+        seed_log_with_frame(&path);
+        append_partial_tail(&path);
+
+        assert!(ProjectSession::open_untrusted(&path).is_err());
     }
 
     fn copy_v1_fixture(path: &Utf8Path) {

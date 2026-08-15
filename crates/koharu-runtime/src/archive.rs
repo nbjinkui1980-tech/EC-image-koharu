@@ -22,6 +22,7 @@ pub(crate) enum ExtractPolicy<'a> {
     Selected(&'a [&'a str]),
 }
 
+#[cfg(test)]
 pub(crate) fn detect_kind(file_name: &str) -> Result<ArchiveKind> {
     if file_name.ends_with(".zip") {
         Ok(ArchiveKind::Zip)

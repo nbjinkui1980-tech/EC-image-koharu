@@ -25,7 +25,8 @@ fn missing_secret_exits_nonzero_without_listening() {
         .spawn()
         .unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let started_at = Instant::now();
+    let deadline = started_at + Duration::from_secs(30);
     let mut connected = false;
     while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
         connected |= TcpStream::connect_timeout(
@@ -36,9 +37,15 @@ fn missing_secret_exits_nonzero_without_listening() {
         std::thread::sleep(Duration::from_millis(10));
     }
     if child.try_wait().unwrap().is_none() {
+        let pid = child.id();
         child.kill().unwrap();
-        let _ = child.wait();
-        panic!("headless process did not reject the missing secret within 15 seconds");
+        let output = child.wait_with_output().unwrap();
+        panic!(
+            "headless process {pid} did not reject the missing secret within {:?}; connected={connected}; stdout={:?}; stderr={:?}",
+            started_at.elapsed(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
     let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);

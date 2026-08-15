@@ -136,11 +136,22 @@ impl Downloads {
         })
     }
 
-    /// Download a file to the downloads cache, returning the cached path.
-    pub(crate) async fn cached_download(&self, url: &str, file_name: &str) -> Result<PathBuf> {
+    /// Digest-checked download to the cache: a cache hit must match
+    /// `expected_sha256` (a mismatching cache is deleted and refetched), and
+    /// a fresh download that fails verification is deleted instead of being
+    /// returned — a bad download never clobbers a verified cache.
+    pub(crate) async fn cached_download_with_sha256(
+        &self,
+        url: &str,
+        file_name: &str,
+        expected_sha256: &str,
+    ) -> Result<PathBuf> {
         let destination = self.downloads_root.join(file_name);
         if destination.exists() {
-            return Ok(destination);
+            if verify_sha256(&destination, expected_sha256)? {
+                return Ok(destination);
+            }
+            tokio::fs::remove_file(&destination).await.ok();
         }
 
         if let Some(parent) = destination.parent() {
@@ -158,6 +169,11 @@ impl Downloads {
             return Err(error);
         }
         reporter.finish();
+
+        if !verify_sha256(&destination, expected_sha256)? {
+            tokio::fs::remove_file(&destination).await.ok();
+            anyhow::bail!("sha256 mismatch for `{file_name}` after download");
+        }
         Ok(destination)
     }
 
@@ -360,6 +376,16 @@ impl TransferReporter {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Stream a file and compare its SHA-256 against the expected hex digest.
+pub(crate) fn verify_sha256(path: &Path, expected_hex: &str) -> Result<bool> {
+    use sha2::Digest;
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("open `{}` for digest", path.display()))?;
+    let mut hasher = sha2::Sha256::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()) == expected_hex.to_ascii_lowercase())
+}
+
 fn part_path(destination: &Path) -> Result<PathBuf> {
     let file_name = destination.file_name().ok_or_else(|| {
         anyhow::anyhow!(
@@ -380,5 +406,160 @@ mod tests {
     fn partial_download_path_appends_suffix() {
         let part = part_path(Path::new("/tmp/models/config.json")).unwrap();
         assert_eq!(part, Path::new("/tmp/models/config.json.part"));
+    }
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use std::path::Path;
+
+    use super::{Downloads, verify_sha256};
+
+    const GOOD_BYTES: &[u8] = b"koharu-digest-fixture";
+    const BAD_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(bytes))
+    }
+
+    fn downloads(root: &Path) -> Downloads {
+        Downloads::new(
+            root.join("downloads"),
+            root.join("hf"),
+            &crate::RuntimeHttpConfig::default(),
+        )
+        .expect("downloads")
+    }
+
+    // A minimal HTTP server answering HEAD (Content-Length) and ranged GETs
+    // (206) so ranged_download can run against a local fixture.
+    async fn spawn_range_server(bytes: &'static [u8]) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    let read = stream.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..read]);
+                    let response = if request.starts_with("HEAD") {
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            bytes.len()
+                        )
+                        .into_bytes()
+                    } else {
+                        let range = request
+                            .lines()
+                            .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+                            .and_then(|line| line.split_once("bytes="))
+                            .map(|(_, spec)| spec.trim().to_string())
+                            .unwrap_or_else(|| format!("0-{}", bytes.len() - 1));
+                        let (start, stop) = range
+                            .split_once('-')
+                            .map(|(a, b)| {
+                                (
+                                    a.parse::<usize>().unwrap_or(0),
+                                    b.parse::<usize>().unwrap_or(bytes.len() - 1),
+                                )
+                            })
+                            .unwrap();
+                        let body = &bytes[start..=stop.min(bytes.len() - 1)];
+                        let mut response = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+                            body.len(),
+                            start,
+                            start + body.len() - 1,
+                            bytes.len()
+                        )
+                        .into_bytes();
+                        response.extend_from_slice(body);
+                        response
+                    };
+                    let _ = stream.write_all(&response).await;
+                });
+            }
+        });
+        (port, task)
+    }
+
+    #[test]
+    fn verify_sha256_matches_and_rejects() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fixture.bin");
+        std::fs::write(&path, GOOD_BYTES).unwrap();
+        assert!(verify_sha256(&path, &sha256_hex(GOOD_BYTES)).unwrap());
+        assert!(!verify_sha256(&path, BAD_SHA256).unwrap());
+    }
+
+    // AR09-T01 RED: a cache hit must be re-verified — a mismatched cache is
+    // deleted and refetched, and a failed download never clobbers the cache.
+    #[tokio::test]
+    async fn cached_hit_with_mismatched_digest_redownloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloads = downloads(dir.path());
+        let cache = dir.path().join("downloads");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("fixture.bin"), b"corrupt").unwrap();
+        let (port, server) = spawn_range_server(GOOD_BYTES).await;
+
+        let path = downloads
+            .cached_download_with_sha256(
+                &format!("http://127.0.0.1:{port}/fixture.bin"),
+                "fixture.bin",
+                &sha256_hex(GOOD_BYTES),
+            )
+            .await
+            .expect("redownload with the correct bytes");
+        server.abort();
+
+        assert_eq!(std::fs::read(&path).unwrap(), GOOD_BYTES);
+    }
+
+    #[tokio::test]
+    async fn failed_download_never_lands_in_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloads = downloads(dir.path());
+        let (port, server) = spawn_range_server(GOOD_BYTES).await;
+
+        let result = downloads
+            .cached_download_with_sha256(
+                &format!("http://127.0.0.1:{port}/fixture.bin"),
+                "fixture.bin",
+                BAD_SHA256,
+            )
+            .await;
+        server.abort();
+
+        assert!(result.is_err(), "digest mismatch after download must fail");
+        assert!(
+            !dir.path().join("downloads").join("fixture.bin").exists(),
+            "a failed download must not land in the cache"
+        );
+    }
+
+    // Lock: a cache hit with a matching digest returns without any network.
+    #[tokio::test]
+    async fn cached_hit_with_matching_digest_returns_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let downloads = downloads(dir.path());
+        let cache = dir.path().join("downloads");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("fixture.bin"), GOOD_BYTES).unwrap();
+
+        let path = downloads
+            .cached_download_with_sha256(
+                "http://127.0.0.1:1/unreachable",
+                "fixture.bin",
+                &sha256_hex(GOOD_BYTES),
+            )
+            .await
+            .expect("matching cache hit returns without network");
+        assert_eq!(std::fs::read(&path).unwrap(), GOOD_BYTES);
     }
 }

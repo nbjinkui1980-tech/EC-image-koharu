@@ -16,12 +16,13 @@ vi.mock('@/lib/auth', () => ({
   bootstrapDesktopSession: mocks.bootstrapDesktopSession,
   exchangeSession: mocks.exchangeSession,
   isAuthenticated: () => mocks.authenticated,
-  isDesktop: () => mocks.desktop,
   onAuthenticationRequired: (listener: () => void) => {
     mocks.authRequired = listener
     return vi.fn()
   },
 }))
+
+vi.mock('@/lib/backend', () => ({ isTauri: () => mocks.desktop }))
 
 vi.mock('@/lib/events', () => ({ connectEvents: mocks.connectEvents }))
 

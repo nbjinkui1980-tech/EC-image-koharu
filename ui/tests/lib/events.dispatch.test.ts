@@ -225,6 +225,54 @@ describe('dispatch()', () => {
   })
 })
 
+describe('retention bounds', () => {
+  it('bounds terminal jobs at 256 while running jobs survive', async () => {
+    await simulateOpen()
+    send({ event: 'jobStarted', id: 'run-keep', kind: 'pipeline' })
+    for (let i = 0; i < 260; i += 1) {
+      send({ event: 'jobStarted', id: `job-${i}`, kind: 'pipeline' })
+      send({ event: 'jobFinished', id: `job-${i}`, status: 'completed', error: null })
+    }
+    const jobs = useJobsStore.getState().jobs
+    expect(Object.values(jobs).filter((j) => j.status !== 'running').length).toBe(256)
+    expect(jobs['run-keep']?.status).toBe('running')
+  })
+
+  it('bounds terminal downloads at 256', async () => {
+    await simulateOpen()
+    for (let i = 0; i < 260; i += 1) {
+      send({ event: 'downloadProgress', id: `dl-${i}`, status: { status: 'completed' } })
+    }
+    expect(Object.keys(useDownloadsStore.getState().downloads).length).toBe(256)
+  })
+
+  it('evicts oldest-inserted terminal jobs even with integer-like ids', async () => {
+    await simulateOpen()
+    send({ event: 'jobStarted', id: '100', kind: 'pipeline' })
+    send({ event: 'jobFinished', id: '100', status: 'completed', error: null })
+    for (let i = 1; i <= 259; i += 1) {
+      send({ event: 'jobStarted', id: String(i), kind: 'pipeline' })
+      send({ event: 'jobFinished', id: String(i), status: 'completed', error: null })
+    }
+    const jobs = useJobsStore.getState().jobs
+    expect(Object.keys(jobs).length).toBe(256)
+    expect(jobs['100']).toBeUndefined()
+    expect(jobs['4']).toBeDefined()
+  })
+
+  it('bounds terminal jobs even when a snapshot arrives over the limit', async () => {
+    await simulateOpen()
+    const jobs = Array.from({ length: 300 }, (_, i) => ({
+      id: `snap-${i}`,
+      kind: 'pipeline',
+      status: 'completed' as const,
+      error: null,
+    }))
+    send({ event: 'snapshot', jobs, downloads: [] })
+    expect(Object.keys(useJobsStore.getState().jobs).length).toBe(256)
+  })
+})
+
 describe('connection lifecycle', () => {
   it('uses same-origin cookies without a bearer header', () => {
     expect(captured.credentials).toBe('same-origin')
