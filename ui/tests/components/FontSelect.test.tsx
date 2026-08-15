@@ -1,4 +1,4 @@
-import { render, renderHook, screen } from '@testing-library/react'
+import { render, renderHook, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -72,5 +72,45 @@ describe('FontSelect', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Sans' }))
 
     expect(onBrowseOnlineFonts).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('useGoogleFontPreview font face ownership', () => {
+  let addSpy: any
+  let deleteSpy: any
+
+  beforeEach(() => {
+    addSpy = vi.spyOn(document.fonts, 'add').mockImplementation(() => document.fonts)
+    deleteSpy = vi.spyOn(document.fonts, 'delete').mockImplementation(() => true)
+  })
+
+  it('deletes the added font face on unmount', async () => {
+    vi.spyOn(FontFace.prototype, 'load').mockImplementation(function (this: FontFace) {
+      return Promise.resolve(this)
+    })
+    const { result, unmount } = renderHook(() =>
+      useGoogleFontPreview('Fam:400', 'google', true, true),
+    )
+    await waitFor(() => expect(result.current).toBe('ready'))
+    expect(addSpy).toHaveBeenCalledTimes(1)
+    const face = addSpy.mock.calls[0]![0]
+    unmount()
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+    expect(deleteSpy).toHaveBeenCalledWith(face)
+  })
+
+  it('never adds a face whose load resolves after cancel', async () => {
+    let resolveStale!: (face: unknown) => void
+    vi.spyOn(FontFace.prototype, 'load').mockImplementation(
+      () =>
+        new Promise<FontFace>((resolve) => {
+          resolveStale = resolve as (face: unknown) => void
+        }),
+    )
+    const { unmount } = renderHook(() => useGoogleFontPreview('Fam:400', 'google', true, true))
+    unmount()
+    resolveStale(null)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(addSpy).not.toHaveBeenCalled()
   })
 })
