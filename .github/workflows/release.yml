@@ -6,9 +6,7 @@ on:
       - '*'
 
 permissions:
-  contents: write
-  id-token: write
-  packages: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,6 +27,8 @@ jobs:
             args: ''
 
     runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -96,6 +96,7 @@ jobs:
         shell: bash
         run: |
           curl -fsSL "https://github.com/Levminer/trusted-signing-cli/releases/download/0.8.0/trusted-signing-cli.exe" -o "$RUNNER_TEMP/trusted-signing-cli.exe"
+          echo "39ece56f51f41eaf208cdf95323830cfa9e0a64c974ea9de8a27d82113d6e007  $RUNNER_TEMP/trusted-signing-cli.exe" | sha256sum -c -
           printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/trusted-signing-cli.exe" --version
 
@@ -165,6 +166,9 @@ jobs:
   container:
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 

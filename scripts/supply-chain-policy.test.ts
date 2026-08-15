@@ -88,3 +88,59 @@ test('pinned actions carry the version comment', () => {
   }
   expect(offenders).toEqual([])
 })
+
+const releaseWorkflowUrl = new URL('../.github/workflows/release.yml', import.meta.url)
+
+function releaseWorkflowText(): string {
+  return readFileSync(releaseWorkflowUrl, 'utf8')
+}
+
+function topLevelPermissionLines(): string[] {
+  const top = releaseWorkflowText().split(/^jobs:/m)[0] ?? ''
+  const lines = top.split('\n')
+  const start = lines.findIndex((line) => line === 'permissions:')
+  if (start === -1) return []
+  const out: string[] = []
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i]!
+    if (/^  [\w-]+:\s*[\w-]+\s*$/.test(line)) out.push(line.trim())
+    else break
+  }
+  return out
+}
+
+function jobBlock(name: string): string {
+  const lines = releaseWorkflowText().split('\n')
+  const start = lines.findIndex((line) => line === `  ${name}:`)
+  if (start === -1) return ''
+  const out: string[] = []
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i]!
+    if (/^  \S/.test(line)) break
+    out.push(line)
+  }
+  return out.join('\n')
+}
+
+test('release workflow keeps write permissions out of the top level', () => {
+  expect(topLevelPermissionLines().filter((line) => line.endsWith(': write'))).toEqual([])
+})
+
+test('release workflow has no id-token grant anywhere', () => {
+  expect(releaseWorkflowText()).not.toContain('id-token: write')
+})
+
+test('job permissions stay within the declared allowlist', () => {
+  const release = jobBlock('release')
+  const container = jobBlock('container')
+  expect(release).toContain('contents: write')
+  expect(release).not.toContain('packages: write')
+  expect(container).toContain('packages: write')
+  expect(container).not.toContain('contents: write')
+})
+
+test('trusted-signing-cli download verifies sha256 before execution', () => {
+  const cli = jobBlock('release').match(/trusted-signing-cli[\s\S]*?(?=\n      - (?:name|uses):|$)/)
+  expect(cli?.[0]).toContain('sha256')
+  expect(cli?.[0]).toContain('39ece56f51f41eaf208cdf95323830cfa9e0a64c974ea9de8a27d82113d6e007')
+})
