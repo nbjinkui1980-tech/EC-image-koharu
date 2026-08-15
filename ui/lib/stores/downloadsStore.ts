@@ -13,6 +13,29 @@ type DownloadsState = {
   byStatus: (status: DownloadStatus['status']) => DownloadProgress[]
 }
 
+const MAX_TERMINAL_DOWNLOADS = 256
+
+function trimTerminalDownloads(
+  downloads: Record<string, DownloadProgress>,
+): Record<string, DownloadProgress> {
+  const entries = Object.entries(downloads)
+  let terminal = 0
+  for (const [, download] of entries) {
+    if (download.status.status !== 'downloading') terminal += 1
+  }
+  if (terminal <= MAX_TERMINAL_DOWNLOADS) return downloads
+  const next = { ...downloads }
+  let evict = terminal - MAX_TERMINAL_DOWNLOADS
+  for (const [id, download] of entries) {
+    if (evict === 0) break
+    if (download.status.status !== 'downloading') {
+      delete next[id]
+      evict -= 1
+    }
+  }
+  return next
+}
+
 export const useDownloadsStore = create<DownloadsState>()((set, get) => ({
   downloads: {},
   setSnapshot: (downloads) => {
@@ -22,7 +45,7 @@ export const useDownloadsStore = create<DownloadsState>()((set, get) => ({
   },
   progress: (p) =>
     set((s) => ({
-      downloads: { ...s.downloads, [p.id]: p },
+      downloads: trimTerminalDownloads({ ...s.downloads, [p.id]: p }),
     })),
   remove: (id) =>
     set((s) => {

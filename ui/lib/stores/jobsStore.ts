@@ -15,6 +15,27 @@ export type JobEntry = JobSummary & {
   warnings?: JobWarningEvent[]
 }
 
+const MAX_TERMINAL_JOBS = 256
+
+function trimTerminalJobs(jobs: Record<string, JobEntry>): Record<string, JobEntry> {
+  const entries = Object.entries(jobs)
+  let terminal = 0
+  for (const [, job] of entries) {
+    if (job.status !== 'running') terminal += 1
+  }
+  if (terminal <= MAX_TERMINAL_JOBS) return jobs
+  const next = { ...jobs }
+  let evict = terminal - MAX_TERMINAL_JOBS
+  for (const [id, job] of entries) {
+    if (evict === 0) break
+    if (job.status !== 'running') {
+      delete next[id]
+      evict -= 1
+    }
+  }
+  return next
+}
+
 type JobsState = {
   jobs: Record<string, JobEntry>
   setSnapshot: (jobs: JobSummary[]) => void
@@ -64,7 +85,7 @@ export const useJobsStore = create<JobsState>()((set, get) => ({
     set((s) => {
       const existing = s.jobs[id] ?? { id, kind: 'pipeline', status }
       return {
-        jobs: { ...s.jobs, [id]: { ...existing, status, error: error ?? null } },
+        jobs: trimTerminalJobs({ ...s.jobs, [id]: { ...existing, status, error: error ?? null } }),
       }
     }),
   clear: () => set({ jobs: {} }),
