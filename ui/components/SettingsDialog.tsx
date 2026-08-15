@@ -86,6 +86,7 @@ import {
   isKeyBlocked,
   isModifierKey,
 } from '@/lib/shortcutUtils'
+import { useEditorUiStore } from '@/lib/stores/editorUiStore'
 import { usePreferencesStore } from '@/lib/stores/preferencesStore'
 import { cn } from '@/lib/utils'
 
@@ -201,6 +202,7 @@ export function SettingsDialog({
   const [isSavingStorageSettings, setIsSavingStorageSettings] = useState(false)
   const [engineCatalog, setEngineCatalog] = useState<GetEngineCatalog200 | null>(null)
   const [appVersion, setAppVersion] = useState<string>()
+  const configMutationSeq = useRef(0)
   const updater = useUpdater()
 
   useEffect(() => {
@@ -263,19 +265,22 @@ export function SettingsDialog({
       refreshCatalog?: boolean
     } = {},
   ) => {
+    const seq = ++configMutationSeq.current
     try {
       const patch = appConfigToPatch(next)
       const saved = await patchConfig(
         typographyOnly ? { typographyPlanner: patch.typographyPlanner } : patch,
       )
+      if (seq !== configMutationSeq.current) return { saved, superseded: true }
       setAppConfig(saved)
       queryClient.setQueryData(getGetConfigQueryKey(), saved)
       if (refreshCatalog) {
         const catalog = await getLlmCatalog()
+        if (seq !== configMutationSeq.current) return { saved, superseded: true }
         setProviderCatalogs(catalog.providers)
         queryClient.setQueryData(getGetLlmCatalogQueryKey(), catalog)
       }
-      return saved
+      return { saved, superseded: false }
     } catch {
       return null
     }
@@ -316,7 +321,7 @@ export function SettingsDialog({
 
     setIsSavingStorageSettings(true)
     setStorageSettingsError(null)
-    const saved = await persistConfig({
+    const result = await persistConfig({
       ...appConfig,
       data: { path },
       http: {
@@ -326,10 +331,11 @@ export function SettingsDialog({
       },
     })
     setIsSavingStorageSettings(false)
-    if (!saved) {
+    if (!result) {
       setStorageSettingsError('Failed')
       return
     }
+    if (result.superseded) return
     if (!isTauri()) {
       setStorageSettingsError('Restart manually')
       return
@@ -415,12 +421,18 @@ export function SettingsDialog({
                     if (idx >= 0) providers[idx] = updated
                     else providers.push(updated)
                     void persistConfig({ ...appConfig, providers }, { refreshCatalog: true }).then(
-                      () =>
+                      (result) => {
+                        if (!result) {
+                          useEditorUiStore.getState().showError('Failed to save API key')
+                          return
+                        }
+                        if (result.superseded) return
                         setApiKeyDrafts((c) => {
                           const n = { ...c }
                           delete n[id]
                           return n
-                        }),
+                        })
+                      },
                     )
                   }}
                   onClearKey={(id) => {
@@ -429,12 +441,18 @@ export function SettingsDialog({
                     const idx = providers.findIndex((p) => p.id === id)
                     if (idx >= 0) providers[idx] = { ...providers[idx], api_key: null }
                     void persistConfig({ ...appConfig, providers }, { refreshCatalog: true }).then(
-                      () =>
+                      (result) => {
+                        if (!result) {
+                          useEditorUiStore.getState().showError('Failed to clear API key')
+                          return
+                        }
+                        if (result.superseded) return
                         setApiKeyDrafts((c) => {
                           const n = { ...c }
                           delete n[id]
                           return n
-                        }),
+                        })
+                      },
                     )
                   }}
                 />
