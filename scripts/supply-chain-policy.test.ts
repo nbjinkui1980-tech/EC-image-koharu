@@ -144,3 +144,35 @@ test('trusted-signing-cli download verifies sha256 before execution', () => {
   expect(cli?.[0]).toContain('sha256')
   expect(cli?.[0]).toContain('39ece56f51f41eaf208cdf95323830cfa9e0a64c974ea9de8a27d82113d6e007')
 })
+
+const dockerfileUrl = new URL('../Dockerfile', import.meta.url)
+
+test('dockerfile never downloads from releases/latest', () => {
+  const dockerfile = readFileSync(dockerfileUrl, 'utf8')
+  expect(dockerfile).not.toContain('releases/latest')
+  expect(dockerfile).not.toContain('curl')
+})
+
+test('container job consumes only the same-run artifact with a digest check', () => {
+  const container = jobBlock('container')
+  expect(container).toContain('download-artifact')
+  expect(container).toContain('sha256sum -c')
+  const release = jobBlock('release')
+  expect(release).toContain('upload-artifact')
+  expect(release).toContain('koharu.sha256')
+})
+
+test('image name is pinned to the fork authority', () => {
+  const text = releaseWorkflowText()
+  expect(text).toContain('IMAGE_NAME: nbjinkui1980-tech/koharu')
+  expect(text).not.toContain('IMAGE_NAME: ${{ github.repository }}')
+})
+
+test('container image carries OCI source/revision/version labels', () => {
+  const container = jobBlock('container')
+  expect(container).toContain(
+    'org.opencontainers.image.source=https://github.com/nbjinkui1980-tech/koharu',
+  )
+  expect(container).toContain('org.opencontainers.image.revision=${{ github.sha }}')
+  expect(container).toContain('org.opencontainers.image.version=${{ github.ref_name }}')
+})

@@ -3,11 +3,11 @@
 FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG KOHARU_SHA256
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
     ca-certificates \
-    curl \
     fonts-noto-cjk \
     libayatana-appindicator3-1 \
     libgomp1 \
@@ -15,10 +15,12 @@ RUN apt-get update \
     libssl3 \
     libwebkit2gtk-4.1-0 \
     libxdo3 \
-    && curl -fL "https://github.com/mayocream/koharu/releases/latest/download/koharu_linux_x64" -o /usr/local/bin/koharu \
-    && chmod 0755 /usr/local/bin/koharu \
-    && apt-get purge -y --auto-remove curl \
     && rm -rf /var/lib/apt/lists/*
+
+COPY dist/koharu /usr/local/bin/koharu
+RUN test -n "$KOHARU_SHA256" \
+    && echo "$KOHARU_SHA256  /usr/local/bin/koharu" | sha256sum -c - \
+    && chmod 0755 /usr/local/bin/koharu
 
 RUN useradd --create-home --shell /bin/bash koharu \
     && install -d -o koharu -g koharu -m 755 /home/koharu/.local/share/Koharu
