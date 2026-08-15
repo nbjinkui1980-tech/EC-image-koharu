@@ -76,7 +76,7 @@ import type {
   LlmProviderCatalog,
   ProviderConfig,
 } from '@/lib/api/schemas'
-import { isTauri, openExternalUrl } from '@/lib/backend'
+import { isTauri, openExternalUrl, openVerificationUrl } from '@/lib/backend'
 import { supportedLanguages } from '@/lib/i18n'
 import {
   areShortcutsEqual,
@@ -834,7 +834,7 @@ function CodexSettingsPane() {
       setCopied(false)
       setLoginOpen(true)
       void invalidateAuth()
-      void openExternalUrl(next.verificationUrl)
+      void openVerificationUrl(next.verificationUrl).catch((err) => setActionError(String(err)))
     } catch (err) {
       setActionError(String(err))
     } finally {
@@ -941,7 +941,12 @@ function CodexSettingsPane() {
             size='sm'
             className='w-full gap-1.5'
             disabled={!login}
-            onClick={() => login && void openExternalUrl(login.verificationUrl)}
+            onClick={() =>
+              login &&
+              void openVerificationUrl(login.verificationUrl).catch((err) =>
+                setActionError(String(err)),
+              )
+            }
           >
             <ExternalLinkIcon className='size-3.5' />
             {t('ai.openBrowser')}
