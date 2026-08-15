@@ -1,6 +1,6 @@
 # 审计修复 SDD Phase 3 — Loop 执行驱动文档
 
-**状态：ACTIVE/AUTO — Phase 3 一次批准已于 2026-08-13 授予；Loop 空闲，当前无在途 lane。**
+**状态：ACTIVE/AUTO — Phase 3 一次批准已于 2026-08-13 授予；在途 lane:L-AR12。**
 **规格：** `docs/plan/2026-08-10-audit-remediation-sdd-spec.md`
 **计划：** `docs/plan/2026-08-10-audit-remediation-sdd-plan.md`
 **任务：** `docs/plan/2026-08-10-audit-remediation-sdd-tasks.md`
@@ -79,7 +79,7 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | **P2** | **L-AR08** ZIP 安全 | AR08-T01 → T02 | 解锁 AR07-T03 | 🟡 就绪 |
 | **P2** | **L-AR09** 产物完整性 | AR09-T01 → T02 ∥ T03 | 下载 digest 链 | 🟡 就绪 |
 | **P3** | **L-AR11** UI 所有权 | AR11-T01~T06(相互独立) | UI 数据一致性 | ✅ 收口(2026-08-15) |
-| **P3** | **L-AR12** UI 资源 | AR12-T01~T06(相互独立) | UI 资源生命周期 | 🟡 就绪 |
+| **P3** | **L-AR12** UI 资源 | AR12-T01~T06(相互独立) | UI 资源生命周期 | 🚧 在途 |
 | **P4** | **L-AR10** 发布 provenance | AR10-T01 → T02 → T03 | 解锁 AR14-T06;仅本地修改/验证 | 🟡 就绪 |
 | **P5** | **L-FINAL** 收敛 | 全部非 OOS 卡已集成执行分支 + W1~W6 PASS → FINAL-T01 → FINAL-T02 | 全门禁 + 平台/凭据验收 | 🔴 阻塞 |
 
@@ -162,12 +162,12 @@ LOOP-6  自动回 LOOP-1,不等待用户批准。只在全部可执行 lane 完�
 | AR11-T04 Auto-render project/page 隔离 | ✅ | commit `0fa9b34f` | L-AR11 收口证据见合同 |
 | AR11-T05 Scene 临时错误保留旧数据 | ✅ | commit `4aa36a36` | L-AR11 收口证据见合同 |
 | AR11-T06 Verification URL allowlist | ✅ | commit `944915d6` | L-AR11 收口证据见合同 |
-| AR12-T01 Query 缓存 bytes,组件拥有 URL | 🟡 | — | lane 内相互独立 |
-| AR12-T02 FontFace owner | 🟡 | — | lane 内相互独立 |
-| AR12-T03 UI jobs/downloads retention | 🟡 | — | lane 内相互独立 |
-| AR12-T04 Updater cleanup | 🟡 | — | lane 内相互独立 |
-| AR12-T05 文本输入原生 undo/redo | 🟡 | — | lane 内相互独立 |
-| AR12-T06 字体收藏与删除按钮 a11y | 🟡 | — | lane 内相互独立 |
+| AR12-T01 Query 缓存 bytes,组件拥有 URL | 🚧 | — | lane 内相互独立 |
+| AR12-T02 FontFace owner | 🚧 | — | lane 内相互独立 |
+| AR12-T03 UI jobs/downloads retention | 🚧 | — | lane 内相互独立 |
+| AR12-T04 Updater cleanup | 🚧 | — | lane 内相互独立 |
+| AR12-T05 文本输入原生 undo/redo | 🚧 | — | lane 内相互独立 |
+| AR12-T06 字体收藏与删除按钮 a11y | 🚧 | — | lane 内相互独立 |
 
 *AR11/AR12 十二卡在各自 lane 内相互独立,可任意排序执行;自 08-10 起 UI 域零修复提交。*
 
@@ -205,6 +205,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 
 | Lane | Owner 会话 | 执行分支 | 合同 SHA | 登记时间 |
 |---|---|---|---|---|
+| L-AR12 | Sisyphus/K3 | audit-remediation-phase3 | 99de6d5ddee05f88 | 2026-08-15 |
 
 规则:唯一执行器在 LOOP-3 写代码前,于 `audit-remediation-phase3` 主账登记当前 lane 并标 🚧。新会话接管时必须从该分支读取此表;同时只允许一行。仅 LOOP-5e 可在门禁全绿后清除登记并标 ✅。
 
@@ -322,6 +323,7 @@ FINAL-T01 只有在全部非 OOS 卡为执行分支上的 ✅ 且 W1~W6 全部 P
 | 2026-08-15 | L-AR06-T05 | lane 收口 ✅(2 commit)+W4 WAVE-GREEN | T05 `976ac27e` / review-fix `e0ac2a00`(utoipa 429 文档化+happy/413 锁);独立 review 经 oracle 完成:零 blocker/major,2 minor+1 informational 修复,返回类型弱化裁决不改(pipeline start_pipeline 同型先例);**W4 标 PASS**(全部非 OOS 卡 ✅;verifier Sisyphus/K3 @`e0ac2a00`:workspace tests exit 0/39 suites、check/clippy/fmt 净、check:generated 零漂移、UI 245P/lint 0/format 净);依赖传播:无下游;计数不变 → ✅42/◐11/🟡13/🚧0/🔴6/⛔1/⏸0 |
 | 2026-08-15 | L-AR11 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `41ead2f01a883b90`;认领基线 main@`b68f123e`,分支 tip `3a13538d`;无前置依赖(6 卡相互独立;T03/T04 共享 scene.ts、T02/T06 共享 SettingsDialog.tsx,串行隔离);子代理基础设施已恢复(近两 lane oracle 成功);T01~T06 🟡→🚧;计数 → ✅42/◐11/🟡7/🚧6/🔴6/⛔1/⏸0 |
 | 2026-08-15 | L-AR11 | lane 收口 ✅(8 commit) | T01 `5999a1e1` / T02 `e8c6cbf1`+`4429d1dd` / T03 `9a722c57` / T04 `0fa9b34f` / T05 `4aa36a36` / T06 `944915d6` / review-fix `b72c4c89`;门禁全绿(UI 259P/38 文件、lint 0、format 净、ui build 0、workspace check/clippy/fmt 净、check:generated 零漂移);独立 review 经 oracle:零 blocker,2 major(superseded 失败静默/builder page 货币性)+2 minor(switchProject 定时器/URL 主张实证驳回)+4 informational,修至零;依赖传播:无;W5 未收齐(L-AR12 未竟);计数 → ✅48/◐11/🟡7/🚧0/🔴6/⛔1/⏸0 |
+| 2026-08-15 | L-AR12 | 合同经 Phase 3 一次批准覆盖,LOOP-3 本地认领登记 | 合同 `99de6d5ddee05f88`;认领基线 main@`b68f123e`,分支 tip `7cad9a4f`;无前置依赖(6 卡相互独立;T02/T06 共享 font-select.tsx 串行隔离);T02 stale-load 面与 T04 close 面疑似现状已满足,RED-0 实证后按先例或转锁;T01~T06 🟡→🚧;计数 → ✅48/◐11/🟡1/🚧6/🔴6/⛔1/⏸0 |
 
 ---
 
