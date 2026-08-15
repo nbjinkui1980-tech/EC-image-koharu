@@ -134,15 +134,23 @@ test('job permissions stay within the declared allowlist', () => {
   const release = jobBlock('release')
   const container = jobBlock('container')
   expect(release).toContain('contents: write')
+  expect(release).toContain('actions: write')
   expect(release).not.toContain('packages: write')
   expect(container).toContain('packages: write')
+  expect(container).toContain('actions: read')
   expect(container).not.toContain('contents: write')
 })
 
 test('trusted-signing-cli download verifies sha256 before execution', () => {
-  const cli = jobBlock('release').match(/trusted-signing-cli[\s\S]*?(?=\n      - (?:name|uses):|$)/)
+  const cli = jobBlock('release').match(/trusted-signing-cli[\s\S]*?(?=\n\s+- (?:name|uses):|$)/)
   expect(cli?.[0]).toContain('sha256')
   expect(cli?.[0]).toContain('39ece56f51f41eaf208cdf95323830cfa9e0a64c974ea9de8a27d82113d6e007')
+})
+
+test('artifact digest manifest uses the bare binary name', () => {
+  const release = jobBlock('release')
+  expect(release).toContain('sha256sum koharu >')
+  expect(release).not.toContain('sha256sum target/release/koharu >')
 })
 
 const dockerfileUrl = new URL('../Dockerfile', import.meta.url)

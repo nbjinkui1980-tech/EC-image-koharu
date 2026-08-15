@@ -28,6 +28,7 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     permissions:
+      actions: write
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -167,7 +168,7 @@ jobs:
         if: startsWith(matrix.platform, 'ubuntu')
         shell: bash
         run: |
-          sha256sum target/release/koharu > target/release/koharu.sha256
+          cd target/release && sha256sum koharu > koharu.sha256
 
       - name: Upload the linux binary as a same-run artifact
         if: startsWith(matrix.platform, 'ubuntu')
@@ -184,6 +185,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       packages: write
     steps:
