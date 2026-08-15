@@ -1,7 +1,7 @@
 import { act, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { UpdaterProvider } from '@/components/Updater'
+import { UpdaterProvider, useUpdater } from '@/components/Updater'
 
 const updater = vi.hoisted(() => ({
   check: vi.fn(),
@@ -38,5 +38,38 @@ describe('UpdaterProvider', () => {
     })
 
     expect(updater.check).not.toHaveBeenCalled()
+  })
+
+  it('closes each update handle exactly once across replacement and unmount', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    const updateA = { close: vi.fn().mockResolvedValue(undefined) }
+    const updateB = { close: vi.fn().mockResolvedValue(undefined) }
+    updater.check.mockResolvedValueOnce(updateA).mockResolvedValueOnce(updateB)
+
+    let checkAgain: (() => Promise<void>) | undefined
+    function Probe() {
+      checkAgain = useUpdater().checkForUpdates
+      return null
+    }
+
+    const { unmount } = render(
+      <UpdaterProvider>
+        <Probe />
+      </UpdaterProvider>,
+    )
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      await checkAgain?.()
+    })
+    expect(updateA.close).toHaveBeenCalledTimes(1)
+    expect(updateB.close).not.toHaveBeenCalled()
+
+    unmount()
+    expect(updateA.close).toHaveBeenCalledTimes(1)
+    expect(updateB.close).toHaveBeenCalledTimes(1)
   })
 })
