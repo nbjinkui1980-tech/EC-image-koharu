@@ -49,6 +49,12 @@ export function useGoogleFontPreview(
   stateRef.current = state
 
   useEffect(() => {
+    const next = source === 'system' ? 'ready' : 'idle'
+    stateRef.current = next
+    setState(next)
+  }, [family, source])
+
+  useEffect(() => {
     if (source !== 'google' || !cached || !isVisible || stateRef.current !== 'idle') return
 
     let cancelled = false

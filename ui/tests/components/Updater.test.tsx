@@ -1,4 +1,4 @@
-import { act, render } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { UpdaterProvider, useUpdater } from '@/components/Updater'
@@ -57,14 +57,12 @@ describe('UpdaterProvider', () => {
         <Probe />
       </UpdaterProvider>,
     )
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+    await waitFor(() => expect(updater.check).toHaveBeenCalledTimes(1))
 
     await act(async () => {
       await checkAgain?.()
     })
+    await waitFor(() => expect(updater.check).toHaveBeenCalledTimes(2))
     expect(updateA.close).toHaveBeenCalledTimes(1)
     expect(updateB.close).not.toHaveBeenCalled()
 

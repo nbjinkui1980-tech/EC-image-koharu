@@ -6,6 +6,7 @@ import type { DownloadProgress, DownloadStatus } from '@/lib/api/schemas'
 
 type DownloadsState = {
   downloads: Record<string, DownloadProgress>
+  order: string[]
   setSnapshot: (downloads: DownloadProgress[]) => void
   progress: (p: DownloadProgress) => void
   remove: (id: string) => void
@@ -17,41 +18,42 @@ const MAX_TERMINAL_DOWNLOADS = 256
 
 function trimTerminalDownloads(
   downloads: Record<string, DownloadProgress>,
-): Record<string, DownloadProgress> {
-  const entries = Object.entries(downloads)
-  let terminal = 0
-  for (const [, download] of entries) {
-    if (download.status.status !== 'downloading') terminal += 1
-  }
-  if (terminal <= MAX_TERMINAL_DOWNLOADS) return downloads
-  const next = { ...downloads }
-  let evict = terminal - MAX_TERMINAL_DOWNLOADS
-  for (const [id, download] of entries) {
-    if (evict === 0) break
-    if (download.status.status !== 'downloading') {
-      delete next[id]
-      evict -= 1
-    }
-  }
-  return next
+  order: string[],
+): { downloads: Record<string, DownloadProgress>; order: string[] } {
+  const terminalIds = order.filter(
+    (id) => downloads[id] && downloads[id].status.status !== 'downloading',
+  )
+  if (terminalIds.length <= MAX_TERMINAL_DOWNLOADS) return { downloads, order }
+  const evict = new Set(terminalIds.slice(0, terminalIds.length - MAX_TERMINAL_DOWNLOADS))
+  const nextDownloads = { ...downloads }
+  for (const id of evict) delete nextDownloads[id]
+  return { downloads: nextDownloads, order: order.filter((id) => !evict.has(id)) }
 }
 
 export const useDownloadsStore = create<DownloadsState>()((set, get) => ({
   downloads: {},
+  order: [],
   setSnapshot: (downloads) => {
     const next: Record<string, DownloadProgress> = {}
     for (const download of downloads) next[download.id] = download
-    set({ downloads: next })
+    set(
+      trimTerminalDownloads(
+        next,
+        downloads.map((d) => d.id),
+      ),
+    )
   },
   progress: (p) =>
-    set((s) => ({
-      downloads: trimTerminalDownloads({ ...s.downloads, [p.id]: p }),
-    })),
+    set((s) => {
+      const downloads = { ...s.downloads, [p.id]: p }
+      const order = s.downloads[p.id] ? s.order : [...s.order, p.id]
+      return trimTerminalDownloads(downloads, order)
+    }),
   remove: (id) =>
     set((s) => {
       const { [id]: _removed, ...downloads } = s.downloads
-      return { downloads }
+      return { downloads, order: s.order.filter((existing) => existing !== id) }
     }),
-  clear: () => set({ downloads: {} }),
+  clear: () => set({ downloads: {}, order: [] }),
   byStatus: (status) => Object.values(get().downloads).filter((d) => d.status.status === status),
 }))

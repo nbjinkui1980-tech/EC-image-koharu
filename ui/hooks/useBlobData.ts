@@ -1,7 +1,7 @@
 'use client'
 
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { getBlob } from '@/lib/api'
 import { convertToBlob, revokeObjectUrlLater } from '@/lib/io/blobConvert'
@@ -76,5 +76,5 @@ export function useBlobImage(hash: string | undefined) {
     setUrl(objectUrl)
     return () => revokeObjectUrlLater(objectUrl)
   }, [blob])
-  return { ...query, data: url }
+  return useMemo(() => ({ ...query, data: url }), [query, url])
 }

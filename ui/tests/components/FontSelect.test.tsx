@@ -128,6 +128,21 @@ describe('useGoogleFontPreview font face ownership', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(addSpy).not.toHaveBeenCalled()
   })
+
+  it('reloads the preview when the family changes after a successful load', async () => {
+    vi.spyOn(FontFace.prototype, 'load').mockImplementation(function (this: FontFace) {
+      return Promise.resolve(this)
+    })
+    const { result, rerender } = renderHook(
+      ({ family }) => useGoogleFontPreview(family, 'google', true, true),
+      { initialProps: { family: 'Fam-A:400' } },
+    )
+    await waitFor(() => expect(result.current).toBe('ready'))
+    rerender({ family: 'Fam-B:400' })
+    await waitFor(() => expect(result.current).toBe('ready'))
+    expect(addSpy).toHaveBeenCalledTimes(2)
+    expect(deleteSpy).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('FontSelect favorite button keyboard isolation', () => {

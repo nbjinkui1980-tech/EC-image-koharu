@@ -110,7 +110,39 @@ describe('useKeyboardShortcuts — undo/redo in text fields', () => {
     expect(sceneOps.undoOp).not.toHaveBeenCalled()
     expect(event.defaultPrevented).toBe(false)
 
+    const redoEvent = new KeyboardEvent('keydown', {
+      key: 'y',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    fireEvent(input, redoEvent)
+    expect(sceneOps.redoOp).not.toHaveBeenCalled()
+    expect(redoEvent.defaultPrevented).toBe(false)
+
     document.body.removeChild(input)
+  })
+
+  it('keeps native text undo inside contenteditable targets', () => {
+    renderHook(() => useKeyboardShortcuts())
+    const div = document.createElement('div')
+    div.contentEditable = 'true'
+    Object.defineProperty(div, 'isContentEditable', { value: true })
+    document.body.appendChild(div)
+    div.focus()
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
+    fireEvent(div, event)
+
+    expect(sceneOps.undoOp).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(false)
+
+    document.body.removeChild(div)
   })
 
   it('routes undo to scene history outside editable targets', () => {
