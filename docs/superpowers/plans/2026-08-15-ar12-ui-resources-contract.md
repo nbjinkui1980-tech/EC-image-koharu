@@ -30,7 +30,7 @@
   2. `object_url_revoked_when_component_unmounts_or_hash_changes` — unmount/hash 变更 → revokeObjectURL 被调 → 现状 FAIL
 - **目标文件**:上表 T01 行(≤4)
 - **验收命令**:`bun run --cwd ui test -- tests/hooks/useBlobData tests/components/Image`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 2F/0P(缓存持 URL 字符串;变更/unmount 无 revoke)→GREEN 2/2;commit `ac980ef1`;Image.tsx 已有 revokeObjectUrlLater/cancel 全路径管理(范围缩减,零改动)
 
 ## 卡:AR12-T02 — FontFace owner
 
@@ -42,7 +42,7 @@
   2. `stale_load_never_adds_face`(锁,预期 PASS)
 - **目标文件**:上表 T02 行(≤2)
 - **验收命令**:`bun run --cwd ui test -- tests/components/FontSelect`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 1F/1P(unmount 不 delete)+锁 1P(stale 已有 cancelled 守卫,范围缩减转锁)→GREEN 5/5;commit `3b7dc13f`;jsdom 取证:document.fonts 不可重定义(原型方法 spy)、FontFace 构造/load 可用(原型 spy)
 
 ## 卡:AR12-T03 — UI jobs/downloads retention
 
@@ -53,7 +53,7 @@
   1. `completed_jobs_are_bounded_at_256_while_running_survive` → 现状 FAIL
 - **目标文件**:上表 T03 行(≤3)
 - **验收命令**:`bun run --cwd ui test -- tests/lib/events.dispatch`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 2F/0P(260 条终态无界)→GREEN 20/20;commit `b02c57bf`
 
 ## 卡:AR12-T04 — Updater cleanup
 
@@ -64,7 +64,7 @@
   1. `each_update_handle_is_closed_exactly_once_across_replacement_and_unmount` → 现状待证
 - **目标文件**:上表 T04 行(≤2)
 - **验收命令**:`bun run --cwd ui test -- tests/components/Updater`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED-0 实证:[update] 键 effect 已恰好一次 close(replacement+unmount)→范围缩减转锁(AR03-T03 先例),零产品改动;commit `31fa3a1a`(纯测试)
 
 ## 卡:AR12-T05 — 文本输入原生 undo/redo
 
@@ -76,7 +76,7 @@
   2. `non_editable_target_routes_to_scene_history`(锁,预期 PASS)
 - **目标文件**:上表 T05 行(≤2)
 - **验收命令**:`bun run --cwd ui test -- tests/hooks/useKeyboardShortcuts`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 1F/4P(input 内 Cmd+Z 触发 scene undo+preventDefault)→GREEN 5/5;commit `37fcfa0c`
 
 ## 卡:AR12-T06 — 字体收藏与删除按钮 a11y
 
@@ -88,4 +88,13 @@
   2. `delete_button_has_accessible_name_and_visible_focus` → 现状 FAIL
 - **目标文件**:上表 T06 行(≤4)
 - **验收命令**:`bun run --cwd ui test -- tests/components/FontSelect tests/components/Navigator`
-- **证据记录**:RED / GREEN / commit SHA(执行时填)
+- **证据**:RED 2F/0P(Enter 冒泡选中字体;删除按钮无 aria-label/focus-visible)→GREEN 21/21;commit `769fb1ae`;测试驱动取证:选项列表经 react-virtual 虚拟化(jsdom 需 mock)、findByText 命中触发器值需 findAllByText+role 过滤
+
+## Lane 收口(2026-08-15)
+
+- 门禁:UI suite 274P/0F(39 文件)、lint:ui exit 0、format:check 净、ui build exit 0、workspace check 净、check:generated 零漂移
+- 独立 review(oracle):零 blocker;**1 major**——终态 trim 依赖 Record 键序,整数字符串 ID 按数值排序破坏最旧先出(修:双 store 显式插入序数组+eviction 断言含整数 ID 用例);**4 minor**——setSnapshot 绕过上限(同修)/useBlobImage 逐渲染新引用(useMemo)/font-select 家族变更停滞(T02 删除旧 face 后 guard 阻断新加载;修:family/source 变更同步重置 idle+stateRef,补锁)/Updater 测试微任务计数(改 waitFor);**3 informational**——数值 ID 测试缺口(补)/keyboard 仅 Ctrl+Z(补 Ctrl+Y+contenteditable;jsdom 无 isContentEditable,defineProperty 垫片)/收藏按钮 aria-label(裁决记录:需四语言 locale key,超卡范围)
+- review-fix commit:`8c4b3af1`(8 文件,+134/-52)
+- 提交/回滚单元:T01 `ac980ef1`、T02 `3b7dc13f`、T03 `b02c57bf`、T04 `31fa3a1a`、T05 `37fcfa0c`、T06 `769fb1ae`、review-fix `8c4b3af1`,均可独立 revert
+- 附加:清除 housekeeping 孤儿 `check-hanonly-production-policy.test.ts`(import 已删脚本,`6c150bc8`)
+- **W5 WAVE-GREEN**:四 lane 全 ✅(L-AR07/08/09/11/12);verifier Sisyphus/K3 @`6c150bc8`:`bun cargo test --workspace --tests` exit 0(39 suites;首轮 `hanonly_pre_greenc_red_t3_transient_planner_hint_contract` flake,单跑+全量复跑绿,该族第二次,既有)、UI 274P/0F+ui build 0、policy 8P/0F(supply-chain+tauri-security-config+sentry-policy)、Tauri desktop release build exit 0;Docker build 环境阻塞(daemon 不可用),按 AR14-T07 Linux CI 先例记录,不宣称发布就绪
