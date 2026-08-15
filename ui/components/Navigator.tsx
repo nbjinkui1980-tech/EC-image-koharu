@@ -275,7 +275,8 @@ const PagePreview = memo(function PagePreview({
             variant='destructive'
             size='icon'
             data-testid={`navigator-page-delete-${index}`}
-            className='absolute top-1.5 right-1.5 h-6 w-6 rounded-full opacity-0 shadow-md transition-opacity duration-200 group-hover:opacity-100 hover:scale-105'
+            className='absolute top-1.5 right-1.5 h-6 w-6 rounded-full opacity-0 shadow-md transition-opacity duration-200 group-hover:opacity-100 hover:scale-105 focus-visible:opacity-100'
+            aria-label={t('common.delete', 'Delete')}
             onClick={(e) => {
               e.stopPropagation()
               onDelete(pageId)

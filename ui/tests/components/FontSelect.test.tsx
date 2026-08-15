@@ -9,6 +9,21 @@ const api = vi.hoisted(() => ({
   getGetGoogleFontFileUrl: vi.fn(() => '/cached-font.ttf'),
 }))
 
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getTotalSize: () => count * 28,
+    getVirtualItems: () =>
+      Array.from({ length: count }, (_, i) => ({
+        index: i,
+        start: i * 28,
+        end: (i + 1) * 28,
+        size: 28,
+        key: i,
+      })),
+    measure: vi.fn(),
+  }),
+}))
+
 vi.mock('@/lib/api', () => api)
 
 describe('FontSelect', () => {
@@ -112,5 +127,33 @@ describe('useGoogleFontPreview font face ownership', () => {
     resolveStale(null)
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(addSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('FontSelect favorite button keyboard isolation', () => {
+  it('Enter on the favorite button toggles favorite without selecting the font', async () => {
+    const onToggleFavorite = vi.fn()
+    const onChange = vi.fn()
+    render(
+      <FontSelect
+        value='Alpha'
+        options={[
+          { familyName: 'Alpha', postScriptName: 'AlphaPS', source: 'system', cached: true },
+        ]}
+        favoriteFonts={[]}
+        onToggleFavorite={onToggleFavorite}
+        onChange={onChange}
+        data-testid='font-select'
+      />,
+    )
+    await userEvent.click(screen.getByTestId('font-select'))
+    await screen.findByPlaceholderText('Search fonts…')
+    const texts = await screen.findAllByText('Alpha')
+    const row = texts.map((el) => el.closest('div[role="button"]')).find(Boolean)!
+    const favoriteButton = row.querySelector('button')!
+    favoriteButton.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(onToggleFavorite).toHaveBeenCalledTimes(1)
+    expect(onChange).not.toHaveBeenCalled()
   })
 })

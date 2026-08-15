@@ -159,6 +159,7 @@ function FontRow({
             e.stopPropagation()
             onToggleFavorite(font.postScriptName)
           }}
+          onKeyDown={(e) => e.stopPropagation()}
         >
           <StarIcon className={cn('size-3', isFavorite && 'fill-current')} />
         </button>
