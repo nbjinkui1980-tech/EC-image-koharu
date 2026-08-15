@@ -51,6 +51,13 @@ jobs:
           path: tests/integration-tests/.cache
           key: ${{ runner.os }}-integration-runtime-${{ hashFiles('koharu-runtime/**/*.rs', 'koharu-llm/**/*.rs') }}
           restore-keys: ${{ runner.os }}-integration-runtime-
+      - name: DIAG bisect rpc lib suite (temporary, revert after diagnosis)
+        continue-on-error: true
+        run: |
+          echo "=== half 1: routes:: ==="
+          cargo test -p koharu-rpc --lib routes:: 2>&1 | tail -3 || true
+          echo "=== half 2: non-routes ==="
+          cargo test -p koharu-rpc --lib -- --skip routes:: 2>&1 | tail -3 || true
       - name: Run workspace tests (unit + integration)
         run: |
           # Headless dbus + gnome-keyring so the provider-secret integration
