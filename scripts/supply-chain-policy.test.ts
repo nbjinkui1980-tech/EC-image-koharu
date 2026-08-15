@@ -52,7 +52,7 @@ test('permits only a complete future-dated development exception', () => {
   )
 })
 
-const releaseWorkflowFiles = ['build.yml', 'publish.yml', 'release.yml'].map(
+const releaseWorkflowFiles = ['build.yml', 'publish.yml', 'release.yml', 'lint.yml', 'test.yml'].map(
   (name) => new URL(`../.github/workflows/${name}`, import.meta.url),
 )
 
@@ -183,4 +183,30 @@ test('container image carries OCI source/revision/version labels', () => {
   )
   expect(container).toContain('org.opencontainers.image.revision=${{ github.sha }}')
   expect(container).toContain('org.opencontainers.image.version=${{ github.ref_name }}')
+})
+
+const ciWorkflowText = ['lint.yml', 'test.yml']
+  .map((name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8'))
+  .join('\n')
+
+test('CI blocks on the full workspace rust gate set', () => {
+  expect(ciWorkflowText).toContain('cargo fmt --all -- --check')
+  expect(ciWorkflowText).toContain('cargo check --workspace --all-targets')
+  expect(ciWorkflowText).toContain('cargo clippy --workspace --all-targets -- -D warnings')
+  expect(ciWorkflowText).toContain('cargo test --workspace --tests')
+})
+
+test('CI blocks on the UI format/lint/test gate set', () => {
+  expect(ciWorkflowText).toContain('format:check')
+  expect(ciWorkflowText).toMatch(/bun (run )?lint:ui/)
+  expect(ciWorkflowText).toMatch(/bun run --filter ui test|test:ui/)
+})
+
+test('CI blocks on generated-artifact drift', () => {
+  expect(ciWorkflowText).toContain('check:generated')
+})
+
+test('CI blocks on cargo and dependency audit', () => {
+  expect(ciWorkflowText).toContain('cargo audit')
+  expect(ciWorkflowText).toContain('audit:deps')
 })
